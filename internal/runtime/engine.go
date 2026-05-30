@@ -1724,6 +1724,8 @@ func providerStopFailure(stopReason string) (string, string) {
 		return "provider_blocked", "provider stopped because the response was blocked"
 	case "error":
 		return "provider_stop_error", "provider stopped with an adapter/provider error stop reason"
+	case "tool_use":
+		return "provider_tool_use_empty", "provider reported tool use without any parsed tool calls"
 	default:
 		return "", ""
 	}

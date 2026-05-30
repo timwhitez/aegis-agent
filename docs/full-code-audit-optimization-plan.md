@@ -9312,7 +9312,47 @@ Evidence gates:
 - Confirmed this is distinct from earlier unknown-stop, non-object tool input, and missing tool-use-id slices. Those covered malformed stop names or malformed tool blocks that were present; this residual shape declared tool use at the provider stop boundary while providing only text content, yielding `StopReason:"tool_use"` with zero internal tool calls.
 - Confirmed the minimal fix belongs in the Anthropic adapter, not Web, CLI, or runtime: provider-specific response shape validation must fail as `response_parse_error` before runtime can persist or interpret an empty tool-use turn.
 
+### Review 528
+
+- Confirmed FCA-20260530-533 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md`: runtime must fail closed if it receives `StopReason:"tool_use"` with no parsed tool calls.
+- Confirmed this is a separate hard-backstop slice from FCA-20260530-532. That slice fixed the Anthropic adapter's malformed response shape; this slice covers the runtime/provider interface invariant so a future adapter, compatible provider, or fake/test provider cannot silently turn the same contradictory result into `awaiting_input`.
+- Confirmed the minimal fix belongs in runtime stop-reason failure handling only for the no-tool-call branch. Normal `tool_use` turns with one or more parsed tool calls still go through the existing tool dispatch path unchanged.
+
 ## Update Log
+
+### FCA-20260530-533
+
+Slice: `fix(runtime): fail empty provider tool-use stops`
+
+Finding:
+
+- Runtime tool dispatch is keyed on `len(result.ToolCalls) > 0`, but provider stop failure handling previously treated only `max_tokens`, `blocked`, and `error` as provider failures in the no-tool-call branch.
+- If a provider adapter returned `StopReason:"tool_use"` with an empty tool-call list, `ModeRun` entered ordinary `awaiting_input` with the partial assistant text instead of marking the turn as a provider boundary failure.
+- Focused failing evidence showed `TestEngineProviderStopReasonFailuresAreResumable/tool_use` returned `Status:"awaiting_input"` before the fix.
+
+Impact:
+
+- A malformed or future provider adapter result could leave durable session state looking like a normal no-tool stop even though the provider declared a tool-use boundary.
+- That weakens Web/CLI recovery diagnostics and provider-attempt traceability, and it makes the runtime rely entirely on every adapter catching this invariant locally.
+- This did not affect normal tool execution, because the new failure path is reached only when `StopReason:"tool_use"` arrives with zero parsed tool calls.
+
+Changes:
+
+- Extended the provider stop failure mapping so an empty `tool_use` stop becomes `provider_tool_use_empty` with a clear operator-facing error.
+- Expanded the existing runtime provider-stop regression matrix to cover `tool_use` alongside `max_tokens`, `blocked`, and `error`.
+- Updated the provider contract to state that `tool_use` must carry at least one internal tool call, and that runtime must treat an empty `tool_use` result as provider boundary failure.
+
+Validation:
+
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable/tool_use -count=1`: failed before the fix because the session entered `awaiting_input`; passed after the fix.
+- `go test ./internal/runtime -run TestEngineProviderStopReasonFailuresAreResumable -count=1`: passed.
+- `go test ./internal/runtime -run 'TestEngineProviderStopReasonFailuresAreResumable|TestEngineProviderStopReasonReportsFailedEventAppendError' -count=1`: passed.
+- `go test ./internal/runtime ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-532
 

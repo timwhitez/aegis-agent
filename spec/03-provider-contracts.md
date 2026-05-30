@@ -107,6 +107,7 @@ v1 允许 adapter 采用“单次响应 + 事件回放”的伪流式模式。
 
 - `completed` 只留给显式完成语义
 - provider 自然结束通常先映射为 `done_candidate`
+- `tool_use` 必须携带至少一个内部 tool call；如果 runtime 在没有 parsed tool calls 的情况下看到 `tool_use`，必须按 provider boundary failure 处理，不能降级为普通等待输入。
 - 若 provider 因 `429` / `5xx` / transport timeout 发生有限重试，必须在事件流里留下 `provider.retry` 证据
 - 若 provider 在没有新工具副作用前因 `upstream_timeout` 失败，runtime 可以按有界策略自动续跑，并必须留下 `provider.auto_resume` 证据
 - runtime 还会把 retry、auto-resume、failure、success 追加到 `provider-attempts.jsonl`；success attempt 会保存 provider 返回的 cache read/write token 计数。该 ledger 只用于诊断、恢复与 WebConsole 展示，不反向驱动 adapter retry policy。

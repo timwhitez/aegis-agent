@@ -968,7 +968,7 @@ func TestEngineDoesNotCompleteOnBlankFinishMessage(t *testing.T) {
 }
 
 func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
-	for _, stopReason := range []string{"max_tokens", "blocked", "error"} {
+	for _, stopReason := range []string{"max_tokens", "blocked", "error", "tool_use"} {
 		t.Run(stopReason, func(t *testing.T) {
 			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
