@@ -4118,7 +4118,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		}
 		dir := managedSkillDir
 		if index != managedSkillIndex {
-			dir, err = resolveSkillDir(rawDir)
+			dir, err = resolveReadOnlySkillDir(rawDir)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
@@ -6109,6 +6109,14 @@ func resolveManagedSkillDir(rawDir string) (string, error) {
 			return "", fmt.Errorf("skill root is not a directory: %s", resolved)
 		}
 	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return canonicalManagedPath(resolved), nil
+}
+
+func resolveReadOnlySkillDir(rawDir string) (string, error) {
+	resolved, err := resolveSkillDir(rawDir)
+	if err != nil {
 		return "", err
 	}
 	return canonicalManagedPath(resolved), nil

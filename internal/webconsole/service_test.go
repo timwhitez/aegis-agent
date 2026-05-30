@@ -9574,6 +9574,49 @@ func TestServiceSkillListUsesCanonicalManagedSkillDir(t *testing.T) {
 	}
 }
 
+func TestServiceSkillListUsesCanonicalReadOnlySkillDir(t *testing.T) {
+	cfg := testConfig(t, "")
+	base := t.TempDir()
+	managedDir := filepath.Join(base, "managed-skills")
+	realRoot := filepath.Join(base, "real-root")
+	linkRoot := filepath.Join(base, "link-root")
+	externalDir := filepath.Join(realRoot, "external-skills")
+	externalSkill := filepath.Join(externalDir, "external-skill")
+	if err := os.MkdirAll(externalSkill, 0o755); err != nil {
+		t.Fatalf("mkdir external skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(externalSkill, "SKILL.md"), []byte("---\nname: external-skill\ndescription: canonical read-only skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write external skill manifest: %v", err)
+	}
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	cfg.Skills.Dirs = []string{managedDir, filepath.Join(linkRoot, "external-skills")}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("expected one external skill, got %#v", listed)
+	}
+	if listed[0]["id"] != "external-skill" {
+		t.Fatalf("unexpected listed skill: %#v", listed[0])
+	}
+	if listed[0]["read_only"] != true || listed[0]["disabled_reason"] == "" {
+		t.Fatalf("external skill should remain read-only, got %#v", listed[0])
+	}
+	if listed[0]["discovery_path"] != filepath.Clean(externalDir) {
+		t.Fatalf("expected canonical discovery path %s, got %#v", filepath.Clean(externalDir), listed[0])
+	}
+}
+
 func TestServiceSkillListRequiresReadableSkillManifest(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

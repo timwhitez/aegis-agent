@@ -9150,7 +9150,46 @@ Evidence gates:
 - Confirmed this is distinct from the earlier symlink-root and symlink-manifest hardening slices. `handleUploadSkill(...)` and `handleUninstallSkill(...)` already used `resolveManagedSkillDir(...)`, but `handleListSkills(...)` used the raw `resolveSkillDir(...)` path; when the configured managed path had a symlink ancestor, mutation operated on the canonical real directory while listing tried to read manifests through the symlinked ancestor and failed.
 - Confirmed the minimal fix belongs in `handleListSkills(...)`: resolve the first non-blank configured skill directory through `resolveManagedSkillDir(...)` once, reuse that canonical path for the managed list pass, and leave later configured skill directories as read-only discovery roots.
 
+### Review 501
+
+- Confirmed FCA-20260530-506 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, `spec/18-durable-contract-and-completion.md`, and the runtime skill catalog: read-only configured skill directories are still local skill roots and should be listed consistently with runtime discovery.
+- Confirmed this is the read-only counterpart to FCA-20260530-505. The managed root now reused `resolveManagedSkillDir(...)`, but later configured skill directories still used the raw `resolveSkillDir(...)` path; when a read-only configured root had a symlink ancestor, the runtime catalog could discover the canonical real skill root while Web `/api/skills` failed before returning read-only skill metadata.
+- Confirmed the minimal fix should not make later directories mutable. It belongs in a separate read-only resolver that canonicalizes the configured root for safe listing while preserving `read_only=true` and the existing disabled reason for all non-managed skill directories.
+
 ## Update Log
+
+### FCA-20260530-506
+
+Slice: `fix(webconsole): canonicalize read-only skill listing`
+
+Finding:
+
+- After FCA-20260530-505, `handleListSkills(...)` still resolved later configured skill directories with raw `resolveSkillDir(...)`.
+- A focused failing test configured a read-only external skill directory below a symlinked ancestor. Before the fix, `/api/skills` returned `500` while reading the external skill manifest through that symlinked ancestor, even though runtime skill catalog discovery canonicalizes configured roots with `EvalSymlinks(...)`.
+
+Impact:
+
+- WebConsole skill observability could disagree with runtime skill discovery for read-only configured skill roots.
+- Operators could lose the entire skills list when a later read-only skill root was reachable and safe after canonicalization.
+
+Changes:
+
+- Added `resolveReadOnlySkillDir(...)` to canonicalize non-managed skill directories before listing.
+- Updated `handleListSkills(...)` to use that read-only resolver for later configured roots while keeping them non-mutable.
+- Added `TestServiceSkillListUsesCanonicalReadOnlySkillDir` to prove a symlink-ancestor external root lists successfully as read-only with a canonical discovery path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillListUsesCanonicalReadOnlySkillDir -count=1`: failed before the fix with `/api/skills` returning `500` while reading through the symlinked ancestor; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkillListUsesCanonical(ReadOnly|Managed)SkillDir' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkill(ListUsesCanonicalReadOnlySkillDir|ListUsesCanonicalManagedSkillDir|ListMarksNonManagedSkillDirsReadOnly|RoutesUseFirstNonBlankManagedSkillDir|ListRequiresReadableSkillManifest)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath' -count=1`: passed.
+- `go test -timeout 120s ./internal/skills -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'Test.*Skill|Test.*Catalog|Test.*Command' -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-505
 
