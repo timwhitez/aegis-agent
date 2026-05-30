@@ -83,8 +83,26 @@ var deniedWorkspaceWriteDirPaths = []string{
 	".config/gcloud",
 }
 
+var deniedWorkspaceWriteFilePaths = []string{
+	".m2/settings.xml",
+	".m2/settings-security.xml",
+	".gradle/gradle.properties",
+	".nuget/NuGet.Config",
+	".pip/pip.conf",
+	".config/pip/pip.conf",
+}
+
 var deniedWorkspaceWriteFiles = []string{
 	".env",
+	".npmrc",
+	".netrc",
+	"_netrc",
+	".pypirc",
+	".git-credentials",
+	".dockercfg",
+	".yarnrc",
+	".yarnrc.yml",
+	".pnpmrc",
 	"id_rsa",
 	"id_ed25519",
 	"credentials",
@@ -142,6 +160,9 @@ func checkWorkspaceWriteDisplayPath(displayPath string) error {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s/'", displayPath, denied)
 		}
 	}
+	if pattern := deniedWorkspaceWriteFilePathPattern(parts); pattern != "" {
+		return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, pattern)
+	}
 	for _, part := range parts {
 		if pattern := deniedWorkspaceWritePathComponentPattern(part); pattern != "" {
 			return fmt.Errorf("write denied: path '%s' matches deny pattern '%s'", displayPath, pattern)
@@ -157,6 +178,15 @@ func deniedWorkspaceWritePathComponentPattern(name string) string {
 		}
 	}
 	return deniedWorkspaceWriteFilePattern(name)
+}
+
+func deniedWorkspaceWriteFilePathPattern(parts []string) string {
+	for _, denied := range deniedWorkspaceWriteFilePaths {
+		if displayPathContainsDirPath(parts, denied) {
+			return denied
+		}
+	}
+	return ""
 }
 
 func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) error {
@@ -176,6 +206,15 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 		}
 		if ok && isWithin(deniedPath, resolvedPath) {
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s/'", displayPath, denied)
+		}
+	}
+	for _, denied := range deniedWorkspaceWriteFilePaths {
+		deniedPath, ok, err := resolveWorkspacePolicyPathWithExistingParent(base, denied)
+		if err != nil {
+			return err
+		}
+		if ok && resolvedAliasMatches(deniedPath, resolvedPath) {
+			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, denied)
 		}
 	}
 	for _, denied := range deniedWorkspaceWriteFiles {
@@ -291,6 +330,20 @@ func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) 
 		return "", false, err
 	}
 	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if !isWithin(base, resolved) {
+		return "", false, nil
+	}
+	return resolved, true, nil
+}
+
+func resolveWorkspacePolicyPathWithExistingParent(base, rel string) (string, bool, error) {
+	resolved, err := resolveWithExistingParent(filepath.Join(base, rel))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil

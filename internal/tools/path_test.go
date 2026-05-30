@@ -122,6 +122,34 @@ func TestWriteDeniedSecretDirs(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedCredentialRCAndPackageCredentialFiles(t *testing.T) {
+	tests := []struct {
+		path    string
+		pattern string
+	}{
+		{path: ".npmrc", pattern: ".npmrc"},
+		{path: ".netrc", pattern: ".netrc"},
+		{path: "_netrc", pattern: "_netrc"},
+		{path: ".pypirc", pattern: ".pypirc"},
+		{path: ".git-credentials", pattern: ".git-credentials"},
+		{path: ".dockercfg", pattern: ".dockercfg"},
+		{path: ".yarnrc", pattern: ".yarnrc"},
+		{path: ".yarnrc.yml", pattern: ".yarnrc.yml"},
+		{path: ".pnpmrc", pattern: ".pnpmrc"},
+		{path: ".m2/settings.xml", pattern: ".m2/settings.xml"},
+		{path: ".m2/settings-security.xml", pattern: ".m2/settings-security.xml"},
+		{path: ".gradle/gradle.properties", pattern: ".gradle/gradle.properties"},
+		{path: ".nuget/NuGet.Config", pattern: ".nuget/NuGet.Config"},
+		{path: ".pip/pip.conf", pattern: ".pip/pip.conf"},
+		{path: ".config/pip/pip.conf", pattern: ".config/pip/pip.conf"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			assertWriteDenied(t, tt.path, tt.pattern)
+		})
+	}
+}
+
 func TestWriteDeniedAllowsNormalWorkspaceFile(t *testing.T) {
 	root := t.TempDir()
 	path, err := ResolveWorkspacePath(root, "reports/result.md")
@@ -263,6 +291,24 @@ func TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets(t *testing.T) {
 				t.Fatalf("expected resolved %s directory target child to be denied, got %v", tt.alias, err)
 			}
 		})
+	}
+}
+
+func TestWriteDeniedPackageCredentialPathSymlinkAlias(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "maven-real")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("mkdir maven target: %v", err)
+	}
+	if err := os.Symlink("maven-real", filepath.Join(root, ".m2")); err != nil {
+		t.Fatalf("symlink .m2: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "maven-real/settings.xml")
+	if err != nil {
+		t.Fatalf("resolve maven target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.m2/settings.xml'") {
+		t.Fatalf("expected resolved .m2/settings.xml target to be denied, got %v", err)
 	}
 }
 

@@ -71,6 +71,14 @@ func TestExecPolicyDetectsSecretPathWrite(t *testing.T) {
 		"printf token > .azure/accessTokens.json",
 		"printf token > .oci/config",
 		"printf token > .config/gcloud/configurations/config_default",
+		"printf token > .npmrc",
+		"printf token > .yarnrc.yml",
+		"printf token > .pnpmrc",
+		"printf token > .m2/settings.xml",
+		"printf token > .m2/settings-security.xml",
+		"printf token > .gradle/gradle.properties",
+		"printf token > .nuget/NuGet.Config",
+		"printf token > .config/pip/pip.conf",
 	} {
 		t.Run(command, func(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)
@@ -92,6 +100,10 @@ func TestExecPolicyDetectsSecretPathWriteCommands(t *testing.T) {
 		"install -d .config/gcloud",
 		"env cp token.txt .env.local",
 		"env FOO=bar /bin/cp token.txt .env.local",
+		"touch .m2/settings.xml",
+		"cp token.txt .pnpmrc",
+		"mv token.txt .nuget/NuGet.Config",
+		"install -m 600 token.txt .gradle/gradle.properties",
 	} {
 		t.Run(command, func(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)
@@ -122,6 +134,8 @@ func TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets(t *testing.T) {
 		"printf token | tee reports/out.txt .env.local",
 		"printf token | tee -a reports/out.txt .env/token",
 		"printf token | /usr/bin/tee reports/out.txt configs/.env.production/token",
+		"printf token | tee reports/out.txt .m2/settings.xml",
+		"printf token | tee -a reports/out.txt .config/pip/pip.conf",
 	} {
 		t.Run(command, func(t *testing.T) {
 			violations := DetectExecPolicyViolations(command)

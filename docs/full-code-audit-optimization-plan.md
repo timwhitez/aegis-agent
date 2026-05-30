@@ -9180,7 +9180,48 @@ Evidence gates:
 - Confirmed this is distinct from the earlier foreign-origin and cross-scheme mutation guards. Those checks rejected `Origin: evil` with a different `Host`, and rejected `https` origin against an `http` request, but `sameOriginRequest(...)` still accepted `Host: evil.invalid` with `Origin: http://evil.invalid`.
 - Confirmed the minimal fix belongs in `sameOriginRequest(...)`: keep the scheme and exact host comparison, but first require both request and origin hosts to be local-console hosts, currently `localhost` / `*.localhost` or IP literals. This preserves loopback/IP access, including non-loopback IP access after the documented LAN warning, while denying arbitrary DNS names in the unsafe mutation path.
 
+### Review 506
+
+- Confirmed FCA-20260530-511 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: model-facing workspace writes and shell exec-policy classification should not lag behind the credential-like paths already established for the local Web Workspace browser.
+- Confirmed this is distinct from FCA-20260530-508 and FCA-20260530-509. Those slices hardened the Web read-only browser for credential rc files and package-manager credential configs; the residual issue was the tool side still allowed `write_file` / `edit_file` and shell writes to the same rc/package credential paths.
+- Confirmed the minimal fix belongs in `internal/tools/path.go` and `internal/tools/exec_policy.go`: extend the existing secret write deny/classification helpers, including symlink-alias resolution for directory-scoped package credential paths, without changing workspace reads, Web rendering, provider replay, session/report content, or runtime workflow decisions.
+
 ## Update Log
+
+### FCA-20260530-511
+
+Slice: `fix(tools): deny credential config writes`
+
+Finding:
+
+- `internal/tools/path.go` still allowed model-facing writes to credential rc/auth files and package-manager credential configs such as `.npmrc`, `.pnpmrc`, `.m2/settings.xml`, `.gradle/gradle.properties`, `.nuget/NuGet.Config`, and `.config/pip/pip.conf`.
+- `internal/tools/exec_policy.go` likewise failed to classify shell redirect, `tee`, and common write commands targeting those paths as `secret_path_write`.
+- Focused failing tests proved the gap before the fix: the new workspace write cases were allowed, the `.m2 -> maven-real` symlink-alias target was writable through its resolved real path, and package credential shell writes returned no `secret_path_write` violation.
+
+Impact:
+
+- A model or shell command running inside the workspace could create or overwrite package registry tokens, Maven server passwords, Gradle repository credentials, NuGet source credentials, pip index credentials, netrc entries, Git credentials, or legacy Docker registry auth material without the direct write guard or shell exec-policy warning/deny path triggering.
+- This weakened the consistency between the Web Workspace credential boundary and the model-facing tool safety boundary. The issue is limited to workspace writes and shell exec-policy metadata; it does not change workspace reads, Web Workspace rendering, provider replay, session/report content, or runtime workflow behavior.
+
+Changes:
+
+- Added credential rc/auth filenames and package-manager rc filenames to the workspace write denied file list.
+- Added path-level write denial for Maven, Gradle, NuGet, pip, and `.config/pip` credential config files without blocking unrelated `.m2`, `.gradle`, `.nuget`, `.pip`, or `.config` content.
+- Added resolved-alias enforcement for path-level package credential files so a real target reached through a sensitive package-config alias is also denied.
+- Reused the path-level deny helper from shell exec-policy target classification so redirects, `tee`, and common write commands all classify matching package credential targets as `secret_path_write`.
+- Added focused coverage for direct tool writes, package credential symlink aliases, shell redirects, later `tee` targets, and common write commands.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedCredentialRCAndPackageCredentialFiles|TestWriteDeniedPackageCredentialPathSymlinkAlias|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyDetectsSecretPathWriteCommands|TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets' -count=1`: failed before the fix because the new credential rc/package write cases were allowed or unclassified; passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDenied(CredentialRCAndPackageCredentialFiles|PackageCredentialPathSymlinkAlias|SecretDirs|PrivateKeyAndCredentialFiles|EnvVariantsAndSensitivePathComponents|CloudCredentialPathSymlinkAlias)|TestExecPolicyDetectsSecretPathWrite|TestExecPolicyDetectsSecretPathWriteCommands|TestExecPolicyDetectsSecretPathWriteFromLaterTeeTargets|TestExecPolicyAllowsEnvTemplateWrites|TestExecPolicyAllowsEnvTemplateWriteCommands|TestExecPolicyAllowsEnvTemplateLaterTeeTargets' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-510
 

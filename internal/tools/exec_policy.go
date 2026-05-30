@@ -434,6 +434,9 @@ func execPolicyTargetSecretPath(target string) bool {
 			return true
 		}
 	}
+	if deniedWorkspaceWriteFilePathPattern(parts) != "" {
+		return true
+	}
 	return false
 }
 
