@@ -196,6 +196,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case len(calls) > 0:
 		stopReason = "error"
 		suppressFunctionCalls = true
+	case finishReason == "":
+		stopReason = "error"
 	}
 	if suppressFunctionCalls {
 		calls = nil

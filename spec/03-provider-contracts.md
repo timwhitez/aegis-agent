@@ -194,6 +194,7 @@ adapter 负责转换为：
 - `incomplete_details.reason=max_output_tokens` -> `max_tokens`
 - 非 `completed` 状态必须先按 provider failure / incomplete boundary 处理，并且不得把同一响应里的 `function_call` 暴露为可执行 tool call
 - 缺失 `status` 时若响应包含 `function_call`，adapter 必须按 provider boundary failure 处理，不能把缺失成功边界的调用暴露给 runtime
+- 缺失 `status` 的最终响应必须按 provider boundary failure 处理，不能降级为普通 `done_candidate`
 - cancel -> `cancelled`
 - HTTP / parse error -> `error`
 
@@ -265,6 +266,7 @@ adapter 负责转换为：
 - `max_tokens` -> `max_tokens`
 - cancel -> `cancelled`
 - 其他错误 -> `error`
+- 缺失 `stop_reason` 的最终响应必须按 provider boundary failure 处理，不能降级为普通 `done_candidate`
 - 若上游返回 `stop_reason=tool_use` 但响应 content 中没有任何可执行的 `tool_use` block，adapter 必须将其归类为 `response_parse_error`，不能把空工具调用结果交给 runtime 当作普通停顿处理。
 - 若响应 content 中包含可执行 `tool_use` block 但 `stop_reason` 不是 `tool_use`，adapter 必须将其归类为 `response_parse_error`，不能把不一致的工具调用暴露给 runtime。
 
@@ -330,6 +332,7 @@ adapter 负责转换为：
 - 安全拦截 -> `blocked`
 - 非 `STOP` finishReason 必须先按 provider boundary / safety / incomplete 语义处理，并且不得把同一 candidate 里的 `functionCall` 暴露为可执行 tool call
 - 缺失 `finishReason` 时若 candidate 包含 `functionCall`，adapter 必须按 provider boundary failure 处理，不能把缺失成功边界的调用暴露给 runtime
+- 缺失 `finishReason` 的最终 candidate 必须按 provider boundary failure 处理，不能降级为普通 `done_candidate`
 - cancel -> `cancelled`
 - 其他错误 -> `error`
 

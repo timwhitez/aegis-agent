@@ -177,9 +177,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	case "pause_turn":
 		stopReason = "error"
 	default:
-		if strings.TrimSpace(resp.StopReason) != "" {
-			stopReason = "error"
-		}
+		stopReason = "error"
 	}
 	return TurnResult{
 		Text:                  text,

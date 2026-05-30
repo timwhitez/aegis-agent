@@ -9342,7 +9342,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-532. That slice rejected `stop_reason=tool_use` without any tool block; this residual slice rejects the inverse shape, a tool block under a non-tool stop reason.
 - Confirmed the minimal fix belongs in the Anthropic adapter response-shape validation, not runtime or Web, because the contradiction is provider-native protocol state.
 
+### Review 533
+
+- Confirmed FCA-20260530-538 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/03-provider-contracts.md`: provider adapters must not interpret missing terminal stop metadata as natural completion.
+- Confirmed this is distinct from FCA-20260530-536 and FCA-20260530-537. Those handled parsed tool-call contradictions; this slice covers text-only or no-tool final responses that omitted OpenAI `status`, Anthropic `stop_reason`, or Google `finishReason`.
+- Confirmed the minimal fix belongs in adapter stop mapping, preserving partial text/replay diagnostics while returning an internal `error` stop so runtime treats the turn as a provider boundary failure instead of ordinary awaiting input.
+
 ## Update Log
+
+### FCA-20260530-538
+
+Slice: `fix(provider): fail missing terminal stop metadata`
+
+Finding:
+
+- OpenAI, Anthropic, and Google adapters defaulted `stopReason := "done_candidate"` before inspecting provider terminal metadata.
+- If a final-looking response omitted OpenAI `status`, Anthropic `stop_reason`, or Google `finishReason`, the adapters returned `StopReason:"done_candidate"` for text-only/no-tool responses.
+- Focused failing evidence showed `TestOpenAIAdapterMapsMissingStatusToErrorStop`, `TestAnthropicAdapterMapsMissingStopReasonToErrorStop`, and `TestGoogleAdapterMapsMissingFinishReasonToErrorStop` all received `done_candidate` before the fix.
+
+Impact:
+
+- A malformed or partially compatible provider response could look like a normal assistant stop, causing Web/CLI recovery to enter ordinary awaiting-input behavior rather than surfacing a provider boundary failure.
+- This weakened provider-attempt diagnostics because missing terminal metadata is protocol-shape evidence, not a natural end turn.
+- This does not affect valid no-tool completion because explicit OpenAI `status:"completed"`, Anthropic `stop_reason:"end_turn"`, and Google `finishReason:"STOP"` still map to `done_candidate`.
+
+Changes:
+
+- Tightened OpenAI stop mapping so a missing `status` maps to internal `error`.
+- Tightened Anthropic stop mapping so a missing `stop_reason` maps to internal `error`.
+- Tightened Google stop mapping so a missing `finishReason` maps to internal `error`.
+- Added focused regression tests for missing terminal metadata on all three adapters.
+- Updated the provider contract to document missing terminal stop metadata as provider boundary failure.
+
+Validation:
+
+- `go test ./internal/provider -run 'TestOpenAIAdapterMapsMissingStatusToErrorStop|TestAnthropicAdapterMapsMissingStopReasonToErrorStop|TestGoogleAdapterMapsMissingFinishReasonToErrorStop' -count=1`: failed before the fix because all three adapters returned `done_candidate`; passed after the fix.
+- `go test ./internal/provider -run 'TestOpenAIAdapterSerializesAndParses|TestOpenAIAdapterMapsNonCompletedStatusToErrorStop|TestOpenAIAdapterMapsMissingStatusToErrorStop|TestAnthropicAdapterSerializesAndParses|TestAnthropicAdapterMapsUnknownStopReasonToErrorStop|TestAnthropicAdapterMapsMissingStopReasonToErrorStop|TestGoogleAdapterSerializesAndParses|TestGoogleAdapterMapsUnknownFinishReasonToErrorStop|TestGoogleAdapterMapsMissingFinishReasonToErrorStop' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-537
 

@@ -335,6 +335,34 @@ func TestOpenAIAdapterDoesNotExecuteFunctionCallsWithoutCompletedStatus(t *testi
 	}
 }
 
+func TestOpenAIAdapterMapsMissingStatusToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_missing_status",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing status to be a provider error stop, got %#v", result)
+	}
+}
+
 func TestOpenAIInputReplaysEncryptedReasoningBlockSafely(t *testing.T) {
 	assistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)}})
 	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
@@ -499,6 +527,32 @@ func TestAnthropicAdapterMapsUnknownStopReasonToErrorStop(t *testing.T) {
 	}
 	if result.RawProvider["provider_stop_reason"] != "refusal" || result.RawProvider["stop_reason"] != "refusal" {
 		t.Fatalf("expected raw stop reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
+func TestAnthropicAdapterMapsMissingStopReasonToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_missing_stop",
+			"content":[{"type":"text","text":"partial"}],
+			"usage":{"input_tokens":8,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing stop reason to be a provider error stop, got %#v", result)
 	}
 }
 
@@ -989,6 +1043,35 @@ func TestGoogleAdapterDoesNotExecuteFunctionCallsWithoutStopFinish(t *testing.T)
 		if block.Provider == "google" && block.Type == "function_call" {
 			t.Fatalf("expected missing finish reason to suppress function-call provider blocks, got %#v", result.ProviderContentBlocks)
 		}
+	}
+}
+
+func TestGoogleAdapterMapsMissingFinishReasonToErrorStop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_missing_finish",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"text":"partial"}]}
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected missing finish reason to be a provider error stop, got %#v", result)
 	}
 }
 

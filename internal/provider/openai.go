@@ -182,6 +182,8 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case len(calls) > 0:
 		stopReason = "error"
 		calls = nil
+	case status == "":
+		stopReason = "error"
 	}
 	return TurnResult{
 		Text:                  text,
