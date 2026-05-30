@@ -9318,7 +9318,46 @@ Evidence gates:
 - Confirmed this is a separate hard-backstop slice from FCA-20260530-532. That slice fixed the Anthropic adapter's malformed response shape; this slice covers the runtime/provider interface invariant so a future adapter, compatible provider, or fake/test provider cannot silently turn the same contradictory result into `awaiting_input`.
 - Confirmed the minimal fix belongs in runtime stop-reason failure handling only for the no-tool-call branch. Normal `tool_use` turns with one or more parsed tool calls still go through the existing tool dispatch path unchanged.
 
+### Review 529
+
+- Confirmed FCA-20260530-534 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/03-provider-contracts.md`: OpenAI Responses `function_call` items are executable only when the provider response is otherwise successful, so a non-`completed` status must not be allowed to drive tool dispatch.
+- Confirmed this is distinct from FCA-20260530-533. That slice added a runtime backstop for empty tool-use stops; this slice prevents an adapter from exposing non-empty tool calls from a failed OpenAI response in the first place.
+- Confirmed the minimal fix belongs in the OpenAI adapter stop mapping, not runtime or Web. Runtime should still receive a normal provider failure stop with raw status telemetry, while valid `status=completed` function calls remain unchanged.
+
 ## Update Log
+
+### FCA-20260530-534
+
+Slice: `fix(provider): suppress openai calls on failed status`
+
+Finding:
+
+- `internal/provider/openai.go` parsed `function_call` output items and then mapped `len(calls) > 0` to `StopReason:"tool_use"` before checking `resp.Status`.
+- If an OpenAI-compatible provider returned `status:"failed"` with a syntactically valid `function_call`, the adapter returned an executable internal tool call even though the response status was failed.
+- Focused failing evidence showed `TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus` returned `StopReason:"tool_use"` with one `shell` call before the fix.
+
+Impact:
+
+- A failed or otherwise non-completed provider response could trigger local tool execution, violating the provider/runtime boundary that tool calls should come only from successful provider turns.
+- Web/CLI recovery would then see tool side effects rather than a provider failure, making durable provider-attempt diagnostics and replay harder to reason about.
+- This does not affect ordinary OpenAI tool execution because `status:"completed"` responses with `function_call` items still map to `tool_use`.
+
+Changes:
+
+- Changed OpenAI stop mapping so `max_output_tokens` and non-`completed` statuses win over parsed calls and clear the executable call list.
+- Added a regression test for a failed OpenAI response that includes a valid `function_call`.
+- Updated the provider contract to state that OpenAI function calls are executable only from `status=completed` responses.
+
+Validation:
+
+- `go test ./internal/provider -run TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus -count=1`: failed before the fix because the adapter returned `tool_use`; passed after the fix.
+- `go test ./internal/provider -run 'TestOpenAIAdapterSerializesAndParses|TestOpenAIAdapterMapsNonCompletedStatusToErrorStop|TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus|TestOpenAIAdapterRejectsInvalidFunctionCallArguments|TestOpenAIAdapterRejectsNonObjectFunctionCallArguments|TestOpenAIAdapterRejectsMissingFunctionCallID' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-533
 

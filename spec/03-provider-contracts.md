@@ -189,9 +189,10 @@ adapter 负责转换为：
 
 ### 6.4 stop_reason 映射
 
-- 有 `function_call` -> `tool_use`
+- `status=completed` 且有 `function_call` -> `tool_use`
 - `status=completed` 且无工具调用 -> `done_candidate`
 - `incomplete_details.reason=max_output_tokens` -> `max_tokens`
+- 非 `completed` 状态必须先按 provider failure / incomplete boundary 处理，并且不得把同一响应里的 `function_call` 暴露为可执行 tool call
 - cancel -> `cancelled`
 - HTTP / parse error -> `error`
 

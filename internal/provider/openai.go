@@ -168,14 +168,16 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	stopReason := "done_candidate"
 	switch {
-	case len(calls) > 0:
-		stopReason = "tool_use"
 	case resp.IncompleteDetails.Reason == "max_output_tokens":
 		stopReason = "max_tokens"
+		calls = nil
+	case strings.TrimSpace(resp.Status) != "" && resp.Status != "completed":
+		stopReason = "error"
+		calls = nil
+	case len(calls) > 0:
+		stopReason = "tool_use"
 	case resp.Status == "completed":
 		stopReason = "done_candidate"
-	case strings.TrimSpace(resp.Status) != "":
-		stopReason = "error"
 	}
 	return TurnResult{
 		Text:                  text,
