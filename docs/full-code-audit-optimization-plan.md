@@ -9168,7 +9168,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260526-042 and the existing workspace browser coverage. The earlier deny rules covered `.env`, private-key names, cloud credential directories, `.config/gcloud`, and generic `credentials` filenames; the residual gap was root-visible credential rc files such as `.npmrc`, `.netrc`, `_netrc`, `.pypirc`, `.git-credentials`, and `.dockercfg`.
 - Confirmed the minimal fix belongs in `webFileBrowserNameDenied(...)`, because both `handleListFiles(...)` and `handleReadFile(...)` route through `webFileBrowserPathDenied(...)` and the directory listing also filters entry names through the same deny predicate.
 
+### Review 504
+
+- Confirmed FCA-20260530-509 against `AGENTS.md` and `spec/17-web-console.md`: the WebConsole workspace read-only browser must also hide and reject package-manager credential configuration paths, not just root-level rc/auth files.
+- Confirmed this is distinct from FCA-20260530-508. That slice denied common root-visible credential files such as `.npmrc`, `.netrc`, `.pypirc`, and `.dockercfg`; the residual gap was package-manager auth configs with different names or directory-scoped locations, including `.yarnrc.yml`, `.pnpmrc`, Maven `.m2/settings.xml`, Gradle `.gradle/gradle.properties`, NuGet `.nuget/NuGet.Config`, and pip `.config/pip/pip.conf`.
+- Confirmed the minimal fix belongs in the existing Workspace browser deny path: exact root filenames are handled by `webFileBrowserNameDenied(...)`, while directory-scoped package credential files are handled by a new path predicate used by both `/api/files` listing and `/api/file/read` direct reads.
+
 ## Update Log
+
+### FCA-20260530-509
+
+Slice: `fix(webconsole): hide package credential workspace files`
+
+Finding:
+
+- The WebConsole workspace read-only browser still allowed common package-manager credential configuration files such as `.yarnrc.yml`, `.pnpmrc`, `.m2/settings.xml`, `.gradle/gradle.properties`, `.nuget/NuGet.Config`, and `.config/pip/pip.conf`.
+- A focused failing test showed that `/api/files` listed `.pnpmrc` and `.yarnrc.yml` at the workspace root before the fix, and direct `/api/file/read?path=...` requests for those and nested package credential files were not denied.
+
+Impact:
+
+- The local WebConsole workspace browser could expose package registry tokens, Maven server passwords, Gradle repository credentials, NuGet source credentials, or pip index credentials through the read-only Workspace surface.
+- This violated the `spec/17-web-console.md` requirement that the workspace browser hide and reject credential-like paths.
+
+Changes:
+
+- Added `.yarnrc`, `.yarnrc.yml`, and `.pnpmrc` to `webFileBrowserNameDenied(...)`.
+- Added `webFileBrowserPackageCredentialPathDenied(...)` for directory-scoped package auth config paths under `.m2`, `.gradle`, `.nuget`, `.pip`, and `.config/pip`.
+- Added `TestServiceWorkspaceRoutesRejectsPackageCredentialFiles` to prove package credential files are hidden from listings and denied by direct reads.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceWorkspaceRoutesRejectsPackageCredentialFiles -count=1`: failed before the fix by listing `.pnpmrc` and `.yarnrc.yml`; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceWorkspace(RoutesListReadAndRejectEscape|RoutesRejectsCredentialRCFiles|RoutesRejectsPackageCredentialFiles|RootIncludesParentNavigationWhenEmpty)|TestServiceMetaReportsDefaultWorkspaceSubdirOnly|TestServiceMetaReportsWorkspaceRootError' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Workspace|Test.*File|Test.*Meta' -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-508
 

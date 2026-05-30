@@ -5120,6 +5120,9 @@ func webFileBrowserPathDenied(root, target string) bool {
 	if webFileBrowserCloudCredentialPathDenied(parts) {
 		return true
 	}
+	if webFileBrowserPackageCredentialPathDenied(parts) {
+		return true
+	}
 	return false
 }
 
@@ -5133,6 +5136,8 @@ func webFileBrowserNameDenied(name string) bool {
 		"credentials":
 		return true
 	case ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg":
+		return true
+	case ".yarnrc", ".yarnrc.yml", ".pnpmrc":
 		return true
 	case ".env":
 		return true
@@ -5149,6 +5154,39 @@ func webFileBrowserCloudCredentialPathDenied(parts []string) bool {
 	for i := 0; i+1 < len(parts); i++ {
 		if strings.EqualFold(strings.TrimSpace(parts[i]), ".config") &&
 			strings.EqualFold(strings.TrimSpace(parts[i+1]), "gcloud") {
+			return true
+		}
+	}
+	return false
+}
+
+func webFileBrowserPackageCredentialPathDenied(parts []string) bool {
+	lowerParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		lowerParts = append(lowerParts, strings.ToLower(strings.TrimSpace(part)))
+	}
+	for i := 0; i+1 < len(lowerParts); i++ {
+		dir := lowerParts[i]
+		name := lowerParts[i+1]
+		switch dir {
+		case ".m2":
+			if name == "settings.xml" || name == "settings-security.xml" {
+				return true
+			}
+		case ".gradle":
+			if name == "gradle.properties" {
+				return true
+			}
+		case ".nuget":
+			if name == "nuget.config" {
+				return true
+			}
+		case ".pip":
+			if name == "pip.conf" {
+				return true
+			}
+		}
+		if i+2 < len(lowerParts) && dir == ".config" && name == "pip" && lowerParts[i+2] == "pip.conf" {
 			return true
 		}
 	}

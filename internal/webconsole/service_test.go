@@ -8994,6 +8994,85 @@ func TestServiceWorkspaceRoutesRejectsCredentialRCFiles(t *testing.T) {
 	}
 }
 
+func TestServiceWorkspaceRoutesRejectsPackageCredentialFiles(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	credentialFiles := map[string]string{
+		".yarnrc.yml":               "npmAuthToken: yarn-secret\n",
+		".pnpmrc":                   "//registry.npmjs.org/:_authToken=pnpm-secret\n",
+		".m2/settings.xml":          "<settings><servers><password>maven-secret</password></servers></settings>\n",
+		".gradle/gradle.properties": "repoPassword=gradle-secret\n",
+		".nuget/NuGet.Config":       "<configuration><packageSourceCredentials><add key=\"ClearTextPassword\" value=\"nuget-secret\" /></packageSourceCredentials></configuration>\n",
+		".config/pip/pip.conf":      "[global]\nindex-url = https://user:pip-secret@example.invalid/simple\n",
+	}
+	for rel, content := range credentialFiles {
+		path := filepath.Join(workspaceRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir package credential parent %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write package credential file %s: %v", rel, err)
+		}
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var tree []map[string]any
+	postGetJSON(t, ts.URL+"/api/files", &tree)
+	for _, item := range tree {
+		name, _ := item["name"].(string)
+		for _, denied := range []string{".yarnrc.yml", ".pnpmrc"} {
+			if name == denied {
+				t.Fatalf("workspace listing leaked package credential file %s: %#v", denied, tree)
+			}
+		}
+	}
+	for dir, deniedName := range map[string]string{
+		".m2":         "settings.xml",
+		".gradle":     "gradle.properties",
+		".nuget":      "NuGet.Config",
+		".config/pip": "pip.conf",
+	} {
+		var nested []map[string]any
+		postGetJSON(t, ts.URL+"/api/files?path="+url.QueryEscape(dir), &nested)
+		for _, item := range nested {
+			if item["name"] == deniedName {
+				t.Fatalf("workspace listing leaked package credential file %s/%s: %#v", dir, deniedName, nested)
+			}
+		}
+	}
+	for denied := range credentialFiles {
+		resp, err := http.Get(ts.URL + "/api/file/read?path=" + url.QueryEscape(denied))
+		if err != nil {
+			t.Fatalf("workspace package credential read request %s: %v", denied, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected forbidden for workspace package credential read %s, got %d body=%s", denied, resp.StatusCode, string(body))
+		}
+	}
+}
+
 func TestServiceWorkspaceRootIncludesParentNavigationWhenEmpty(t *testing.T) {
 	root := t.TempDir()
 	previousWD, err := os.Getwd()
