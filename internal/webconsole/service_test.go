@@ -6460,6 +6460,42 @@ func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsSameOriginNonLocalHostMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "http://evil.invalid/api/config", bytes.NewBufferString(`{"provider":"openai","model":"should-not-save"}`))
+	request.Header.Set("Origin", "http://evil.invalid")
+	request.Header.Set("Content-Type", "application/json")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden same-origin non-local-host mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServiceAllowsSameOriginLoopbackMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
+	request.Header.Set("Origin", "http://127.0.0.1")
+	request.Header.Set("Content-Type", "application/json")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected accepted same-origin loopback mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestServiceRejectsCrossSchemeOriginMutation(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})

@@ -13,6 +13,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -6666,10 +6667,29 @@ func sameOriginRequest(origin *url.URL, r *http.Request) bool {
 	if origin == nil || r == nil || strings.TrimSpace(origin.Host) == "" || strings.TrimSpace(r.Host) == "" {
 		return false
 	}
+	if !webConsoleHostAllowed(origin.Host) || !webConsoleHostAllowed(r.Host) {
+		return false
+	}
 	if !strings.EqualFold(origin.Host, r.Host) {
 		return false
 	}
 	return strings.EqualFold(origin.Scheme, requestOriginScheme(r))
+}
+
+func webConsoleHostAllowed(hostport string) bool {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	return net.ParseIP(host) != nil
 }
 
 func requestOriginScheme(r *http.Request) string {

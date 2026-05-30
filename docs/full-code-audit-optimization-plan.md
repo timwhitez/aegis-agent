@@ -9174,7 +9174,44 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-508. That slice denied common root-visible credential files such as `.npmrc`, `.netrc`, `.pypirc`, and `.dockercfg`; the residual gap was package-manager auth configs with different names or directory-scoped locations, including `.yarnrc.yml`, `.pnpmrc`, Maven `.m2/settings.xml`, Gradle `.gradle/gradle.properties`, NuGet `.nuget/NuGet.Config`, and pip `.config/pip/pip.conf`.
 - Confirmed the minimal fix belongs in the existing Workspace browser deny path: exact root filenames are handled by `webFileBrowserNameDenied(...)`, while directory-scoped package credential files are handled by a new path predicate used by both `/api/files` listing and `/api/file/read` direct reads.
 
+### Review 505
+
+- Confirmed FCA-20260530-510 against `AGENTS.md` and `spec/17-web-console.md`: unsafe WebConsole API mutations need a local-console guard that rejects foreign origins and should not accept arbitrary DNS hostnames merely because `Host` and `Origin` match.
+- Confirmed this is distinct from the earlier foreign-origin and cross-scheme mutation guards. Those checks rejected `Origin: evil` with a different `Host`, and rejected `https` origin against an `http` request, but `sameOriginRequest(...)` still accepted `Host: evil.invalid` with `Origin: http://evil.invalid`.
+- Confirmed the minimal fix belongs in `sameOriginRequest(...)`: keep the scheme and exact host comparison, but first require both request and origin hosts to be local-console hosts, currently `localhost` / `*.localhost` or IP literals. This preserves loopback/IP access, including non-loopback IP access after the documented LAN warning, while denying arbitrary DNS names in the unsafe mutation path.
+
 ## Update Log
+
+### FCA-20260530-510
+
+Slice: `fix(webconsole): reject non-local same-origin mutations`
+
+Finding:
+
+- `sameOriginRequest(...)` only compared `Origin` host, request `Host`, and scheme. If a request used `Host: evil.invalid` and `Origin: http://evil.invalid`, the unsafe mutation guard treated it as same-origin.
+- A focused failing test showed that `POST /api/config` with matching non-local `Host` and `Origin` returned `200` and saved settings before the fix.
+
+Impact:
+
+- The local WebConsole mutation guard could be weakened by a non-local DNS hostname that appeared same-origin to the browser. That reduced protection for sensitive local operations such as config/API-key writes, session controls, skill management, and other unsafe `/api/` mutations.
+- This violated the intent of `spec/17-web-console.md`'s local-console guard for unsafe mutations.
+
+Changes:
+
+- Added `webConsoleHostAllowed(...)` and required both the request host and origin host to be `localhost` / `*.localhost` or IP literals before accepting same-origin unsafe mutations.
+- Added `TestServiceRejectsSameOriginNonLocalHostMutation` to prove matching non-local `Host` / `Origin` values are rejected.
+- Added `TestServiceAllowsSameOriginLoopbackMutation` to preserve the local loopback same-origin path.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceRejectsSameOriginNonLocalHostMutation -count=1`: failed before the fix with `200` and `{"success":true}`; passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(RejectsSameOriginNonLocalHostMutation|AllowsSameOriginLoopbackMutation|RejectsForeignOriginMutation|RejectsCrossSchemeOriginMutation)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestService(RejectsSameOriginNonLocalHostMutation|AllowsSameOriginLoopbackMutation|RejectsForeignOriginMutation|RejectsCrossSchemeOriginMutation|RejectsJSONMutationSubtypeContentType|BodylessMutationsDoNotRequireJSONContentType)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-509
 
