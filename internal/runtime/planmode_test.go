@@ -545,15 +545,26 @@ func TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult(t *testing.T) {
 		t.Fatalf("load messages: %v", err)
 	}
 	var count int
+	var recoveredResult session.ToolResult
 	for _, msg := range messages {
 		for _, result := range msg.ToolResults {
 			if result.ToolCallID == request.ToolCallID && result.Name == "request_user_input" {
 				count++
+				recoveredResult = result
 			}
 		}
 	}
 	if count != 1 {
 		t.Fatalf("expected one recovered cancellation result for %s, got %d messages=%#v", request.ToolCallID, count, messages)
+	}
+	if recoveredResult.Metadata["planmode_terminal"] != planModeTerminalPlanCancelled {
+		t.Fatalf("expected recovered cancellation result to carry terminal metadata, got %#v", recoveredResult.Metadata)
+	}
+	if recovered, _ := recoveredResult.Metadata["recovered"].(bool); !recovered {
+		t.Fatalf("expected recovered cancellation result to be marked recovered, got %#v", recoveredResult.Metadata)
+	}
+	if cancelled, _ := recoveredResult.Metadata["cancelled"].(bool); !cancelled {
+		t.Fatalf("expected recovered cancellation result to be marked cancelled, got %#v", recoveredResult.Metadata)
 	}
 }
 

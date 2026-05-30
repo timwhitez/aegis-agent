@@ -1304,10 +1304,12 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 			DisplayOutput: "Error: Plan Mode input was cancelled by the user.",
 			IsError:       true,
 			Metadata: map[string]any{
-				"planmode":     true,
-				"request_id":   request.RequestID,
-				"cancelled":    true,
-				"plan_mode_id": planMode.PlanModeID,
+				"planmode":          true,
+				"planmode_terminal": planModeTerminalPlanCancelled,
+				"request_id":        request.RequestID,
+				"cancelled":         true,
+				"recovered":         true,
+				"plan_mode_id":      planMode.PlanModeID,
 			},
 		}
 		if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {

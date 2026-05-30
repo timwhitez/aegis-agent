@@ -9240,7 +9240,58 @@ Evidence gates:
 - Confirmed this is distinct from the existing completed-transition coverage. Completing a task already removed its current dependents, but a later task creation or `task_update add_blocks` could add fresh dependency edges from that already completed task and leave pending dependents blocked by satisfied work.
 - Confirmed the minimal fix belongs in `internal/session/taskboard.go`: after task create/update edge synchronization, re-apply completed-task unlock reconciliation in the store mutation path, preserving model-led task usage, bidirectional graph validation, cycle checks, Web/CLI/tool surfaces, and the explicit non-unlocking semantics for cancelled tasks.
 
+### Review 516
+
+- Confirmed FCA-20260530-521 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`: recovered Plan Mode input cancellation must append the same durable replay facts that live `request_user_input` cancellation produces for terminal Plan Mode handling.
+- Confirmed this is distinct from the earlier same-batch cancellation text fix. Live cancellation returned a `planmode_terminal=plan_cancelled` tool result that lets the engine classify the terminal action, but the cross-process/recovered `Continue(CancelPlan)` replay path appended a `request_user_input` error result without that terminal marker.
+- Confirmed the minimal fix belongs in `Runner.appendPlanInputCancelToolResult(...)`: add terminal and recovered metadata to the recovered replay tool result while preserving idempotent retry behavior, existing plan cancellation state transitions, Web/CLI control paths, provider adapter boundaries, and pending-request replay semantics.
+
 ## Update Log
+
+### FCA-20260530-521
+
+Slice: `fix(runtime): mark recovered plan input cancellation`
+
+Finding:
+
+- Live `request_user_input` cancellation in `internal/tools/registry.go` returns a terminal Plan Mode tool result with `planmode_terminal=plan_cancelled`.
+- The recovered/cross-process cancellation path in `internal/runtime/runner.go` `appendPlanInputCancelToolResult(...)` appended the replay `request_user_input` error result without `planmode_terminal`.
+- The recovered path also did not mark the tool result as `recovered`, while recovered Plan Mode input answers already do.
+- A focused failing test proved the durable cancellation replay result lacked the terminal metadata even though it carried `cancelled=true`.
+
+Impact:
+
+- Durable Web/session inspection could not distinguish the recovered cancellation replay result as the same terminal Plan Mode action emitted by the live tool path.
+- Recovery traces for cancelled pending input were less self-describing than recovered answer traces, weakening auditability of Plan Mode input cancellation after a Web handle loss or process restart.
+- Provider replay still received an error tool result, but the session fact stream lost a metadata classification used elsewhere for terminal Plan Mode handling.
+
+Changes:
+
+- Added a focused regression asserting the recovered `request_user_input` cancellation result is unique and carries `planmode_terminal=plan_cancelled`, `recovered=true`, and `cancelled=true`.
+- Updated `appendPlanInputCancelToolResult(...)` to include the terminal Plan Mode action and recovered marker on the replay tool result.
+- Preserved the existing idempotent retry behavior: repeated cancellation/retry still does not duplicate the replay tool result, history row, or event facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestCancelPlanModeDoesNotDuplicateRecoveredInputToolResult -count=1`: failed before the fix because the recovered cancellation result metadata lacked `planmode_terminal`.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRecordsAwaitingInputLifecycleEvent)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'Test(CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRecordsAwaitingInputLifecycleEvent|EnginePlanInputCancelStopsTurnAndCompletesLaterToolResults|PlanInputAnswerRetryAfterEventFailureRestoresEvent)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test.*PlanMode|Test.*PlanInput' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput|TestSubmitPlan|TestTodoAndTaskToolsEmitStructuredEvents|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-520
 
