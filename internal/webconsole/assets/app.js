@@ -1352,6 +1352,8 @@ async function sendMessage() {
     const sessionID = state.sessionId;
     const actionPlanModeIdentity = currentPlanModeActionIdentity();
     let revisingPlanMode = false;
+    let continuingSession = false;
+    let actionContinueIdentity = '';
     try {
       const planMode = currentPlanMode();
       if (planMode?.status === 'awaiting_approval') {
@@ -1370,6 +1372,8 @@ async function sendMessage() {
           renderCurrentSession();
           return;
         }
+        continuingSession = true;
+        actionContinueIdentity = currentContinueActionIdentity();
         setGenerating(true, {
           title: 'Continuing session',
           copy: 'Bootstrapping a new turn. Tool calls, queue activity, and children will appear as durable events arrive.',
@@ -1379,7 +1383,7 @@ async function sendMessage() {
           message: text,
           planMode: planDraft || undefined
         });
-        if (state.sessionId !== sessionID) {
+        if (state.sessionId !== sessionID || !isCurrentContinueActionIdentity(actionContinueIdentity)) {
           return;
         }
         if (planDraft) {
@@ -1395,7 +1399,11 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
-      if (state.sessionId === sessionID && (!revisingPlanMode || isCurrentPlanModeActionIdentity(actionPlanModeIdentity))) {
+      if (
+        state.sessionId === sessionID &&
+        (!revisingPlanMode || isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) &&
+        (!continuingSession || isCurrentContinueActionIdentity(actionContinueIdentity))
+      ) {
         removeOptimisticMessage(optimisticID);
         setGeneratingViewState(false);
         showToast(err.message || 'Failed to continue session.', 'error');
@@ -2045,6 +2053,27 @@ function currentPlanInputActionIdentity(requestID) {
 
 function isCurrentPlanInputActionIdentity(identity, requestID) {
   return currentPlanInputActionIdentity(requestID) === identity;
+}
+
+function currentContinueActionIdentity() {
+  const detail = state.sessionDetail;
+  if (!detail || typeof detail !== 'object') {
+    return '';
+  }
+  const metadata = detail.metadata || {};
+  const sessionState = detail.state || {};
+  return [
+    state.sessionId || '',
+    metadata.id || '',
+    metadata.updated_at || '',
+    sessionState.status || '',
+    sessionState.updated_at || '',
+    currentPlanModeActionIdentity()
+  ].map((part) => String(part || '')).join('\n');
+}
+
+function isCurrentContinueActionIdentity(identity) {
+  return currentContinueActionIdentity() === identity;
 }
 
 async function handlePlanModeAction(button) {

@@ -3514,6 +3514,58 @@ test('continue completion does not mark a newly selected session as generating',
   });
 });
 
+test('continue completion ignores refreshed same-session state', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+
+  const send = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_continue_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded paused session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_continue_same_a', updated_at: '2026-05-30T05:00:00Z' },
+      state: { status: 'paused', updated_at: '2026-05-30T05:00:00Z' },
+      plan_mode: null,
+      messages: []
+    };
+    nodes.chatInput.value = 'continue this session';
+    sendMessage();
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_continue_same_a\/continue/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded completed session', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_continue_same_a', updated_at: '2026-05-30T05:01:00Z' },
+      state: { status: 'completed', updated_at: '2026-05-30T05:01:00Z' },
+      plan_mode: null,
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_continue_same_a', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title
+  })`, appContext)), {
+    selected: 'session_continue_same_a',
+    generating: false,
+    activityTitle: 'Loaded completed session'
+  });
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('start completion does not replace a session selected while launch is pending', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
