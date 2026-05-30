@@ -308,7 +308,7 @@ description: Example skill for local tasks
 - `name`
 - `description`
 - `command`
-- `timeout_sec`
+- `timeout_sec`（可选；省略时使用 configured runtime command timeout，显式值仍受 runtime 默认上限约束）
 - `input_schema`
 
 约束：
@@ -316,6 +316,7 @@ description: Example skill for local tasks
 - `command` 必须是字符串数组，而不是 shell 字符串
 - built-in 工具名保留，不可覆盖
 - direct-call skill command tool 必须从已解析的 skill 根目录执行，并把 cwd / sandbox bind source 绑定到 no-symlink 打开的目录；若 skill 目录在注册后、进程启动前被替换为 symlink，不得跟随新路径执行
+- direct-call skill command tool 的 timeout、sandbox、exec policy 与环境变量过滤必须使用本次执行配置；结果 metadata 必须反映实际执行配置，而不是只反映 catalog/registry 创建时的配置
 
 ## 7. Skill 加载策略
 

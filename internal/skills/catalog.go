@@ -279,9 +279,6 @@ func loadTools(rootReal, skillDirReal, dir, skillName, skillPath string) ([]Comm
 		}
 		tool.SkillName = skillName
 		tool.SkillPath = skillPath
-		if tool.TimeoutSec <= 0 {
-			tool.TimeoutSec = 120
-		}
 		out = append(out, tool)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -4497,6 +4497,84 @@ func TestSkillCommandToolUsesRegistryConfigWhenExecContextConfigMissing(t *testi
 	}
 }
 
+func TestSkillCommandToolUsesRuntimeDefaultTimeoutWhenUnset(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.CommandTimeoutSec = 1
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "slow.yaml"), []byte("name: slow_skill\ndescription: Sleep too long\ncommand: [\"bash\", \"-lc\", \"sleep 2\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "slow_skill", ExecContext{
+		Workdir: root,
+		Config:  cfg,
+	}, json.RawMessage(`{}`))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected runtime default timeout to interrupt skill command, got result=%#v err=%v", result, err)
+	}
+	if !result.IsError || result.Metadata["timeout"] != 1 {
+		t.Fatalf("expected structured timeout metadata from runtime default, got %#v", result)
+	}
+}
+
+func TestSkillCommandToolMetadataUsesExecutionSandboxConfig(t *testing.T) {
+	registryCfg := config.Default()
+	execCfg := config.Default()
+	execCfg.Runtime.ExecPolicy.Mode = "deny"
+	execCfg.Runtime.Shell.Sandbox = "firejail"
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "helpers")
+	if err := os.MkdirAll(filepath.Join(skillDir, "tools"), 0o755); err != nil {
+		t.Fatalf("mkdir tools: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "write_env.yaml"), []byte("name: write_env\ndescription: Try to write env\ncommand: [\"bash\", \"-lc\", \"echo token > .env\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(registryCfg, catalog, nil, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "write_env", ExecContext{
+		Workdir: root,
+		Config:  execCfg,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "denied by exec policy") {
+		t.Fatalf("expected exec policy denial, got %#v", result)
+	}
+	if result.Metadata["sandbox"] != "unsupported" {
+		t.Fatalf("expected sandbox metadata from execution config, got %#v", result.Metadata)
+	}
+	if _, err := os.Stat(filepath.Join(skillDir, ".env")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skill command should not have written .env, stat err=%v", err)
+	}
+}
+
 func TestSkillCommandToolTimeoutIncludesStructuredMetadata(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()

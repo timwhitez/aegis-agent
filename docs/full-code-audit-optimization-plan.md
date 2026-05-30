@@ -9372,7 +9372,50 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-476, which fixed the built-in `shell` workdir override path. The residual gap was the separate skill command executor still using `cmd.Dir = skillDir` and `sandboxCommand(..., skillDir, skillDir, ...)`.
 - Confirmed the minimal fix belongs in the skill command execution path: reuse the same stable no-symlink command workdir helper as `shell`, keep the model-facing skill metadata path unchanged, and avoid changing command rendering, argument validation, timeout, exec-policy, or provider replay behavior.
 
+### Review 538
+
+- Confirmed FCA-20260530-543 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and the direct-call skill command execution code: command tools must inherit the current runtime execution contract instead of freezing timeout/sandbox facts at catalog scan or registry construction time.
+- Confirmed this is distinct from FCA-20260530-542. That slice stabilized the command cwd and sandbox bind source; this residual slice covers the execution configuration applied after the command definition has been registered.
+- Confirmed the minimal fix belongs across `internal/skills/catalog.go` and `internal/tools/registry.go`: the catalog should preserve an omitted `timeout_sec` as omitted, and the executor should compute timeout, sandbox, exec policy, environment filtering, and result metadata from the effective execution config.
+
 ## Update Log
+
+### FCA-20260530-543
+
+Slice: `fix(tools): honor skill command execution config`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` treats direct-call skill command tools as local tool executions with timeout, sandbox, exec-policy, and metadata boundaries.
+- `internal/skills/catalog.go` rewrote every command tool with omitted `timeout_sec` to `TimeoutSec=120` during scan.
+- `internal/tools/registry.go` then only used `cfg.Runtime.CommandTimeoutSec` when `tool.TimeoutSec <= 0`, so the configured runtime command timeout could never apply to skill commands that omitted `timeout_sec`.
+- The same executor also built sandbox metadata from the registry construction config while the actual sandbox decision came from `execCtx.Config`, so callers using an execution config override could get result metadata that did not match the execution boundary.
+
+Impact:
+
+- A runtime configured with a shorter command timeout could still let an omitted-timeout direct-call skill command run for the catalog's hard-coded 120 seconds.
+- Direct-call skill command tools could bypass the same default timeout cap enforced for the built-in `shell` tool, weakening local execution control and making long-running skill commands harder to interrupt predictably.
+- Result metadata could mislead operator diagnostics about whether the command ran with sandboxing disabled, unsupported, unavailable, or enabled.
+
+Changes:
+
+- Stopped defaulting omitted `timeout_sec` in the skill catalog layer.
+- Changed direct-call skill command execution to compute timeout with `effectiveToolTimeout(effectiveConfig.Runtime.CommandTimeoutSec, tool.TimeoutSec)`.
+- Switched direct-call skill command exec policy, sandbox selection, environment filtering, and sandbox metadata to the effective execution config.
+- Updated `spec/04-tools-and-skills.md` to document that omitted skill command timeouts use the configured runtime command timeout, explicit values remain capped by that default, and metadata must reflect the execution config.
+- Added regressions proving omitted `timeout_sec` honors `runtime.command_timeout_sec=1` and sandbox metadata follows `ExecContext.Config` even when the registry was created with a different config.
+
+Validation:
+
+- `go test ./internal/tools -run 'TestSkillCommandTool(UsesRuntimeDefaultTimeoutWhenUnset|MetadataUsesExecutionSandboxConfig|TimeoutIncludesStructuredMetadata|UsesRegistryConfigWhenExecContextConfigMissing)' -count=1`: passed.
+- `go test ./internal/skills -count=1`: passed.
+- `go test ./internal/tools -run 'TestSkillCommandTool' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/tools ./internal/skills -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js internal/webconsole/assets/session-view.js internal/webconsole/assets/workspace-view.js internal/webconsole/assets/events.js internal/webconsole/assets/settings-view.js internal/webconsole/assets/utils.js internal/webconsole/assets/api.js internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-542
 

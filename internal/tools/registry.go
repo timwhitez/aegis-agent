@@ -3179,12 +3179,15 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 	}
 	skillDir := filepath.Dir(tool.SkillPath)
 	inputSchema := closeObjectSchemas(tool.InputSchema)
-	commandMetadata := func(timeout, exitCode, rawLength int, truncated bool) map[string]any {
+	commandMetadata := func(timeout int, sandboxStatus string, exitCode, rawLength int, truncated bool) map[string]any {
+		if strings.TrimSpace(sandboxStatus) == "" {
+			sandboxStatus = effectiveSandboxStatus(cfg)
+		}
 		return map[string]any{
 			"skill_name": tool.SkillName,
 			"skill_path": tool.SkillPath,
 			"workdir":    skillDir,
-			"sandbox":    effectiveSandboxStatus(cfg),
+			"sandbox":    sandboxStatus,
 			"timeout":    timeout,
 			"exit_code":  exitCode,
 			"raw_length": rawLength,
@@ -3208,23 +3211,27 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			if err != nil {
 				return errorResult(tool.Name, err), nil
 			}
+			effectiveConfig := execCtx.Config
+			if effectiveConfig == nil {
+				effectiveConfig = cfg
+			}
+			if effectiveConfig == nil {
+				effectiveConfig = config.Default()
+			}
 			callCtx := ctx
 			var cancel context.CancelFunc
-			timeout := tool.TimeoutSec
-			if timeout <= 0 {
-				timeout = cfg.Runtime.CommandTimeoutSec
-			}
+			timeout := effectiveToolTimeout(effectiveConfig.Runtime.CommandTimeoutSec, tool.TimeoutSec)
 			if timeout > 0 {
 				callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 				defer cancel()
 			}
 			commandText := strings.Join(argv, " ")
-			policyMode := effectiveExecPolicyMode(execCtx.Config)
+			policyMode := effectiveExecPolicyMode(effectiveConfig)
 			policyViolations := DetectExecPolicyViolations(commandText)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
 			shellSandbox := ""
-			if execCtx.Config != nil {
-				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
+			if effectiveConfig != nil {
+				shellSandbox = effectiveConfig.Runtime.Shell.Sandbox
 			}
 			stableDir, commandDir, err := openStableCommandWorkdir(skillDir)
 			if err != nil {
@@ -3242,13 +3249,12 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					LLMOutput:     text,
 					DisplayOutput: text,
 					IsError:       true,
-					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, 0, 0, false), policyMetadata),
+					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, 0, 0, false), policyMetadata),
 				}, nil
 			}
 			if sandboxErr != nil {
 				text := "Error: " + sandboxErr.Error()
-				metadata := commandMetadata(timeout, 0, 0, false)
-				metadata["sandbox"] = sandboxStatus
+				metadata := commandMetadata(timeout, sandboxStatus, 0, 0, false)
 				return session.ToolResult{
 					Name:          tool.Name,
 					LLMOutput:     text,
@@ -3264,7 +3270,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				cmd.ExtraFiles = append(cmd.ExtraFiles, sandboxExtraFiles...)
 			}
 			cmd.Env = append(
-				filteredEnv(execCtx.Config.Runtime.ShellEnvAllowlist),
+				filteredEnv(effectiveConfig.Runtime.ShellEnvAllowlist),
 				"GO_CLI_AGENT_ARGS_JSON="+string(raw),
 				"GO_CLI_AGENT_SKILL_DIR="+skillDir,
 				"GO_CLI_AGENT_SKILL_NAME="+tool.SkillName,
@@ -3295,7 +3301,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 						LLMOutput:     "[Tool execution was interrupted]",
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
-						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
+						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
 					}, interruptErr
 				}
 				return session.ToolResult{
@@ -3303,14 +3309,14 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					LLMOutput:     text,
 					DisplayOutput: text,
 					IsError:       true,
-					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
+					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
 				}, nil
 			}
 			return session.ToolResult{
 				Name:          tool.Name,
 				LLMOutput:     text,
 				DisplayOutput: text,
-				Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, exitCode, rawLength, truncated), policyMetadata),
+				Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
 			}, nil
 		},
 	}
