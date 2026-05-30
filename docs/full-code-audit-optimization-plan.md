@@ -9216,7 +9216,49 @@ Evidence gates:
 - Confirmed this is specific to the Google adapter fallback path. OpenAI Responses uses `call_id`, Anthropic `tool_use.id` is required for replay, and Google `functionCall.id` can be absent; the residual issue was two same-name Google `functionCall` parts without `id` both becoming `call_<name>`.
 - Confirmed the minimal fix belongs in `internal/provider/google.go`: keep provider-specific parsing in the adapter, preserve the raw provider call id when present, and generate unique internal fallback IDs before the runtime translates tool calls into durable assistant messages.
 
+### Review 512
+
+- Confirmed FCA-20260530-517 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode `request_user_input` must not leave a pending input request unless the session state has also reached the recoverable `awaiting_input` / `plan_input` boundary or a live responder is actually waiting.
+- Confirmed this is distinct from the existing recoverable event-failure path. A missing `planmode.input_requested` event after state save intentionally leaves a pending request for Web/CLI fallback recovery, but a failure while saving `state.json` happened earlier and left `planmode.json` in `awaiting_user_input` while the session state still reflected the previous running phase.
+- Confirmed the minimal fix belongs in the model-facing `request_user_input` tool implementation: snapshot Plan Mode state/history before creating the pending request, and restore both if state load or save fails before the interactive responder is called.
+
 ## Update Log
+
+### FCA-20260530-517
+
+Slice: `fix(tools): restore plan input on state save failure`
+
+Finding:
+
+- `internal/tools/registry.go` created a Plan Mode pending request through `SetPlanModePendingRequest(...)`, then loaded and saved `state.json` as `awaiting_input` / `plan_input`, then emitted the `planmode.input_requested` event and called the responder.
+- A focused failing test proved that when the state save failed after the pending request was written, `request_user_input` returned an error and did not call the responder, but `planmode.json` stayed in `awaiting_user_input` with a pending request and `artifacts/planmode-history.jsonl` retained `planmode.input_requested`.
+- That left durable Plan Mode facts claiming an input wait was available even though the session never reached the recoverable input boundary.
+
+Impact:
+
+- A storage failure during Plan Mode input setup could leave a half-created pending input request that Web/CLI recovery surfaces could misinterpret as actionable.
+- This weakened the session/state/Plan Mode file-fact consistency required for local Web-first recovery. It did not change provider adapters, Web routing, Goal/Mission approval, queue/delegation, or Plan Mode event-failure recovery semantics.
+
+Changes:
+
+- Snapshotted Plan Mode state and history before creating the pending `request_user_input` request.
+- Restored the prior Plan Mode snapshot and history when state load or state save failed before the responder was called.
+- Extended the focused state-save failure regression to assert that no pending request or `planmode.input_requested` history remains after the error.
+- Kept the existing event-failure behavior unchanged: after the state reaches `awaiting_input`, a failed `planmode.input_requested` event still leaves a recoverable pending request and avoids calling the responder.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsStateSaveErrorBeforeResponder -count=1`: failed before the fix because `planmode.json` remained `awaiting_user_input` with a pending request.
+- `go test -timeout 120s ./internal/tools -run TestRequestUserInputReportsStateSaveErrorBeforeResponder -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput(ReportsStateSaveErrorBeforeResponder|ReportsRequiredEventErrorBeforeResponder|ReportsAnsweredEventErrorAndRestoresPendingRequest|ReportsCancellationEventErrorAndRestoresPendingRequest|DoesNotPersistPendingRequestWithoutResponder)' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestPlanInput(CancelReturnsHistoryAppendError|CancelRetryAfterHistoryFailureRestoresFacts|AnswerRollsBackWhenToolResultAppendFails|AnswerRetryAfterEventFailureRestoresEvent)|TestActivePlanInputDeliveryClaimsWaiterBeforeSend' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePlanMode(Input|Approve|Revise|Cancel|TrackedContinue)|TestServicePlanModeInputAnswerActiveHandle|TestServicePlanModeApproveRequiresSubmittedPlan|TestServicePlanModeApproveBlocksUncoveredGoalValidation' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-516
 

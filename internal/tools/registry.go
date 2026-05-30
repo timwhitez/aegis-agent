@@ -2281,17 +2281,37 @@ func defRequestUserInput() Definition {
 			if request.ToolCallID == "" {
 				request.ToolCallID = request.RequestID
 			}
+			previousPendingPlanMode, err := execCtx.Store.SnapshotPlanMode(execCtx.SessionID)
+			if err != nil {
+				return errorResult("request_user_input", err), nil
+			}
+			previousPendingHistory, err := execCtx.Store.LoadPlanModeHistory(execCtx.SessionID)
+			if err != nil {
+				return errorResult("request_user_input", err), nil
+			}
 			planMode, err := execCtx.Store.SetPlanModePendingRequest(execCtx.SessionID, request, session.PlanModeSourceTool)
 			if err != nil {
 				return errorResult("request_user_input", err), nil
 			}
 			state, stateErr := execCtx.Store.LoadState(execCtx.SessionID)
 			if stateErr != nil {
+				if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPendingPlanMode); rollbackErr != nil {
+					return errorResult("request_user_input", fmt.Errorf("restore plan mode after state load error %v: %w", stateErr, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousPendingHistory); rollbackErr != nil {
+					return errorResult("request_user_input", fmt.Errorf("restore plan mode history after state load error %v: %w", stateErr, rollbackErr)), nil
+				}
 				return errorResult("request_user_input", stateErr), nil
 			}
 			state.Status = session.StatusAwaitingInput
 			state.Phase = "plan_input"
 			if err := execCtx.Store.SaveState(execCtx.SessionID, state); err != nil {
+				if rollbackErr := execCtx.Store.RestorePlanModeSnapshot(execCtx.SessionID, previousPendingPlanMode); rollbackErr != nil {
+					return errorResult("request_user_input", fmt.Errorf("restore plan mode after state save error %v: %w", err, rollbackErr)), nil
+				}
+				if rollbackErr := execCtx.Store.RestorePlanModeHistory(execCtx.SessionID, previousPendingHistory); rollbackErr != nil {
+					return errorResult("request_user_input", fmt.Errorf("restore plan mode history after state save error %v: %w", err, rollbackErr)), nil
+				}
 				return errorResult("request_user_input", err), nil
 			}
 			if err := emitToolEvent(execCtx, "planmode.input_requested", map[string]any{

@@ -522,6 +522,22 @@ func TestRequestUserInputReportsStateSaveErrorBeforeResponder(t *testing.T) {
 	if responder.calls != 0 {
 		t.Fatalf("responder must not be called after state save failure, got %d calls", responder.calls)
 	}
+	planMode, err := store.LoadPlanMode(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusPlanning || planMode.PendingRequest != nil {
+		t.Fatalf("state save failure must restore planning Plan Mode, got %#v", planMode)
+	}
+	history, err := store.LoadPlanModeHistory(meta.ID)
+	if err != nil {
+		t.Fatalf("load plan mode history: %v", err)
+	}
+	for _, item := range history {
+		if item.Type == "planmode.input_requested" {
+			t.Fatalf("state save failure must not leave input_requested history, got %#v", history)
+		}
+	}
 }
 
 func TestRequestUserInputReportsRequiredEventErrorBeforeResponder(t *testing.T) {
