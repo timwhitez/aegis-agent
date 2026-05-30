@@ -9396,7 +9396,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260522-005 and FCA-20260530-545. FCA-20260522-005 kept non-terminal Plan Mode input handles alive during detail polling, and FCA-20260530-545 preflighted recovered Plan Mode controls before runtime claim. The residual gap was a Web-only active-handle lookup that bypassed stale terminal pruning, so a failed session with a pending Plan Mode request could be blocked by an old in-memory handle and never reach the recovered cancel path.
 - Confirmed the minimal fix is to route direct Web handle lookup through the existing `pruneInactiveHandles` terminal-state policy. This keeps live `awaiting_input` handles intact while removing `failed` / `completed` handle leftovers before Plan Mode cancel/input chooses between active delivery and recovery continue.
 
+### Review 542
+
+- Confirmed FCA-20260530-547 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Web stop/interrupt controls must prune terminal stale current-process handles before deciding that the current Web process owns the session.
+- Confirmed this is distinct from FCA-20260530-546. That slice routed Plan Mode input/cancel active-runner decisions through stale-handle pruning; this residual gap covered the separate `/interrupt` and `/stop` handlers, which still read `s.handles` directly and could call a settled runner for a durable `failed` or `completed` session.
+- Confirmed the minimal fix is to reuse `handleForSession` for stop/interrupt ownership checks. That keeps the existing terminal-only pruning policy, preserves real live stop/interrupt behavior, and returns the structured `ACTIVE_HANDLE_NOT_OWNED` recovery guidance when durable facts prove the handle is stale.
+
 ## Update Log
+
+### FCA-20260530-547
+
+Slice: `fix(webconsole): prune stale handles before stop controls`
+
+Finding:
+
+- `spec/17-web-console.md` and `spec/18-durable-contract-and-completion.md` make Web active handles process-local owner clues that must defer to durable terminal session state.
+- `internal/webconsole/service.go` `handleForSession` now pruned durable `failed` / `completed` stale handles before returning a current-process handle, and Plan Mode controls already used that helper.
+- `handleInterruptSession` and `handleStopSession` still read `s.handles` directly, so a leftover handle for a durably settled session could bypass pruning and call `InterruptWithReason` on a runner that was no longer running.
+- Focused regressions reproduced the failure with `state.status=failed` for `/interrupt` and `state.status=completed` for `/stop`: both returned a generic `session is not running` conflict instead of pruning the stale handle and returning the structured `ACTIVE_HANDLE_NOT_OWNED` response.
+
+Impact:
+
+- Web stop/interrupt controls could present an unstructured runner-state error for sessions whose durable facts already proved the current-process handle was stale.
+- The stale handle also survived until a later detail or active-handle query pruned it, weakening the Web-first ownership guidance that tells operators when to use interrupt steer, refresh, or wait for settlement.
+
+Changes:
+
+- Routed `handleInterruptSession` and `handleStopSession` through `handleForSession`.
+- Preserved the existing pruning policy: only readable durable `completed` / `failed` states remove current-process handles, so live `running` and non-terminal Plan Mode input handles remain interruptible by the owning Web server.
+- Added WebConsole regressions proving terminal stale handles are pruned before stop/interrupt ownership checks and that both endpoints return the structured not-owned error.
+- Updated Web active-handle specs to state that stale terminal handles must not drive stop/interrupt ownership decisions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'Test(Interrupt|Stop)PrunesTerminalStaleHandleBeforeOwnershipCheck' -count=1`: failed before the fix with generic `session is not running`, then passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'Test(InterruptNonOwnedSessionReturnsStructuredError|StopNonOwnedSessionReturnsStructuredError|ServiceInterruptUsesManualPauseReason|ServiceStopSessionPausesWithManualStopReason|ServicePruneInactiveHandlesRecordsReleaseEvent|ServicePruneInactiveHandlesKeepsUnreadableStateHandle)' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-546
 

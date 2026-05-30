@@ -322,7 +322,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 - 多个并发 session 不能共享单个 interrupt slot
 - Web server 需要知道哪些 session 是自己托管的 active run
 - handle 本身不能伪持久化；只能把 `webconsole.handle.acquired/released` 这类 owner/process 线索写入 `events.jsonl`，供恢复诊断、`session.md` 与 long-run checkpoint 使用
-- Web 读取当前进程 handle 前必须先按 durable terminal state 清理 stale handle；`failed` / `completed` 的遗留 handle 不能阻断 Plan Mode recovery continue、删除/清理或其他可恢复控制路径
+- Web 读取当前进程 handle 前必须先按 durable terminal state 清理 stale handle；`failed` / `completed` 的遗留 handle 不能阻断 stop / interrupt 所有权判断、Plan Mode recovery continue、删除/清理或其他可恢复控制路径
 
 ### 6.3 Worker 并发池
 

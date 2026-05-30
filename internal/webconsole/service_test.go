@@ -4491,6 +4491,34 @@ func TestInterruptNonOwnedSessionReturnsStructuredError(t *testing.T) {
 	}
 }
 
+func TestInterruptPrunesTerminalStaleHandleBeforeOwnershipCheck(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_interrupt_stale_terminal_handle")
+	if err := svc.store.Create(meta, testSessionState(session.StatusFailed)); err != nil {
+		t.Fatalf("create failed session: %v", err)
+	}
+	if err := svc.addHandle(newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})); err != nil {
+		t.Fatalf("add stale handle: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/interrupt", map[string]any{}, http.StatusConflict)
+	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
+		t.Fatalf("expected stale terminal handle to be pruned into structured active-handle error, got %#v", errResp)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatal("expected terminal stale handle to be pruned")
+	}
+}
+
 func TestStopNonOwnedSessionReturnsStructuredError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -4510,6 +4538,34 @@ func TestStopNonOwnedSessionReturnsStructuredError(t *testing.T) {
 	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/stop", map[string]any{}, http.StatusConflict)
 	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
 		t.Fatalf("expected structured active-handle error, got %#v", errResp)
+	}
+}
+
+func TestStopPrunesTerminalStaleHandleBeforeOwnershipCheck(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_stop_stale_terminal_handle")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create completed session: %v", err)
+	}
+	if err := svc.addHandle(newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})); err != nil {
+		t.Fatalf("add stale handle: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/stop", map[string]any{}, http.StatusConflict)
+	if errResp.Code != errorCodeActiveHandleNotOwned || errResp.Action == "" {
+		t.Fatalf("expected stale terminal handle to be pruned into structured active-handle error, got %#v", errResp)
+	}
+	if svc.hasActiveHandle(meta.ID) {
+		t.Fatal("expected terminal stale handle to be pruned")
 	}
 }
 

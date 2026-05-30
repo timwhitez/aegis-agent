@@ -2711,9 +2711,7 @@ func steerActionStatus(err error) int {
 }
 
 func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string) {
-	s.mu.RLock()
-	handle, ok := s.handles[sessionID]
-	s.mu.RUnlock()
+	handle, ok := s.handleForSession(sessionID)
 	if !ok {
 		writeError(w, http.StatusConflict, newWebError(
 			errorCodeActiveHandleNotOwned,
@@ -2731,9 +2729,7 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, sessionID string
 }
 
 func (s *Service) handleStopSession(w http.ResponseWriter, sessionID string) {
-	s.mu.RLock()
-	handle, ok := s.handles[sessionID]
-	s.mu.RUnlock()
+	handle, ok := s.handleForSession(sessionID)
 	if !ok {
 		writeError(w, http.StatusConflict, newWebError(
 			errorCodeActiveHandleNotOwned,
