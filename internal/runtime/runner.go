@@ -953,6 +953,22 @@ func planModeDraftForContinue(sessionID string, req ContinueRequest, source stri
 }
 
 func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest) error {
+	var controls []string
+	if req.PlanMode != nil && req.PlanMode.Enabled {
+		controls = append(controls, "start")
+	}
+	if req.ApprovePlan {
+		controls = append(controls, "approve")
+	}
+	if req.CancelPlan {
+		controls = append(controls, "cancel")
+	}
+	if len(req.PlanInputAnswers) > 0 {
+		controls = append(controls, "answer_input")
+	}
+	if len(controls) > 1 {
+		return fmt.Errorf("conflicting plan mode controls: %s", strings.Join(controls, ", "))
+	}
 	if req.ApprovePlan {
 		planMode, err := r.store.LoadPlanMode(sessionID)
 		if err != nil {

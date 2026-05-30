@@ -91,6 +91,70 @@ func TestContinuePlanModeRejectsInvalidDraftBeforeClaim(t *testing.T) {
 	}
 }
 
+func TestContinuePlanModeRejectsConflictingControlsBeforeClaim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	sessionID := session.NewSessionID()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               sessionID,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         cfg.DefaultProvider,
+		Model:            cfg.Providers[cfg.DefaultProvider].Model,
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	initialState := session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, initialState); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := runner.store.CreatePlanMode(sessionID, session.PlanModeDraft{Enabled: true, Objective: "Approve or cancel"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := runner.store.SubmitPlanMode(sessionID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Plan summary",
+		PlanMarkdown: "# Plan\n\nDo it.",
+		Verification: []string{"manual"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID:   sessionID,
+		ApprovePlan: true,
+		CancelPlan:  true,
+		Source:      session.PlanModeSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "conflicting plan mode controls") {
+		t.Fatalf("expected conflicting Plan Mode controls error, got result=%#v err=%v", result, err)
+	}
+	state, err := runner.store.LoadState(sessionID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusAwaitingInput || state.Phase != "plan_approval" {
+		t.Fatalf("conflicting controls should not claim the session, got %#v", state)
+	}
+	planMode, err := runner.store.LoadPlanMode(sessionID)
+	if err != nil {
+		t.Fatalf("load plan mode: %v", err)
+	}
+	if planMode.Status != session.PlanModeStatusAwaitingApproval {
+		t.Fatalf("conflicting controls should not mutate Plan Mode, got %#v", planMode)
+	}
+	messages, err := runner.store.LoadMessages(sessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("conflicting controls should not append replay messages, got %#v", messages)
+	}
+}
+
 func TestContinuePlanModeRetryAfterCreatedEventFailureDoesNotReplacePlanMode(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

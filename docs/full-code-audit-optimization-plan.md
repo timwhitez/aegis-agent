@@ -9576,7 +9576,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260528-361 and FCA-20260526-178. Those slices made `session.created` and `session.started` event appends checked and stopped provider execution on missing lifecycle events; the residual gap was the returned error path still left `state.json` in `running`.
 - Confirmed the minimal fix belongs in the runtime runner boundary: reuse the existing pre-run failure transition for `session.created` and `session.started` append failures, preserving the original event failure cause while converging the durable session state to `failed`.
 
+### Review 572
+
+- Confirmed FCA-20260531-577 against `spec/18-durable-contract-and-completion.md`: runtime `continue` Plan Mode controls must preflight the current durable `planmode.json` fact before claiming a session, and approve, cancel, input answer, and Plan Mode creation are distinct operator controls.
+- Confirmed this is distinct from FCA-20260529-408 and FCA-20260530-570. Those slices moved invalid Plan Mode controls before claim and allowed idempotent executing approvals; this residual gap was accepting multiple valid-looking controls in one request and letting the later `Continue` branch order decide the outcome.
+- Confirmed the minimal fix belongs in `Runner.preflightPlanModeControl`: reject conflicting Plan Mode controls before `ClaimSessionRun`, `SaveMetadata`, replay message append, Plan Mode mutation, or provider execution, while preserving each standalone control's existing preflight and recovery behavior.
+
 ## Update Log
+
+### FCA-20260531-577
+
+Slice: `fix(runtime): reject conflicting plan controls`
+
+Finding:
+
+- `spec/18-durable-contract-and-completion.md` says runtime `continue` Plan Mode controls must preflight durable `planmode.json` before claiming the session, and it treats approval, cancellation, and recovered input answers as explicit control actions.
+- `Runner.Continue` accepted requests that combined Plan Mode controls such as `ApprovePlan` and `CancelPlan`.
+- The branch order then chose cancellation after the session had been claimed, metadata saved, and Plan Mode state mutated; a focused pre-fix regression with `ApprovePlan:true` and `CancelPlan:true` returned successful cancellation instead of rejecting the ambiguous operator request.
+
+Impact:
+
+- A malformed CLI/API call could cancel an approval-ready Plan Mode session while the same request also asked to approve it.
+- The durable `state.json`, `planmode.json`, and replay messages could advance according to implementation branch order rather than a single explicit operator intent, weakening recovery and Web/CLI control traceability.
+
+Changes:
+
+- Added a Plan Mode control conflict check to `Runner.preflightPlanModeControl`.
+- Treat `PlanMode.Enabled`, `ApprovePlan`, `CancelPlan`, and recovered `PlanInputAnswers` as mutually exclusive control families.
+- Added a focused regression proving conflicting controls fail before session claim, leave `state.json` in the original resumable state, keep `planmode.json` awaiting approval, and append no replay messages.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRejectsConflictingControlsBeforeClaim -count=1`: failed before the fix because the conflicting request returned successful cancellation.
+- `go test -timeout 120s ./internal/runtime -run TestContinuePlanModeRejectsConflictingControlsBeforeClaim -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestContinuePlanModeRejects(InvalidDraft|ConflictingControls)BeforeClaim|TestApprovePlanModeReportsPlanApprovedEventAppendError|TestCancelPlanModeReportsCancelledEventAppendError' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeInputDetailKeepsLiveHandle -count=1`: passed after the first full-suite run exposed a one-off active-handle timing failure in that unrelated WebConsole test.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed on rerun.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-576
 
