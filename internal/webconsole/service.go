@@ -2646,11 +2646,17 @@ func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCove
 	if err != nil {
 		return err
 	}
-	if planMode.Status != session.PlanModeStatusAwaitingApproval && planMode.Status != session.PlanModeStatusApproved {
+	switch planMode.Status {
+	case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+		if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+			return errors.New("plan mode has no submitted plan")
+		}
+	case session.PlanModeStatusExecuting:
+		if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
+			return errors.New("plan mode has no approved plan")
+		}
+	default:
 		return fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
-	}
-	if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-		return errors.New("plan mode has no submitted plan")
 	}
 	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
 		return nil

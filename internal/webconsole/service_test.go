@@ -3131,6 +3131,75 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	}
 }
 
+func TestServicePlanModeApproveAcceptsExecutingRecovery(t *testing.T) {
+	server := newFinishServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	meta := testSessionMetadata(t, "session_planmode_approve_executing")
+	meta.Mode = session.ModeExec
+	meta.CompletionPolicy = session.CompletionPolicyAutonomous
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, session.State{Status: session.StatusFailed, Phase: "plan_execution", LastError: "previous process exited after approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Recover approved execution", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Already approved and executing.",
+		PlanMarkdown: "# Plan\n\nRecover execution.",
+		Verification: []string{"go test ./internal/webconsole"},
+		Source:       session.PlanModeSourceTool,
+	}); err != nil {
+		t.Fatalf("submit plan: %v", err)
+	}
+	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("approve plan: %v", err)
+	}
+	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
+		t.Fatalf("mark executing: %v", err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var launch LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(meta.ID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(meta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		data, marshalErr := json.Marshal(state)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+	messages, err := svc.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var foundApproval bool
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["source"] == "planmode_approval" && msg.Meta["plan_mode_id"] != "" {
+			foundApproval = true
+		}
+	}
+	if !foundApproval {
+		t.Fatalf("expected recovered executing approve to append replayable approval message, got %#v", messages)
+	}
+}
+
 func TestServicePlanModeApproveRejectsPlanningBeforeLaunch(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

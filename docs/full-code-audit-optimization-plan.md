@@ -9534,7 +9534,48 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-568. That slice fixed cancellation stop mapping; this residual telemetry gap was that OpenAI max-token incomplete responses got the right internal stop reason but preserved only `status:"incomplete"` as the raw provider stop source.
 - Confirmed the minimal fix belongs in the OpenAI adapter raw-provider envelope: when `incomplete_details.reason` is present, use it as `provider_stop_reason_source` / `provider_stop_reason` and keep the original `status` alongside it for diagnostics.
 
+### Review 565
+
+- Confirmed FCA-20260530-570 against `spec/18-durable-contract-and-completion.md`: Web Plan Mode approve controls must preflight durable `planmode.json` before claiming a session, and approve must accept either an approval-ready plan or an idempotent already-`executing` Plan Mode.
+- Confirmed this is distinct from the stale-handle pruning slices. Those covered failed/completed in-memory handles blocking recovered input/cancel/stop/interrupt paths; this residual gap was a Web service preflight rejecting durable `executing` Plan Mode before the runtime's idempotent approve recovery path could run.
+- Confirmed the minimal fix belongs in the Web service preflight boundary: align `ensurePlanModeApprovalPreflight` with runtime approve preflight by allowing `executing` only when an approved version and plan markdown are present, while keeping planning/input/cancelled states rejected.
+
 ## Update Log
+
+### FCA-20260530-570
+
+Slice: `fix(webconsole): allow executing plan approval recovery`
+
+Finding:
+
+- `spec/18-durable-contract-and-completion.md` says Plan Mode approve requires an approval-ready or idempotent `executing` Plan Mode.
+- `internal/runtime/runner.go` already supports `ApprovePlan` recovery for `PlanModeStatusExecuting`: it verifies an approved plan, appends idempotent plan-approved/execution-started events, emits the replayable `planmode_approval` user message, and continues the run.
+- `internal/webconsole/service.go` rejected the same durable state in `ensurePlanModeApprovalPreflight`, returning `409 plan mode is not awaiting approval: executing` before runtime recovery could run.
+- A focused WebConsole regression reproduced a failed session whose `planmode.json` was already approved/executing; `POST /api/sessions/{id}/planmode/approve` failed before the fix instead of recovering execution.
+
+Impact:
+
+- A browser operator could not recover a Plan Mode session that had already crossed the approval boundary but failed or crashed before finishing execution.
+- The Web default app surface diverged from the CLI/runtime recovery contract and left an approved durable plan stuck even though session state was resumable.
+
+Changes:
+
+- Changed `ensurePlanModeApprovalPreflight` to accept `awaiting_approval`, `approved`, and `executing` Plan Mode states.
+- Preserved stricter validation by requiring a submitted plan for `awaiting_approval`/`approved`, and an approved version plus plan markdown for `executing`.
+- Added `TestServicePlanModeApproveAcceptsExecutingRecovery` to prove Web approve now reaches runtime recovery and appends a replayable `planmode_approval` user message.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServicePlanModeApproveAcceptsExecutingRecovery -count=1`: failed before the fix with `409 plan mode is not awaiting approval: executing`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServicePlanModeApprove(AppendsReplayableUserMessage|AcceptsExecutingRecovery|RejectsPlanningBeforeLaunch|ReturnsConflictWhenLinkedMissionCoverageBlocks)' -count=1`: passed after the fix.
+- `gofmt -l internal/webconsole/service.go internal/webconsole/service_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed with 115 subtests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-569
 
