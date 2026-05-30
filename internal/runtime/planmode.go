@@ -138,6 +138,17 @@ func terminalPlanModeAction(result session.ToolResult) string {
 	return value
 }
 
+func terminalPlanModeSyntheticResult(action string) string {
+	switch action {
+	case planModeTerminalPlanSubmitted:
+		return "Error: submit_plan ended the Plan Mode turn; this later tool call was not executed"
+	case planModeTerminalPlanCancelled:
+		return "Error: Plan Mode was cancelled; this later tool call was not executed"
+	default:
+		return "Error: Plan Mode ended this turn; this later tool call was not executed"
+	}
+}
+
 func planModeToolResultPayload(toolName string, payload any) session.ToolResult {
 	data, err := json.Marshal(payload)
 	if err != nil {

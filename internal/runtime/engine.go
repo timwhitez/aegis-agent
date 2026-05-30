@@ -766,7 +766,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if action := terminalPlanModeAction(toolResult); action != "" {
 					planModeTerminal = action
 					if callIndex+1 < len(result.ToolCalls) {
-						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: submit_plan ended the Plan Mode turn; this later tool call was not executed")...)
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], terminalPlanModeSyntheticResult(action))...)
 					}
 					break
 				}

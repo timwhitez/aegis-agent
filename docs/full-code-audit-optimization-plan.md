@@ -9222,7 +9222,46 @@ Evidence gates:
 - Confirmed this is distinct from the existing recoverable event-failure path. A missing `planmode.input_requested` event after state save intentionally leaves a pending request for Web/CLI fallback recovery, but a failure while saving `state.json` happened earlier and left `planmode.json` in `awaiting_user_input` while the session state still reflected the previous running phase.
 - Confirmed the minimal fix belongs in the model-facing `request_user_input` tool implementation: snapshot Plan Mode state/history before creating the pending request, and restore both if state load or save fails before the interactive responder is called.
 
+### Review 513
+
+- Confirmed FCA-20260530-518 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`: Plan Mode terminal tools must leave replayable tool results that accurately explain why same-batch later tool calls did not execute.
+- Confirmed this is distinct from the existing `submit_plan` same-batch coverage. `submit_plan` correctly wrote a synthetic later result that said the submitted plan ended the turn, but `request_user_input` cancellation reused that same text even though the terminal action was `plan_cancelled`.
+- Confirmed the minimal fix belongs in the runtime Plan Mode terminal handling: select the synthetic later tool-result text from the actual `planmode_terminal` action, preserving the existing state transitions, provider schema filtering, tool execution, Web/API controls, and `submit_plan` behavior.
+
 ## Update Log
+
+### FCA-20260530-518
+
+Slice: `fix(runtime): report plan cancellation for skipped tools`
+
+Finding:
+
+- `internal/runtime/engine.go` stopped the current tool batch when a Plan Mode tool result carried `metadata.planmode_terminal`.
+- A focused failing test proved that when `request_user_input` was cancelled by the user and the provider had emitted another same-batch tool call, the runtime wrote a synthetic later tool result that said `submit_plan ended the Plan Mode turn`.
+- The session state and Plan Mode snapshot still moved to cancellation correctly, but the durable replay/tool-lane fact for the later skipped call named the wrong terminal action.
+
+Impact:
+
+- Web timeline, CLI/session inspection, and provider replay diagnostics could show a misleading skipped-tool reason after Plan Mode input cancellation.
+- This weakened Plan Mode recovery traceability because a cancellation path looked like a submitted-plan path in `messages.jsonl`. It did not execute the later tool call, corrupt Plan Mode state, alter provider adapters, or change Web/CLI approval and cancellation controls.
+
+Changes:
+
+- Added a runtime regression where `request_user_input` is cancelled and a later same-batch `read_file` call must receive a cancellation-specific synthetic error result.
+- Added a small Plan Mode terminal synthetic-result helper keyed by `planmode_terminal`.
+- Preserved the existing `submit_plan` synthetic text and added a generic fallback for unknown terminal actions.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults -count=1`: failed before the fix because the skipped `read_file` result said `submit_plan ended the Plan Mode turn`.
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngine(SubmitPlanStopsTurnAndCompletesLaterToolResults|PlanInputCancelStopsTurnAndCompletesLaterToolResults|SubmitPlanReportsPlanSubmittedEventAppendError|PlanCancelledReportsAwaitingInputEventAppendError)|TestPlanInput(CancelReturnsHistoryAppendError|CancelRetryAfterHistoryFailureRestoresFacts|AnswerRollsBackWhenToolResultAppendFails|AnswerRetryAfterEventFailureRestoresEvent)|TestCancelPlanMode(DoesNotDuplicateRecoveredInputToolResult|RecordsAwaitingInputLifecycleEvent)|TestActivePlanInputDeliveryClaimsWaiterBeforeSend' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-517
 

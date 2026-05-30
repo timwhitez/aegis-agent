@@ -288,6 +288,82 @@ func TestEngineSubmitPlanStopsTurnAndCompletesLaterToolResults(t *testing.T) {
 	}
 }
 
+func TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.SetRunner(cancellingPlanInputRunner{})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Ask before planning.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if _, err := engine.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Ask before planning"}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		if !hasProviderTool(req.Tools, "request_user_input") {
+			t.Fatalf("request_user_input missing from planning tools: %#v", req.Tools)
+		}
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:   "call_plan_input",
+					Name: "request_user_input",
+					Arguments: json.RawMessage(`{
+						"questions":[{
+							"id":"scope_choice",
+							"header":"Scope",
+							"question":"Which scope should the plan use?",
+							"options":[
+								{"label":"Narrow (Recommended)","description":"Keep the plan focused."},
+								{"label":"Broad","description":"Include adjacent cleanup."}
+							]
+						}]
+					}`),
+				},
+				{ID: "call_read_after_cancel", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting input after input cancellation, got %#v", result)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Phase != "plan_cancelled" {
+		t.Fatalf("expected plan_cancelled phase, got %#v", loadedState)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 2 {
+		t.Fatalf("expected cancelled request_user_input plus synthetic later result, got %#v", last)
+	}
+	if !last.ToolResults[0].IsError || !strings.Contains(last.ToolResults[0].LLMOutput, "cancelled") {
+		t.Fatalf("expected first tool result to record input cancellation, got %#v", last.ToolResults[0])
+	}
+	if strings.Contains(last.ToolResults[1].LLMOutput, "submit_plan ended") || !strings.Contains(last.ToolResults[1].LLMOutput, "Plan Mode was cancelled") {
+		t.Fatalf("expected cancellation-specific synthetic result for later tool call, got %#v", last.ToolResults[1])
+	}
+}
+
+type cancellingPlanInputRunner struct{}
+
+func (cancellingPlanInputRunner) AutoContinue(context.Context, string) (RunResult, error) {
+	return RunResult{}, errors.New("unexpected AutoContinue")
+}
+
+func (cancellingPlanInputRunner) RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
+	return nil, tools.ErrPlanInputCancelled
+}
+
 func TestEngineSubmitPlanReportsPlanSubmittedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Plan this change before editing.")); err != nil {
