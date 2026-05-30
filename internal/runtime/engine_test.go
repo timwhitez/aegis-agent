@@ -995,6 +995,49 @@ func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	}
 }
 
+func TestEngineRejectsToolCallsWithoutToolUseStopReason(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			Text:       "partial",
+			StopReason: "max_tokens",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_finish",
+				Name:      "finish",
+				Arguments: json.RawMessage(`{"message":"should not run"}`),
+			}},
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed {
+		t.Fatalf("expected failed status, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != "provider_tool_call_stop_mismatch" {
+		t.Fatalf("expected provider tool-call mismatch reason, got %#v", loaded)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults {
+			if result.ToolCallID == "call_finish" {
+				t.Fatalf("mismatched provider tool call should not execute, got result %#v", result)
+			}
+		}
+	}
+}
+
 func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {

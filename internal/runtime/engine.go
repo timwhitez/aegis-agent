@@ -399,6 +399,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return RunResult{}, fmt.Errorf("record turn.stopped event: %w", err)
 		}
 
+		if failureReason, failureText := providerToolCallStopFailure(result); failureReason != "" {
+			state.Status = session.StatusFailed
+			state.Phase = "turn_decide"
+			state.IncompleteReason = failureReason
+			state.LastError = failureText
+			if err := e.store.SaveState(meta.ID, state); err != nil {
+				return RunResult{}, err
+			}
+			if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"reason": failureReason, "stop_reason": result.StopReason}); err != nil {
+				return RunResult{}, fmt.Errorf("record provider stop failure event for %s: %w", failureReason, err)
+			}
+			_ = writeSessionSummary(e.store, meta.ID)
+			_ = writeLongRunCheckpoint(e.store, meta.ID)
+			return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
+		}
+
 		result.ProviderContentBlocks = stampProviderContentBlocks(meta, result.ProviderContentBlocks)
 		if shouldPersistAssistantResult(result) {
 			assistantPayload, err := hookManager.Trigger(ctx, "assistant.message", map[string]any{
@@ -1729,6 +1745,13 @@ func providerStopFailure(stopReason string) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+func providerToolCallStopFailure(result provider.TurnResult) (string, string) {
+	if len(result.ToolCalls) == 0 || strings.TrimSpace(result.StopReason) == "tool_use" {
+		return "", ""
+	}
+	return "provider_tool_call_stop_mismatch", "provider returned parsed tool calls without a tool_use stop reason"
 }
 
 func syntheticToolResults(calls []provider.ToolCall, output string) []session.ToolResult {

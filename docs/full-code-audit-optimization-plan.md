@@ -9504,7 +9504,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-535 and FCA-20260530-536. Those slices suppressed function calls under unsafe or missing `finishReason` boundaries; the residual gap was a present `functionCall` object with no `name`, which the Go zero-value struct made indistinguishable from an absent function call.
 - Confirmed the minimal fix belongs in the Google adapter response parser: preserve missing `id` fallback behavior for valid Gemini calls, but distinguish absent `functionCall` fields from present malformed objects and fail with a provider `response_parse_error` when the call name is missing.
 
+### Review 560
+
+- Confirmed FCA-20260530-565 against `spec/03-provider-contracts.md` and `spec/18-durable-contract-and-completion.md`: runtime must treat provider stop metadata and parsed tool calls as a single boundary contract before dispatching any local tool side effect.
+- Confirmed this is distinct from FCA-20260530-533. That earlier slice covered `StopReason:"tool_use"` with no parsed calls; the residual inverse mismatch was a result with parsed calls but a non-`tool_use` stop reason such as `max_tokens`, which runtime still dispatched.
+- Confirmed the minimal fix belongs in the core engine after provider result recording but before assistant/tool persistence: fail the session with a durable provider-boundary reason before creating dangling assistant tool-call replay facts or executing any tool.
+
 ## Update Log
+
+### FCA-20260530-565
+
+Slice: `fix(runtime): reject tool-call stop mismatches`
+
+Finding:
+
+- `spec/03-provider-contracts.md` says `tool_use` is the provider stop reason that carries executable internal tool calls, and `max_tokens`, `blocked`, and `error` are provider stop failures.
+- `internal/runtime/engine.go` only applied `providerStopFailure` when `len(result.ToolCalls) == 0`.
+- If a future adapter or compatible provider returned parsed `ToolCalls` with `StopReason:"max_tokens"` or another non-`tool_use` stop reason, the engine skipped the provider-failure branch and entered the normal tool dispatch path.
+- A focused regression proved the failure mode by returning `StopReason:"max_tokens"` plus a `finish` call; before the fix, runtime executed `finish` and completed the session with `FinalText:"should not run"`.
+
+Impact:
+
+- Runtime could perform local side effects from a provider result that was explicitly not a tool-use boundary.
+- The completion state could become `completed` even though the provider stop reason was `max_tokens`, weakening recovery diagnostics and provider boundary enforcement.
+
+Changes:
+
+- Added a runtime regression that supplies a contradictory provider result with `StopReason:"max_tokens"` and a parsed `finish` tool call.
+- Added `providerToolCallStopFailure` and invoked it after `turn.stopped` is recorded but before assistant/tool-call persistence and tool execution.
+- The engine now fails the session with `IncompleteReason:"provider_tool_call_stop_mismatch"` and records `session.failed` instead of executing mismatched tool calls.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEngineRejectsToolCallsWithoutToolUseStopReason -count=1`: failed before the fix because the engine executed `finish` and returned `Status:"completed"`.
+- `go test -timeout 120s ./internal/runtime -run TestEngineRejectsToolCallsWithoutToolUseStopReason -count=1`: passed after the fix.
+- `gofmt -l internal/runtime/engine.go internal/runtime/engine_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestEngineRejectsToolCallsWithoutToolUseStopReason|TestEngineProviderStopReasonFailuresAreResumable|TestEngineProviderStopReasonReportsFailedEventAppendError' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/provider -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-564
 
