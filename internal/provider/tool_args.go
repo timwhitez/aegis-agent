@@ -4,7 +4,26 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
+
+func validateToolCallEnvelope(providerName, toolName, toolCallID string) error {
+	if strings.TrimSpace(toolName) == "" {
+		return &HTTPError{
+			Provider: providerName,
+			Class:    "response_parse_error",
+			Message:  "tool-call name is required",
+		}
+	}
+	if strings.TrimSpace(toolCallID) == "" {
+		return &HTTPError{
+			Provider: providerName,
+			Class:    "response_parse_error",
+			Message:  fmt.Sprintf("tool-call id for %q is required", toolName),
+		}
+	}
+	return nil
+}
 
 func normalizeToolCallArguments(providerName, toolName string, raw json.RawMessage) (json.RawMessage, error) {
 	trimmed := bytes.TrimSpace(raw)

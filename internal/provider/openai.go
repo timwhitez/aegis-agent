@@ -123,6 +123,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				}
 			}
 		case "function_call":
+			if err := validateToolCallEnvelope("openai", item.Name, item.CallID); err != nil {
+				return TurnResult{}, err
+			}
 			arguments, err := normalizeToolCallArguments("openai", item.Name, json.RawMessage(item.Arguments))
 			if err != nil {
 				return TurnResult{}, err

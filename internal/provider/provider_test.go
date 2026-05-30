@@ -210,6 +210,30 @@ func TestOpenAIAdapterRejectsNonObjectFunctionCallArguments(t *testing.T) {
 	assertProviderParseError(t, err, "openai", "JSON object")
 }
 
+func TestOpenAIAdapterRejectsMissingFunctionCallID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_missing_call_id",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","name":"shell","arguments":"{\"command\":\"pwd\"}"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "openai", "tool-call id")
+}
+
 func TestOpenAIAdapterMapsNonCompletedStatusToErrorStop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -432,6 +456,31 @@ func TestAnthropicAdapterRejectsNonObjectToolUseInput(t *testing.T) {
 		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
 	}, func(string, map[string]any) {})
 	assertProviderParseError(t, err, "anthropic", "JSON object")
+}
+
+func TestAnthropicAdapterRejectsMissingToolUseID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"msg_missing_tool_use_id",
+			"stop_reason":"tool_use",
+			"content":[
+				{"type":"tool_use","name":"shell","input":{"command":"pwd"}}
+			],
+			"usage":{"input_tokens":8,"output_tokens":4}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "claude-sonnet-4-6",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "anthropic", "tool-call id")
 }
 
 func TestAnthropicAdapterAppliesPromptCacheMarkersAndTelemetry(t *testing.T) {

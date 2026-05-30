@@ -125,6 +125,9 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 				Model:    req.Model,
 			})
 		case "tool_use":
+			if err := validateToolCallEnvelope("anthropic", item.Name, item.ID); err != nil {
+				return TurnResult{}, err
+			}
 			input, err := normalizeToolCallArguments("anthropic", item.Name, item.Input)
 			if err != nil {
 				return TurnResult{}, err

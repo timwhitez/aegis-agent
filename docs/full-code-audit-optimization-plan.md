@@ -9228,7 +9228,48 @@ Evidence gates:
 - Confirmed this is distinct from the existing `submit_plan` same-batch coverage. `submit_plan` correctly wrote a synthetic later result that said the submitted plan ended the turn, but `request_user_input` cancellation reused that same text even though the terminal action was `plan_cancelled`.
 - Confirmed the minimal fix belongs in the runtime Plan Mode terminal handling: select the synthetic later tool-result text from the actual `planmode_terminal` action, preserving the existing state transitions, provider schema filtering, tool execution, Web/API controls, and `submit_plan` behavior.
 
+### Review 514
+
+- Confirmed FCA-20260530-519 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and `spec/18-durable-contract-and-completion.md`: provider adapters must normalize provider tool-call facts before runtime persists assistant messages, and provider-specific replay fields must stay in adapter-owned code.
+- Confirmed this is distinct from the Google fallback-id slice. Google `functionCall.id` can be absent and has an adapter-owned unique fallback; OpenAI Responses `function_call.call_id` and Anthropic `tool_use.id` are replay identifiers, so missing values should be reported as malformed provider responses instead of silently becoming empty durable `tool_call.id` values.
+- Confirmed the minimal fix belongs in the OpenAI and Anthropic adapter response parsing path: reject incomplete tool-call envelopes with `response_parse_error` before constructing internal `ToolCall` values, preserving runtime/session validation as a hard backstop rather than the first visible failure.
+
 ## Update Log
+
+### FCA-20260530-519
+
+Slice: `fix(provider): reject missing tool call ids`
+
+Finding:
+
+- `internal/provider/openai.go` copied OpenAI Responses `function_call.call_id` directly into internal `ToolCall.ID`.
+- `internal/provider/anthropic.go` copied Anthropic `tool_use.id` directly into internal `ToolCall.ID` and `provider_content_blocks`.
+- Focused failing tests proved that when an upstream or compatible provider returned a tool call without the replay id, the adapters returned a normal `tool_use` result with an empty internal tool-call id instead of a provider parse error.
+- `internal/session/store.go` later rejects empty tool-call ids when persisting assistant messages, so the malformed provider response was surfacing at the generic session-store boundary after provider success had already been normalized.
+
+Impact:
+
+- Web timeline, CLI/session inspection, provider-attempt diagnostics, and recovery could see a generic assistant-message persistence failure instead of an adapter-owned provider `response_parse_error`.
+- OpenAI `function_call_output.call_id` replay and Anthropic `tool_result.tool_use_id` replay require the provider id, so accepting missing ids weakens tool replay correctness and durable session traceability.
+- The issue did not affect Google fallback ids because Google has an adapter-owned unique fallback path for absent `functionCall.id`.
+
+Changes:
+
+- Added focused OpenAI and Anthropic adapter regressions for missing provider tool-call ids.
+- Added a small shared provider helper that rejects missing tool-call names or ids as `response_parse_error`.
+- Called the helper before OpenAI `function_call` and Anthropic `tool_use` arguments are normalized or converted into internal `ToolCall` / provider-content-block facts.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterRejectsMissingFunctionCallID|AnthropicAdapterRejectsMissingToolUseID)' -count=1`: failed before the fix because both adapters returned nil error.
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterRejectsMissingFunctionCallID|AnthropicAdapterRejectsMissingToolUseID)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterRejects(Invalid|NonObject|Missing)FunctionCall|OpenAIInputRejectsMalformedPersistedToolArguments|AnthropicAdapterRejects(NonObject|Missing)ToolUse|GoogleAdapterGeneratesUniqueFallbackToolCallIDs)' -count=1`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-518
 
