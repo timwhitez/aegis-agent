@@ -104,11 +104,13 @@ v1 内置工具固定为：
 - 自动创建父目录
 - 默认全量写入
 - 新文件写入应采用原子替换流程，并为 agent 产物设置 owner-only 默认权限
+- 必须拒绝写入 credential / private-key / secret 配置路径；该拒绝不仅基于用户输入路径，也要覆盖工作区内任意目录下已存在的敏感文件名 symlink alias，避免通过普通目标路径间接改写敏感别名
 
 ### 4.4 `edit_file`
 
 - 采用“查找旧文本并替换”的最小语义
 - 若旧文本不存在则报错
+- 与 `write_file` 共享同一套 workspace 写入策略，包括敏感路径和 symlink alias 检查
 
 ### 4.5 `glob`
 

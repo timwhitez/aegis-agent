@@ -255,6 +255,30 @@ func TestWriteDeniedPrivateKeyPatternSymlinkFileTargets(t *testing.T) {
 	}
 }
 
+func TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "configs"), 0o700); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	target := filepath.Join(root, "secrets", "key-real")
+	if err := os.WriteFile(target, []byte("SECRET=old\n"), 0o600); err != nil {
+		t.Fatalf("write sensitive target: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "secrets", "key-real"), filepath.Join(root, "configs", "deploy.pem")); err != nil {
+		t.Fatalf("symlink nested deploy.pem: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/key-real")
+	if err != nil {
+		t.Fatalf("resolve sensitive target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '*.pem'") {
+		t.Fatalf("expected nested resolved deploy.pem target to be denied, got %v", err)
+	}
+}
+
 func TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -234,24 +235,30 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 }
 
 func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath string) error {
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
+	return filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry == nil || sameCleanPath(path, base) {
+			return nil
+		}
 		pattern := deniedWorkspaceWriteFilePattern(entry.Name())
 		if pattern == "" {
-			continue
+			return nil
 		}
-		deniedPath, ok, err := resolveExistingWorkspacePolicyPath(base, entry.Name())
+		rel, err := filepath.Rel(base, path)
+		if err != nil {
+			return err
+		}
+		deniedPath, ok, err := resolveWorkspacePolicyPathWithExistingParent(base, rel)
 		if err != nil {
 			return err
 		}
 		if ok && resolvedAliasMatches(deniedPath, resolvedPath) {
 			return fmt.Errorf("write denied: path '%s' resolves to deny pattern '%s'", displayPath, pattern)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func deniedWorkspaceWriteFilePattern(name string) string {

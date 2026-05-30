@@ -9288,7 +9288,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-527. That slice covered OAuth client secret filenames; this residual gap covers common cloud service-account filenames such as `service_account.json` and `service-account.json`, which did not contain `credentials`, `client_secret`, `private_key`, or a private-key file extension in the filename.
 - Confirmed the minimal fix should reuse the existing credential-name predicate and preserve prior `*_credentials.json` matching order, so existing diagnostics and symlink-alias behavior remain stable while adding service-account coverage.
 
+### Review 524
+
+- Confirmed FCA-20260530-529 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: workspace write and Web browser safety must deny sensitive symlink aliases below nested directories, not only aliases in the workspace root.
+- Confirmed this is distinct from the filename enumeration slices. Existing direct path checks already denied `configs/deploy.pem` lexically, and existing alias checks denied root-level `deploy.pem -> secrets/key-real`; the remaining bypass was writing or reading the ordinary target path `secrets/key-real` while a nested sensitive alias such as `configs/deploy.pem -> ../secrets/key-real` existed.
+- Confirmed the minimal fix belongs in the shared workspace write policy, not in Web-only filtering or a runtime workflow guard: recursively inspect existing workspace entries whose names match the credential/private-key pattern and compare their resolved targets with the requested write/read target.
+
 ## Update Log
+
+### FCA-20260530-529
+
+Slice: `fix(workspace): deny nested credential aliases`
+
+Finding:
+
+- `spec/04-tools-and-skills.md` requires workspace path safety and secret/credential write boundaries, and `spec/17-web-console.md` requires the read-only Workspace browser to hide/refuse private-key and credential-like paths.
+- `internal/tools/path.go` checked fixed sensitive directory/path aliases and root-level credential/private-key pattern aliases, but `checkWorkspaceWriteResolvedPatternAliases` only scanned `os.ReadDir(base)`.
+- A nested sensitive alias such as `configs/deploy.pem -> ../secrets/key-real` therefore left the ordinary target `secrets/key-real` writable by `write_file` / `edit_file` and readable/listable by the Web Workspace browser, because the target path itself did not contain `.pem` or another sensitive filename pattern.
+
+Impact:
+
+- A model-facing file write could indirectly overwrite private-key or credential material through a nested sensitive symlink alias while passing the existing workspace write policy.
+- The Web read-only Workspace browser could list or read the resolved target behind a nested private-key / credential alias even though it hid the sensitive alias path itself.
+
+Changes:
+
+- Replaced the root-only credential/private-key pattern alias scan with a workspace-recursive `filepath.WalkDir` scan that checks every existing entry name against the existing sensitive filename patterns.
+- For each matched entry, resolved the policy path with the existing symlink-aware resolver and denied the requested target when it resolves to the same path or a child path.
+- Added a tool-policy regression for `configs/deploy.pem -> ../secrets/key-real` denying writes to `secrets/key-real`.
+- Extended Web Workspace symlink-target coverage to ensure the same nested alias hides `secrets/key-real` from listing and rejects direct reads.
+- Updated the tools spec to state that `write_file` / `edit_file` sensitive path policy covers nested symlink aliases as well as user input paths.
+
+Validation:
+
+- `go test ./internal/tools -run TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget -count=1`: failed before the fix because `CheckWorkspaceWriteAllowed(root, "secrets/key-real")` returned `<nil>` while `configs/deploy.pem` pointed at that target; passed after the fix.
+- `go test ./internal/tools -run 'TestWriteDeniedNestedPrivateKeyPatternSymlinkFileTarget|TestWriteDeniedPrivateKeyPatternSymlinkFileTargets|TestWriteDeniedPrivateKeyPatternSymlinkDirectoryTargets' -count=1`: passed.
+- `go test ./internal/webconsole -run TestServiceWorkspaceRoutesRejectCredentialSymlinkRealTargets -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-528
 
