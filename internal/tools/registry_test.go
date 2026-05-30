@@ -322,6 +322,99 @@ func TestTodoAndTaskToolsEmitStructuredEvents(t *testing.T) {
 	}
 }
 
+func TestTaskListHonorsFilters(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: meta.Workdir, Store: store, Config: cfg}
+
+	ready, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Ready task"})
+	if err != nil {
+		t.Fatalf("create ready task: %v", err)
+	}
+	blocker, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Blocking task"})
+	if err != nil {
+		t.Fatalf("create blocker task: %v", err)
+	}
+	blocked, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Blocked task", BlockedBy: []string{blocker.ID}})
+	if err != nil {
+		t.Fatalf("create blocked task: %v", err)
+	}
+	inProgress, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Current task"})
+	if err != nil {
+		t.Fatalf("create in-progress task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: inProgress.ID, Status: "in_progress"}); err != nil {
+		t.Fatalf("mark in progress: %v", err)
+	}
+	completed, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Completed task"})
+	if err != nil {
+		t.Fatalf("create completed task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: completed.ID, Status: "completed"}); err != nil {
+		t.Fatalf("mark completed: %v", err)
+	}
+	cancelled, err := session.CreateTask(store, meta.ID, session.TaskCreateInput{Subject: "Cancelled task"})
+	if err != nil {
+		t.Fatalf("create cancelled task: %v", err)
+	}
+	if _, err := session.UpdateTask(store, meta.ID, session.TaskUpdateInput{TaskID: cancelled.ID, Status: "cancelled"}); err != nil {
+		t.Fatalf("mark cancelled: %v", err)
+	}
+
+	assertListedIDs := func(name string, raw json.RawMessage, want []string) {
+		t.Helper()
+		result, err := registry.Execute(context.Background(), "task_list", execCtx, raw)
+		if err != nil {
+			t.Fatalf("%s task_list: %v", name, err)
+		}
+		if result.IsError {
+			t.Fatalf("%s task_list returned error: %s", name, result.DisplayOutput)
+		}
+		var board session.TaskBoard
+		if err := json.Unmarshal([]byte(result.LLMOutput), &board); err != nil {
+			t.Fatalf("%s decode board: %v\n%s", name, err, result.LLMOutput)
+		}
+		got := make([]string, 0, len(board.Tasks))
+		for _, task := range board.Tasks {
+			got = append(got, task.ID)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s expected task ids %v, got %v", name, want, got)
+		}
+	}
+
+	assertListedIDs("default", json.RawMessage(`{}`), []string{ready.ID, blocker.ID, blocked.ID, inProgress.ID, completed.ID, cancelled.ID})
+	assertListedIDs("active only", json.RawMessage(`{"include_completed":false}`), []string{ready.ID, blocker.ID, blocked.ID, inProgress.ID})
+	assertListedIDs("ready", json.RawMessage(`{"status":"ready"}`), []string{ready.ID, blocker.ID})
+	assertListedIDs("blocked", json.RawMessage(`{"status":"blocked"}`), []string{blocked.ID})
+	assertListedIDs("done", json.RawMessage(`{"status":"done","include_completed":false}`), []string{completed.ID, cancelled.ID})
+
+	result, err := registry.Execute(context.Background(), "task_list", execCtx, json.RawMessage(`{"status":"waiting"}`))
+	if err != nil {
+		t.Fatalf("invalid status task_list: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "invalid status") {
+		t.Fatalf("expected invalid status error, got %#v", result)
+	}
+}
+
 func TestRequestUserInputResponderErrorKeepsRecoverablePendingRequest(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

@@ -253,8 +253,8 @@ task 满足以下条件时视为 blocked：
 
 输入：
 
-- `include_completed?`
-- `status?`
+- `include_completed?`：默认 `true`，保证恢复/交接默认能看到完整 task graph；当为 `false` 且未指定 `status` 时，返回视图排除 `completed` / `cancelled`
+- `status?`：可选 `pending | in_progress | completed | cancelled | ready | blocked | done`；显式 `status` 优先于 `include_completed`
 
 返回：
 

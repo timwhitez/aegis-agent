@@ -9354,7 +9354,47 @@ Evidence gates:
 - Confirmed this is distinct from the existing bodyless mutation coverage. Prior tests covered nil/zero-length body requests without JSON Content-Type; this residual slice covers chunked or otherwise unknown-length empty bodies, which previously looked body-present to the guard and were rejected before handler-level validation.
 - Confirmed the minimal fix belongs in Web request decoding, not runtime or session store: required JSON endpoints still enforce JSON Content-Type at the shared mutation guard, while optional JSON endpoints defer body inspection to a bounded optional decoder that treats whitespace-only bodies as empty and requires JSON Content-Type for non-empty bodies.
 
+### Review 535
+
+- Confirmed FCA-20260530-540 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/12-task-system.md`, and the model-facing built-in tool schema: `task_list` advertised durable task graph recovery but its closed input schema rejected the spec-documented `include_completed` and `status` filters.
+- Confirmed this is a contract drift rather than a storage-layer task graph issue. `BuildTaskBoard` already exposes ready / blocked / completed / cancelled / done derived views, and task create/update state transitions remain correct; the missing behavior was confined to the `task_list` adapter schema and response projection.
+- Confirmed the minimal fix should preserve the default full-graph recovery behavior, then apply optional filters only to the returned task view. Explicit `status` filters should override `include_completed=false` so callers can still request `completed`, `cancelled`, or combined `done` tasks intentionally.
+
 ## Update Log
+
+### FCA-20260530-540
+
+Slice: `fix(tools): honor task list filters`
+
+Finding:
+
+- `spec/12-task-system.md` documented `task_list` inputs `include_completed?` and `status?`, while `spec/04-tools-and-skills.md` described the tool as returning durable task graph derived views.
+- `internal/tools/registry.go` exposed `task_list` with an empty closed input schema, so any call with `include_completed` or `status` failed before execution with `unexpected field`.
+- The executor ignored raw input entirely, so even if the schema had allowed those fields, the returned task board would still be the unfiltered full graph.
+
+Impact:
+
+- A model resuming long-running work could not ask the durable task tool for active-only, ready-only, blocked-only, or done-only task views despite the task-system contract saying those filters exist.
+- This weakened task recovery and handoff ergonomics because callers had to manually scan all completed/cancelled items even when they wanted only actionable or derived-status work.
+- The issue was not a task storage corruption bug; `BuildTaskBoard` and task status transitions already had the derived groups needed by the missing tool projection.
+
+Changes:
+
+- Added `include_completed` and `status` to the `task_list` tool schema, with `status` values `pending`, `in_progress`, `completed`, `cancelled`, `ready`, `blocked`, and `done`.
+- Added input decoding and validation for `task_list`, preserving nil/empty input as the default request.
+- Kept default `task_list` behavior as a full durable task graph for recovery/交接; `include_completed=false` filters `completed` and `cancelled` only when no explicit `status` is requested.
+- Added filtered response projection for concrete statuses and derived ready/blocked/done groups without changing task storage or graph mutation behavior.
+- Updated `spec/04-tools-and-skills.md` and `spec/12-task-system.md` to spell out the default full-graph behavior and filter precedence.
+
+Validation:
+
+- `go test ./internal/tools -run TestTaskListHonorsFilters -count=1`: failed before the fix with `unexpected field "include_completed"`; passed after the fix.
+- `go test ./internal/tools -run 'Test(BuiltinToolExecutionRejectsUnknownTopLevelField|BuiltinToolSchemasDisallowUnknownProperties|TodoAndTaskToolsEmitStructuredEvents|TaskListHonorsFilters|SessionScopedToolsRejectMissingSessionMetadata)' -count=1`: passed.
+- `go test ./internal/session -run 'TestBuildTaskBoard|TestTask' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-539
 

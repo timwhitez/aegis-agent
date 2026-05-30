@@ -2800,13 +2800,27 @@ func defTaskUpdate() Definition {
 func defTaskList() Definition {
 	return Definition{
 		Name:        "task_list",
-		Description: "List the durable task graph and derived ready, blocked, and completed views. Use this when resuming long work, choosing the next ready task, or reconciling handoff state. This is not a substitute for checking current files or validation results.",
+		Description: "List the durable task graph and derived ready, blocked, completed, cancelled, and done views. Use this when resuming long work, choosing the next ready task, or reconciling handoff state. This is not a substitute for checking current files or validation results.",
 		InputSchema: map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
+			"type": "object",
+			"properties": map[string]any{
+				"include_completed": map[string]any{
+					"type":        "boolean",
+					"description": "Whether to include completed and cancelled tasks in the returned task array when status is omitted. Defaults to true so recovery sees the full durable graph.",
+				},
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []any{"pending", "in_progress", "completed", "cancelled", "ready", "blocked", "done"},
+					"description": "Optional task status or derived group to return. Explicit status filters override include_completed.",
+				},
+			},
 			"additionalProperties": false,
 		},
-		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
+		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			input, err := decodeTaskListInput(raw)
+			if err != nil {
+				return errorResult("task_list", err), nil
+			}
 			if err := requireToolSessionMetadata(execCtx); err != nil {
 				return errorResult("task_list", err), nil
 			}
@@ -2819,25 +2833,101 @@ func defTaskList() Definition {
 				return errorResult("task_list", err), nil
 			}
 			board := session.BuildTaskBoard(todo, tasks)
-			data, _ := json.MarshalIndent(board, "", "  ")
+			visibleTasks, err := filterTaskListTasks(tasks, board, input)
+			if err != nil {
+				return errorResult("task_list", err), nil
+			}
+			responseBoard := session.BuildTaskBoard(todo, visibleTasks)
+			data, _ := json.MarshalIndent(responseBoard, "", "  ")
 			return session.ToolResult{
 				Name:          "task_list",
 				LLMOutput:     string(data),
 				DisplayOutput: string(data),
 				Metadata: map[string]any{
-					"tasks_dir":       taskDirPath(execCtx),
-					"session_dir":     execCtx.Store.SessionDir(execCtx.SessionID),
-					"todo_count":      len(todo),
-					"task_count":      len(tasks),
-					"ready_count":     board.Counters["ready"],
-					"blocked_count":   board.Counters["blocked"],
-					"completed_count": board.Counters["completed"],
-					"cancelled_count": board.Counters["cancelled"],
-					"done_count":      board.Counters["done"],
+					"tasks_dir":           taskDirPath(execCtx),
+					"session_dir":         execCtx.Store.SessionDir(execCtx.SessionID),
+					"todo_count":          len(todo),
+					"task_count":          len(tasks),
+					"filtered_task_count": len(visibleTasks),
+					"include_completed":   input.includeCompleted(),
+					"filter_status":       input.Status,
+					"ready_count":         board.Counters["ready"],
+					"blocked_count":       board.Counters["blocked"],
+					"completed_count":     board.Counters["completed"],
+					"cancelled_count":     board.Counters["cancelled"],
+					"done_count":          board.Counters["done"],
 				},
 			}, nil
 		},
 	}
+}
+
+type taskListInput struct {
+	IncludeCompleted *bool  `json:"include_completed,omitempty"`
+	Status           string `json:"status,omitempty"`
+}
+
+func (input taskListInput) includeCompleted() bool {
+	if input.IncludeCompleted == nil {
+		return true
+	}
+	return *input.IncludeCompleted
+}
+
+func decodeTaskListInput(raw json.RawMessage) (taskListInput, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	var input taskListInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return taskListInput{}, err
+	}
+	status := strings.TrimSpace(input.Status)
+	if status == "" {
+		input.Status = ""
+		return input, nil
+	}
+	switch status {
+	case "pending", "in_progress", "completed", "cancelled", "ready", "blocked", "done":
+		input.Status = status
+		return input, nil
+	default:
+		return taskListInput{}, fmt.Errorf("invalid status: %s", input.Status)
+	}
+}
+
+func filterTaskListTasks(tasks []session.Task, board session.TaskBoard, input taskListInput) ([]session.Task, error) {
+	if input.Status != "" {
+		switch input.Status {
+		case "ready", "blocked", "done":
+			return append([]session.Task{}, board.Groups[input.Status]...), nil
+		case "pending", "in_progress", "completed", "cancelled":
+			return filterTasksByStatus(tasks, input.Status), nil
+		default:
+			return nil, fmt.Errorf("invalid status: %s", input.Status)
+		}
+	}
+	if input.includeCompleted() {
+		return append([]session.Task{}, tasks...), nil
+	}
+	visible := make([]session.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status == "completed" || task.Status == "cancelled" {
+			continue
+		}
+		visible = append(visible, task)
+	}
+	return visible, nil
+}
+
+func filterTasksByStatus(tasks []session.Task, status string) []session.Task {
+	filtered := make([]session.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Status == status {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered
 }
 
 func defTaskGet() Definition {
