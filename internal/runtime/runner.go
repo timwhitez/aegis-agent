@@ -401,7 +401,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		"mode":     meta.Mode,
 		"workdir":  meta.Workdir,
 	}); err != nil {
-		return RunResult{}, fmt.Errorf("record session.created event: %w", err)
+		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record session.created event: %w", err))
 	}
 	_ = writeSessionSummary(r.store, meta.ID)
 	if stringsTrim(req.Prompt) != "" {
@@ -1750,7 +1750,7 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 		"provider": meta.Provider,
 		"model":    meta.Model,
 	}); err != nil {
-		return RunResult{}, fmt.Errorf("record session.started event: %w", err)
+		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record session.started event: %w", err))
 	}
 	return r.engine.Run(ctx, meta, state, systemOverride, adapter, catalog, registry, hookManager)
 }

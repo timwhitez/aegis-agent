@@ -834,6 +834,16 @@ func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 	if calls := providerCalls.Load(); calls != 0 {
 		t.Fatalf("provider should not run after missing started event, got %d calls", calls)
 	}
+	stateAfter, stateErr := runner.store.LoadState(meta.ID)
+	if stateErr != nil {
+		t.Fatalf("load state after started event failure: %v", stateErr)
+	}
+	if stateAfter.Status != session.StatusFailed {
+		t.Fatalf("session.started append failure must mark session failed, got %#v", stateAfter)
+	}
+	if !strings.Contains(stateAfter.LastError, "session.started") {
+		t.Fatalf("failed state must retain session.started cause, got %#v", stateAfter)
+	}
 }
 
 func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
@@ -863,6 +873,7 @@ func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	runner := NewRunner(cfg)
+	var createdSessionID string
 
 	req := StartRequest{
 		Prompt:   "start should stop when session.created cannot be recorded",
@@ -872,6 +883,7 @@ func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
 		Workdir:  t.TempDir(),
 	}
 	runner.beforeStartSessionCreatedEvent = func(sessionID string) {
+		createdSessionID = sessionID
 		blockRunnerEventsPath(t, runner.store, sessionID)
 	}
 	result, err := runner.Start(context.Background(), req)
@@ -886,6 +898,19 @@ func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
 	}
 	if calls := providerCalls.Load(); calls != 0 {
 		t.Fatalf("provider should not run after missing created event, got %d calls", calls)
+	}
+	if strings.TrimSpace(createdSessionID) == "" {
+		t.Fatal("expected created session id from start hook")
+	}
+	stateAfter, stateErr := runner.store.LoadState(createdSessionID)
+	if stateErr != nil {
+		t.Fatalf("load state after created event failure: %v", stateErr)
+	}
+	if stateAfter.Status != session.StatusFailed {
+		t.Fatalf("session.created append failure must mark session failed, got %#v", stateAfter)
+	}
+	if !strings.Contains(stateAfter.LastError, "session.created") {
+		t.Fatalf("failed state must retain session.created cause, got %#v", stateAfter)
 	}
 }
 

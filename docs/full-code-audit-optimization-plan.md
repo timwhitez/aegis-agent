@@ -9570,7 +9570,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-018, FCA-20260525-056, and FCA-20260528-347. Those slices rejected malformed successful tool-call arguments and malformed persisted replay facts; this residual bug was that malformed calls inside already-failed provider boundaries were parsed before the adapter honored the failed / blocked stop reason.
 - Confirmed the minimal fix belongs inside the OpenAI and Google adapters: gate provider function-call envelope/argument parsing on the success boundary, while keeping success-path malformed-call validation unchanged and preserving raw provider stop telemetry.
 
+### Review 571
+
+- Confirmed FCA-20260531-576 against `spec/01-runtime-architecture.md` and `spec/18-durable-contract-and-completion.md`: `state.json` and `events.jsonl` are both durable session facts, and a failed pre-engine lifecycle boundary must not leave a session durably `running` when no provider loop can continue it.
+- Confirmed this is distinct from FCA-20260528-361 and FCA-20260526-178. Those slices made `session.created` and `session.started` event appends checked and stopped provider execution on missing lifecycle events; the residual gap was the returned error path still left `state.json` in `running`.
+- Confirmed the minimal fix belongs in the runtime runner boundary: reuse the existing pre-run failure transition for `session.created` and `session.started` append failures, preserving the original event failure cause while converging the durable session state to `failed`.
+
 ## Update Log
+
+### FCA-20260531-576
+
+Slice: `fix(runtime): fail pre-run lifecycle gaps`
+
+Finding:
+
+- `spec/01-runtime-architecture.md` defines `state.json`, `messages.jsonl`, and `events.jsonl` as durable session facts, and `spec/18-durable-contract-and-completion.md` relies on those facts for recovery, Web detail, summaries, and completion auditing.
+- `Runner.Start` already stopped before writing the prompt or calling the provider when `session.created` could not be appended, and `runExisting` already stopped before the provider when `session.started` could not be appended.
+- Both paths returned the append error directly while leaving the just-created or claimed `state.json` as `status:"running"`.
+
+Impact:
+
+- A local Web console or recovery script could observe a durable running session even though no provider loop was active and the required lifecycle event was missing.
+- That made pre-engine startup failures look like stuck active work instead of a terminal harness persistence failure, weakening recovery and operator diagnostics.
+
+Changes:
+
+- `Runner.Start` now routes `session.created` append failures through `failBeforeRun`, so the durable session state records `failed` with the original `session.created` cause.
+- `runExisting` now routes `session.started` append failures through the same pre-run failure transition before returning.
+- Expanded the focused lifecycle regressions to assert the provider still does not run and the resulting `state.json` is `failed` with the matching lifecycle cause.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run 'TestRunnerStartReports(Created|Started)EventAppendError' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/runtime -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-575
 
