@@ -340,7 +340,7 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 
 控制面约束：
 
-- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
+- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
 - goal 控制只通过 REST endpoint 写入 session store，不通过 WebSocket 控制消息。
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session；浏览器 WebSocket upgrade 必须拒绝 foreign `Origin`，无 `Origin` 的本地非浏览器 client 可继续用于测试/诊断。

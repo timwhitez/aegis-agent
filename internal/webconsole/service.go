@@ -69,8 +69,9 @@ const (
 )
 
 var (
-	errWebServiceClosing    = errors.New("web service is closing")
-	errSessionAlreadyActive = errors.New("session is already active in this web console")
+	errWebServiceClosing       = errors.New("web service is closing")
+	errSessionAlreadyActive    = errors.New("session is already active in this web console")
+	errJSONMutationContentType = errors.New("JSON API mutation requires Content-Type: application/json")
 
 	// beforeReserveSkillBackupCleanup is set only by package tests to force a
 	// deterministic filesystem replacement between reservation and cleanup.
@@ -5688,11 +5689,12 @@ func missionPlanPatchTouchesApprovalScopedContent(req MissionPlanPatchRequest) b
 
 func decodeOptionalMissionPlanApproveRequest(w http.ResponseWriter, r *http.Request) (MissionPlanApproveRequest, bool) {
 	var req MissionPlanApproveRequest
-	if r.Body == nil || r.ContentLength == 0 {
-		return req, true
-	}
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+	if _, err := decodeOptionalJSON(r, &req); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errJSONMutationContentType) {
+			status = http.StatusForbidden
+		}
+		writeError(w, status, err)
 		return MissionPlanApproveRequest{}, false
 	}
 	return req, true
@@ -6656,15 +6658,46 @@ func decodeJSON(r *http.Request, target any) error {
 	return nil
 }
 
+func decodeOptionalJSON(r *http.Request, target any) (bool, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return false, nil
+	}
+	defer r.Body.Close()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return false, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return false, nil
+	}
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return false, errJSONMutationContentType
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return false, err
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return false, errors.New("request body must contain a single JSON value")
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func guardUnsafeAPIRequest(r *http.Request) error {
 	if !isUnsafeMethod(r.Method) {
 		return nil
 	}
 	policy := jsonBodyPolicyForRequest(r.Method, r.URL.Path)
-	if policy == webJSONBodyRequired || (policy == webJSONBodyOptional && requestHasBody(r)) {
+	if policy == webJSONBodyRequired {
 		mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(r.Header.Get("Content-Type")))
 		if err != nil || !strings.EqualFold(mediaType, "application/json") {
-			return errors.New("JSON API mutation requires Content-Type: application/json")
+			return errJSONMutationContentType
 		}
 	}
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
@@ -6730,10 +6763,6 @@ const (
 	webJSONBodyOptional
 	webJSONBodyRequired
 )
-
-func requestHasBody(r *http.Request) bool {
-	return r != nil && r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0
-}
 
 func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 	if method == http.MethodPost {

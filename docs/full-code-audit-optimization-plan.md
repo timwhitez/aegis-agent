@@ -9348,7 +9348,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-536 and FCA-20260530-537. Those handled parsed tool-call contradictions; this slice covers text-only or no-tool final responses that omitted OpenAI `status`, Anthropic `stop_reason`, or Google `finishReason`.
 - Confirmed the minimal fix belongs in adapter stop mapping, preserving partial text/replay diagnostics while returning an internal `error` stop so runtime treats the turn as a provider boundary failure instead of ordinary awaiting input.
 
+### Review 534
+
+- Confirmed FCA-20260530-539 against `AGENTS.md`, `spec/17-web-console.md`, and the Web API guard/body-policy implementation: optional JSON approve mutations must accept an actually empty request body even when the transport reports an unknown body length.
+- Confirmed this is distinct from the existing bodyless mutation coverage. Prior tests covered nil/zero-length body requests without JSON Content-Type; this residual slice covers chunked or otherwise unknown-length empty bodies, which previously looked body-present to the guard and were rejected before handler-level validation.
+- Confirmed the minimal fix belongs in Web request decoding, not runtime or session store: required JSON endpoints still enforce JSON Content-Type at the shared mutation guard, while optional JSON endpoints defer body inspection to a bounded optional decoder that treats whitespace-only bodies as empty and requires JSON Content-Type for non-empty bodies.
+
 ## Update Log
+
+### FCA-20260530-539
+
+Slice: `fix(webconsole): allow empty optional JSON approve bodies`
+
+Finding:
+
+- `guardUnsafeAPIRequest` treated optional JSON mutations with `ContentLength=-1` as body-present and required `Content-Type: application/json` before the approve handler could inspect whether the body was actually empty.
+- `decodeOptionalMissionPlanApproveRequest` also keyed optional-body absence on `ContentLength == 0`, so an unknown-length empty body with JSON Content-Type would reach `decodeJSON` and fail with `EOF`.
+- The affected optional approve endpoints were `POST /api/sessions/{id}/planmode/approve` and `POST /api/sessions/{id}/mission/plan/approve`, both of which support an omitted body and only need JSON when the optional `override_coverage` payload is present.
+
+Impact:
+
+- Some HTTP clients that send an empty POST body with unknown length or chunked transfer encoding could be rejected at the Web API guard even though they were making the same semantic request as the supported bodyless approve call.
+- This made the local Web/API control surface stricter than the documented optional-body contract and could hide the real handler-level status, such as plan not awaiting approval or missing mission plan.
+- Non-empty optional bodies still need to be strict JSON; the fix does not allow form/text bodies to carry override fields.
+
+Changes:
+
+- Added a bounded `decodeOptionalJSON` helper that reads the already MaxBytes-limited body, treats empty/whitespace-only content as absent, enforces exact `application/json` for non-empty content, rejects unknown fields through the existing decoder settings, and rejects trailing JSON values.
+- Changed the shared unsafe mutation guard to enforce JSON Content-Type only for required JSON body endpoints; optional JSON endpoints now let the optional decoder decide after inspecting whether non-empty content exists.
+- Updated optional approve decoding to return the same JSON Content-Type error for non-empty optional bodies without weakening required JSON routes.
+- Updated `spec/17-web-console.md` to clarify optional JSON mutation semantics for empty unknown-length bodies and non-empty JSON payloads.
+
+Validation:
+
+- `go test ./internal/webconsole -run 'TestServiceOptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentType|TestServiceBodylessMutationsDoNotRequireJSONContentType|TestServiceRejectsJSONMutationSubtypeContentType|TestServiceRejectsOversizedJSONMutationBody' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`, `session-view.js`, `workspace-view.js`, `events.js`, `settings-view.js`, `utils.js`, `api.js`, and `icons.js`: passed.
+- `git diff --check`: passed.
+- `go test ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-538
 

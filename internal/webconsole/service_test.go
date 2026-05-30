@@ -6585,6 +6585,89 @@ func TestServiceRejectsOversizedJSONMutationBody(t *testing.T) {
 	}
 }
 
+func TestServiceOptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentType(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	planMeta := testSessionMetadata(t, "session_optional_empty_plan_approve")
+	planMeta.Mode = session.ModeExec
+	planMeta.CompletionPolicy = session.CompletionPolicyAutonomous
+	if err := svc.store.Create(planMeta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create plan mode session: %v", err)
+	}
+	if _, err := svc.store.CreatePlanMode(planMeta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Approve with empty unknown-length body",
+		Source:    session.PlanModeSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+
+	missionMeta := testSessionMetadata(t, "session_optional_empty_mission_approve")
+	if err := svc.store.Create(missionMeta, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create mission session: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(missionMeta.ID, session.GoalDraft{
+		Enabled:   true,
+		Objective: "Plain goal cannot approve mission",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plain goal: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "plan mode approve",
+			path:       "/api/sessions/" + planMeta.ID + "/planmode/approve",
+			wantStatus: http.StatusConflict,
+			wantBody:   "not awaiting approval",
+		},
+		{
+			name:       "mission plan approve",
+			path:       "/api/sessions/" + missionMeta.ID + "/mission/plan/approve",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "mission plan is required before approval",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			request.Body = io.NopCloser(strings.NewReader(""))
+			request.ContentLength = -1
+			request.Header.Set(webMutationHeader, "1")
+			svc.ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("unexpected status: %d want %d body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.wantBody) {
+				t.Fatalf("expected handler-level response containing %q, got body=%s", tc.wantBody, recorder.Body.String())
+			}
+		})
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+planMeta.ID+"/planmode/approve", nil)
+	request.Body = io.NopCloser(strings.NewReader(`{"override_coverage":true}`))
+	request.ContentLength = -1
+	request.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden for non-empty optional JSON body without content type, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "Content-Type: application/json") {
+		t.Fatalf("expected JSON content-type error, got body=%s", recorder.Body.String())
+	}
+}
+
 func TestServiceBodylessMutationsDoNotRequireJSONContentType(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
