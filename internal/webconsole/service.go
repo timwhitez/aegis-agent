@@ -4230,6 +4230,9 @@ func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 		return
 	}
+	if !decodeOptionalEmptyJSONRequest(w, r) {
+		return
+	}
 	writeError(w, http.StatusNotImplemented, errors.New("installing marketplace skills is not supported; upload a .zip skill instead"))
 }
 
@@ -4928,6 +4931,9 @@ func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
 func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
 	cfg, err := s.configSnapshot()
@@ -5695,6 +5701,19 @@ func decodeOptionalMissionPlanApproveRequest(w http.ResponseWriter, r *http.Requ
 		return MissionPlanApproveRequest{}, false
 	}
 	return req, true
+}
+
+func decodeOptionalEmptyJSONRequest(w http.ResponseWriter, r *http.Request) bool {
+	var req struct{}
+	if _, err := decodeOptionalJSON(r, &req); err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, errJSONMutationContentType) {
+			status = http.StatusForbidden
+		}
+		writeError(w, status, err)
+		return false
+	}
+	return true
 }
 
 func ensureWebMissionCoverage(goal session.SessionGoal, override bool) error {
@@ -6770,6 +6789,13 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 			"/api/queue/jobs",
 			"/api/workers":
 			return webJSONBodyRequired
+		}
+	}
+
+	if method == http.MethodPost && strings.HasPrefix(path, "/api/skills/") {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) == 4 && parts[0] == "api" && parts[1] == "skills" && (parts[3] == "install" || parts[3] == "uninstall") {
+			return webJSONBodyOptional
 		}
 	}
 

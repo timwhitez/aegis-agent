@@ -9414,7 +9414,49 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-548. That slice guarded selected-session and selected parent/child projections, but a History list row can be clicked without either context; after the History list re-rendered, the stale row's rejected `/stop` could still fall through the no-selected-session fallback branch.
 - Confirmed the minimal fix belongs in the existing frontend stop path: capture `currentHistoryRenderSeq()` at click time, require that sequence to remain current before fallback steer or History cleanup refresh, and keep non-History stop behavior unchanged.
 
+### Review 545
+
+- Confirmed FCA-20260530-550 against `AGENTS.md` and `spec/17-web-console.md`: skill install/uninstall routes are local WebConsole skill-management mutations, and when they receive a non-empty body that body must follow the optional JSON mutation contract before any unsupported-action response or uninstall side effect.
+- Confirmed this is distinct from FCA-20260530-539. That slice fixed optional JSON body handling for Plan Mode and mission approve routes; dynamic `/api/skills/{id}/install|uninstall` remained outside `jsonBodyPolicyForRequest`, so the bounded optional decoder was never reached for those skill action routes.
+- Confirmed the minimal fix belongs in the Web service adapter: classify skill install/uninstall as optional JSON-body routes, reuse the existing bounded optional decoder with an empty request shape, and keep empty-body frontend calls, JSON `{}` calls, unsupported install behavior, audit, rollback, and managed-skill path safety unchanged.
+
 ## Update Log
+
+### FCA-20260530-550
+
+Slice: `fix(webconsole): validate skill action bodies`
+
+Finding:
+
+- `spec/17-web-console.md` requires unsafe Web API mutations to use the local-console guard, and optional JSON mutation endpoints must accept genuinely empty bodies while requiring JSON Content-Type and a single JSON value for any non-empty body.
+- Skill upload is explicitly multipart, but `/api/skills/{id}/install` and `/api/skills/{id}/uninstall` are POST skill-management actions rather than multipart upload.
+- The frontend currently calls skill uninstall as an empty-body POST, while existing service tests also allow JSON `{}` for compatibility.
+- `internal/webconsole/service.go` `jsonBodyPolicyForRequest` did not classify dynamic skill action routes as optional JSON routes, so the service did not apply the bounded body reader policy for those paths.
+- `handleInstallSkill` returned the unsupported-install response without inspecting a non-empty body, and `handleUninstallSkill` ignored a non-empty body before deleting the managed skill directory and appending the uninstall audit event.
+- A focused regression reproduced the gap: `POST /api/skills/demo-skill/uninstall` with `X-Go-Cli-Agent-Web: 1`, no JSON Content-Type, and body `not-json` reached the handler instead of returning the optional JSON Content-Type error.
+
+Impact:
+
+- A malformed local-console skill action request could hide client serialization bugs and, for uninstall, still perform a destructive local skill mutation even though the body violated the Web API mutation contract.
+- This weakened the consistency of risky local WebConsole mutations compared with Plan Mode / mission optional JSON routes, settings/config writes, session history deletion, and skill upload's explicit multipart boundary.
+
+Changes:
+
+- Added a focused WebConsole regression covering both `/api/skills/{id}/install` and `/api/skills/{id}/uninstall` with non-empty non-JSON bodies.
+- Added `decodeOptionalEmptyJSONRequest` to reuse the existing bounded optional JSON decoder for actions whose body shape is `{}` when present.
+- Classified dynamic skill install/uninstall routes as `webJSONBodyOptional`, so the shared guard applies the existing request body size cap.
+- Called the optional empty-body decoder before unsupported install handling or managed-skill uninstall side effects.
+- Preserved empty-body POST compatibility and JSON `{}` compatibility for existing frontend/API callers.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillActionRoutesRejectNonJSONBodies -count=1`: failed before the fix because `install` returned 501 over a non-JSON body and `uninstall` would continue to the mutation path.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkillActionRoutesRejectNonJSONBodies|TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported' -count=1`: passed after the fix.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-549
 

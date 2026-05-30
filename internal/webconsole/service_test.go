@@ -9781,6 +9781,51 @@ func TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported(t *testing.T
 	}
 }
 
+func TestServiceSkillActionRoutesRejectNonJSONBodies(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	skillDir := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatalf("create skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: demo-skill\n---\n"), 0o600); err != nil {
+		t.Fatalf("write skill manifest: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	for _, action := range []string{"install", "uninstall"} {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo-skill/"+action, strings.NewReader("not-json"))
+		if err != nil {
+			t.Fatalf("new %s request: %v", action, err)
+		}
+		req.Header.Set(webMutationHeader, "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s request: %v", action, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("expected %s to reject non-JSON body, got %d body=%s", action, resp.StatusCode, string(body))
+		}
+		if !strings.Contains(string(body), "Content-Type: application/json") {
+			t.Fatalf("expected %s response to mention JSON Content-Type, got %s", action, string(body))
+		}
+		if _, err := os.Stat(skillDir); err != nil {
+			t.Fatalf("%s with rejected body must not remove skill dir: %v", action, err)
+		}
+	}
+}
+
 func TestSkillUploadUsesOriginalTempFileWhenPathIsReplaced(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")
