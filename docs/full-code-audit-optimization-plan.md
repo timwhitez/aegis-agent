@@ -9642,7 +9642,53 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-586. That slice fixed WebConsole Goal facts that consumed a capped child/job display slice; this residual gap was lower in `SessionStore`, where `ListJobsPage` attempted an all-job read through `listJobs(0, "")` but `0` meant "default 100".
 - Confirmed the minimal fix belongs in `SessionStore` plus checkpoint readers: keep `limit == 0` as the existing 100-item default for list APIs, add `limit < 0` as an internal all-items read, use that path for `ListJobsPage`, session summaries, and long-run checkpoint child/job recovery facts.
 
+### Review 583
+
+- Confirmed FCA-20260531-588 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`: `agent_list` is a model-facing recovery/reconciliation tool for delegated work, so it must not hide linked child sessions or queue jobs behind the default display-list cap.
+- Confirmed this is distinct from FCA-20260531-587. That slice fixed store pagination, Web history cleanup, session summaries, and checkpoint readers; this residual gap was in the runtime control-plane facade, where `Runner.AgentList` still explicitly asked the store for only 100 children and 100 jobs.
+- Confirmed the minimal fix belongs in `Runner.AgentList`: use the store's internal all-items relation reads for this recovery tool while keeping user-facing list endpoints, CLI list flags, Web child panels, and TUI snapshots capped for display.
+
 ## Update Log
+
+### FCA-20260531-588
+
+Slice: `fix(runtime): list all delegated work for agent recovery`
+
+Finding:
+
+- `spec/00-product.md` keeps `delegate` / `children` / `queue` as a large-project profile with lightweight Web/CLI observability, and `spec/18-durable-contract-and-completion.md` makes child and queue facts part of parent recovery and completion coordination.
+- The `agent_list` tool description says it should list child agents and background jobs so the model can recover delegated work, find unresolved outputs, and decide what still needs reconciliation before summarizing.
+- `Runner.AgentList` still called `ListChildren(parentSessionID, 100)` and `ListJobsByParent(parentSessionID, 100)`.
+- After the store learned `limit < 0` as the all-items path, this runtime facade remained capped, so a parent with more than 100 linked child sessions or queue jobs could not see the 101st and later items through the model-facing recovery tool.
+
+Impact:
+
+- A long-running parent could summarize or attempt completion from an incomplete `agent_list` view even though additional linked child sessions or queue jobs existed on disk.
+- The default display endpoints stayed intentionally capped, but the recovery tool's contract requires complete durable relation facts.
+
+Changes:
+
+- `Runner.AgentList` now uses `ListChildren(parentSessionID, -1)` and `ListJobsByParent(parentSessionID, -1)`.
+- Added runtime coverage proving `agent_list` returns 105 child sessions and 105 queue jobs while the default relation list APIs still cap at 100.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestAgentListReturnsLinkedWorkBeyondDefaultListLimit -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'TestAgentList(ReturnsLinkedWorkBeyondDefaultListLimit|RejectsUnknownParentSession)|TestLongRunCheckpointIncludes(QueueJobs|ChildSessions)BeyondDefaultListLimit|TestLongRunCheckpointMirrorsParentCoordinationUnresolvedWork|TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-587
 

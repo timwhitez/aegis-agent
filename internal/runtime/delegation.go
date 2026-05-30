@@ -305,11 +305,11 @@ func (r *Runner) AgentList(_ context.Context, parentSessionID string) (tools.Age
 	if _, err := r.store.LoadMetadata(parentSessionID); err != nil {
 		return tools.AgentListResult{}, err
 	}
-	sessions, err := r.store.ListChildren(parentSessionID, 100)
+	sessions, err := r.store.ListChildren(parentSessionID, -1)
 	if err != nil {
 		return tools.AgentListResult{}, err
 	}
-	jobs, err := r.store.ListJobsByParent(parentSessionID, 100)
+	jobs, err := r.store.ListJobsByParent(parentSessionID, -1)
 	if err != nil {
 		return tools.AgentListResult{}, err
 	}

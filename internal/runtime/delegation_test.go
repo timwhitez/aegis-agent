@@ -72,6 +72,77 @@ func TestAgentListRejectsUnknownParentSession(t *testing.T) {
 	}
 }
 
+func TestAgentListReturnsLinkedWorkBeyondDefaultListLimit(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	base := time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 105; i++ {
+		childID := fmt.Sprintf("agent_list_child_%03d", i)
+		createdAt := base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		meta := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               childID,
+			CreatedAt:        createdAt,
+			Workdir:          t.TempDir(),
+			Mode:             session.ModeExec,
+			Provider:         "openai-compatible",
+			Model:            "gpt-5.4",
+			CompletionPolicy: session.CompletionPolicyAutonomous,
+			ParentSessionID:  parentID,
+			RootSessionID:    parentID,
+			AgentRole:        "evaluator",
+			Depth:            1,
+		}
+		state := session.State{
+			Status:    session.StatusCompleted,
+			Phase:     "done",
+			UpdatedAt: createdAt,
+		}
+		if err := runner.store.Create(meta, state); err != nil {
+			t.Fatalf("create child %d: %v", i, err)
+		}
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              fmt.Sprintf("agent_list_job_%03d", i),
+			CreatedAt:       createdAt,
+			Status:          session.QueueStatusCompleted,
+			ParentSessionID: parentID,
+			RootSessionID:   parentID,
+			Prompt:          "background work",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := runner.store.SaveJob(job); err != nil {
+			t.Fatalf("save job %d: %v", i, err)
+		}
+	}
+
+	defaultChildren, err := runner.store.ListChildren(parentID, 0)
+	if err != nil {
+		t.Fatalf("list default children: %v", err)
+	}
+	defaultJobs, err := runner.store.ListJobsByParent(parentID, 0)
+	if err != nil {
+		t.Fatalf("list default jobs: %v", err)
+	}
+	if len(defaultChildren) != 100 || len(defaultJobs) != 100 {
+		t.Fatalf("expected default relation lists to remain capped at 100, got children=%d jobs=%d", len(defaultChildren), len(defaultJobs))
+	}
+
+	result, err := runner.AgentList(context.Background(), parentID)
+	if err != nil {
+		t.Fatalf("agent list: %v", err)
+	}
+	if len(result.Sessions) != 105 || len(result.Jobs) != 105 {
+		t.Fatalf("expected all linked work, got children=%d jobs=%d", len(result.Sessions), len(result.Jobs))
+	}
+	if result.Sessions[104].ID != "agent_list_child_104" || result.Jobs[104].ID != "agent_list_job_104" {
+		t.Fatalf("expected final linked work beyond default cap, got child=%s job=%s", result.Sessions[104].ID, result.Jobs[104].ID)
+	}
+}
+
 func TestAgentStatusRejectsSessionOutsideParent(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
