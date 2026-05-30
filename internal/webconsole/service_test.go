@@ -2648,6 +2648,128 @@ func TestServiceGoalFactsIncludesPendingBackgroundWithExistingUnresolvedLinks(t 
 	}
 }
 
+func TestServiceGoalFactsResolveLinkedWorkBeyondChildrenLimit(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	base := time.Date(2026, 5, 31, 8, 15, 0, 0, time.UTC)
+	parent := testSessionMetadata(t, "session_goal_facts_linked_over_limit")
+	parent.CreatedAt = base.Format(time.RFC3339Nano)
+	parent.RootSessionID = parent.ID
+	if err := svc.store.Create(parent, testSessionState(session.StatusAwaitingInput)); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if _, err := svc.store.CreateGoal(parent.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Resolve linked work beyond display limits",
+		Source:    session.GoalSourceWeb,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		child := testSessionMetadata(t, fmt.Sprintf("child_goal_facts_old_%02d", i))
+		child.CreatedAt = base.Add(time.Duration(i+1) * time.Second).Format(time.RFC3339Nano)
+		child.ParentSessionID = parent.ID
+		child.RootSessionID = parent.ID
+		child.Depth = 1
+		if err := svc.store.Create(child, testSessionState(session.StatusCompleted)); err != nil {
+			t.Fatalf("create old child %d: %v", i, err)
+		}
+		job := session.QueueJob{
+			SchemaVersion:   1,
+			ID:              fmt.Sprintf("job_goal_facts_old_%02d", i),
+			CreatedAt:       base.Add(time.Duration(i+1) * time.Second).Format(time.RFC3339Nano),
+			Status:          session.QueueStatusCompleted,
+			ParentSessionID: parent.ID,
+			RootSessionID:   parent.ID,
+			Prompt:          "old linked display item",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}
+		if err := svc.store.SaveJob(job); err != nil {
+			t.Fatalf("save old job %d: %v", i, err)
+		}
+	}
+
+	targetChild := testSessionMetadata(t, "child_goal_facts_completed_over_limit")
+	targetChild.CreatedAt = base.Add(90 * time.Second).Format(time.RFC3339Nano)
+	targetChild.ParentSessionID = parent.ID
+	targetChild.RootSessionID = parent.ID
+	targetChild.Depth = 1
+	if err := svc.store.Create(targetChild, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create target child: %v", err)
+	}
+	targetJob := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_goal_facts_completed_over_limit",
+		CreatedAt:       base.Add(90 * time.Second).Format(time.RFC3339Nano),
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: parent.ID,
+		RootSessionID:   parent.ID,
+		Prompt:          "completed linked display item",
+		Mode:            session.ModeExec,
+		Background:      true,
+	}
+	if err := svc.store.SaveJob(targetJob); err != nil {
+		t.Fatalf("save target job: %v", err)
+	}
+	if _, err := svc.store.ListJobsByParent(parent.ID, 1000); err != nil {
+		t.Fatalf("reconcile parent jobs: %v", err)
+	}
+	notifications, err := svc.store.LoadBackgroundNotifications(parent.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	for i := range notifications {
+		notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
+	}
+	if err := svc.store.UpdateBackgroundNotifications(parent.ID, notifications); err != nil {
+		t.Fatalf("accept background notifications: %v", err)
+	}
+	if _, _, err := svc.store.RecordGoalProgress(parent.ID, session.GoalProgressInput{
+		Source:          session.GoalSourceTool,
+		Kind:            "validation",
+		Summary:         "Linked completed work created after the first display page.",
+		ChildSessionIDs: []string{targetChild.ID},
+		QueueJobIDs:     []string{targetJob.ID},
+	}); err != nil {
+		t.Fatalf("record progress: %v", err)
+	}
+
+	detail, err := svc.sessionDetail(parent.ID, 40)
+	if err != nil {
+		t.Fatalf("session detail: %v", err)
+	}
+	if detail.GoalFacts == nil {
+		t.Fatalf("expected goal facts in detail: %#v", detail)
+	}
+	if len(detail.Children.Sessions) != 50 || len(detail.Children.Jobs) != 50 {
+		t.Fatalf("expected capped child/job display lists, got children=%d jobs=%d", len(detail.Children.Sessions), len(detail.Children.Jobs))
+	}
+	for _, child := range detail.Children.Sessions {
+		if child.ID == targetChild.ID {
+			t.Fatalf("test setup expected target child outside display slice")
+		}
+	}
+	for _, job := range detail.Children.Jobs {
+		if job.ID == targetJob.ID {
+			t.Fatalf("test setup expected target job outside display slice")
+		}
+	}
+	if slices.Contains(detail.GoalFacts.UnresolvedChildSessionIDs, targetChild.ID) {
+		t.Fatalf("completed child outside display slice was reported unresolved: %#v", detail.GoalFacts.UnresolvedChildSessionIDs)
+	}
+	if slices.Contains(detail.GoalFacts.UnresolvedQueueJobIDs, targetJob.ID) {
+		t.Fatalf("completed queue job outside display slice was reported unresolved: %#v", detail.GoalFacts.UnresolvedQueueJobIDs)
+	}
+}
+
 func TestServiceSessionDetailReportsGoalHistoryLoadError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -6111,8 +6111,14 @@ func (s *Service) goalFacts(sessionID string, goal session.SessionGoal, children
 		latest = &copyLatest
 	}
 	childIDs, queueIDs, evaluatorCount, latestBlocker := linkedGoalFacts(goal)
-	unresolvedChildren := unresolvedLinkedChildren(childIDs, children.Sessions)
-	unresolvedJobs := unresolvedLinkedJobs(queueIDs, children.Jobs)
+	unresolvedChildren, err := s.unresolvedLinkedChildren(childIDs, children.Sessions)
+	if err != nil {
+		return nil, err
+	}
+	unresolvedJobs, err := s.unresolvedLinkedJobs(queueIDs, children.Jobs)
+	if err != nil {
+		return nil, err
+	}
 	for _, notification := range background {
 		if notification.DeliveryStatus != session.BackgroundNotificationPending {
 			continue
@@ -6187,34 +6193,56 @@ func linkedGoalFacts(goal session.SessionGoal) ([]string, []string, int, string)
 	return childIDs, queueIDs, evaluatorCount, latestBlocker
 }
 
-func unresolvedLinkedChildren(ids []string, children []session.SessionSummary) []string {
+func (s *Service) unresolvedLinkedChildren(ids []string, children []session.SessionSummary) ([]string, error) {
 	statusByID := map[string]string{}
 	for _, child := range children {
 		statusByID[child.ID] = child.Status
 	}
 	out := []string{}
 	for _, id := range ids {
-		status := statusByID[id]
+		status, ok := statusByID[id]
+		if !ok {
+			state, err := s.store.LoadState(id)
+			if errors.Is(err, fs.ErrNotExist) {
+				out = append(out, id)
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("load linked child session %s state.json: %w", id, err)
+			}
+			status = state.Status
+		}
 		if status == "" || (status != session.StatusCompleted && status != session.StatusFailed) {
 			out = append(out, id)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func unresolvedLinkedJobs(ids []string, jobs []session.QueueJob) []string {
+func (s *Service) unresolvedLinkedJobs(ids []string, jobs []session.QueueJob) ([]string, error) {
 	statusByID := map[string]string{}
 	for _, job := range jobs {
 		statusByID[job.ID] = job.Status
 	}
 	out := []string{}
 	for _, id := range ids {
-		status := statusByID[id]
+		status, ok := statusByID[id]
+		if !ok {
+			job, err := s.store.LoadJob(id)
+			if errors.Is(err, fs.ErrNotExist) {
+				out = append(out, id)
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("load linked queue job %s: %w", id, err)
+			}
+			status = job.Status
+		}
 		if status == "" || (status != session.QueueStatusCompleted && status != session.QueueStatusFailed) {
 			out = append(out, id)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func mergeUniqueStrings(existing []string, additions []string) []string {

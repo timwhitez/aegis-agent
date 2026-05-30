@@ -9630,7 +9630,55 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260531-584. That slice fixed premature parent queue completion facts; this residual WebConsole gap only affected `goal_facts` aggregation, where pending background notifications were skipped whenever both unresolved child and unresolved queue lists were already non-empty.
 - Confirmed the minimal fix belongs in `Service.goalFacts`: always merge pending background notification session/job IDs into the unresolved facts with de-duplication, instead of treating them as a fallback only for empty unresolved dimensions.
 
+### Review 581
+
+- Confirmed FCA-20260531-586 against `spec/00-product.md`, `spec/01-runtime-architecture.md`, and `spec/18-durable-contract-and-completion.md`: WebConsole Goal facts must be derived from durable session/job facts, while the child/job list in session detail can remain a capped display slice.
+- Confirmed this is distinct from FCA-20260531-585. That slice fixed pending background notifications already present in the loaded background facts; this residual gap was the linked-work resolution path, where `goal_facts.unresolved_*` trusted the capped `children(sessionID, 50)` response.
+- Confirmed the minimal fix belongs in `Service.goalFacts`: reuse the already-loaded display slice when it contains a linked child/job, but directly load missing linked session/job IDs from the store before classifying them as unresolved.
+
 ## Update Log
+
+### FCA-20260531-586
+
+Slice: `fix(webconsole): resolve linked goal facts beyond child limit`
+
+Finding:
+
+- `spec/00-product.md` defines WebConsole as the default local operator surface, and `spec/18-durable-contract-and-completion.md` keeps session/job facts as the completion and recovery source of truth.
+- `sessionDetail` loaded `children(sessionID, 50)` for the detail display, then passed that capped child/job slice into `Service.goalFacts`.
+- `Service.goalFacts` classified linked child sessions or queue jobs as unresolved when their IDs were absent from that capped display slice.
+- A goal with more than 50 parent children or queue jobs could therefore report an already completed/failed linked child or queue job as unresolved if the linked item fell beyond the first display page.
+
+Impact:
+
+- The Goal inspector could over-report unresolved work for larger delegated goals even though the durable linked child session or queue job had already reached a terminal state.
+- Operators could misread Goal completion readiness from the Web-first local console, and recovery triage would have to inspect the raw session/job facts to reconcile the mismatch.
+
+Changes:
+
+- `Service.goalFacts` now resolves linked child status from the display slice when present, and otherwise loads the linked child session's `state.json` directly from the session store.
+- `Service.goalFacts` now resolves linked queue job status from the display slice when present, and otherwise loads the linked queue job directly from the queue store.
+- Missing linked child/job facts still remain unresolved; unreadable existing facts return a contextual WebConsole error instead of silently converting corruption into completion.
+- Added `TestServiceGoalFactsResolveLinkedWorkBeyondChildrenLimit` to cover a parent with 50 older child sessions and 50 older queue jobs, plus completed linked child/job facts outside the display slice.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceGoalFactsResolveLinkedWorkBeyondChildrenLimit -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceGoalFactsResolveLinkedWorkBeyondChildrenLimit|TestServiceGoalFactsIncludesPendingBackgroundWithExistingUnresolvedLinks|TestServiceGoalFactsAndMissionCoverageApproval' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 116/116 tests.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-585
 
