@@ -99,6 +99,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		return TurnResult{}, fmt.Errorf("google: empty candidates")
 	}
 	candidate := resp.Candidates[0]
+	finishReason := strings.TrimSpace(candidate.FinishReason)
+	allowFunctionCalls := finishReason == "STOP"
 	var textParts []string
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
@@ -144,6 +146,9 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			})
 		}
 		if part.FunctionCall != nil {
+			if !allowFunctionCalls {
+				continue
+			}
 			if strings.TrimSpace(part.FunctionCall.Name) == "" {
 				return TurnResult{}, &HTTPError{
 					Provider: "google",
@@ -189,7 +194,6 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	stopReason := "done_candidate"
 	suppressFunctionCalls := false
-	finishReason := strings.TrimSpace(candidate.FinishReason)
 	switch {
 	case finishReason == "STOP":
 		if len(calls) > 0 {

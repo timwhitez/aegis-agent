@@ -107,6 +107,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if err != nil {
 		return TurnResult{}, err
 	}
+	status := strings.TrimSpace(resp.Status)
+	incompleteReason := strings.TrimSpace(resp.IncompleteDetails.Reason)
+	allowFunctionCalls := status == "completed" && incompleteReason != "max_output_tokens"
 	var textParts []string
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
@@ -123,6 +126,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				}
 			}
 		case "function_call":
+			if !allowFunctionCalls {
+				continue
+			}
 			if err := validateToolCallEnvelope("openai", item.Name, item.CallID); err != nil {
 				return TurnResult{}, err
 			}
@@ -169,9 +175,8 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		emit("assistant.delta", map[string]any{"text": text})
 	}
 	stopReason := "done_candidate"
-	status := strings.TrimSpace(resp.Status)
 	switch {
-	case resp.IncompleteDetails.Reason == "max_output_tokens":
+	case incompleteReason == "max_output_tokens":
 		stopReason = "max_tokens"
 		calls = nil
 	case providerStopReasonIsCancelled(status):
@@ -203,7 +208,7 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		"thinking_replay_observed":    reasoningEncryptedCount > 0,
 		"thinking_strategy":           thinkingStrategy,
 	}
-	if incompleteReason := strings.TrimSpace(resp.IncompleteDetails.Reason); incompleteReason != "" {
+	if incompleteReason != "" {
 		rawStopSource = "incomplete_details.reason"
 		rawStopReason = resp.IncompleteDetails.Reason
 		rawExtras["status"] = resp.Status

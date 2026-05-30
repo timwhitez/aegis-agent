@@ -305,6 +305,43 @@ func TestOpenAIAdapterDoesNotExecuteFunctionCallsFromFailedStatus(t *testing.T) 
 	}
 }
 
+func TestOpenAIAdapterSuppressesMalformedFunctionCallsFromFailedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_failed_with_bad_call",
+			"status":"failed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]},
+				{"type":"function_call","call_id":"call_1","name":"shell","arguments":"[]"}
+			],
+			"usage":{"input_tokens":10,"output_tokens":2}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("failed status should suppress malformed function calls before argument parsing: %v", err)
+	}
+	if result.StopReason != "error" {
+		t.Fatalf("expected failed status to remain provider error stop, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected failed status to suppress malformed function calls, got %#v", result.ToolCalls)
+	}
+	if result.RawProvider["provider_stop_reason"] != "failed" || result.RawProvider["status"] != "failed" {
+		t.Fatalf("expected raw failed status to be preserved, got %#v", result.RawProvider)
+	}
+}
+
 func TestOpenAIAdapterMapsCancelledStatusToCancelledStop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1179,6 +1216,48 @@ func TestGoogleAdapterDoesNotExecuteFunctionCallsFromSafetyFinish(t *testing.T) 
 	}
 	if len(result.ToolCalls) != 0 {
 		t.Fatalf("expected safety finish to suppress tool calls, got %#v", result.ToolCalls)
+	}
+	for _, block := range result.ProviderContentBlocks {
+		if block.Provider == "google" && block.Type == "function_call" {
+			t.Fatalf("expected safety finish to suppress function-call provider blocks, got %#v", result.ProviderContentBlocks)
+		}
+	}
+	if result.RawProvider["provider_stop_reason"] != "SAFETY" || result.RawProvider["finish_reason"] != "SAFETY" {
+		t.Fatalf("expected raw safety finish reason to be preserved, got %#v", result.RawProvider)
+	}
+}
+
+func TestGoogleAdapterSuppressesMalformedFunctionCallsFromSafetyFinish(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_safety_with_bad_call",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"functionCall":{"name":"shell","id":"call_1","args":[]}}]},
+				"finishReason":"SAFETY"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":1}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	if err != nil {
+		t.Fatalf("safety finish should suppress malformed function calls before argument parsing: %v", err)
+	}
+	if result.StopReason != "blocked" {
+		t.Fatalf("expected safety finish to remain blocked, got %#v", result)
+	}
+	if len(result.ToolCalls) != 0 {
+		t.Fatalf("expected safety finish to suppress malformed function calls, got %#v", result.ToolCalls)
 	}
 	for _, block := range result.ProviderContentBlocks {
 		if block.Provider == "google" && block.Type == "function_call" {

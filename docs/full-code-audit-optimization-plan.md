@@ -9564,7 +9564,56 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260525-023 and FCA-20260530-481. Those slices added gap tracking and invalidated stale reset windows; this residual race occurs when a non-gap older-page request is already in flight, then polling creates a new gap before that request resolves.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js` `loadEarlierMessages`: after merging the older page, preserve a different currently active `messageGapAnchorId` instead of clearing it based on the older request's captured non-gap context.
 
+### Review 570
+
+- Confirmed FCA-20260531-575 against `spec/03-provider-contracts.md`: OpenAI non-`completed` responses and Google non-`STOP` candidates must first be treated as provider boundary / safety / incomplete outcomes, and function calls in those same responses must not be exposed as executable calls.
+- Confirmed this is distinct from FCA-20260525-018, FCA-20260525-056, and FCA-20260528-347. Those slices rejected malformed successful tool-call arguments and malformed persisted replay facts; this residual bug was that malformed calls inside already-failed provider boundaries were parsed before the adapter honored the failed / blocked stop reason.
+- Confirmed the minimal fix belongs inside the OpenAI and Google adapters: gate provider function-call envelope/argument parsing on the success boundary, while keeping success-path malformed-call validation unchanged and preserving raw provider stop telemetry.
+
 ## Update Log
+
+### FCA-20260531-575
+
+Slice: `fix(provider): gate call parsing on stop boundary`
+
+Finding:
+
+- `spec/03-provider-contracts.md` says OpenAI Responses with a non-`completed` status, or `incomplete_details.reason=max_output_tokens`, must be handled as provider failure / incomplete boundaries and must not expose any same-response `function_call` as executable.
+- The same spec says Google candidates with non-`STOP` `finishReason` must be handled as safety / incomplete / provider-boundary outcomes and must not expose same-candidate `functionCall` values.
+- `internal/provider/openai.go` and `internal/provider/google.go` parsed function-call names and arguments before applying those status / finish-reason boundaries.
+- Existing regressions covered valid calls under failed / safety boundaries and proved they were suppressed after parsing. They did not cover malformed calls under those same boundaries.
+- A failed OpenAI response or safety-blocked Google response containing malformed function-call arguments therefore returned `response_parse_error` before preserving the provider stop outcome.
+
+Impact:
+
+- Provider boundary diagnostics could be misclassified: a failed / blocked / cancelled / max-token provider response could look like a local tool-call parse failure just because the response also carried unusable call-shaped data.
+- Runtime failure handling and provider-attempt evidence would lose the more important upstream stop reason, even though the contract says non-success boundaries must win before tool calls can become executable.
+
+Changes:
+
+- OpenAI now computes `status` and `incomplete_details.reason` before walking `output`, and only validates / normalizes `function_call` items when the response is a completed success boundary.
+- Google now computes `finishReason` before walking candidate parts, and only validates / normalizes `functionCall` parts when `finishReason=STOP`.
+- Success-path malformed tool-call validation remains unchanged for OpenAI `status=completed` and Google `finishReason=STOP`.
+- Added focused regressions proving malformed calls are suppressed under OpenAI `status=failed` and Google `finishReason=SAFETY` while preserving raw stop metadata.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterSuppressesMalformedFunctionCallsFromFailedStatus|GoogleAdapterSuppressesMalformedFunctionCallsFromSafetyFinish)' -count=1`: failed before the fix because both adapters parsed malformed call arguments before honoring the failed / safety boundary.
+- `go test -timeout 120s ./internal/provider -run 'Test(OpenAIAdapterSuppressesMalformedFunctionCallsFromFailedStatus|GoogleAdapterSuppressesMalformedFunctionCallsFromSafetyFinish)' -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed with 116 subtests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260531-574
 
