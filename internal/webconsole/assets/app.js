@@ -1350,11 +1350,14 @@ async function sendMessage() {
   const currentStatus = state.sessionDetail?.state?.status || '';
   if (hasDurableSession() && ['awaiting_input', 'paused', 'failed'].includes(currentStatus)) {
     const sessionID = state.sessionId;
+    const actionPlanModeIdentity = currentPlanModeActionIdentity();
+    let revisingPlanMode = false;
     try {
       const planMode = currentPlanMode();
       if (planMode?.status === 'awaiting_approval') {
+        revisingPlanMode = true;
         await revisePlanMode(sessionID, text);
-        if (state.sessionId !== sessionID) {
+        if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
           return;
         }
         showToast('Plan revision sent.', 'success');
@@ -1392,7 +1395,7 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
-      if (state.sessionId === sessionID) {
+      if (state.sessionId === sessionID && (!revisingPlanMode || isCurrentPlanModeActionIdentity(actionPlanModeIdentity))) {
         removeOptimisticMessage(optimisticID);
         setGeneratingViewState(false);
         showToast(err.message || 'Failed to continue session.', 'error');

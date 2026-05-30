@@ -9066,7 +9066,52 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-489. FCA-489 tied Plan Mode approval / coverage override to the Plan Mode snapshot; this residual issue was the input-answer path, where `handlePlanInputAction(submit)` rechecked only `state.sessionId` after `answerPlanModeInput(...)` settled and could delete/show/refresh around a stale request.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact Plan input identity composed from the current Plan Mode identity plus `pending_request.request_id`, then abandon stale same-session input success/error/render continuations when the pending request changes.
 
+### Review 487
+
+- Confirmed FCA-20260530-492 against `AGENTS.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: Plan revision messages in WebConsole are controls over the current durable `planmode.json` awaiting-approval projection, so completion UI for one submitted plan must not apply after the same session refreshes to a different Plan Mode projection.
+- Confirmed this is distinct from FCA-20260530-489 and FCA-20260530-491. FCA-489 tied Plan Mode approve / coverage override actions to the Plan Mode snapshot, and FCA-491 tied pending-input answers to the current `pending_request`; this residual issue was the `sendMessage()` Ask for Changes path, where `revisePlanMode(...)` still rechecked only `state.sessionId` after the async revision request settled.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: reuse the compact Plan Mode action identity around `revisePlanMode(...)`, then abandon stale same-session success/error/render continuations when the selected session is unchanged but the rendered Plan Mode identity has changed.
+
 ## Update Log
+
+### FCA-20260530-492
+
+Slice: `fix(webconsole): ignore stale plan revision`
+
+Finding:
+
+- In `sendMessage()`, paused/awaiting/failed sessions with `plan_mode.status === 'awaiting_approval'` correctly sent ordinary composer text through `/planmode/revise`, but after `revisePlanMode(sessionID, text)` settled it checked only `state.sessionId`.
+- A focused regression reproduced that if the same session refreshed from `plan_old` to `plan_new` while the old revision request was in flight, the old completion still showed `Plan revision sent` and set the refreshed Plan Mode view to `Continuing session` / generating.
+
+Impact:
+
+- The WebConsole could make a refreshed replacement Plan Mode projection look like it had just accepted an older revision request.
+- This weakened the local Web UI contract that Plan Mode controls act on the durable Plan Mode snapshot the operator saw, not merely on the selected session id.
+
+Changes:
+
+- Captured the current compact Plan Mode action identity before the durable continue/send branch handles paused, failed, or awaiting-input sessions.
+- The Plan revision branch now suppresses stale same-session success, activity, refresh, and error side effects when the Plan Mode identity changes while `/planmode/revise` is in flight.
+- Added a focused frontend regression for stale same-session Plan revision completion.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "plan revision completion ignores refreshed same-session Plan Mode"`: failed before the fix because the stale completion left `generating: true` and activity title `Continuing session` on the refreshed Plan Mode view.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "plan revision completion ignores refreshed same-session Plan Mode"`: passed after the fix, 104 tests.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 104 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-491
 

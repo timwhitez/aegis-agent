@@ -4151,6 +4151,70 @@ test('plan revision completion does not mark a newly selected session as generat
   });
 });
 
+test('plan revision completion ignores refreshed same-session Plan Mode', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+
+  const send = vm.runInContext(`
+    showToast = function(message, tone = 'info') {
+      toastsRef.push({ message, tone });
+    };
+    state.sessionId = 'session_revision_same_a';
+    state.sessionBacked = true;
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded old plan', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_revision_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_old',
+        status: 'awaiting_approval',
+        objective: 'old plan',
+        plan_version: 1,
+        updated_at: '2026-05-30T04:00:00Z'
+      },
+      messages: []
+    };
+    nodes.chatInput.value = 'revise the plan';
+    sendMessage();
+  `, Object.assign(appContext, { toastsRef: toasts }));
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_revision_same_a\/planmode\/revise/);
+
+  vm.runInContext(`
+    setGeneratingViewState(false);
+    setLiveActivity({ title: 'Loaded new plan', copy: '', tone: 'neutral' });
+    state.sessionDetail = {
+      metadata: { id: 'session_revision_same_a' },
+      state: { status: 'awaiting_input' },
+      plan_mode: {
+        plan_mode_id: 'plan_new',
+        status: 'awaiting_approval',
+        objective: 'new plan',
+        plan_version: 2,
+        updated_at: '2026-05-30T04:01:00Z'
+      },
+      messages: []
+    };
+  `, appContext);
+
+  appContext.pendingRequests[0].resolve({ session_id: 'session_revision_same_a', status: 'accepted' });
+  await send;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selected: state.sessionId,
+    generating: isGenerating(),
+    activityTitle: currentLiveActivity().title
+  })`, appContext)), {
+    selected: 'session_revision_same_a',
+    generating: false,
+    activityTitle: 'Loaded new plan'
+  });
+  assert.deepEqual(sameRealm(toasts), []);
+});
+
 test('interrupt completion does not update a newly selected session', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
