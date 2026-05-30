@@ -329,7 +329,7 @@ func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) 
 		}
 		return "", false, err
 	}
-	resolved, err := filepath.EvalSymlinks(path)
+	resolved, err := resolvePolicyPathWithExistingParent(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
@@ -343,7 +343,7 @@ func resolveExistingWorkspacePolicyPath(base, rel string) (string, bool, error) 
 }
 
 func resolveWorkspacePolicyPathWithExistingParent(base, rel string) (string, bool, error) {
-	resolved, err := resolveWithExistingParent(filepath.Join(base, rel))
+	resolved, err := resolvePolicyPathWithExistingParent(filepath.Join(base, rel))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
@@ -354,6 +354,61 @@ func resolveWorkspacePolicyPathWithExistingParent(base, rel string) (string, boo
 		return "", false, nil
 	}
 	return resolved, true, nil
+}
+
+func resolvePolicyPathWithExistingParent(path string) (string, error) {
+	return resolvePolicyPathWithExistingParentDepth(filepath.Clean(path), 0)
+}
+
+func resolvePolicyPathWithExistingParentDepth(path string, depth int) (string, error) {
+	if depth > 40 {
+		return "", errors.New("too many symlink levels")
+	}
+	var suffix []string
+	current := filepath.Clean(path)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			resolved, err := resolveExistingPolicyPath(current, info, depth)
+			if err != nil {
+				return "", err
+			}
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", errors.New("unable to resolve path")
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func resolveExistingPolicyPath(path string, info os.FileInfo, depth int) (string, error) {
+	if info.Mode()&os.ModeSymlink == 0 {
+		return filepath.EvalSymlinks(path)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", err
+	}
+	target, readErr := os.Readlink(path)
+	if readErr != nil {
+		return "", readErr
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return resolvePolicyPathWithExistingParentDepth(target, depth+1)
 }
 
 func sameCleanPath(left, right string) bool {

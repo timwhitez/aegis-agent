@@ -347,6 +347,37 @@ func TestWriteDeniedBrokenSensitiveSymlinkDoesNotBlockUnrelatedFile(t *testing.T
 	}
 }
 
+func TestWriteDeniedBrokenSensitiveSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("secrets", "env-real"), filepath.Join(root, ".env")); err != nil {
+		t.Fatalf("symlink .env: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "secrets/env-real")
+	if err != nil {
+		t.Fatalf("resolve env target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.env'") {
+		t.Fatalf("expected missing .env symlink target write to be denied, got %v", err)
+	}
+}
+
+func TestWriteDeniedBrokenPackageCredentialSymlinkParentTarget(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink("maven-real", filepath.Join(root, ".m2")); err != nil {
+		t.Fatalf("symlink .m2: %v", err)
+	}
+	resolved, err := ResolveWorkspacePath(root, "maven-real/settings.xml")
+	if err != nil {
+		t.Fatalf("resolve maven target: %v", err)
+	}
+	if err := CheckWorkspaceWriteAllowed(root, resolved); err == nil || !strings.Contains(err.Error(), "resolves to deny pattern '.m2/settings.xml'") {
+		t.Fatalf("expected missing .m2/settings.xml symlink target write to be denied, got %v", err)
+	}
+}
+
 func assertWriteDenied(t *testing.T, inputPath, pattern string) {
 	t.Helper()
 	root := t.TempDir()

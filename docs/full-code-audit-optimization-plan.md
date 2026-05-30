@@ -9198,7 +9198,40 @@ Evidence gates:
 - Confirmed this is distinct from the existing unsupported-mode and target-inside-source mappings. Those paths already returned `400 Bad Request`; the residual issue was `isolation_mode=git` in a non-Git workdir, where `isolation.Prepare` returns a deterministic user-actionable error before creating any session but Web start still surfaced it as `500 Internal Server Error`.
 - Confirmed the minimal fix belongs in WebConsole error classification only. Runtime isolation preparation still rejects the request, and no provider, session, queue, workflow, or isolation-copy behavior changes are required.
 
+### Review 509
+
+- Confirmed FCA-20260530-514 against `AGENTS.md` and `spec/04-tools-and-skills.md`: model-facing file write tools must not be able to create the unresolved real target behind an existing sensitive symlink alias.
+- Confirmed this is distinct from the existing resolved-alias protections. The guard already rejected writes to existing real targets such as `.env -> secrets/env-real` after `secrets/env-real` existed, but a broken sensitive symlink was ignored by `filepath.EvalSymlinks`, so the first write to the intended target could materialize the credential file through a benign-looking path.
+- Confirmed the minimal fix belongs in the workspace write-policy resolver only. The runtime loop, provider adapters, Web UI, session store, and workflow/Plan/Goal behavior do not need to change.
+
 ## Update Log
+
+### FCA-20260530-514
+
+Slice: `fix(tools): deny broken credential symlink targets`
+
+Finding:
+
+- `internal/tools/path.go` used plain `filepath.EvalSymlinks` while resolving existing sensitive policy aliases.
+- A focused failing test proved that a workspace containing `.env -> secrets/env-real` still allowed `CheckWorkspaceWriteAllowed(..., "secrets/env-real")` when the target file did not exist yet.
+- A second focused failing test proved the same bypass for package credential parent aliases such as `.m2 -> maven-real` before `maven-real/settings.xml` had been created.
+
+Impact:
+
+- `write_file` / `edit_file` could create a credential target through a benign-looking real path when a sensitive symlink alias already existed but was still broken.
+- This weakened the workspace write boundary for local agent tools and any surface reusing the same policy checks. It did not change session persistence, provider replay, Plan Mode, Goal completion, queue/delegation, or Web routing behavior.
+
+Changes:
+
+- Added a policy-only resolver that follows existing symlinks and, when a sensitive alias is broken, resolves the symlink's intended target through the nearest existing parent.
+- Reused that resolver for both exact sensitive alias paths and package credential paths with existing parents.
+- Added regression coverage for broken `.env` target creation and broken `.m2/settings.xml` target creation, while preserving the existing rule that broken sensitive aliases do not block unrelated workspace files.
+
+Validation:
+
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedBroken(SensitiveSymlinkTarget|PackageCredentialSymlinkParentTarget)' -count=1`: failed before the fix because both writes were allowed.
+- `go test -timeout 120s ./internal/tools -run 'TestWriteDeniedBroken(SensitiveSymlinkTarget|PackageCredentialSymlinkParentTarget|SensitiveSymlinkDoesNotBlockUnrelatedFile)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/tools -count=1`: passed.
 
 ### FCA-20260530-513
 
