@@ -9306,7 +9306,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-530. That slice extended recursive aliases from wildcard-only names to fixed sensitive file names, but directory aliases still bypassed because `.ssh`, `.aws`, `.kube`, `.docker`, and `.config/gcloud` live in the directory/path deny lists rather than the file-name predicate.
 - Confirmed the minimal fix is to factor the recursive alias pattern selection through the same ordered policy groups used for lexical input paths: denied directories, denied directory paths, denied file paths, then denied file-name components.
 
+### Review 527
+
+- Confirmed FCA-20260530-532 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/03-provider-contracts.md`, and runtime provider stop handling: Anthropic adapter parsing must reject a `stop_reason=tool_use` response that contains no executable `tool_use` content block.
+- Confirmed this is distinct from earlier unknown-stop, non-object tool input, and missing tool-use-id slices. Those covered malformed stop names or malformed tool blocks that were present; this residual shape declared tool use at the provider stop boundary while providing only text content, yielding `StopReason:"tool_use"` with zero internal tool calls.
+- Confirmed the minimal fix belongs in the Anthropic adapter, not Web, CLI, or runtime: provider-specific response shape validation must fail as `response_parse_error` before runtime can persist or interpret an empty tool-use turn.
+
 ## Update Log
+
+### FCA-20260530-532
+
+Slice: `fix(provider): reject empty anthropic tool-use stops`
+
+Finding:
+
+- `spec/03-provider-contracts.md` maps Anthropic `stop_reason=tool_use` to internal tool execution, and the runtime dispatch path keys actual execution on parsed `ToolCalls`.
+- `internal/provider/anthropic.go` accepted a response with `stop_reason:"tool_use"` even when the response content contained no `tool_use` block, returning `StopReason:"tool_use"` with `ToolCalls` empty.
+- Focused failing evidence showed `TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock` received no provider parse error before the fix.
+
+Impact:
+
+- An Anthropic-compatible gateway could emit a malformed tool-use stop that the harness did not classify as a provider response-shape failure.
+- Because runtime provider-stop failure handling only treats `max_tokens`, `blocked`, and `error` as resumable provider failures when no tool calls exist, the empty `tool_use` turn could be handled like a normal no-tool assistant stop rather than a provider protocol error.
+- This weakened provider boundary diagnostics and could leave durable session state with an ambiguous assistant turn instead of an adapter-owned `response_parse_error`.
+
+Changes:
+
+- Added an Anthropic adapter regression for `stop_reason:"tool_use"` with only text content and no `tool_use` block.
+- Updated `internal/provider/anthropic.go` to return an Anthropic `response_parse_error` before constructing a `TurnResult` when a tool-use stop contains zero parsed tool calls.
+- Updated the provider contract to state that Anthropic `tool_use` stops without executable `tool_use` content blocks are malformed provider responses.
+
+Validation:
+
+- `go test ./internal/provider -run TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock -count=1`: failed before the fix because the adapter returned no error.
+- `go test ./internal/provider -run 'TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock|TestAnthropicAdapterSerializesAndParses|TestAnthropicAdapterRejectsMissingToolUseID' -count=1`: passed after the fix.
+- `go test ./internal/provider -run 'TestAnthropicAdapterRejectsToolUseStopWithoutToolUseBlock|TestAnthropicAdapterSerializesAndParses|TestAnthropicAdapterRejectsMissingToolUseID|TestAnthropicAdapterMapsUnknownStopReasonToErrorStop|TestAnthropicAdapterRejectsNonObjectToolUseInput' -count=1`: passed.
+- `go test ./internal/provider -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-531
 

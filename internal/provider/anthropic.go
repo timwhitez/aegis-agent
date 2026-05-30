@@ -152,6 +152,13 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if text != "" {
 		emit("assistant.delta", map[string]any{"text": text})
 	}
+	if resp.StopReason == "tool_use" && len(calls) == 0 {
+		return TurnResult{}, &HTTPError{
+			Provider: "anthropic",
+			Class:    "response_parse_error",
+			Message:  "anthropic tool_use stop reason did not include a tool_use content block",
+		}
+	}
 	stopReason := "done_candidate"
 	switch resp.StopReason {
 	case "tool_use":

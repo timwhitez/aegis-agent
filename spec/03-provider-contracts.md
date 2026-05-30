@@ -262,6 +262,7 @@ adapter 负责转换为：
 - `max_tokens` -> `max_tokens`
 - cancel -> `cancelled`
 - 其他错误 -> `error`
+- 若上游返回 `stop_reason=tool_use` 但响应 content 中没有任何可执行的 `tool_use` block，adapter 必须将其归类为 `response_parse_error`，不能把空工具调用结果交给 runtime 当作普通停顿处理。
 
 ### 7.6 当前限制
 
