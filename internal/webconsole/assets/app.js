@@ -1543,11 +1543,16 @@ async function requestStopSession(sessionID, options = {}) {
     selectedSessionID &&
     selectedSessionID !== sessionID &&
     currentSessionReferencesSession(sessionID);
+  const selectedReferenceIdentity = refreshSelectedSession ? currentReferencedSessionActionIdentity(sessionID) : '';
   const selectedStoppedSessionStillCurrent = () => (
     state.sessionId === sessionID &&
     (!stoppingSelectedSession || isCurrentStopActionIdentity(actionStopIdentity))
   );
-  const selectedContextStillCurrent = () => state.sessionId === selectedSessionID && hasDurableSession();
+  const selectedContextStillCurrent = () => (
+    state.sessionId === selectedSessionID &&
+    hasDurableSession() &&
+    (!refreshSelectedSession || isCurrentReferencedSessionActionIdentity(selectedReferenceIdentity, sessionID))
+  );
   stopActionViewState.sessionIds.add(sessionID);
   const button = options.button || null;
   if (button) {
@@ -2107,6 +2112,87 @@ function currentStopActionIdentity() {
 
 function isCurrentStopActionIdentity(identity) {
   return currentStopActionIdentity() === identity;
+}
+
+function currentReferencedSessionActionIdentity(sessionID) {
+  const targetID = String(sessionID || '');
+  if (!targetID || !currentSessionReferencesSession(targetID)) {
+    return '';
+  }
+  return [
+    currentContinueActionIdentity(),
+    targetID,
+    referencedSessionFactsIdentity(targetID)
+  ].join('\n');
+}
+
+function isCurrentReferencedSessionActionIdentity(identity, sessionID) {
+  return Boolean(identity) && currentReferencedSessionActionIdentity(sessionID) === identity;
+}
+
+function referencedSessionFactsIdentity(sessionID) {
+  const targetID = String(sessionID || '');
+  const detail = state.sessionDetail || {};
+  const children = detail.children || {};
+  const references = [];
+  const addReference = (kind, parts) => {
+    references.push([kind, ...parts].map((part) => String(part || '')).join('\t'));
+  };
+
+  if (detail.metadata?.id === targetID) {
+    const sessionState = detail.state || {};
+    addReference('detail', [
+      detail.metadata.id,
+      detail.metadata.updated_at,
+      sessionState.status,
+      sessionState.updated_at
+    ]);
+  }
+  maybeArray(children.sessions).forEach((item) => {
+    if (item?.id === targetID) {
+      addReference('child-session', [
+        item.id,
+        item.status,
+        item.updated_at,
+        item.last_error
+      ]);
+    }
+  });
+  maybeArray(children.jobs).forEach((item) => {
+    if (item?.session_id === targetID) {
+      addReference('child-job', [
+        item.id,
+        item.session_id,
+        item.status,
+        item.updated_at,
+        item.last_error
+      ]);
+    }
+  });
+  maybeArray(detail.background_notifications).forEach((item) => {
+    if (item?.session_id === targetID) {
+      addReference('background-notification', [
+        item.id,
+        item.session_id,
+        item.queue_job_id,
+        item.status,
+        item.updated_at,
+        item.last_error
+      ]);
+    }
+  });
+  const selectedJob = selectedQueueJobDetail();
+  if (selectedJob?.session_id === targetID) {
+    addReference('selected-queue-job', [
+      selectedQueueJobId(),
+      selectedJob.id,
+      selectedJob.session_id,
+      selectedJob.status,
+      selectedJob.updated_at,
+      selectedJob.last_error
+    ]);
+  }
+  return references.join('\n');
 }
 
 async function handlePlanModeAction(button) {

@@ -9096,7 +9096,51 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-493 and the older cross-session inline continue guard. FCA-493 covered the composer continue path, while `inline continue action does not refresh a newly selected session after stale completion` covered selected-session changes; this residual issue was the helper path `requestContinueSession(...)`, which still used only `state.sessionId` and could enqueue stale same-session session-detail and overview refreshes after the selected session had refreshed from awaiting input to completed.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture the compact session-state action identity inside `requestContinueSession(...)`, then abandon stale same-session success/error/refresh continuations when that projection changes while `/continue` is in flight.
 
+### Review 492
+
+- Confirmed FCA-20260530-497 against `AGENTS.md`, `spec/13-live-input-and-steering.md`, `spec/17-web-console.md`, and `spec/18-durable-contract-and-completion.md`: child or related-session stop completion is a control over the selected parent projection that still references that child/session, so stale child stop responses must not refresh or toast for a same-parent projection that no longer references the stopped child.
+- Confirmed this is distinct from FCA-20260530-495 and existing child stop coverage. FCA-495 covered top-level selected-session interrupt/stop, while `child stop completion refreshes selected parent session` covered the positive case where the selected parent still references the child; this residual issue kept using only the selected parent id/backed state after the child stop settled.
+- Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact referenced-session identity for the selected parent/child relationship and abandon stale parent refresh/toast continuations when that relationship disappears or the parent projection changes.
+
 ## Update Log
+
+### FCA-20260530-497
+
+Slice: `fix(webconsole): ignore stale child stop completion`
+
+Finding:
+
+- `requestStopSession(...)` used `refreshSelectedSession` captured before await and `selectedContextStillCurrent()` checked only selected parent id/backed state.
+- A focused regression reproduced that if the selected parent refreshed and no longer referenced the child while `/stop` was in flight, the stale child stop completion still showed `Stop requested.` and queued session/overview refreshes.
+
+Impact:
+
+- The WebConsole could refresh/toast a newer same-parent projection for a child stop action that no longer belonged to that projection.
+- This weakened the local Web UI contract that child stop side effects belong to the selected parent snapshot that referenced the child.
+
+Changes:
+
+- Added a referenced-session identity for selected-parent child/related stop refreshes.
+- Child/related stop now suppresses stale success, error, render, session refresh, and overview refresh side effects when the parent projection no longer references the child/session or has changed.
+- Added a focused frontend regression for stale child stop completion after a same-parent refresh removes the child reference.
+
+Validation:
+
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "child stop completion ignores refreshed parent without child reference"`: failed before the fix, 109 passed / 1 failed, because the stale completion still showed `Stop requested.` and queued session/overview refreshes.
+- `node validation/scripts/webconsole_utils_test.mjs --test-name-pattern "child stop completion"`: passed after the fix, 110 tests.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-496
 
