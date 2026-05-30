@@ -3391,7 +3391,12 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if strings.TrimSpace(req.GuardrailsMode) != "" {
-		updatedCfg.Runtime.GuardrailsMode = configMode(req.GuardrailsMode)
+		guardrailsMode, err := webGuardrailsMode(req.GuardrailsMode)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		updatedCfg.Runtime.GuardrailsMode = guardrailsMode
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
@@ -3950,12 +3955,14 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func configMode(value string) string {
+func webGuardrailsMode(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "standard":
+		return "standard", nil
 	case "yolo":
-		return "yolo"
+		return "yolo", nil
 	default:
-		return "standard"
+		return "", fmt.Errorf("unsupported guardrails_mode: %s", strings.TrimSpace(value))
 	}
 }
 

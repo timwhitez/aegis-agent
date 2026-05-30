@@ -4977,6 +4977,44 @@ func TestUpdateConfigRejectsNullBodyBeforeConfigWrite(t *testing.T) {
 	}
 }
 
+func TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	cfg := testConfig(t, "")
+	cfg.Runtime.GuardrailsMode = "yolo"
+	configPath := filepath.Join(cwd, "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"guardrails_mode": "standrad",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "unsupported guardrails_mode") {
+		t.Fatalf("expected guardrails mode error, got %#v", errResp)
+	}
+	snapshot, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if snapshot.Runtime.GuardrailsMode != "yolo" {
+		t.Fatalf("invalid guardrails mode should not mutate active config, got %q", snapshot.Runtime.GuardrailsMode)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid guardrails mode should not persist config; stat err=%v", err)
+	}
+	auditPath := webAuditLogPath(cfg.Session.Dir)
+	if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), "web.config.write") {
+		t.Fatalf("invalid guardrails mode should not append config audit event, got %s", string(data))
+	}
+}
+
 func TestUpdateConfigReportsMissingCurrentDirectoryBeforeDefaultPathPersistence(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {

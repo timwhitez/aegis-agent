@@ -9468,7 +9468,54 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-551 and FCA-20260530-555. Those slices rejected non-JSON bodies on no-input routes and empty semantic PATCH objects; the residual gap was valid JSON `null`, which still reached required and optional JSON decoders as a zero-value struct.
 - Confirmed the minimal fix belongs in the shared Web JSON decoder: preserve empty-body compatibility for optional controls and preserve `{}` where routes intentionally allow it, but reject non-empty top-level non-object JSON before settings writes, goal/plan controls, session launch/continue, queue submit, and other mutation handlers.
 
+### Review 554
+
+- Confirmed FCA-20260530-559 against `spec/17-web-console.md`: Settings is a risk-sensitive Web-first local control surface for provider/model and guardrails configuration, so unsupported guardrails values must be rejected as client errors rather than persisted through silent fallback.
+- Confirmed this is distinct from FCA-20260530-558. That slice covered JSON body shape before request decoding; the residual gap was a syntactically valid object with a misspelled semantic field value (`guardrails_mode:"standrad"`) that reached handler logic and changed the effective runtime setting.
+- Confirmed the minimal fix belongs in the Web service adapter, not in config file normalization. Config-file loading can keep compatibility fallback for old or hand-edited files, while the Web mutation boundary should accept only the explicit `standard` / `yolo` values used by the Settings UI.
+
 ## Update Log
+
+### FCA-20260530-559
+
+Slice: `fix(webconsole): reject invalid guardrails mode`
+
+Finding:
+
+- `spec/17-web-console.md` treats Settings provider/model/guardrails configuration as part of the default Web-first local console, with explicit confirmation for local config writes.
+- `internal/webconsole/service.go` accepted any non-empty `guardrails_mode` value, passed it to `configMode`, and `configMode` returned `standard` for every value other than `yolo`.
+- A focused regression posted `{"guardrails_mode":"standrad"}` while the active config was `yolo`. Before the fix, the API returned HTTP 200, wrote `config.yaml`, appended `web.config.write`, and changed active guardrails mode to `standard`.
+
+Impact:
+
+- A typo or malformed Web API client request could silently change runtime guardrails behavior and persist that change as if the operator intentionally selected `standard`.
+- The Web Settings mutation boundary was less strict than adjacent provider, API provider, reasoning mode, role provider, and hard-turn-limit validation paths.
+
+Changes:
+
+- Replaced silent Web guardrails fallback with explicit `standard` / `yolo` validation.
+- Kept lower-level config normalization unchanged for compatibility with config-file loading.
+- Added a focused WebConsole regression proving unsupported `guardrails_mode` is rejected before active config, config file, or audit log mutation.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite -count=1`: failed before the fix because the misspelled mode returned HTTP 200 and persisted `standard`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestUpdateConfigRejectsUnsupportedGuardrailsModeBeforeConfigWrite|TestUpdateConfigRejectsUnknownProvider|TestServiceConfigRoutesUpdateActiveConfig' -count=1`: passed after the fix.
+- `gofmt -w internal/webconsole/service.go internal/webconsole/service_test.go`: applied formatting.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `node validation/scripts/webconsole_utils_test.mjs`: passed, 115/115 tests.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-558
 
