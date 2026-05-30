@@ -58,6 +58,90 @@ func TestTaskLifecycleAutoUnlocksDependents(t *testing.T) {
 	}
 }
 
+func TestTaskCreateDoesNotBlockOnCompletedDependency(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "first"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	if _, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: first.ID, Status: "completed"}); err != nil {
+		t.Fatalf("complete first: %v", err)
+	}
+	second, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "second", BlockedBy: []string{first.ID}})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if len(second.BlockedBy) != 0 {
+		t.Fatalf("completed dependency should not block a new task, got %#v", second.BlockedBy)
+	}
+	updatedFirst, err := store.GetTask(meta.ID, first.ID)
+	if err != nil {
+		t.Fatalf("get first: %v", err)
+	}
+	if len(updatedFirst.Blocks) != 0 {
+		t.Fatalf("completed task should not retain new dependent edges, got %#v", updatedFirst.Blocks)
+	}
+}
+
+func TestTaskUpdateDoesNotReblockDependentsFromCompletedTask(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "first"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := CreateTask(store, meta.ID, TaskCreateInput{Subject: "second"})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if _, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: first.ID, Status: "completed"}); err != nil {
+		t.Fatalf("complete first: %v", err)
+	}
+	updatedFirst, err := UpdateTask(store, meta.ID, TaskUpdateInput{TaskID: first.ID, AddBlocks: []string{second.ID}})
+	if err != nil {
+		t.Fatalf("add blocks to completed task: %v", err)
+	}
+	if len(updatedFirst.Blocks) != 0 {
+		t.Fatalf("completed task should not retain added dependent edges, got %#v", updatedFirst.Blocks)
+	}
+	updatedSecond, err := store.GetTask(meta.ID, second.ID)
+	if err != nil {
+		t.Fatalf("get second: %v", err)
+	}
+	if len(updatedSecond.BlockedBy) != 0 {
+		t.Fatalf("completed task should not reblock dependents, got %#v", updatedSecond.BlockedBy)
+	}
+}
+
 func TestTaskCycleRejected(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{

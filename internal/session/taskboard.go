@@ -57,7 +57,8 @@ func CreateTask(store *Store, sessionID string, input TaskCreateInput) (Task, er
 		}
 		tasks = append(tasks, task)
 		syncTaskEdges(tasks, task.ID, nil, nil, task.BlockedBy, task.Blocks)
-		created = task
+		unlockCompletedDependents(tasks)
+		created, _ = findTask(tasks, task.ID)
 		return tasks, nil
 	}); err != nil {
 		return Task{}, err
@@ -95,7 +96,6 @@ func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, er
 		task := tasks[index]
 		previousBlockedBy := append([]string{}, task.BlockedBy...)
 		previousBlocks := append([]string{}, task.Blocks...)
-		prevStatus := task.Status
 		if input.Status != "" {
 			switch input.Status {
 			case "pending", "in_progress", "completed", "cancelled":
@@ -124,9 +124,7 @@ func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, er
 		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		tasks[index] = task
 		syncTaskEdges(tasks, task.ID, previousBlockedBy, previousBlocks, task.BlockedBy, task.Blocks)
-		if prevStatus != "completed" && task.Status == "completed" {
-			unlockDependents(tasks, task.ID)
-		}
+		unlockCompletedDependents(tasks)
 		updated, _ = findTask(tasks, task.ID)
 		return tasks, nil
 	}); err != nil {
@@ -408,6 +406,14 @@ func unlockDependents(tasks []Task, completedID string) {
 		if len(next) != len(tasks[i].Blocks) {
 			tasks[i].Blocks = next
 			tasks[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+	}
+}
+
+func unlockCompletedDependents(tasks []Task) {
+	for _, task := range append([]Task{}, tasks...) {
+		if task.Status == "completed" {
+			unlockDependents(tasks, task.ID)
 		}
 	}
 }

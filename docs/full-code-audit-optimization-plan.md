@@ -9234,7 +9234,50 @@ Evidence gates:
 - Confirmed this is distinct from the Google fallback-id slice. Google `functionCall.id` can be absent and has an adapter-owned unique fallback; OpenAI Responses `function_call.call_id` and Anthropic `tool_use.id` are replay identifiers, so missing values should be reported as malformed provider responses instead of silently becoming empty durable `tool_call.id` values.
 - Confirmed the minimal fix belongs in the OpenAI and Anthropic adapter response parsing path: reject incomplete tool-call envelopes with `response_parse_error` before constructing internal `ToolCall` values, preserving runtime/session validation as a hard backstop rather than the first visible failure.
 
+### Review 515
+
+- Confirmed FCA-20260530-520 against `AGENTS.md`, `spec/01-runtime-architecture.md`, and `spec/12-task-system.md`: the durable task graph is a recovery and ready-state fact source, and `completed` dependencies must automatically unlock dependents while `cancelled` dependencies do not.
+- Confirmed this is distinct from the existing completed-transition coverage. Completing a task already removed its current dependents, but a later task creation or `task_update add_blocks` could add fresh dependency edges from that already completed task and leave pending dependents blocked by satisfied work.
+- Confirmed the minimal fix belongs in `internal/session/taskboard.go`: after task create/update edge synchronization, re-apply completed-task unlock reconciliation in the store mutation path, preserving model-led task usage, bidirectional graph validation, cycle checks, Web/CLI/tool surfaces, and the explicit non-unlocking semantics for cancelled tasks.
+
 ## Update Log
+
+### FCA-20260530-520
+
+Slice: `fix(session): keep completed tasks from reblocking dependents`
+
+Finding:
+
+- `internal/session/taskboard.go` only called `unlockDependents(...)` when a task transitioned from a non-completed status into `completed`.
+- Focused failing tests proved that creating a new task with `blocked_by` pointing at an already completed task left the new task blocked by satisfied work.
+- A second focused failing test proved that updating an already completed task with `add_blocks` retained the new `blocks` edge and added the completed task to the dependent's `blocked_by`.
+- The existing lifecycle test covered the original completion transition, but not later graph mutations involving a task that was already completed.
+
+Impact:
+
+- Web task board, CLI task views, `task_list`, session summary, and long-run checkpoints could classify pending work as blocked even though the dependency was already done.
+- The issue weakened recovery semantics for large tasks because completed task facts could be reintroduced as active blockers after plan/task edits.
+- Cancelled tasks remain explicit blockers unless the graph is manually adjusted; this fix only changes completed-task dependency reconciliation.
+
+Changes:
+
+- Added store-level regressions for creating a task blocked by an already completed dependency and for updating an already completed task to block another task.
+- Added `unlockCompletedDependents(...)` and applied it after create/update edge synchronization so completed tasks cannot retain or recreate dependent-blocking edges through normal task mutations.
+- Preserved existing bidirectional edge maintenance, cycle detection, task status validation, and completed-transition behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/session -run 'TestTask(CreateDoesNotBlockOnCompletedDependency|UpdateDoesNotReblockDependentsFromCompletedTask)' -count=1`: failed before the fix because completed dependencies blocked pending tasks.
+- `go test -timeout 120s ./internal/session -run 'TestTask(CreateDoesNotBlockOnCompletedDependency|UpdateDoesNotReblockDependentsFromCompletedTask|LifecycleAutoUnlocksDependents|CycleRejected|UpdateRemovesReverseEdges)' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/session -run 'TestTask|TestBuildTaskBoard|TestStoreSaveTasksRemovesStaleTaskFiles' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestTask|TestTodoAndTaskToolsEmitStructuredEvents|TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph' -count=1`: passed.
+- `go test -timeout 120s ./internal/session -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/*.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/session ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-519
 
