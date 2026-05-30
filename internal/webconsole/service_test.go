@@ -10031,6 +10031,78 @@ func TestProcessSkillZipRejectsFileDirectoryConflictBeforeMutation(t *testing.T)
 	}
 }
 
+func TestProcessSkillZipRejectsDuplicateNormalizedEntryPathsBeforeMutation(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	existing := filepath.Join(dest, "demo-skill")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatalf("mkdir existing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "SKILL.md"), []byte("---\nname: existing-demo\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write existing skill: %v", err)
+	}
+	zipPath := filepath.Join(base, "duplicate-normalized-path.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "---\nname: demo-skill\n---\nbody\n"},
+		{name: "demo-skill/tools/run.sh", content: "first\n"},
+		{name: "demo-skill/tools/./run.sh", content: "second\n"},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err == nil || !strings.Contains(err.Error(), "duplicate path") {
+		t.Fatalf("expected duplicate normalized path to be rejected, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("expected existing skill to remain after rejected upload: %v", err)
+	}
+	if !strings.Contains(string(data), "existing-demo") {
+		t.Fatalf("existing skill was unexpectedly modified: %q", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(existing, "tools", "run.sh")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("duplicate normalized entry should not be extracted, got %v", err)
+	}
+}
+
+func TestProcessSkillZipSanitizesUploadedFileModes(t *testing.T) {
+	base := t.TempDir()
+	dest := filepath.Join(base, "skills")
+	zipPath := filepath.Join(base, "skill.zip")
+	createZipEntriesInOrder(t, zipPath, []zipTestEntry{
+		{name: "demo-skill/SKILL.md", content: "---\nname: demo-skill\n---\nbody\n", mode: 0o666},
+		{name: "demo-skill/tools/run.sh", content: "#!/bin/sh\n", mode: 0o777},
+	})
+
+	if _, err := processSkillZip(zipPath, dest); err != nil {
+		t.Fatalf("process skill zip: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(dest, "demo-skill"),
+		filepath.Join(dest, "demo-skill", "tools"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat uploaded directory %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got&0o077 != 0 {
+			t.Fatalf("uploaded directory %s should not retain group/other permissions, got %03o", path, got)
+		}
+	}
+	manifestInfo, err := os.Stat(filepath.Join(dest, "demo-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("stat uploaded manifest: %v", err)
+	}
+	if got := manifestInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("uploaded manifest should be owner read/write only, got %03o", got)
+	}
+	scriptInfo, err := os.Stat(filepath.Join(dest, "demo-skill", "tools", "run.sh"))
+	if err != nil {
+		t.Fatalf("stat uploaded executable: %v", err)
+	}
+	if got := scriptInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("uploaded executable should preserve owner execute only, got %03o", got)
+	}
+}
+
 func TestProcessSkillZipPreservesExistingSkillOnLateExtractionError(t *testing.T) {
 	base := t.TempDir()
 	dest := filepath.Join(base, "skills")
@@ -10449,6 +10521,7 @@ func createZipEntries(t *testing.T, zipPath string, entries map[string]string) {
 type zipTestEntry struct {
 	name    string
 	content string
+	mode    os.FileMode
 }
 
 func createZipEntriesInOrder(t *testing.T, zipPath string, entries []zipTestEntry) {
@@ -10461,7 +10534,15 @@ func createZipEntriesInOrder(t *testing.T, zipPath string, entries []zipTestEntr
 
 	zipWriter := zip.NewWriter(file)
 	for _, item := range entries {
-		entry, err := zipWriter.Create(item.name)
+		var entry io.Writer
+		var err error
+		if item.mode != 0 {
+			header := &zip.FileHeader{Name: item.name}
+			header.SetMode(item.mode)
+			entry, err = zipWriter.CreateHeader(header)
+		} else {
+			entry, err = zipWriter.Create(item.name)
+		}
 		if err != nil {
 			t.Fatalf("create zip entry %s: %v", item.name, err)
 		}

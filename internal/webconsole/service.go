@@ -60,6 +60,7 @@ const (
 	maxSkillZipFiles                = 2048
 	maxSkillZipEntryBytes           = 10 << 20
 	maxSkillZipTotalBytes           = 100 << 20
+	skillZipDirectoryMode           = 0o700
 	maxWebJSONBodyBytes             = 4 << 20
 	workspaceFilePreviewDefaultSize = 256 << 10
 	workspaceFilePreviewMaxSize     = 1 << 20
@@ -4411,7 +4412,7 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 		root := plan.Root
 		targetPath := stagedSkillTargetPath(stagingRoot, plan.TargetPath)
 
-		if err := fileutil.MkdirAllNoSymlink(targetPath, 0o755); err != nil {
+		if err := fileutil.MkdirAllNoSymlink(targetPath, skillZipDirectoryMode); err != nil {
 			return nil, err
 		}
 
@@ -4447,12 +4448,12 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 			}
 
 			if f.FileInfo().IsDir() {
-				if err := fileutil.MkdirAllNoSymlink(outPath, f.Mode()); err != nil {
+				if err := fileutil.MkdirAllNoSymlink(outPath, skillZipDirectoryMode); err != nil {
 					return nil, err
 				}
 				continue
 			}
-			if err := fileutil.MkdirAllNoSymlink(filepath.Dir(outPath), 0o755); err != nil {
+			if err := fileutil.MkdirAllNoSymlink(filepath.Dir(outPath), skillZipDirectoryMode); err != nil {
 				return nil, err
 			}
 
@@ -4464,10 +4465,7 @@ func processSkillZipReader(r *zip.Reader, globalDest string) (*skillZipInstallTr
 			if extractedBytes > maxSkillZipTotalBytes {
 				return nil, skillZipPackageErrorf("skill zip uncompressed size exceeds %d bytes", maxSkillZipTotalBytes)
 			}
-			mode := f.Mode().Perm()
-			if mode == 0 {
-				mode = 0o644
-			}
+			mode := sanitizedSkillZipFileMode(f.Mode())
 			if err := fileutil.AtomicWriteFileNoSymlink(outPath, data, mode); err != nil {
 				return nil, err
 			}
@@ -4641,6 +4639,9 @@ func validateSkillZipRootEntries(cleanNames map[*zip.File]string, files []*zip.F
 		if f.FileInfo().IsDir() {
 			dirsSeen[rel] = f.Name
 		} else {
+			if previous, ok := filesSeen[rel]; ok {
+				return fmt.Errorf("skill zip duplicate path: %s and %s normalize to %s", previous, f.Name, rel)
+			}
 			filesSeen[rel] = f.Name
 		}
 		for dir := path.Dir(rel); dir != "." && dir != "/" && dir != ""; dir = path.Dir(dir) {
@@ -4666,6 +4667,19 @@ func skillZipRootRelativeName(cleanRoot, cleanedName string) (string, bool) {
 		return strings.TrimPrefix(cleanedName, cleanRoot+"/"), true
 	}
 	return "", false
+}
+
+func sanitizedSkillZipFileMode(mode os.FileMode) os.FileMode {
+	perm := mode.Perm()
+	if perm == 0 {
+		return 0o600
+	}
+	sanitized := perm & 0o700
+	sanitized |= 0o600
+	if perm&0o111 != 0 {
+		sanitized |= 0o100
+	}
+	return sanitized
 }
 
 func readZipFileLimited(f *zip.File, limit int) ([]byte, error) {

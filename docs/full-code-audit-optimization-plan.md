@@ -9102,7 +9102,46 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-495 and existing child stop coverage. FCA-495 covered top-level selected-session interrupt/stop, while `child stop completion refreshes selected parent session` covered the positive case where the selected parent still references the child; this residual issue kept using only the selected parent id/backed state after the child stop settled.
 - Confirmed the minimal fix belongs in `internal/webconsole/assets/app.js`: capture a compact referenced-session identity for the selected parent/child relationship and abandon stale parent refresh/toast continuations when that relationship disappears or the parent projection changes.
 
+### Review 493
+
+- Confirmed FCA-20260530-498 against `AGENTS.md`, `spec/04-tools-and-skills.md`, and `spec/17-web-console.md`: WebConsole skill upload is a local writable skill-management surface, so zip package extraction must fail closed on ambiguous normalized paths and must not let package-provided modes create group/world-writable local skill code.
+- Confirmed this is distinct from FCA-20260526-053, FCA-20260527-211, FCA-20260527-222, FCA-20260527-224, and the existing traversal/symlink/file-directory conflict coverage. Those slices covered duplicate target directories, replacement timing, extraction rollback, and audit rollback; this residual issue was inside a single accepted root where two file entries such as `tools/run.sh` and `tools/./run.sh` normalized to the same relative path, plus mode inheritance where uploaded files and directories could keep overly broad zip permission bits.
+- Confirmed the minimal fix belongs in `internal/webconsole/service.go`: reject duplicate normalized file paths during `validateSkillZipRootEntries(...)`, create uploaded skill subdirectories owner-only, and sanitize uploaded file modes to owner read/write plus owner execute only when the package marks the file executable.
+
 ## Update Log
+
+### FCA-20260530-498
+
+Slice: `fix(webconsole): harden skill zip extraction`
+
+Finding:
+
+- `validateSkillZipRootEntries(...)` tracked file paths in a map but overwrote duplicate normalized paths instead of rejecting them.
+- A focused regression reproduced that a package containing both `demo-skill/tools/run.sh` and `demo-skill/tools/./run.sh` installed successfully, letting the later entry silently win.
+- `processSkillZipReader(...)` also created uploaded skill subdirectories with `0o755` or zip-provided directory modes and wrote uploaded files using `f.Mode().Perm()`, so a zip entry with broad write bits could install local skill code with group/world-writeable permissions on permissive filesystems.
+
+Impact:
+
+- Ambiguous zip packages could make package review and installed file facts disagree because duplicate normalized paths had last-writer-wins behavior.
+- Uploaded skill command files are part of the local agent capability surface; retaining group/world write bits would allow another local principal with filesystem access to modify skill code after upload and before later `load_skill` or direct skill command execution.
+
+Changes:
+
+- Reject duplicate normalized file paths within each skill root before staging or mutating installed skills.
+- Create uploaded skill root/subdirectories with owner-only mode.
+- Sanitize uploaded file modes to owner read/write, preserving owner execute only when any execute bit is present in the package entry.
+- Added focused regressions for duplicate normalized path rejection and uploaded mode sanitization.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsDuplicateNormalizedEntryPathsBeforeMutation|TestProcessSkillZipSanitizesUploadedFileModes' -count=1`: failed before the fix because duplicate normalized paths were accepted and the uploaded skill directory retained `0755`.
+- `go test -timeout 120s ./internal/webconsole -run 'TestProcessSkillZipRejectsDuplicateNormalizedEntryPathsBeforeMutation|TestProcessSkillZipSanitizesUploadedFileModes' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath|TestListSkills' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-497
 
