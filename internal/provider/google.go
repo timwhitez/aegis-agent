@@ -55,7 +55,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 					Text         string `json:"text"`
 					Thought      bool   `json:"thought"`
 					ThoughtSig   string `json:"thoughtSignature"`
-					FunctionCall struct {
+					FunctionCall *struct {
 						Name string          `json:"name"`
 						ID   string          `json:"id"`
 						Args json.RawMessage `json:"args"`
@@ -139,7 +139,14 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				Model:            req.Model,
 			})
 		}
-		if part.FunctionCall.Name != "" {
+		if part.FunctionCall != nil {
+			if strings.TrimSpace(part.FunctionCall.Name) == "" {
+				return TurnResult{}, &HTTPError{
+					Provider: "google",
+					Class:    "response_parse_error",
+					Message:  "tool-call name is required",
+				}
+			}
 			args, err := normalizeToolCallArguments("google", part.FunctionCall.Name, part.FunctionCall.Args)
 			if err != nil {
 				return TurnResult{}, err

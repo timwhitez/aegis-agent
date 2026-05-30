@@ -1134,6 +1134,32 @@ func TestGoogleAdapterRejectsNonObjectFunctionCallArgs(t *testing.T) {
 	assertProviderParseError(t, err, "google", "JSON object")
 }
 
+func TestGoogleAdapterRejectsMissingFunctionCallName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"responseId":"resp_google_missing_call_name",
+			"modelVersion":"gemini-2.5-flash",
+			"candidates":[{
+				"content":{"parts":[{"functionCall":{"id":"call_1","args":{"command":"pwd"}}}]},
+				"finishReason":"STOP"
+			}],
+			"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":3}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gemini-2.5-flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, func(string, map[string]any) {})
+	assertProviderParseError(t, err, "google", "tool-call name")
+}
+
 func TestGoogleAdapterReplaysThoughtSignatures(t *testing.T) {
 	var rawBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

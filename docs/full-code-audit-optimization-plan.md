@@ -9498,7 +9498,45 @@ Evidence gates:
 - Confirmed this is distinct from the existing provider-option backfill and durable retry-policy slices. Those paths correctly backfill missing legacy metadata and restore explicit retry/timeout policy; the residual gap was the durable session merge treating zero-valued scalar options such as `max_output_tokens=0` and `thinking_budget=0` as absent, so a later non-zero config changed the provider request during continue.
 - Confirmed the minimal fix belongs in the runtime metadata merge boundary: keep full backfill for sessions with no provider options, but for sessions that already have provider options preserve durable generation/reasoning default values while continuing to backfill adapter/store/transport facts needed for old partial metadata.
 
+### Review 559
+
+- Confirmed FCA-20260530-564 against `spec/03-provider-contracts.md` and `spec/11-spec-audit-and-traceability.md`: Google `functionCall` parts are provider-owned tool-call facts, so malformed call envelopes must be rejected at the adapter boundary instead of being silently interpreted as ordinary completion.
+- Confirmed this is distinct from FCA-20260530-535 and FCA-20260530-536. Those slices suppressed function calls under unsafe or missing `finishReason` boundaries; the residual gap was a present `functionCall` object with no `name`, which the Go zero-value struct made indistinguishable from an absent function call.
+- Confirmed the minimal fix belongs in the Google adapter response parser: preserve missing `id` fallback behavior for valid Gemini calls, but distinguish absent `functionCall` fields from present malformed objects and fail with a provider `response_parse_error` when the call name is missing.
+
 ## Update Log
+
+### FCA-20260530-564
+
+Slice: `fix(provider): reject nameless google calls`
+
+Finding:
+
+- `spec/03-provider-contracts.md` keeps provider tool-call and replay differences inside provider adapters and requires provider tool-use boundaries to be explicit before runtime executes tools.
+- `internal/provider/google.go` decoded each Gemini part's `functionCall` into a non-pointer struct and then checked only `part.FunctionCall.Name != ""`.
+- When the upstream response contained a `functionCall` object with an `id` and `args` but no `name`, Go decoded the nested struct to zero values, the adapter treated it as no tool call, and a `finishReason=STOP` candidate could continue as an ordinary `done_candidate`.
+
+Impact:
+
+- A malformed provider tool-call envelope could be silently dropped instead of failing closed as a provider parse error.
+- The session timeline would lose the fact that the provider attempted to emit a tool call, weakening provider boundary diagnostics and making Google behavior inconsistent with OpenAI and Anthropic tool-call envelope validation.
+
+Changes:
+
+- Added a focused Google adapter regression for a present `functionCall` object missing `name`.
+- Changed Google response parsing to decode `functionCall` as a pointer so the adapter can distinguish an absent field from a present malformed object.
+- Added explicit missing-name validation for present Google `functionCall` objects while preserving existing fallback ID generation for valid calls that omit the optional Google call id.
+
+Validation:
+
+- `go test -timeout 120s ./internal/provider -run TestGoogleAdapterRejectsMissingFunctionCallName -count=1`: failed before the fix because the adapter returned no parse error.
+- `go test -timeout 120s ./internal/provider -run TestGoogleAdapterRejectsMissingFunctionCallName -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/provider -count=1`: passed.
+- `gofmt -l internal/provider/google.go internal/provider/provider_test.go`: passed with no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./internal/provider ./internal/runtime -count=1`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-563
 
