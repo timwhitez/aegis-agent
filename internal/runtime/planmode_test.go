@@ -349,6 +349,12 @@ func TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults(t *testing.T
 	if !last.ToolResults[0].IsError || !strings.Contains(last.ToolResults[0].LLMOutput, "cancelled") {
 		t.Fatalf("expected first tool result to record input cancellation, got %#v", last.ToolResults[0])
 	}
+	if last.ToolResults[0].Metadata["planmode_terminal"] != planModeTerminalPlanCancelled {
+		t.Fatalf("expected cancelled input result to carry terminal metadata, got %#v", last.ToolResults[0].Metadata)
+	}
+	if cancelled, _ := last.ToolResults[0].Metadata["cancelled"].(bool); !cancelled {
+		t.Fatalf("expected cancelled input result to carry cancelled metadata, got %#v", last.ToolResults[0].Metadata)
+	}
 	if strings.Contains(last.ToolResults[1].LLMOutput, "submit_plan ended") || !strings.Contains(last.ToolResults[1].LLMOutput, "Plan Mode was cancelled") {
 		t.Fatalf("expected cancellation-specific synthetic result for later tool call, got %#v", last.ToolResults[1])
 	}

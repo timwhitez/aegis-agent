@@ -9246,7 +9246,56 @@ Evidence gates:
 - Confirmed this is distinct from the earlier same-batch cancellation text fix. Live cancellation returned a `planmode_terminal=plan_cancelled` tool result that lets the engine classify the terminal action, but the cross-process/recovered `Continue(CancelPlan)` replay path appended a `request_user_input` error result without that terminal marker.
 - Confirmed the minimal fix belongs in `Runner.appendPlanInputCancelToolResult(...)`: add terminal and recovered metadata to the recovered replay tool result while preserving idempotent retry behavior, existing plan cancellation state transitions, Web/CLI control paths, provider adapter boundaries, and pending-request replay semantics.
 
+### Review 517
+
+- Confirmed FCA-20260530-522 against `AGENTS.md`, `spec/01-runtime-architecture.md`, `spec/04-tools-and-skills.md`, `spec/11-spec-audit-and-traceability.md`, and `spec/18-durable-contract-and-completion.md`: live and recovered Plan Mode input cancellation tool results should carry the same cancellation classification facts.
+- Confirmed this is distinct from the recovered cancellation slice. The recovered `Continue(CancelPlan)` replay result now carries `cancelled=true`, but the live `request_user_input` cancellation result emitted by the tool path still only carried `planmode_terminal=plan_cancelled`, `request_id`, and `plan_mode_id`.
+- Confirmed the minimal fix belongs in `internal/tools/registry.go` `request_user_input`: add `cancelled=true` to the live cancellation result metadata, preserving existing terminal Plan Mode handling, synthetic later tool result behavior, state transitions, events, and recovery paths.
+
 ## Update Log
+
+### FCA-20260530-522
+
+Slice: `fix(tools): mark live plan input cancellation`
+
+Finding:
+
+- The live `request_user_input` cancellation path in `internal/tools/registry.go` returned a terminal Plan Mode tool result with `planmode_terminal=plan_cancelled`, but did not mark the result with `cancelled=true`.
+- The recovered cancellation path now marks replay results with `cancelled=true`, so durable tool result metadata differed depending on whether cancellation happened in the active runner or through recovered `Continue(CancelPlan)`.
+- A focused failing engine test proved the live cancellation result lacked `cancelled=true` even though it stopped the turn and emitted the cancellation-specific synthetic result for later same-batch tool calls.
+
+Impact:
+
+- Durable session inspection, Web timeline details, and audit tooling could classify recovered cancellation results more precisely than live cancellation results.
+- This weakened trace consistency around Plan Mode input cancellation and made live cancellation facts less self-describing than recovery replay facts for the same operator action.
+
+Changes:
+
+- Added a focused regression asserting the live `request_user_input` cancellation result carries both `planmode_terminal=plan_cancelled` and `cancelled=true`.
+- Added `cancelled=true` to the live cancellation metadata emitted by the `request_user_input` tool.
+- Preserved existing Plan Mode cancellation state transitions, event writes, terminal tool-batch handling, same-batch synthetic tool results, and recovered cancellation behavior.
+
+Validation:
+
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults -count=1`: failed before the fix because the live cancellation result metadata lacked `cancelled=true`.
+- `go test -timeout 120s ./internal/runtime -run TestEnginePlanInputCancelStopsTurnAndCompletesLaterToolResults -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput.*Cancel|TestRequestUserInputReportsCancelledEventErrorAndRestoresPendingRequest' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime -run 'Test(EnginePlanInputCancelStopsTurnAndCompletesLaterToolResults|CancelPlanModeDoesNotDuplicateRecoveredInputToolResult|PlanInputCancelRetryAfterHistoryFailureRestoresFacts|PlanInputCancelReturnsHistoryAppendError|CancelPlanModeRecordsAwaitingInputLifecycleEvent)' -count=1`: passed.
+- `go test -timeout 120s ./internal/tools -run 'TestRequestUserInput|TestSubmitPlan' -count=1`: passed.
+- `go test -timeout 120s ./internal/runtime ./internal/tools -count=1`: passed.
+- `go test -timeout 120s ./internal/session ./internal/runtime ./internal/tools -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `node --check internal/webconsole/assets/app.js`: passed.
+- `node --check internal/webconsole/assets/session-view.js`: passed.
+- `node --check internal/webconsole/assets/workspace-view.js`: passed.
+- `node --check internal/webconsole/assets/events.js`: passed.
+- `node --check internal/webconsole/assets/settings-view.js`: passed.
+- `node --check internal/webconsole/assets/utils.js`: passed.
+- `node --check internal/webconsole/assets/api.js`: passed.
+- `node --check internal/webconsole/assets/icons.js`: passed.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-521
 

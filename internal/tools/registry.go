@@ -2369,6 +2369,7 @@ func defRequestUserInput() Definition {
 							"planmode":          true,
 							"planmode_terminal": "plan_cancelled",
 							"request_id":        request.RequestID,
+							"cancelled":         true,
 							"plan_mode_id":      planMode.PlanModeID,
 						},
 					}, nil
