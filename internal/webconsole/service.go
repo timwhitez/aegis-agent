@@ -4952,7 +4952,7 @@ func (s *Service) handleUninstallSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errors.New("skill must be a direct child of the skill root"))
 		return
 	}
-	if _, err := os.Stat(filepath.Join(targetDir, "SKILL.md")); err != nil {
+	if _, _, err := fileutil.ReadRegularFileNoSymlink(filepath.Join(targetDir, "SKILL.md")); err != nil {
 		writeError(w, http.StatusBadRequest, errors.New("target is not an installed skill"))
 		return
 	}

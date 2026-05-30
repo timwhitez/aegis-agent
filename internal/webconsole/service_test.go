@@ -9700,6 +9700,62 @@ func TestServiceSkillUninstallRejectsSymlinkedSkillDir(t *testing.T) {
 	}
 }
 
+func TestServiceSkillUninstallRejectsSymlinkedSkillManifest(t *testing.T) {
+	cfg := testConfig(t, "")
+	base := t.TempDir()
+	skillsDir := filepath.Join(base, "skills")
+	skillDir := filepath.Join(skillsDir, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	outsideManifest := filepath.Join(base, "outside-SKILL.md")
+	if err := os.WriteFile(outsideManifest, []byte("---\nname: demo-skill\n---\n"), 0o600); err != nil {
+		t.Fatalf("write outside manifest: %v", err)
+	}
+	if err := os.Symlink(outsideManifest, filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+	cfg.Skills.Dirs = []string{skillsDir}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/skills/demo-skill/uninstall", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("new uninstall request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(webMutationHeader, "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("uninstall request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected symlinked manifest uninstall to be rejected, got %d body=%s", resp.StatusCode, string(body))
+	}
+	if _, err := os.Lstat(skillDir); err != nil {
+		t.Fatalf("expected skill directory to remain, got %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(skillDir, "SKILL.md")); err != nil {
+		t.Fatalf("expected symlinked manifest to remain, got %v", err)
+	}
+	if _, err := os.Stat(outsideManifest); err != nil {
+		t.Fatalf("expected outside manifest to remain, got %v", err)
+	}
+	if data, err := os.ReadFile(webAuditLogPath(cfg.Session.Dir)); err == nil && strings.Contains(string(data), "web.skill.uninstall") {
+		t.Fatalf("rejected symlinked manifest must not append uninstall audit event, got %q", string(data))
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read audit log: %v", err)
+	}
+}
+
 func TestProcessSkillZipRejectsTraversalEntries(t *testing.T) {
 	for _, entryName := range []string{"../../zip-slip.txt", "..\\escape.txt", "/absolute.txt", "C:/absolute.txt"} {
 		t.Run(entryName, func(t *testing.T) {

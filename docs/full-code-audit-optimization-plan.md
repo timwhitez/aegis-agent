@@ -9114,7 +9114,45 @@ Evidence gates:
 - Confirmed this is distinct from FCA-20260530-498 and the earlier duplicate target / file-directory conflict slices. Those slices handled ambiguous file paths or target directories; this residual issue was ambiguity between skill roots themselves, where `outer/SKILL.md` and `outer/inner/SKILL.md` made the outer installed skill contain the inner manifest while also installing the inner skill as a separate target.
 - Confirmed the minimal fix belongs in `processSkillZipReader(...)` before staging or target replacement: reject nested skill roots as malformed packages, while preserving valid sibling skill packages and the existing per-root path, size, symlink, mode, and rollback checks.
 
+### Review 495
+
+- Confirmed FCA-20260530-500 against `AGENTS.md`, `spec/04-tools-and-skills.md`, `spec/17-web-console.md`, and `internal/skills`: WebConsole uninstall should use the same non-symlink `SKILL.md` boundary as skill listing and runtime catalog loading before it removes a managed skill directory.
+- Confirmed this is distinct from the symlinked skill-directory guard and earlier upload symlink/root hardening. Those slices rejected a managed skill path or upload root that was itself a symlink; this residual issue was a real managed skill directory whose `SKILL.md` was a symlink to another path. `os.Stat(...)` followed that manifest symlink and let uninstall remove a directory that Web listing/runtime catalog would reject.
+- Confirmed the minimal fix belongs in `handleUninstallSkill(...)`: replace the manifest existence preflight with `fileutil.ReadRegularFileNoSymlink(...)`, preserving the existing direct-child, managed-root, audit, backup, rollback, and successful uninstall behavior.
+
 ## Update Log
+
+### FCA-20260530-500
+
+Slice: `fix(webconsole): reject symlinked skill manifests`
+
+Finding:
+
+- `handleListSkills(...)` reads each candidate `SKILL.md` with `fileutil.ReadRegularFileNoSymlink(...)`, and `internal/skills` also rejects manifest symlink escapes before loading a runtime skill.
+- `handleUninstallSkill(...)` only used `os.Stat(filepath.Join(targetDir, "SKILL.md"))` to decide whether a target was an installed skill, so it followed a symlinked manifest.
+- A focused regression proved that a real managed skill directory with `SKILL.md -> ../outside-SKILL.md` returned HTTP 200 from `/api/skills/demo-skill/uninstall`, removed the managed directory, and appended the uninstall audit path before the fix.
+
+Impact:
+
+- The Web Skills control plane could uninstall a directory that the Web catalog and runtime catalog would not consider a valid loadable local skill.
+- That created a mismatch between observable installed skills and writable mutation authority, weakening the no-symlink local skill boundary used elsewhere in the harness.
+
+Changes:
+
+- Replaced the uninstall manifest preflight with `fileutil.ReadRegularFileNoSymlink(...)`.
+- Added focused coverage proving symlinked manifests are rejected, the managed directory and symlink remain in place, the outside manifest remains untouched, and no uninstall audit event is appended.
+
+Validation:
+
+- `go test -timeout 120s ./internal/webconsole -run TestServiceSkillUninstallRejectsSymlinkedSkillManifest -count=1`: failed before the fix because the uninstall returned HTTP 200.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkillUninstallRejectsSymlinkedSkillManifest|TestServiceSkillUninstallRejectsSymlinkedSkillDir' -count=1`: passed after the fix.
+- `go test -timeout 120s ./internal/webconsole -run 'TestServiceSkillUninstallRejectsSymlinkedSkillManifest|TestServiceSkillUninstallRejectsSymlinkedSkillDir|TestServiceSkillRoutesUploadListUninstallAndInstallUnsupported|TestSkillUninstallRollsBackWhenAuditAppendFails|TestServiceSkillListRequiresReadableSkillManifest' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -run 'Test.*Skill|TestProcessSkillZip|TestReserveSkillBackupPath|TestListSkills' -count=1`: passed.
+- `go test -timeout 120s ./internal/webconsole -count=1`: passed.
+- `gofmt -l cmd internal pkg validation/cmd`: no output.
+- `git diff --check`: passed.
+- `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
 
 ### FCA-20260530-499
 
