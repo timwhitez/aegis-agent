@@ -214,6 +214,7 @@ type ContinueRequest struct {
 	Message              string
 	Provider             string
 	Model                string
+	ProviderOptions      session.ProviderOptions
 	SystemOverride       string
 	PlanMode             *session.PlanModeDraft
 	PlanInputHandler     PlanInputHandler
@@ -802,7 +803,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if modelOverride != "" {
 			providerCfg.Model = modelOverride
 		}
-		providerOptions, err := resolvedProviderOptions(providerName, providerCfg, session.ProviderOptions{})
+		providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -812,6 +813,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	}
 	if modelOverride != "" {
 		meta.Model = modelOverride
+	}
+	if providerNameOverride == "" && req.ProviderOptions != (session.ProviderOptions{}) {
+		meta.ProviderOptions = mergeProviderOptions(meta.ProviderOptions, req.ProviderOptions)
 	}
 	req.PlanInputRequestID = strings.TrimSpace(req.PlanInputRequestID)
 	source := strings.TrimSpace(req.Source)

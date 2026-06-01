@@ -73,6 +73,27 @@ func newFakeRunner() *fakeRunner {
 	return &fakeRunner{bus: events.NewBus()}
 }
 
+func withStdin(t *testing.T, input string, fn func()) {
+	t.Helper()
+	oldStdin := os.Stdin
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe stdin: %v", err)
+	}
+	if _, err := writer.WriteString(input); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdin writer: %v", err)
+	}
+	os.Stdin = reader
+	defer func() {
+		os.Stdin = oldStdin
+		_ = reader.Close()
+	}()
+	fn()
+}
+
 func writeDoctorQueueJob(t *testing.T, root, status string, job session.QueueJob) {
 	t.Helper()
 	dir := filepath.Join(root, "_queue", status)
@@ -213,6 +234,250 @@ func TestRunCommandAcceptsFlagsAfterPrompt(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"status":"completed"`) {
 		t.Fatalf("expected json output, got %s", stdout.String())
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"--version"}, &stdout, &stderr); err != nil {
+		t.Fatalf("version: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "go-cli-agent v0.1.0-dev") {
+		t.Fatalf("unexpected version output: %s", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"version"}, &stdout, &stderr); err != nil {
+		t.Fatalf("version alias: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "go-cli-agent v") {
+		t.Fatalf("unexpected version alias output: %s", stdout.String())
+	}
+}
+
+func TestModelsCommandJSON(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+default_provider: local
+providers:
+  local:
+    api_provider: openai-compatible
+    api_key_env: OPENAI_API_KEY
+    base_url: http://localhost:3000/v1
+    model: model-a
+    wire_api: responses
+session:
+  dir: .go-cli-agent/sessions
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"models", "--json", "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("models: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var models []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &models); err != nil {
+		t.Fatalf("decode models: %v output=%s", err, stdout.String())
+	}
+	var found bool
+	for _, model := range models {
+		if model["id"] == "local/model-a" {
+			found = true
+			if model["provider"] != "openai" || model["default"] != true {
+				t.Fatalf("unexpected local model: %#v", model)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected local model in %#v", models)
+	}
+}
+
+func TestRunCommandRejectsConflictingStreamJSONAndJSON(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"exec", "--output-format", "stream-json", "--json", "do work"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mutually exclusive error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCommandReadsStreamJSONInput(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	withStdin(t, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]}}`, func() {
+		if err := Run(context.Background(), []string{"exec", "--input-format", "stream-json"}, &stdout, &stderr); err != nil {
+			t.Fatalf("exec: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+		}
+	})
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	if fake.startCalls[0].Prompt != "hello\nworld" {
+		t.Fatalf("unexpected prompt: %q", fake.startCalls[0].Prompt)
+	}
+}
+
+func TestRunCommandStreamJSONOutputWritesResult(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	withStdin(t, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"say done"}]}}`, func() {
+		if err := Run(context.Background(), []string{"exec", "--output-format", "stream-json", "--input-format", "stream-json"}, &stdout, &stderr); err != nil {
+			t.Fatalf("exec: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected stream-json output")
+	}
+	for _, line := range lines {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil {
+			t.Fatalf("invalid stream-json line %q: %v", line, err)
+		}
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, `"type":"result"`) || !strings.Contains(last, `"session_id":"s1"`) || !strings.Contains(last, `"status":"completed"`) {
+		t.Fatalf("expected final result line, got %s\nall output:\n%s", last, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "== assistant ==") || strings.Contains(stdout.String(), "== completed ==") {
+		t.Fatalf("stream-json output must not include human renderer text:\n%s", stdout.String())
+	}
+}
+
+func TestRunCommandStreamJSONFailureWritesResultBeforeExit(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{
+		SessionID: "s1",
+		Status:    session.StatusFailed,
+		LastError: "incomplete_no_finish: task ended without explicit finish",
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	withStdin(t, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"do work"}]}}`, func() {
+		err := Run(context.Background(), []string{"exec", "--output-format", "stream-json", "--input-format", "stream-json"}, &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "status 6") {
+			t.Fatalf("expected exit status 6, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected stream-json output")
+	}
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, `"type":"result"`) || !strings.Contains(last, `"status":"failed"`) || !strings.Contains(last, `"is_error":true`) {
+		t.Fatalf("expected failed result line, got %s\nall output:\n%s", last, stdout.String())
+	}
+}
+
+func TestRunCommandExecResumeUsesContinue(t *testing.T) {
+	fake := newFakeRunner()
+	fake.continueResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "resume work"}, &stdout, &stderr); err != nil {
+		t.Fatalf("resume: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 0 || len(fake.continueCalls) != 1 {
+		t.Fatalf("expected Continue only, start=%d continue=%d", len(fake.startCalls), len(fake.continueCalls))
+	}
+	if fake.continueCalls[0].SessionID != "s1" || fake.continueCalls[0].Message != "resume work" {
+		t.Fatalf("unexpected continue request: %#v", fake.continueCalls[0])
+	}
+}
+
+func TestRunCommandRejectsRunResume(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"run", "--resume", "s1", "resume work"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "--resume is only supported on exec") {
+		t.Fatalf("expected run --resume error, got %v", err)
+	}
+}
+
+func TestRunCommandThinkingLevelProviderOptions(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	cfg := config.Default()
+	cfg.DefaultProvider = "anthropic"
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--provider", "default", "--thinking-level", "high", "think hard"}, &stdout, &stderr); err != nil {
+		t.Fatalf("exec: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
+	}
+	opts := fake.startCalls[0].ProviderOptions
+	if opts.IncludeThoughts == nil || !*opts.IncludeThoughts || opts.ThinkingBudget != 8192 {
+		t.Fatalf("expected anthropic high thinking options, got %#v", opts)
+	}
+}
+
+func TestRunCommandResumeThinkingLevelProviderOptions(t *testing.T) {
+	fake := newFakeRunner()
+	fake.continueResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	cfg := config.Default()
+	cfg.DefaultProvider = "openai"
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "--thinking-level", "high", "resume"}, &stdout, &stderr); err != nil {
+		t.Fatalf("resume: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if len(fake.continueCalls) != 1 {
+		t.Fatalf("expected one continue call, got %d", len(fake.continueCalls))
+	}
+	if fake.continueCalls[0].ProviderOptions.ReasoningEffort != "high" {
+		t.Fatalf("expected resume thinking level provider options, got %#v", fake.continueCalls[0].ProviderOptions)
 	}
 }
 
@@ -3305,7 +3570,7 @@ func TestUsageShowsWebFirstSurfaceByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	if !strings.Contains(stderr.String(), "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]") {
+	if !strings.Contains(stderr.String(), "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]") {
 		t.Fatalf("expected default usage to show web-first surface, got %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "experimental") {

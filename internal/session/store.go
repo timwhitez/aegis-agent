@@ -1828,7 +1828,7 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 	if err := validateStoreID("queue job", jobID); err != nil {
 		return job, err
 	}
-	copies, err := s.loadQueueJobCopies(jobID)
+	copies, err := s.loadQueueJobCopiesStable(jobID)
 	if err != nil {
 		return QueueJob{}, err
 	}
@@ -1881,7 +1881,7 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		limit = 100
 	}
 	all := limit < 0
-	copies, err := s.listQueueJobCopies()
+	copies, err := s.listQueueJobCopiesStable()
 	if err != nil {
 		return nil, err
 	}
@@ -1926,6 +1926,36 @@ type queueJobCopy struct {
 	status string
 	path   string
 	job    QueueJob
+}
+
+func (s *Store) loadQueueJobCopiesStable(jobID string) ([]queueJobCopy, error) {
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		copies, err := s.loadQueueJobCopies(jobID)
+		if err == nil || !isQueueStatusDirectoryMismatch(err) {
+			return copies, err
+		}
+		lastErr = err
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func (s *Store) listQueueJobCopiesStable() ([]queueJobCopy, error) {
+	var lastErr error
+	for attempt := 0; attempt < 4; attempt++ {
+		copies, err := s.listQueueJobCopies()
+		if err == nil || !isQueueStatusDirectoryMismatch(err) {
+			return copies, err
+		}
+		lastErr = err
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil, lastErr
+}
+
+func isQueueStatusDirectoryMismatch(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "does not match queue directory")
 }
 
 func (s *Store) loadQueueJobCopies(jobID string) ([]queueJobCopy, error) {

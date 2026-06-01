@@ -1602,6 +1602,85 @@ func TestRunnerContinueBackfillsPartialProviderOptions(t *testing.T) {
 	}
 }
 
+func TestRunnerContinueMergesProviderOptionsOverrideWithoutClearingDurableOptions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_continue_options",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:         "openai-compatible",
+		APIKeyEnv:           "OPENAI_API_KEY",
+		BaseURL:             server.URL + "/v1",
+		Model:               "gpt-5.4",
+		RequestTimeoutSec:   7,
+		StreamIdleTimeoutMS: 9000,
+		Retry: config.Retry{
+			MaxAttempts:    3,
+			BaseDelayMS:    250,
+			Retry5xx:       true,
+			RetryTransport: true,
+		},
+		WireAPI: "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{Status: session.StatusAwaitingInput, Phase: "turn_decide", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID:       meta.ID,
+		Message:         "continue with high reasoning",
+		ProviderOptions: session.ProviderOptions{ReasoningEffort: "high"},
+	})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	loadedMeta, err := runner.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if loadedMeta.ProviderOptions.ReasoningEffort != "high" {
+		t.Fatalf("expected reasoning effort override, got %#v", loadedMeta.ProviderOptions)
+	}
+	if loadedMeta.ProviderOptions.Store == nil || *loadedMeta.ProviderOptions.Store {
+		t.Fatalf("expected durable store=false to survive override, got %#v", loadedMeta.ProviderOptions)
+	}
+	if loadedMeta.ProviderOptions.RetryPolicy == nil || loadedMeta.ProviderOptions.RetryPolicy.MaxAttempts != 3 {
+		t.Fatalf("expected retry policy to survive override, got %#v", loadedMeta.ProviderOptions)
+	}
+	if loadedMeta.ProviderOptions.TimeoutPolicy == nil || loadedMeta.ProviderOptions.TimeoutPolicy.RequestTimeoutSec != 7 || loadedMeta.ProviderOptions.TimeoutPolicy.StreamIdleTimeoutMS != 9000 {
+		t.Fatalf("expected timeout policy to survive override, got %#v", loadedMeta.ProviderOptions)
+	}
+}
+
 func TestRunnerContinuePreservesZeroProviderOptionDefaults(t *testing.T) {
 	var seenBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

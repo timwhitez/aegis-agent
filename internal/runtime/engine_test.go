@@ -108,6 +108,7 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
 			Text:               "done_candidate",
+			Thinking:           "reasoning summary",
 			StopReason:         "done_candidate",
 			ProviderResponseID: "resp_test_1",
 			RawProvider: map[string]any{
@@ -142,6 +143,9 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	if !hasEventType(events, "turn.stopped") {
 		t.Fatalf("expected turn.stopped event, got %#v", events)
 	}
+	if hasEventType(events, "turn"+"."+"usage") {
+		t.Fatalf("turn.usage must not be emitted as a duplicate usage fact source: %#v", events)
+	}
 	stopped, ok := findEventByType(events, "turn.stopped")
 	if !ok {
 		t.Fatalf("expected turn.stopped event, got %#v", events)
@@ -152,6 +156,13 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 	if usage["cache_creation_input_tokens"] != float64(5) || usage["cache_read_input_tokens"] != float64(9) {
 		t.Fatalf("expected cache usage counters in turn.stopped, got %#v", usage)
+	}
+	assistantEvent, ok := findEventByType(events, "assistant.message")
+	if !ok {
+		t.Fatalf("expected assistant.message event, got %#v", events)
+	}
+	if assistantEvent.Data["thinking"] != "reasoning summary" {
+		t.Fatalf("expected thinking on assistant.message event, got %#v", assistantEvent.Data)
 	}
 	attempts, err := engine.store.LoadProviderAttempts(meta.ID)
 	if err != nil {
@@ -166,6 +177,60 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 	if !strings.Contains(string(summary), "cache usage: read=`9` creation=`5` hit_attempts=`1`") {
 		t.Fatalf("expected cache usage summary, got:\n%s", string(summary))
+	}
+}
+
+func TestEngineToolEventsIncludeCallID(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	registry.Register(tools.Definition{
+		Name:        "echo_tool",
+		Description: "echo",
+		InputSchema: map[string]any{"type": "object"},
+		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			return session.ToolResult{
+				LLMOutput:     "echoed",
+				DisplayOutput: "echoed",
+			}, nil
+		},
+	})
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run tool")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	turns := 0
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		turns++
+		if turns == 1 {
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_echo",
+					Name:      "echo_tool",
+					Arguments: json.RawMessage(`{"value":"ok"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		}
+		return provider.TurnResult{Text: "done", StopReason: "done_candidate"}, nil
+	})
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	before, ok := findEventByType(events, "tool.before")
+	if !ok {
+		t.Fatalf("expected tool.before event, got %#v", events)
+	}
+	if before.Data["call_id"] != "call_echo" {
+		t.Fatalf("expected tool.before call_id, got %#v", before.Data)
+	}
+	after, ok := findEventByType(events, "tool.after")
+	if !ok {
+		t.Fatalf("expected tool.after event, got %#v", events)
+	}
+	if after.Data["call_id"] != "call_echo" {
+		t.Fatalf("expected tool.after call_id, got %#v", after.Data)
 	}
 }
 

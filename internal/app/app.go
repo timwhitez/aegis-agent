@@ -26,6 +26,7 @@ import (
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
+	"go-cli-agent/internal/streamjson"
 )
 
 type coreRunner interface {
@@ -56,10 +57,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return classifyCommandError(usage(stderr))
 	}
+	if args[0] == "--version" || args[0] == "version" {
+		return classifyCommandError(printVersion(stdout))
+	}
 	var err error
 	switch args[0] {
 	case "init":
 		err = runInit(args[1:], stdout, stderr)
+	case "models":
+		err = modelsCommand(ctx, args[1:], stdout, stderr)
 	case "web":
 		err = webCommand(ctx, args[1:], stdout, stderr)
 	case "run":
@@ -93,7 +99,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func usage(w io.Writer) error {
-	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|probe-provider|doctor> [...]")
+	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]")
 	return flag.ErrHelp
 }
 
@@ -200,7 +206,7 @@ var stdinIsTerminal = func() bool {
 const maxPromptStdinBytes int64 = 4 << 20
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -222,6 +228,10 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		goalStopOnBudget = fs.Bool("goal-stop-on-budget", false, "")
 		planModeEnabled  = fs.Bool("plan", false, "")
 		planOnly         = fs.Bool("plan-only", false, "")
+		outputFormat     = fs.String("output-format", "text", "")
+		inputFormat      = fs.String("input-format", "text", "")
+		resumeSession    = fs.String("resume", "", "")
+		thinkingLevel    = fs.String("thinking-level", "", "")
 		goalCriteria     stringSliceFlag
 		goalValidation   stringSliceFlag
 	)
@@ -230,18 +240,42 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *outputFormat != "text" && *outputFormat != "stream-json" {
+		return fmt.Errorf("unsupported --output-format %q", *outputFormat)
+	}
+	if *inputFormat != "text" && *inputFormat != "stream-json" {
+		return fmt.Errorf("unsupported --input-format %q", *inputFormat)
+	}
+	if *outputFormat == "stream-json" && *jsonMode {
+		return fmt.Errorf("--output-format stream-json and --json are mutually exclusive")
+	}
+	if *resumeSession != "" && mode != session.ModeExec {
+		return fmt.Errorf("--resume is only supported on exec")
+	}
+	if *inputFormat == "stream-json" && len(fs.Args()) > 0 {
+		return fmt.Errorf("positional prompt arguments are not allowed with --input-format stream-json")
+	}
 	invokeCWD, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	runner, _, err := runnerLoader(*configPath, invokeCWD)
+	runner, cfg, err := runnerLoader(*configPath, invokeCWD)
 	if err != nil {
 		return err
 	}
 	if mode == "run" && !term.IsTerminal(int(os.Stdin.Fd())) && !*jsonMode {
 		_, _ = fmt.Fprintln(stderr, "warning: stdin is not a TTY; Esc interrupt is disabled in run mode. Prefer exec for zero-interaction runs.")
 	}
-	prompt, err := resolvePrompt(fs.Args(), os.Stdin)
+	var prompt string
+	if *inputFormat == "stream-json" {
+		prompt, err = streamjson.ReadInitialPrompt(os.Stdin, maxPromptStdinBytes)
+	} else {
+		prompt, err = resolvePrompt(fs.Args(), os.Stdin)
+	}
+	if err != nil {
+		return err
+	}
+	providerOptions, err := providerOptionsForThinkingLevel(*thinkingLevel, cfg, *providerName)
 	if err != nil {
 		return err
 	}
@@ -251,28 +285,28 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	}
 	planDraft := planModeDraftFromCLI(*planModeEnabled || *planOnly, prompt)
 
+	streamMode := *outputFormat == "stream-json"
+	var sjAdapter *streamjson.Adapter
 	renderer := output.New(*jsonMode, stdout)
+	if streamMode {
+		sjAdapter = streamjson.NewAdapter(stdout)
+	}
 	sub := runner.Bus().Subscribe(128)
 	var sessionID string
 	var sessionMu sync.RWMutex
-	done := make(chan struct{})
 	renderCtx, cancelRender := context.WithCancel(ctx)
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case evt := <-sub:
-				if evt.Type == "session.started" {
-					sessionMu.Lock()
-					sessionID = evt.SessionID
-					sessionMu.Unlock()
-				}
-				renderer.Handle(evt)
-			case <-renderCtx.Done():
-				return
-			}
+	done := renderEventsUntilDone(renderCtx, sub, func(evt events.Event) {
+		if evt.Type == "session.started" {
+			sessionMu.Lock()
+			sessionID = evt.SessionID
+			sessionMu.Unlock()
 		}
-	}()
+		if streamMode {
+			sjAdapter.Handle(evt)
+			return
+		}
+		renderer.Handle(evt)
+	}, isTerminalSessionEvent)
 
 	runCtx := ctx
 	var cancel context.CancelFunc
@@ -296,24 +330,54 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *initMode {
 		actualMode = session.ModeInit
 	}
-	result, err := runner.Start(runCtx, runtime.StartRequest{
-		Prompt:           prompt,
-		Provider:         *providerName,
-		Model:            *model,
-		Workdir:          *workdir,
-		Mode:             actualMode,
-		SystemOverride:   *system,
-		Goal:             goalDraft,
-		PlanMode:         planDraft,
-		PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
-		IsolationMode:    *isolationMode,
-		IsolationRoot:    *isolationRoot,
-	})
+	var result runtime.RunResult
+	if *resumeSession != "" {
+		result, err = runner.Continue(runCtx, runtime.ContinueRequest{
+			SessionID:        *resumeSession,
+			Message:          prompt,
+			Provider:         *providerName,
+			Model:            *model,
+			SystemOverride:   *system,
+			PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+			ProviderOptions:  providerOptions,
+		})
+	} else {
+		result, err = runner.Start(runCtx, runtime.StartRequest{
+			Prompt:           prompt,
+			Provider:         *providerName,
+			Model:            *model,
+			ProviderOptions:  providerOptions,
+			Workdir:          *workdir,
+			Mode:             actualMode,
+			SystemOverride:   *system,
+			Goal:             goalDraft,
+			PlanMode:         planDraft,
+			PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+			IsolationMode:    *isolationMode,
+			IsolationRoot:    *isolationRoot,
+		})
+	}
 	cancel()
-	cancelRender()
-	<-done
+	waitForRenderer(done, cancelRender, streamMode)
 	if err != nil {
+		if streamMode && result.SessionID != "" {
+			exitCode := mapStatusToExitCode(result.Status, result.LastError)
+			if writeErr := sjAdapter.WriteResult(result.SessionID, result.FinalText, result.Status, result.LastError, exitCode); writeErr != nil {
+				return writeErr
+			}
+			return ExitError{Code: exitCode}
+		}
 		return err
+	}
+	if streamMode {
+		exitCode := mapStatusToExitCode(result.Status, result.LastError)
+		if err := sjAdapter.WriteResult(result.SessionID, result.FinalText, result.Status, result.LastError, exitCode); err != nil {
+			return err
+		}
+		if exitCode != 0 {
+			return ExitError{Code: exitCode}
+		}
+		return nil
 	}
 	return printResult(stdout, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
 }
@@ -2188,6 +2252,47 @@ func printResult(w io.Writer, jsonMode bool, result runtime.RunResult, exitCode 
 		return ExitError{Code: exitCode}
 	}
 	return nil
+}
+
+func renderEventsUntilDone(ctx context.Context, sub <-chan events.Event, render func(events.Event), terminal func(events.Event) bool) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case evt := <-sub:
+				render(evt)
+				if terminal != nil && terminal(evt) {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return done
+}
+
+func waitForRenderer(done <-chan struct{}, cancel context.CancelFunc, drain bool) {
+	if drain {
+		select {
+		case <-done:
+			cancel()
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+}
+
+func isTerminalSessionEvent(evt events.Event) bool {
+	switch evt.Type {
+	case "session.completed", "session.failed", "session.paused", "session.awaiting_input":
+		return true
+	default:
+		return false
+	}
 }
 
 func watchEsc(ctx context.Context, onInterrupt func()) {

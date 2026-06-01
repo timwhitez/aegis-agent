@@ -440,8 +440,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			messages = append(messages, msg)
 			state.LastAssistantExcerpt = truncateText(assistantText, 500)
 			if err := e.appendEvent(meta.ID, "assistant.message", "assistant_output", map[string]any{
-				"text":   assistantText,
-				"status": state.Status,
+				"text":     assistantText,
+				"thinking": result.Thinking,
+				"status":   state.Status,
 			}); err != nil {
 				return RunResult{}, fmt.Errorf("record assistant.message event: %w", err)
 			}
@@ -505,6 +506,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
+					"call_id":   call.ID,
 					"tool_name": call.Name,
 					"arguments": argumentsText,
 				}); err != nil {
@@ -512,6 +514,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				beforePayload := map[string]any{
 					"session_id": meta.ID,
+					"call_id":    call.ID,
 					"tool_name":  call.Name,
 					"mode":       meta.Mode,
 					"arguments":  argumentsText,
@@ -724,6 +727,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				afterPayload := map[string]any{
 					"session_id":     meta.ID,
+					"call_id":        call.ID,
 					"tool_name":      call.Name,
 					"llm_output":     toolResult.LLMOutput,
 					"display_output": toolResult.DisplayOutput,
@@ -774,6 +778,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 				toolResults = append(toolResults, toolResult)
 				eventData := map[string]any{
+					"call_id":        call.ID,
 					"tool_name":      call.Name,
 					"display_output": toolResult.DisplayOutput,
 					"is_error":       toolResult.IsError,
