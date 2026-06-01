@@ -1066,15 +1066,6 @@ function setupEventListeners() {
       return;
     }
 
-    const queueJobButton = event.target.closest('[data-open-job]');
-    if (queueJobButton) {
-      setSelectedQueueJob(queueJobButton.getAttribute('data-open-job') || '');
-      setInspectorTab('agents');
-      await refreshSelectedQueueJobDetail();
-      renderCurrentSession();
-      return;
-    }
-
     const continueBtn = event.target.closest('[data-continue-session]');
     if (continueBtn) {
       const sessionID = continueBtn.getAttribute('data-continue-session');

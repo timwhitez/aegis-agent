@@ -602,7 +602,6 @@ function renderBackgroundResultItem(item) {
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">
         ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
-        ${item.queue_job_id ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>` : ''}
       </div>
     </section>
   `;
@@ -928,7 +927,7 @@ function renderSpecialToolResult(result, parsed) {
       const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
       const action = job.session_id
         ? `<button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(job.session_id)}" style="margin-left:4px;flex-shrink:0;">Open</button>`
-        : `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(job.id)}" style="margin-left:4px;flex-shrink:0;">Open job</button>`;
+        : '';
       rows.push(`
         <div class="sa-tree-row orphan" style="cursor:default; background:transparent; padding:0;">
           <span class="sa-tree-dot ${statusTone}"></span>
@@ -1709,7 +1708,7 @@ function renderSubAgentJobRow(job) {
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
   const targetAttr = job.session_id
     ? `data-sub-agent-open="${escapeAttr(job.session_id)}" title="Click to open child session"`
-    : `data-open-job="${escapeAttr(job.id)}" title="Click to open queue job"`;
+    : 'style="cursor:default;"';
   return `
     <div class="sa-tree-row orphan" ${targetAttr}>
       <span class="sa-tree-dot ${statusTone}"></span>
@@ -2256,10 +2255,9 @@ function renderBackgroundNotificationsPreview(items) {
       </div>
       <div class="notification-copy">${escapeHTML(truncateText(item.last_error || item.final_text || 'No final text recorded.', 180))}</div>
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}</div>
-      ${(item.queue_job_id || item.session_id) ? `
+      ${item.session_id ? `
         <div class="card-actions">
-          ${item.queue_job_id ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>` : ''}
-          ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
+          <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>
         </div>
       ` : ''}
     </div>
@@ -2312,7 +2310,6 @@ function renderSubAgentCard(row) {
       <div class="card-actions">
         ${sessionId ? renderSessionStopButton(sessionId, status) : ''}
         ${sessionId ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(sessionId)}">Open child session</button>` : ''}
-        ${jobId ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(jobId)}">Open job</button>` : ''}
         ${job?.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
       </div>
     </div>
@@ -2361,7 +2358,6 @@ function renderQueueJobCard(job) {
       ${renderVisiblePaths(job.visible_paths)}
       <div class="card-actions">
         ${job.session_id ? renderSessionStopButton(job.session_id, status) : ''}
-        <button class="mini-link-btn" type="button" data-open-job="${escapeAttr(job.id)}">Open job</button>
         ${job.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(job.session_id)}">Open child session</button>` : ''}
         ${job.parent_session_id ? `<button class="mini-link-btn" type="button" data-open-parent-session="${escapeAttr(job.parent_session_id)}">Open parent session</button>` : ''}
       </div>
@@ -2406,7 +2402,6 @@ function renderNotificationCard(item) {
       <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}${item.delivery_status ? ` · ${escapeHTML(item.delivery_status)}` : ''}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">
-        ${item.queue_job_id ? `<button class="mini-link-btn" type="button" data-open-job="${escapeAttr(item.queue_job_id)}">Open job</button>` : ''}
         ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
       </div>
     </div>

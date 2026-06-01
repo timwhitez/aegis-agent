@@ -6622,8 +6622,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "buildDisplayMessageStream") || !strings.Contains(sessionBody, "partitionMatchingToolResults") || !strings.Contains(sessionBody, "primaryFinalFinishResult") || !strings.Contains(sessionBody, "Final response captured") {
 		t.Fatalf("expected session renderer to merge matching tool call/results without duplicating final output, got session-view.js body: %s", sessionBody)
 	}
-	if !strings.Contains(sessionBody, "Click to open queue job") || !strings.Contains(sessionBody, "data-open-job") {
-		t.Fatalf("expected orphan background jobs to open queue jobs instead of child sessions, got session-view.js body: %s", sessionBody)
+	if strings.Contains(sessionBody, "Click to open queue job") || strings.Contains(sessionBody, "data-open-job") {
+		t.Fatalf("expected background/queue frontend job-opening actions to stay removed, got session-view.js body: %s", sessionBody)
 	}
 	if !strings.Contains(sessionBody, "currentOverviewError()") || !strings.Contains(sessionBody, "No durable sessions yet.") {
 		t.Fatalf("expected session rail to distinguish overview load errors from an empty session list, got session-view.js body: %s", sessionBody)

@@ -178,9 +178,9 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - Web 发起的 session `start` 能进入 `awaiting_input`
 - focused retry-resume follow-up 里，`continue` 至少要保留 durable `retry_policy.max_attempts=2` 并真实写出 `provider.retry`
 - 若 retry-resume proof 已拿到上述 durable evidence，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 completion quirk / follow-up note，而不是误判成 retry-policy 失败
-- worker pool 更新与 queue job 提交能落到真实 queue / child session 路径；worker scaling、queue notification 去重与 retry proof 主要由 shell/service tests 覆盖
+- worker pool 更新与 queue job 提交能落到真实 queue / child session 路径；worker scaling、queue notification 去重、queue job detail 与 retry proof 主要由 API / shell / service tests 覆盖
 - parent session 的 background notification 在 queue completion 与 stale-running reconcile 重叠时仍按 `queue_job_id` 去重
-- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start/continue 后的 session chrome、tool card、timeline 可见性，settled session polling 收敛，以及 API 提交 queue job 后在当前 session Background inspector 中展示 selected job facts
+- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start/continue 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history 清理；前端不再验收 Background / Queue UI，API 提交 queue job 后只验证后端 queue detail 与文件事实源
 - 浏览器端 `runtime exception` / `console error` 必须为空
 
 ## 5. Fixture 组织

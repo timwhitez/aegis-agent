@@ -47,7 +47,7 @@
 
 - retry-resume proof 采用 evidence-first 规则：只要 durable session metadata 仍保留原始 `retry_policy.max_attempts=2`，且 resumed turn 真实写出 `provider.retry`，就视为 retry-drift 修复已被证实
 - 若上述 retry proof 已成立，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 non-blocking completion quirk，而不是把 focused rerun 判成失败
-- webconsole 部分仍要求 embedded shell / JS / CSS 资产可直接加载；当前 headless browser UI smoke 覆盖 Settings / Workspace / Skills / Sessions / Session 导航、主 prompt start、durable session chrome、tool cards、timeline 可见性、history clear、API-backed queue job 完成，以及 queue link 可用时的 selected job facts 面板；worker API、retry proof 与 queue notification dedup 由同一脚本的 API / 文件事实检查覆盖，浏览器侧仍要求无 `runtime exception` / `console error`
+- webconsole 部分仍要求 embedded shell / JS / CSS 资产可直接加载；当前 headless browser UI smoke 覆盖 Settings / Workspace / Skills / Sessions / Session 导航、主 prompt start、durable session chrome、tool cards、timeline 可见性和 history clear；API-backed queue job 完成只通过后端 queue detail / 文件事实源验证，浏览器侧不再要求 Background / Queue 前端入口、`Open job` 或 selected job facts 面板，仍要求无 `runtime exception` / `console error`；worker API、retry proof 与 queue notification dedup 由同一脚本的 API / 文件事实检查覆盖
 - queue follow-up 仍要求在真实 queue 完成后强制一次 stale-running reconcile，并验证 parent `background.jsonl` 仍只有 2 条通知且 `queue_job_id` 去重成立
 
 ## 场景矩阵

@@ -921,7 +921,7 @@ cat >"$SUMMARY_PATH" <<EOF
 - UI smoke JSON: \`raw/webconsole-ui-smoke.json\`
 - UI smoke DOM snapshot: \`raw/webconsole-ui-smoke.html\`
 - Shell/assets regression: \`raw/preflight-webconsole-assets.txt\`
-- Result: embedded shell and assets were served locally. Headless Chrome exercised Settings, Workspace, Skills, Sessions and Session navigation, start through the main prompt, durable session chrome, tool cards, timeline visibility, history clear behavior, API-backed queue job completion, and selected job facts after an \`Open job\` transition when a queue link is available. Retry drift, queue notification dedup and worker API behavior are covered by the surrounding shell-script checks and service tests, not by standalone Overview or Worker Pool page interactions.
+- Result: embedded shell and assets were served locally. Headless Chrome exercised Settings, Workspace, Skills, Sessions and Session navigation, start through the main prompt, durable session chrome, tool cards, timeline visibility, and history clear behavior. API-backed queue job completion is verified through backend queue detail and durable file facts; the browser smoke no longer requires a Background / Queue frontend surface, \`Open job\`, or selected job facts panel. Retry drift, queue notification dedup and worker API behavior are covered by the surrounding shell-script checks and service tests, not by standalone Overview or Worker Pool page interactions.
 
 ## Evidence Paths
 
