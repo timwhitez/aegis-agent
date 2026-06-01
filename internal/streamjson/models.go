@@ -56,7 +56,7 @@ func ModelsFromConfig(cfg *config.Config) ([]Model, error) {
 		if levels := supportedThinkingLevels(apiProvider); len(levels) > 0 {
 			model.Thinking = &ModelThinking{
 				SupportedLevels: levels,
-				DefaultLevel:    "medium",
+				DefaultLevel:    defaultThinkingLevel(apiProvider, providerCfg),
 			}
 		}
 		models = append(models, model)
@@ -84,8 +84,39 @@ func supportedThinkingLevels(apiProvider string) []ThinkingLevel {
 			{Value: "low", Label: "Low", Description: "Use a small reasoning or thinking budget."},
 			{Value: "medium", Label: "Medium", Description: "Use the default reasoning or thinking budget."},
 			{Value: "high", Label: "High", Description: "Use a larger reasoning or thinking budget."},
+			{Value: "xhigh", Label: "XHigh", Description: "Use the largest gocli reasoning or thinking budget."},
 		}
 	default:
 		return nil
+	}
+}
+
+func defaultThinkingLevel(apiProvider string, providerCfg config.Provider) string {
+	switch strings.TrimSpace(apiProvider) {
+	case "openai-compatible":
+		if level := normalizeThinkingLevel(providerCfg.ReasoningEffort); level != "" {
+			return level
+		}
+	case "anthropic-compatible", "google":
+		switch {
+		case providerCfg.ThinkingBudget > 8192:
+			return "xhigh"
+		case providerCfg.ThinkingBudget > 4096:
+			return "high"
+		case providerCfg.ThinkingBudget > 0 && providerCfg.ThinkingBudget <= 1024:
+			return "low"
+		case providerCfg.ThinkingBudget > 0:
+			return "medium"
+		}
+	}
+	return "medium"
+}
+
+func normalizeThinkingLevel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low", "medium", "high", "xhigh":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
 	}
 }

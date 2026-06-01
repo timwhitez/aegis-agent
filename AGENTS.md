@@ -43,6 +43,13 @@
 - 详细设计写在 `spec/`，不要把实现细节堆回根说明文件。
 - 不要在文档里引用当前仓库不存在的脚本或路径。
 
+## Multica 兼容部署经验
+
+- `gocli-stream-json` 是 Multica 与本仓库的唯一耦合面；需要扩展时优先更新 `spec/multica-integration/`，再改 `internal/streamjson` 和 CLI flag。
+- Multica 远端部署推荐用 `GO_CLI_AGENT_CONFIG` 指向全局 go-cli-agent 配置，而不是只在 `MULTICA_GOCLI_ARGS` 里加 `--config`；这样 `models --json` 和 `exec` 会读同一份配置。
+- 给 Multica gocli runtime 的全局配置应只让任务执行扫描 `./skills`：这是 Multica workspace shared skills 的动态注入目录，成员创建、从 URL 导入或从本地运行时复制后的 skills 都通过这里对 agent 生效。不要默认扫描 `~/.codex/skills`；本地运行时 skills 在复制到 Multica workspace 前是私有来源。
+- 当远端 Codex `debug models` 显示 `gpt-5.5` 的 `context_window=272000` 且 `effective_context_window_percent=95` 时，gocli 全局配置应给 `openai/gpt-5.5` 设置 `runtime.compact.context_profiles.openai/gpt-5.5.input_char_threshold: 1033600`，即 `272000 * 0.95 * 4` 的 v1 字符近似；`hysteresis_delta_chars` 可保持默认比例设为 `258400`。
+
 ## Git 纪律
 
 - `go-cli-agent/` 现在是独立 Git 仓库根目录；写入型改动默认在这个仓库内完成，不要依赖外层 loose workspace 的无版本状态。

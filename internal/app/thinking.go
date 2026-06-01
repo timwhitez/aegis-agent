@@ -14,7 +14,7 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 		return session.ProviderOptions{}, nil
 	}
 	switch level {
-	case "low", "medium", "high":
+	case "low", "medium", "high", "xhigh":
 	default:
 		return session.ProviderOptions{}, fmt.Errorf("unsupported --thinking-level %q", level)
 	}
@@ -55,6 +55,8 @@ func thinkingBudgetForLevel(level string) int {
 		return 4096
 	case "high":
 		return 8192
+	case "xhigh":
+		return 16384
 	default:
 		return 0
 	}

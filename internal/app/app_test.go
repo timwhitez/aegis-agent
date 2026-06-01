@@ -470,13 +470,13 @@ func TestRunCommandResumeThinkingLevelProviderOptions(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "--thinking-level", "high", "resume"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "--thinking-level", "xhigh", "resume"}, &stdout, &stderr); err != nil {
 		t.Fatalf("resume: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
 	if len(fake.continueCalls) != 1 {
 		t.Fatalf("expected one continue call, got %d", len(fake.continueCalls))
 	}
-	if fake.continueCalls[0].ProviderOptions.ReasoningEffort != "high" {
+	if fake.continueCalls[0].ProviderOptions.ReasoningEffort != "xhigh" {
 		t.Fatalf("expected resume thinking level provider options, got %#v", fake.continueCalls[0].ProviderOptions)
 	}
 }
