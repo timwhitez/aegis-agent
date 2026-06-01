@@ -429,6 +429,46 @@ func TestLoadSkipsUntrustedWorkspaceConfig(t *testing.T) {
 	}
 }
 
+func TestLoadUsesHomeConfigWhenCwdIsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".go-cli-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".go-cli-agent", "config.yaml"), []byte("default_provider: home\nproviders:\n  home:\n    api_provider: openai-compatible\n    api_key_env: HOME_API_KEY\n    base_url: http://home.invalid/v1\n    model: home-model\n"), 0o600); err != nil {
+		t.Fatalf("write home config: %v", err)
+	}
+	cfg, err := Load("", home)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DefaultProvider != "home" {
+		t.Fatalf("home config was not applied when cwd is home: %#v", cfg.DefaultProvider)
+	}
+}
+
+func TestLoadUsesEnvConfigEvenWhenItMatchesWorkspacePath(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	cwd := filepath.Join(root, "work")
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+	if err := os.WriteFile(configPath, []byte("default_provider: env\nproviders:\n  env:\n    api_provider: openai-compatible\n    api_key_env: ENV_API_KEY\n    base_url: http://env.invalid/v1\n    model: env-model\n"), 0o600); err != nil {
+		t.Fatalf("write env config: %v", err)
+	}
+	t.Setenv("GO_CLI_AGENT_CONFIG", configPath)
+	cfg, err := Load("", cwd)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DefaultProvider != "env" {
+		t.Fatalf("env config was not applied when it matched workspace path: %#v", cfg.DefaultProvider)
+	}
+}
+
 func TestLoadUsesTrustedWorkspaceConfigMarker(t *testing.T) {
 	cwd := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {

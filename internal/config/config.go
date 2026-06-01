@@ -363,26 +363,34 @@ func Default() *Config {
 func Load(explicitPath, cwd string) (*Config, error) {
 	cfg := Default()
 
-	loadOrder := []string{}
+	type loadCandidate struct {
+		path                   string
+		requiresWorkspaceTrust bool
+	}
+
+	loadOrder := []loadCandidate{}
 	if explicitPath == "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
-			loadOrder = append(loadOrder, filepath.Join(home, ".go-cli-agent", "config.yaml"))
+			loadOrder = append(loadOrder, loadCandidate{path: filepath.Join(home, ".go-cli-agent", "config.yaml")})
 		}
-		loadOrder = append(loadOrder, filepath.Join(cwd, ".go-cli-agent", "config.yaml"))
+		loadOrder = append(loadOrder, loadCandidate{
+			path:                   filepath.Join(cwd, ".go-cli-agent", "config.yaml"),
+			requiresWorkspaceTrust: true,
+		})
 		if envPath := os.Getenv("GO_CLI_AGENT_CONFIG"); envPath != "" {
-			loadOrder = append(loadOrder, envPath)
+			loadOrder = append(loadOrder, loadCandidate{path: envPath})
 		}
 	} else {
-		loadOrder = append(loadOrder, explicitPath)
+		loadOrder = append(loadOrder, loadCandidate{path: explicitPath})
 	}
 
-	workspaceConfigPath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
-	for _, path := range loadOrder {
+	for _, candidate := range loadOrder {
+		path := candidate.path
 		if path == "" {
 			continue
 		}
-		if explicitPath == "" && sameCleanPath(path, workspaceConfigPath) && !workspaceConfigTrusted(cwd) {
+		if candidate.requiresWorkspaceTrust && !workspaceConfigTrusted(cwd) {
 			continue
 		}
 		data, _, err := fileutil.ReadRegularFileNoSymlink(path)
