@@ -642,3 +642,68 @@ backend compaction 只改变模型上下文视图，不能覆盖原始日志；M
 - 不要求所有 skill 都改成多 agent workflow；普通单 agent skill 仍应可直接运行。
 - 不让评论成为唯一进度事实源；评论是通知和讨论，公共 progress / handoff / validation artifact 才是可恢复事实。
 - 不用 runtime guard 强迫 sub-agent；委派仍应由模型、用户或 Multica issue/squad 边界共同决定。
+
+## 2026-06-03 上游更新后复核
+
+本节记录远端 Multica 已更新到 GitHub 最新 `origin/main` 后，对本文问题的重新检查。远端路径仍为 `/data00/home/guangzhe.zhang/multica`。
+
+### 更新结果
+
+- 更新前创建了备份分支 `backup/pre-upstream-update-20260603-093215`，指向本地二开旧 HEAD `a47cce01`。
+- 已执行 `git fetch --all --prune`，GitHub 最新 `origin/main` 为 `de900b2b feat(server): funnel/community/commercial business metrics + PostHog pairing (MUL-2949) (#3698)`。
+- 已按远端 `AGENTS.md` runbook 使用 `git merge --no-ff --no-commit origin/main` 合并，并解决冲突后提交远端 merge commit `5c18f3d5 merge: incorporate upstream main`。
+- 当前远端 `main...origin/main` 为 `ahead 12, behind 0`，`origin/main` 已被 `HEAD` 包含；未 push。
+- 合并后 `git diff --check` 通过，`git grep -I -n -e '<''<<<<<' -e '>''>>>>>' -- .` 无冲突标记，远端工作树干净。
+- `pnpm install --frozen-lockfile`、`make build`、`pnpm build` 均完成；`pnpm build` 中 `/download` 静态生成阶段出现 GitHub API 403 日志，但任务最终 `3 successful, 3 total`，不是构建失败。
+- 已运行 DB migration，新增应用 `111_workspace_avatar`、`112_issue_dates_to_date`。
+- 已重启生产 backend、web、默认 daemon、10 个 `codex-general` worker daemon、4 个 `gocli` worker daemon。Backend `/health` 返回 `{"status":"ok"}`；Web `/login` 返回 401，符合该私有部署 Basic Auth 预期。
+
+### 二开功能保留情况
+
+本次冲突合并保留了本地二开能力，同时吸收上游新结构：
+
+- 保留 `gocli` provider、`codex-general` provider、gocli model discovery、gocli thinking levels、comment-triggered no-reply fallback 抑制、shared records、gocli workspace skills 注入等本地能力。
+- 保留 skill binary / non-UTF-8 supporting file 的 `skillfile` 编解码处理。
+- 吸收上游 `server/internal/skill` 包，使用 `ParseSkillFrontmatter` 与 `IsReservedContentPath`，避免 `SKILL.md` supporting file 与主 content 重复。
+- 重启 daemon 时发现一个部署层保护点：新二进制会自动探测 `PATH` 中的 `go-cli-agent`。如果不给非 gocli daemon 显式设置 `MULTICA_GOCLI_PATH=/nonexistent/multica-disabled-gocli`，默认 daemon 和 10 个 `codex-general` workers 会额外注册 11 个 gocli runtime。已按原职责重启非 gocli daemon，并确认多余 gocli rows 已转为 offline。
+
+线上保真复核结果：
+
+- 在线 runtime 池恢复为 `codex` 1、`codex-general` 11、`gocli` 4；4 个 gocli daemon id 仍为 `82ce09ee-03ea-4644-a821-238ec7d6c375`、`ddbc1c3b-015d-4ccd-aa14-9414c22e2f90`、`6e479f19-ebf3-49c7-9b96-1888c8244042`、`a510c25b-7891-4ccd-ac40-7e8858590ab5`。
+- `go-cli-agent` symlink 仍指向 `/data00/home/guangzhe.zhang/.go-cli-agent/bin/go-cli-agent-20260601-multica-configfix`，SHA-256 为 `df5abdf843e9bd72705d2c2be9e1c77c98da2f7a528d2b48ab164846a68600c0`。
+- `/data00/home/guangzhe.zhang/.go-cli-agent/config.yaml` 仍为 `0600`，`skills.dirs` 仍为 `["./skills"]`，`openai/gpt-5.5` compaction profile 仍为 `input_char_threshold=1033600`、`hysteresis_delta_chars=258400`。
+- Workspace skill 文件数量仍为：`authorized-security-playbook` 15、`code-audit-knowledge` 8、`cybersec-long-horizon-mission` 2、`lark-markdown-upload` 1、`pentest-toolset` 11、`security-validation-operations` 7、`timwhite-v2-codex-security-review` 8。
+- Squads 仍存在：`CyberSec Long Horizon Squad`、两个 `代码审计Team`、`安全评估Team`。`代码审计Team` 与 `安全评估Team` 的 leader / validator / worker 角色仍在；历史上存在的一个空 role 记录仍保留，未在本次更新中改动。
+
+### 验证结果
+
+- 通过：`go test ./pkg/agent ./internal/daemon ./internal/daemon/execenv ./internal/skill -count=1`。
+- 通过：评论和 timeline 相关 handler 窄测 `TestListTimeline*`、`TestListComments*`、`TestCreateComment*`、`TestCompleteTask_Comment*`、`TestCompleteTask_SquadLeader*`、`TestClaimTaskByRuntime_Comment*`、`TestCountNewCommentsSince*`、`TestCommentCRUD`、`TestCommentMentions*`、`TestShouldEnqueueSquadLeaderOnComment*`、`TestOnCommentTriggerDecision`。
+- 通过：`TestQuickCreateIssueParentTrustBoundary` 单独运行。
+- 限制：`go test ./internal/handler -count=1` 全包仍不是稳定验收信号。迁移前失败是 live DB schema 过旧；迁移后全包只剩 `TestQuickCreateIssueParentTrustBoundary` 在全包顺序中失败，单测通过。失败表现为测试内 `SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1` 取到同包其他 fixture 产生的 `metadata={}` runtime，触发 `daemon_version_unsupported`，属于 live DB / package fixture 互相干扰，不是本次 merge 后线上 schema 或 runtime 注册失败。
+
+### 原问题是否仍存在
+
+1. Multica squad 级调度与 backend 内部 sub-agent 调度边界：仍存在方案需求，上游未把该边界产品化。
+   - 最新代码仍主要通过 squad leader briefing、comment trigger、squad activity 和 task queue 处理 squad 协作。
+   - 还没有 `delegation_boundary`、`run_role`、`expected_public_artifacts`、`validation_contract_ref` 这类 task payload / prompt guidance 字段。
+   - `go-cli-agent` / `codex-general` 内部 sub-agent 是否使用仍应保持 model-led；本计划中“不把 Multica 调度写入 go-cli-agent core runtime”的结论不变。
+
+2. Skill 改造问题：部分改善，但主要问题仍存在。
+   - 已改善：上游新增 `server/internal/skill`，并在本次合并中与本地 `skillfile` 能力取并集；skill frontmatter 解析、reserved `SKILL.md` supporting path、防二进制内容损坏比旧版本更好。
+   - 仍存在：workspace skills 仍没有 `multica.roles`、`multica.shared_artifacts`、`multica.handoff_schema`、`multica.delegation_boundary` 等 Multica 适配 metadata；现有 7 个安全类/发布类 skill 仍需要按本文方案做 role-specific reference、handoff schema、validator contract 和公共区写入规则。
+
+3. Issue 级公共共享区问题：仍存在。
+   - 最新 `server/internal/daemon/execenv/shared_records.go` 仍只有 `sharedRecordDirs = []string{"reports"}`。
+   - `.multica/shared_records.json` 仍只暴露 `shared_dirs: ["reports"]`，没有 schema version，也没有 `handoffs/`、`progress/`、`validation/`、`artifacts/`。
+   - issue records API / CLI、Shared Records UI 面板、validator evidence 面板、public ledger 聚合仍未实现。
+   - 因此 Phase B “共享记录产品化”仍是后续必做项。
+
+4. Issue 页面评论顺序问题：仍存在，但根因更明确。
+   - 后端 flat `/timeline` 保持 ASC；`ListCommentsForIssue`、`ListActivitiesForIssue` 和 `mergeTimeline(..., ascending=true)` 都按 `(created_at, id)` 升序。
+   - 前端 `listTimeline` 新客户端请求不带分页参数，`useIssueTimeline` 的 WS / mutation append 路径也使用 `sortTimelineEntriesAsc`。
+   - 但 `issue-detail.tsx` 仍把 reply 从 flat timeline 中取出，按 `parent_id` bucket 到 root `CommentCard` 内渲染。参考 issue `90d0746e-8049-4326-b98a-aa72f63564bd` 的线上数据仍是 23 条 comments、19 条 activities、2 条 root comments、21 条 replies；DB 全局顺序正确，但默认 threaded 渲染会把 16:16 到 17:03 的大量 replies 视觉上放进 16:02:49 root comment 下，使 16:02:59 的另一条 root comment 看起来被排到后面。
+   - 旧 wrapped `/timeline?limit|before|after|around` 路径仍保留 DESC entries 作为桌面兼容面；新 web client 当前没有使用该路径，但后续仍应防止新 UI 误消费 wrapped DESC shape。
+   - 因此本文“默认 chronological row view + 显式 threaded view / collapsed replies”的修复方向不变。
+
+结论：远端 Multica 已更新到最新 GitHub commit，并且本地二开 runtime / skill / squad 状态已恢复和验证。上游更新修掉或改善了 skill parsing / reserved path 这一类基础能力，但没有消除本文的核心产品/架构问题：公共区 schema 与 UI、skill 的 Multica role/handoff 改造、squad-vs-backend-sub-agent 边界、以及 agent-heavy issue 的默认 timeline 展示语义仍需后续实现。
