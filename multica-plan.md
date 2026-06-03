@@ -707,3 +707,43 @@ backend compaction 只改变模型上下文视图，不能覆盖原始日志；M
    - 因此本文“默认 chronological row view + 显式 threaded view / collapsed replies”的修复方向不变。
 
 结论：远端 Multica 已更新到最新 GitHub commit，并且本地二开 runtime / skill / squad 状态已恢复和验证。上游更新修掉或改善了 skill parsing / reserved path 这一类基础能力，但没有消除本文的核心产品/架构问题：公共区 schema 与 UI、skill 的 Multica role/handoff 改造、squad-vs-backend-sub-agent 边界、以及 agent-heavy issue 的默认 timeline 展示语义仍需后续实现。
+
+## 2026-06-03 收敛实现记录
+
+本节记录对本文 Phase B / Phase D 的第一轮落地结果。代码修改发生在远端 Multica 仓库 `/data00/home/guangzhe.zhang/multica`，本地 `go-cli-agent` 只更新本设计追踪文档。
+
+### 已实现
+
+- Issue public records 目录从单一 `reports/` 扩展为 `reports/`、`handoffs/`、`progress/`、`validation/`、`artifacts/`，并保留 `_conflicts/` 冲突保留策略。
+- 新增 `server/internal/records` 作为 daemon 同步与 API 共用的目录契约层：统一 shared dirs、manifest、host root 解析、路径校验、symlink parent 防护、文件列表、内容读取、发布写入与冲突落盘。
+- `.multica/shared_records.json` 由旧的单一提示升级为 schema v1 manifest，包含 `shared_dirs`、`handoff_schema`、`write_rules` 和 notes；daemon runtime meta skill 同步提示这些目录用途。
+- 新增 issue records API：
+  - `GET /api/issues/{id}/records`
+  - `GET /api/issues/{id}/records/content?path=...`
+  - `POST /api/issues/{id}/records`
+- 前端 core client / zod schema / query 层新增 issue records 支持，仍遵守 installed desktop/web 的 response compatibility 规则。
+- Issue detail Activity 区新增轻量 Shared records 面板，展示最新 public record 文件，避免公共区只存在于裸路径而不可见。
+- Issue timeline 默认改为 Chronological 全局时间顺序视图：reply comment 按自己的 `created_at` 出现在全局位置，并显示 parent hint；保留 Threaded 切换，用于需要按 root comment 阅读整串讨论时展开嵌套 replies。
+- Skill frontmatter 解析新增 Multica adaptation metadata：支持 `multica:` 块或 `multica.roles`、`multica.shared_artifacts`、`multica.handoff_schema`、`multica.delegation_boundary`，创建 skill 时写入 `skill.config.multica`，为后续 skill UI / squad briefing / validator contract 自动化打基础。
+- Squad leader briefing 新增 Issue Public Records 协议，强调评论只是通知，跨 agent 事实应落在 public records，并要求 leader 在复杂委派中指定 worker/validator 应读写的 public artifact。
+
+### 本轮仍未完全产品化
+
+- Shared Records 目前已有基础 API 与 issue detail 轻量可见面，但还不是完整的文件浏览器；后续仍可增加按目录过滤、内容预览、publish UI、冲突文件专门提示和 agent run detail 中的 publish/conflict 状态。
+- `multica` skill metadata 已能入库，但现有 7 个安全/发布类 workspace skills 尚未逐个改写为 role-specific references、handoff schema 和 validator contract 模板。
+- Squad leader briefing 已有公共区协议，但 task payload 仍未显式加入 `run_role`、`delegation_boundary`、`expected_public_artifacts`、`validation_contract_ref` 等字段；目前仍通过 prompt guidance 与 skill metadata 逐步收敛。
+- Timeline 修复先解决默认视觉顺序问题；如果后续出现同 timestamp 多 comment 的真实插入顺序争议，仍应考虑 DB 级 sequence 或 unified timeline sequence，而不是继续用 UUID tie-break 代表插入顺序。
+
+### 收尾验证
+
+- 远端 Multica 提交为 `646e16fd feat(issues): surface shared records and chronological timeline`，`make build` 完成，生成 `v0.3.14-24-g646e16fd` 后端、CLI 与 migrate 二进制。
+- 后端 targeted Go 测试通过：`go test ./internal/records ./internal/daemon ./internal/daemon/execenv ./internal/skill ./internal/handler -count=1`。
+- 前端 / core targeted 测试通过：`pnpm --filter @multica/core exec vitest run api/schema.test.ts`、`pnpm --filter @multica/views exec vitest run locales/parity.test.ts issues/components/issue-detail.test.tsx`。
+- 全量类型检查通过：`pnpm typecheck --force`，结果 `6 successful / 6 total`。
+- 全量单元测试通过：`pnpm test --force`，结果 `8 successful / 8 total`；包含 core、views、docs、web、desktop 的测试集合。
+- 构建通过：`pnpm build`，结果 `3 successful / 3 total`；`/download` 静态生成阶段仍有 GitHub API 403 非致命日志。
+- 完整 E2E 已重新执行：临时无 Basic Auth Web 服务使用 `127.0.0.1:3011`，命令 `PLAYWRIGHT_BASE_URL=http://127.0.0.1:3011 FRONTEND_ORIGIN=http://127.0.0.1:3011 NEXT_PUBLIC_API_URL=http://127.0.0.1:8080 PORT=8080 pnpm exec playwright test`，结果 `19 passed (20.3s)`；测试后已停止临时 3011 服务。
+- 生产服务复验通过：backend `/health` 返回 200，Web `/login` 返回 401，符合私有部署 Basic Auth 预期。
+- daemon 复验通过：default、`codex-worker-1..10`、`gocli-worker-1..4` 均为 `status=running`，版本均为 `v0.3.14-24-g646e16fd`；4 个 gocli health ports `19846..19849` 均返回 `status=running`。
+- runtime DB 已清理先前错误注册的 11 条无引用 `offline|gocli|local` 记录；最终 runtime 计数为 `online|codex|local|1`、`online|codex-general|local|11`、`online|gocli|local|4`、`non_online_runtime_count|0`。
+- squad 复验显示 `CyberSec Long Horizon Squad`、`代码审计Team`、`安全评估Team` 的 leader / validator / worker 角色仍在；其中两个安全 team 仍各有 leader 1、validator 1、worker 4。
