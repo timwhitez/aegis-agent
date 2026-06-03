@@ -290,6 +290,163 @@ references/
 
 映射只用于 prompt / skill guidance / model selection。不要把它写成 runtime hard guard。
 
+### 当前 Multica Workspace Skills 实证清单
+
+截至本轮只读查询，远端 Multica workspace 中共有 7 个 skill。清单依据是 Multica Postgres 中的 `skill`、`skill_file`、`agent_skill`、`agent`、`agent_runtime` 表；“附加文件数”指 `skill_file` 记录数，不含 `skill.content` 中的主 `SKILL.md`。
+
+| Skill | 来源 / 配置 | 附加文件数 | 绑定 agent 数 | 绑定形态 | 是否需要继续优化 |
+| --- | --- | ---: | ---: | --- | --- |
+| `authorized-security-playbook` | runtime-local import，`~/.codex/skills/authorized-security-playbook` | 15 | 10 | `安全评估*` 的 `codex-general` agents + `CyberSec Long Horizon*` 的 `gocli` agents | 需要，中等优先级 |
+| `code-audit-knowledge` | runtime-local import，`~/.codex/skills/code-audit-knowledge` | 8 | 10 | `代码审计*` 的 `codex-general` agents + `CyberSec Long Horizon*` 的 `gocli` agents | 需要，高优先级 |
+| `cybersec-long-horizon-mission` | workspace shared，`scope=workspace_shared`，`runtime=gocli` | 2 | 4 | 只绑定 `CyberSec Long Horizon*` 的 4 个 `gocli` agents | 需要，最高优先级 |
+| `lark-markdown-upload` | runtime-local import，`~/.codex/skills/lark-markdown-upload` | 1 | 0 | 当前未绑定 agent | 轻量优化即可 |
+| `pentest-toolset` | runtime-local import，`~/.codex/skills/pentest-toolset`，含本地 CLI bundle | 11 | 10 | `安全评估*` 的 `codex-general` agents + `CyberSec Long Horizon*` 的 `gocli` agents | 需要，高优先级 |
+| `security-validation-operations` | runtime-local import，`~/.codex/skills/security-validation-operations` | 7 | 10 | `安全评估*` 的 `codex-general` agents + `CyberSec Long Horizon*` 的 `gocli` agents | 需要，高优先级 |
+| `timwhite-v2-codex-security-review` | runtime-local import，`~/.codex/skills/timwhite-v2-codex-security-review` | 8 | 4 | `代码审计Master/Validator` 的 `codex-general` + `CyberSec Long Horizon Master/Validator` 的 `gocli` | 需要，高优先级 |
+
+观察：
+
+- 多数 skill 已经补过一个简短的 `Multica Team Mode` 段落，但它们仍主要是“单 agent skill + 团队模式提示”。缺口是缺少可执行的角色入口、公共区写入路径、handoff schema、validation contract 和“何时内部 sub-agent、何时 Multica worker”的明确分界。
+- `CyberSec Long Horizon*` 这组 `gocli` agents 同时绑定了 6 个安全类 skills，容易让 master/worker/validator 在同一轮加载过多 reference。需要一个更强的 mission router，把公共 mission state 与每个专业 skill 的最小引用集连接起来。
+- `代码审计*`、`安全评估*` 的 `codex-general` agents 自身具备 `orchestrator/worker/validator` 内部架构；这些 skill 不能继续暗示“主 Codex 必须自己 spawn 内部 workers 完成全流程”，应明确在 Multica task 中只负责本 agent 被分配的边界。
+- `lark-markdown-upload` 是发布辅助 skill，当前未绑定 agent，不需要多 agent 调度，但需要知道从 issue public area 读取最终报告，并把上传结果写回 public handoff。
+
+### 每个 Skill 的具体优化方案
+
+#### `cybersec-long-horizon-mission`
+
+定位：这是当前最接近 Multica 架构的 workspace-native skill，应成为 squad mission 的顶层协议，而不是普通安全知识库。
+
+需要优化：
+
+- `SKILL.md` 需要增加 “Issue Public Area Contract” 段落，明确每个 issue 必须维护 `reports/mission_brief.md`、`reports/progress.md`、`reports/validation.md`、`handoffs/*.json`、`progress/events/*.json` 或 `progress/ledger.jsonl`。
+- `templates/structured-handoff.md` 太偏人工 Markdown，缺少机器可读字段；应新增 `templates/structured-handoff.schema.json`，字段与本文 handoff JSON schema 对齐。
+- `templates/validation-contract.md` 应拆成 master 初始 contract、worker slice acceptance、validator gate 三种模板，避免所有角色共用一个模糊模板。
+- 增加 `references/role-master.md`、`references/role-worker.md`、`references/role-validator.md`：master 只负责拆分/派发/综合；worker 只做 bounded slice；validator 只做 creator-verifier gate。
+- 增加 “Delegation Boundary” 小节：优先使用 Multica worker/validator 承担跨责任边界；只在单个 backend agent 内部需要只读并行搜索或局部实现辅助时，才允许 `codex-general` 或 `go-cli-agent` 使用内部 sub-agent。
+
+公共区写入方案：
+
+- Master 初始化 `reports/mission_brief.md`、`validation/contract.json`、`reports/progress.md`。
+- Worker 写 `handoffs/<timestamp>-worker-<task>.json` 和 `reports/<milestone>_<worker>_handoff.md`。
+- Validator 写 `validation/evidence/<milestone>_gate.json` 和 `reports/<milestone>_validator_gate.md`。
+
+#### `timwhite-v2-codex-security-review`
+
+定位：完整代码安全审计 workflow。它当前最容易和 Multica squad 调度发生“双重编排”，因为原 workflow 已内置 15 步、delegation runtime、worker receipts 和 final audit gate。
+
+需要优化：
+
+- `references/delegation-runtime.md` 需要增加 Multica override：当运行在 Multica squad task 中时，`Planned Delegated Slices` 里的 “delegated” 必须先解释为 Multica worker/validator assignment；只有在当前 task 明确授权内部 sub-agent 且不会重复 Multica 分工时，才解释为 Codex sub-agent。
+- `references/full-audit-workflow.md` 的 round bootstrap 应支持 issue public area：`.context/security-review/<round-id>/` 可保留为 backend 私有工作区，但跨 agent 必须同步摘要到 `reports/code-audit/<round-id>/`、`handoffs/` 和 `validation/evidence/`。
+- `templates/audit-rounds-template.md` 的 `Planned Delegated Slices` 表增加列：`delegation_layer`（`multica-agent|backend-subagent|local-bounded`）、`public_handoff`、`validator_gate`。
+- `templates/final-audit-gate-template.md` 增加 Multica gate：最终 PASS 前必须检查 issue public area 中每个 claimed slice 是否存在 handoff、每个 confirmed finding 是否有 validator evidence。
+- `SKILL.md` 的 `Multica Team Mode` 已有方向，但需要把 “Master/Worker/Validator” 绑定到实际 Multica roles，而不是泛化文字。
+
+公共区写入方案：
+
+- Master 写 `reports/code-audit/round-<id>/master-state.md`、`coverage-matrix.md` 摘要和 `validation/contract.json`。
+- Worker 写 `handoffs/<round>-<slice>-worker.json`，并把原 `subagent-results/*.receipt.json` 映射成 public handoff。
+- Validator 写 `validation/evidence/<finding-id>.json`，最终 gate 写 `reports/code-audit/final-audit-gate.md`。
+
+#### `code-audit-knowledge`
+
+定位：轻量/通用白盒审计知识库，适合作为 `timwhite-v2` 的专业知识层，也可单独用于窄范围审计。
+
+需要优化：
+
+- `references/00-audit-workflow.md` 增加 Multica operating modes：`master-scope-map`、`worker-flow-slice`、`validator-finding-gate`、`single-agent-narrow-review`。
+- `references/03-dataflow-and-evidence.md` 增加 public handoff 字段：entry point、source、sink、guards、evidence refs、false-positive reasoning、confidence、remaining checks。
+- `references/07-reporting-and-validation.md` 增加 validator verdict schema，统一 `confirmed|needs_more_evidence|unverified|false_positive|duplicate|out_of_scope`。
+- `SKILL.md` 的 Team Mode 已明确 creator-verifier separation，但还需说明绑定到 `代码审计Worker*` 时默认不要审全仓库，必须等待 master 的文件/flow/family slice。
+
+公共区写入方案：
+
+- Worker flow slice 写 `handoffs/code-audit-<slice>.json`。
+- Validator 对每个 candidate 写 `validation/evidence/<candidate-id>.json`。
+- Master 将确认结果汇总进 `reports/security-review.md` 或 issue-level `reports/code-audit-summary.md`。
+
+#### `authorized-security-playbook`
+
+定位：授权安全评估和报告 playbook，覆盖面广，主要负责安全边界、路由、证据和报告语言。
+
+需要优化：
+
+- `references/00-safety-and-scope.md` 增加 Multica scope owner：master 是唯一可以扩大 scope/ROE 的角色；worker 遇到 scope 不清只能写 blocker handoff，不自行扩大。
+- `references/01-routing-map.md` 增加 Multica routing：将 broad target 拆为 reconnaissance/scope、identity/API、business logic、input/content、cloud/infra、reporting 等 worker slice，但每个 slice 必须有 ROE 和 evidence requirements。
+- `references/08-reporting-and-evidence.md` 增加 issue public area report bundle：finding draft、evidence ledger、reproduction safety notes、validator verdict、final business wording。
+- `SKILL.md` 的 Team Mode 已可用，但应补 “what each role may write”：worker 写 candidate，validator 写 verdict，master 写 final risk statement。
+
+公共区写入方案：
+
+- Master 写 `reports/assessment-scope.md` 和 `validation/contract.json`。
+- Worker 写 `handoffs/security-assessment-<surface>.json`。
+- Validator 写 `validation/evidence/<finding-or-surface>.json`。
+- Final report 写 `reports/authorized-security-report.md`。
+
+#### `pentest-toolset`
+
+定位：带 `ai-pentest-cli` 的低影响 Web/API 安全评估工具 skill。它最需要避免 “CLI 自己变成调度器”。
+
+需要优化：
+
+- `SKILL.md` 已说 CLI 不是 autonomous scheduler；需要把这条提升为 hard guidance：Multica issue/task 是唯一跨 agent 调度层，`ai-pentest-cli` 只负责 scope check、state、artifact、request/replay/fuzz 证据。
+- `references/02-scope-and-state.md` 增加 Multica namespace 规范：每个 issue/slice 使用 `issue_id + task_id + role` 作为 CLI state namespace，避免多个 worker 写同一 state。
+- `references/06-artifacts-compaction.md` 增加 public artifact 发布规则：CLI 原始 artifact 留在私有 workdir，public area 只放摘要、hash、路径引用、可复现命令和必要脱敏证据。
+- `references/07-test-cases.md` 增加 validator replay boundary：validator 只 replay 证明/反驳结论所需的低影响请求，不扩展 fuzz。
+- `manifest.json` 应增加 bundle version 与 compatibility note，说明 `scripts/ai-pentest-cli` 在 Multica isolated workdir 中的预期路径。
+
+公共区写入方案：
+
+- Worker 每个 hypothesis 写 `handoffs/pentest-<hypothesis>.json`，其中列出 CLI state refs 与 artifact hashes。
+- Validator 写 `validation/evidence/pentest-<finding>.json`。
+- Master 写 `reports/pentest-progress.md` 与最终 `reports/pentest-findings.md`。
+
+#### `security-validation-operations`
+
+定位：防御监控、检测工程、威胁狩猎、purple-team 验证和安全运营证据组织。
+
+需要优化：
+
+- `references/00-safety-and-engagement.md` 增加 Multica “engagement lock”：master 锁定 ROE、telemetry sources、impact limits；workers 不得改变采集源或触发方式。
+- `references/01-routing-map.md` 增加 role routing：detection worker、hunt worker、cloud/identity worker、validation worker、validator 的职责边界。
+- `references/05-evidence-reporting.md` 增加 shared evidence ledger schema：telemetry source、query/rule、time window、observation、negative checks、control gap、owner-ready remediation。
+- `SKILL.md` 的 validator 描述应进一步绑定到 Multica validator：验证安全结论，不验证普通代码质量。
+
+公共区写入方案：
+
+- Worker 写 `reports/security-ops/<slice>.md` 和 `handoffs/security-ops-<slice>.json`。
+- Validator 写 `validation/evidence/security-ops-<assertion>.json`。
+- Master 维护 `reports/security-ops-ledger.md` 和 `reports/security-ops-summary.md`。
+
+#### `lark-markdown-upload`
+
+定位：发布辅助 skill，不是安全工作流，也不需要多 agent 分工。
+
+需要优化：
+
+- `SKILL.md` 增加 Multica public area input rule：默认从 issue public `reports/` 中选取 master-approved final report，不上传 worker draft、validator draft 或 `_conflicts/` 文件。
+- 增加 `references/multica-publish.md`，说明如何读取 `handoffs/` 或 `reports/final-*`，如何把 `document_id`、`revision_id`、URL、上传时间写回 `handoffs/publish-<timestamp>.json`。
+- 保留单 agent 命令路径；无需引入 worker/validator 角色。
+
+公共区写入方案：
+
+- 发布 agent 写 `handoffs/publish-feishu-doc.json`。
+- 如需用户可见，issue comment 只贴最终文档 URL 和 source report path。
+
+### Skill 改造优先级
+
+1. `cybersec-long-horizon-mission`：先把公共区、角色、handoff、validator contract 固化，因为它是其他安全 skill 在 Multica 中的总协议。
+2. `timwhite-v2-codex-security-review`、`pentest-toolset`：这两个最复杂，最容易发生双重编排或状态冲突。
+3. `code-audit-knowledge`、`authorized-security-playbook`、`security-validation-operations`：补齐 role-specific reference、public evidence schema、validator verdict。
+4. `lark-markdown-upload`：作为发布辅助，最后做轻量 public-area 适配。
+
+验收标准：
+
+- 每个已绑定 agent 的 skill 都能回答：当前角色是谁、读哪个 reference、写哪个 public artifact、何时请求 Multica worker/validator、何时允许 backend 内部 sub-agent。
+- 每个 workflow skill 都有 machine-readable handoff 或 validator contract 模板。
+- 同一 issue 中，不同 agent 不能因为 skill 默认路径而写同名 report；所有 worker/validator 输出文件名必须包含 milestone/slice/agent 或 task id。
+
 ## 长上下文与恢复策略
 
 长任务不能依赖任何一个聊天上下文完整保留。推荐事实分层：
@@ -308,6 +465,54 @@ references/
 backend compaction 只改变模型上下文视图，不能覆盖原始日志；Multica handoff 只发布摘要和证据，不能替代 runtime 内部事实。
 
 ## 评论顺序 bug 修复计划
+
+### 指定 Issue 复现证据
+
+用户给出的页面是 `http://10.37.226.142:3000/local-multica/issues/90d0746e-8049-4326-b98a-aa72f63564bd`。只读 DB 查询显示：
+
+- issue 标题为 `授权渗透测试：itsec-iac.bytedance.net 全站安全评估`，状态 `in_progress`，assignee 是 squad。
+- 该 issue 当前有 23 条 comments、19 条 activities。
+- comments 中只有 2 条 root comments，21 条是 replies。
+- 按 DB canonical 顺序 `ORDER BY created_at ASC, id ASC` 看，所有 comment 时间是递增的，没有同 timestamp comment。
+- 第一条 root comment 是 16:02:49 的 member delegation comment；它的线程包含 22 条 comment，时间跨度从 16:02:49 到 17:03:14。第二条 root comment 是 16:02:59 的 agent summary comment，只有自己一条。
+- 前端 `issue-detail.tsx` 会先取 top-level comments / activities，再把 replies bucket 到其 root comment 下，`CommentCard` 收到 `replies={timelineView.threadReplies.get(item.id)}` 后在卡片内渲染整棵回复线程。
+
+因此，这个 issue 的“顺序混乱”不是后端 flat timeline 没按时间排序，而是产品语义冲突：
+
+- 数据层是全局时间线。
+- UI 层把 replies 归到 root comment 下，导致 16:16 到 17:03 的大量 agent reply 会视觉上出现在 16:02:49 root comment 的卡片内部。
+- 紧接着 16:02:59 的 root comment 可能显示在这一大段 thread 之后。用户从全局时间角度看，会认为 16:02:59 的 comment 被错误排到 17:03 后面。
+
+这类页面对于 agent-heavy issue 尤其明显，因为 Multica prompt 当前要求 comment-triggered agent 总是用 `--parent <trigger_comment_id>` 回复；长任务会形成一条很深/很长的主线程。
+
+### 针对该 Issue 的修复方向
+
+这个 bug 应作为 “issue timeline 默认视图不应被长 reply thread 破坏全局时间顺序” 修复，而不是只修 SQL 排序。
+
+推荐产品/技术方案：
+
+1. 保留当前 threaded conversation 能力，但 issue 默认 timeline 应按全局时间顺序展示每个 comment/event。
+   - root comment 和 reply 都作为独立 timeline row 出现在自己的 `created_at` 位置。
+   - reply row 显示 “replying to <parent author/time>” 或短 parent context，而不是完整嵌入到 root card 里。
+   - 点击 thread/replies 才展开 thread drawer 或局部 threaded view。
+2. 对于当前 `CommentCard` 的 inline replies：
+   - 只显示最近 N 条 reply 或 collapsed summary，不能让 root comment 的 card 吃掉后续一小时的全局 timeline。
+   - `ResolvedThreadBar` 可继续用 `collectThreadReplies`，但默认 timeline browsing 不应把全量 descendants 内联。
+3. 增加一个显式 view toggle：
+   - `Chronological`：默认，所有 comments / activities 全局按时间排序。
+   - `Threaded`：按 root thread 分组，适合阅读单个讨论串。
+   - `Agent progress`：可选，把 worker/validator handoff 从 comments 中抽取到 progress lane。
+4. `BuildCommentReplyInstructions` 的 `--parent` 仍然正确，因为它保证 reply 触发语义和通知上下文；不要为了页面顺序移除 parent_id。修复应在展示模型上做，而不是破坏评论线程数据。
+5. 后端 API 可保留 flat `/timeline`；前端增加一个 `timelineViewMode`：
+   - chronological 模式使用 flat `timeline` 原数组直接渲染 comment rows，reply 只带 parent hint。
+   - threaded 模式才构建 `threadReplies` 并传给 root `CommentCard`。
+
+对应测试：
+
+- `issue-detail.test.tsx` 增加复现 fixture：root A 16:02:49，root B 16:02:59，reply A1 16:16，reply A2 17:03。默认 chronological 视图 DOM 顺序必须是 A、B、A1、A2。
+- 增加 threaded 视图测试：切到 threaded 时 A card 可以包含 A1/A2，B 仍按 root 时间排。
+- `use-issue-timeline.test.tsx` 保留 cache ASC 测试；另加 parent_id 不影响 chronological row order。
+- 后端 `activity_test.go` 继续覆盖 flat timeline ASC，避免未来误改为 thread order。
 
 ### 复现和定位
 
