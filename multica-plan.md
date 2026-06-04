@@ -20,7 +20,7 @@
 | Worker 1 busy 时仍排 Worker 1 | issue `78ea40b0-89e3-4c9c-96fc-672dd6222b2f`、`c66fefbe-0576-44c5-966b-a170ced1cb20` 暴露 Master exact mention Worker 1，Worker 2 idle 也不接活。 | claim 阶段不能改变已绑定 agent；问题在 task 创建前缺 role/load delegation。 | 增加 squad delegation API/CLI 和 member status，Master 对新独立 slice 使用 `role=worker + least_busy`，exact mention 仍严格绑定指定 Worker。 |
 | gocli 写完产物后未 finish | 部分任务已写 artifact/comment，但最后被 `max_turns_hard_exceeded` 或无 final result 标失败。 | 仅靠 hard turn limit 收口不可靠；Multica 未识别“已有副作用但未 finish”。 | gocli 全局 `runtime.max_turns_hard: -1`；Multica 增加 no-final-result hardening、side-effect-aware recovery 和 issue-bound Completion Contract。 |
 | repo blocker/no_action 反复 | `repo checkout` 曾报 `MULTICA_DAEMON_PORT not set` 或 `repo is not configured for this workspace`，Master 后续 no_action。 | gocli shell env allowlist 漏 `MULTICA_*`；repo resource 缺预检；blocker metadata 不统一。 | gocli allowlist 加入必要 `MULTICA_*`；新增 `multica repo preflight`；blocker kind/metadata/activity 标准化。 |
-| Validator mention 丢失 | LOC-21 / `ad5f6214-a114-409b-881b-9d6e6221579f` 中 Validator 后续复核没有转成 task。 | 同 issue + 同 agent 已有 pending task 时，后续 mention 被静默跳过。 | 增加 mention/follow-up work item 队列，记录 `enqueued/attached/deferred/deduped/skipped/failed`，前序 task 完成后可转 task 或给出明确 outcome。 |
+| Validator mention 丢失 | LOC-21 / `ad5f6214-a114-409b-881b-9d6e6221579f` 中 Validator 后续复核没有转成 task。 | 同 issue + 同 agent 已有 pending task 时，后续 mention 被静默跳过。 | 不新增独立 follow-up 表；改为让 `agent_task_queue` 对同一 `issue_id + agent_id` 允许不同 `trigger_comment_id` 的 queued/dispatched follow-up，并记录 `mention_task_outcome` 活动，明确 `enqueued/deferred/deduped_pending/skipped_with_reason/failed`。 |
 | mission/publish gate 不完整 | LOC-21 缺 Worker 2 Validator review、final report、Lark URL 后仍可能汇总停滞。 | issue-level durable mission state 不足。 | 增加 mission reconcile/recover/complete/publish 能力；close/final 前检查 Validator artifact、final report、publish receipt、`published_doc_url`。 |
 | skill roles/bindings 不完整 | `cybersec-long-horizon-mission`、`timwhite-v2-codex-security-review`、`lark-markdown-upload` 角色分配不完整。 | Worker/Validator/Master 不能稳定看到 handoff、receipt、publish contract。 | `cybersec-long-horizon-mission` 的 `multica.roles` 加 worker；`timwhite-v2-codex-security-review` 分配给代码审计 Worker 和 CyberSec Long Horizon Worker；`lark-markdown-upload` 挂给 Master/Validator。 |
 
@@ -129,5 +129,5 @@ Codex 对齐来源：`/data00/home/guangzhe.zhang/.codex/config.toml` 已验证�
 - gocli config 出问题：恢复 `/data00/home/guangzhe.zhang/.go-cli-agent/config.yaml` 备份，gocli preflight degraded 时禁止 claim 新任务。
 - runtime 注册出问题：先检查 `agent`、`agent_task_queue`、`chat_session` 引用；无引用错误 runtime 可删除，有引用则保持 offline/hidden，避免破坏历史。
 - delegation 出问题：Master 临时回退 exact mention；保留 member status 只读观测。
-- mention/follow-up 队列出问题：不删除历史 comment/task，只追加 outcome 修正记录。
+- mention follow-up 出问题：不删除历史 comment/task；通过 `agent_task_queue.trigger_comment_id` 和 `mention_task_outcome` 追加修正记录，避免把后续 mention 静默吞掉。
 - mission/publish gate 出问题：允许人工补 `published_doc_url`/receipt metadata，但必须保留 blocker/gate activity。
