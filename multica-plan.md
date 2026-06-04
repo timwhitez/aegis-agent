@@ -4,7 +4,7 @@
 
 ## 1. 当前结论
 
-- gocli 必须复用远端 Codex 配置：`base_url=http://127.0.0.1:8327/v1/`、`wire_api=responses`、`model=gpt-5.5`、`reasoning_effort=xhigh`，API key 从 `~/.codex/auth.json` 导出为 `OPENAI_API_KEY`，禁止打印 secret。
+- gocli 必须复用远端 Codex 配置：`base_url=http://127.0.0.1:8327/v1/`、`wire_api=responses`、`model=gpt-5.5`、`reasoning_effort=xhigh`，API key 从 `~/.codex/auth.json` 导出为 `OPENAI_API_KEY`，禁止打印 secret；gocli daemon 启动时必须设置 `HOME=/data00/home/guangzhe.zhang`，避免 `/home/guangzhe.zhang` symlink parent 触发 go-cli-agent 安全写入拒绝。
 - gocli 任务只扫描 Multica workspace 注入的 `./skills`。远端 `~/.codex/skills` 已归档为 `/data00/home/guangzhe.zhang/.codex/skills.disabled-20260604T062039Z`，不能重新纳入 gocli task skill path。
 - 正确 online runtime 池是：`codex-general=11`、`gocli=4`。旧 `codex` 和混合注册产生的错误 `gocli` runtime 不应保持 online；若无 `agent`、`agent_task_queue`、`chat_session` 引用，可删除。
 - `keep_recent_tool_results: 3` 只影响 go-cli-agent compaction 后 provider view 中保留多少条完整 tool result，不影响 timeout、turn limit、finish、scheduler 或任务恢复。生产默认保持 `3`。
@@ -15,9 +15,11 @@
 | 问题 | 上下文 | 根因 | 修复 |
 | --- | --- | --- | --- |
 | gocli `Invalid API key` / 模型漂移 | `CyberSec Long Horizon Master` 曾报 `openai: {"error":"Invalid API key"}`。 | gocli daemon 没有稳定复用 Codex base/key/model/reasoning；启动环境可能丢 key。 | 远端 `/data00/home/guangzhe.zhang/.go-cli-agent/config.yaml` 固定 OpenAI-compatible Codex base、`gpt-5.5`、`xhigh`；gocli daemon 从 `~/.codex/auth.json` 导出 `OPENAI_API_KEY`；health preflight 校验 key env、base、model、xhigh、wire API。 |
+| gocli preflight `models_command_failed` | 全量重启后 gocli health 一度显示 `status=degraded`、`reason=gocli_models_unavailable`。 | 远端 `/home/guangzhe.zhang` 是指向 `/data00/home/guangzhe.zhang` 的 symlink；go-cli-agent 执行 `models --json` 时拒绝通过 symlink parent 写 config/session。 | gocli daemon 环境固定 `HOME=/data00/home/guangzhe.zhang`，并继续使用绝对 `GO_CLI_AGENT_CONFIG=/data00/home/guangzhe.zhang/.go-cli-agent/config.yaml`；health 需恢复 `models_status=ok`。 |
 | 错误 runtime 行反复出现 | 曾出现 `Codex (n37-226-142)` 和错误 `Go CLI Agent` 行。 | `.env` 在 overrides 之后被 source 会恢复 `MULTICA_CODEX_PATH=/usr/bin/codex`；同一 daemon 先注册 `codex+gocli` 后再只注册 `gocli` 时，旧 provider 没被下线。 | `.env` 改为默认禁用旧 `codex` 和默认 gocli；daemon register 增加 provider reconciliation，把同 daemon 未上报 provider 标 offline；无引用的错误 `codex`/旧 `gocli` runtime 已删除。 |
 | codex-worker 只注册成 1 个 runtime | 10 个 `codex-worker-*` 进程曾全部显示同一个默认 daemon_id。 | 启动 codex worker 时没设置独立 `MULTICA_DAEMON_ID`。 | 每个 `codex-worker-N` 必须设置 `MULTICA_DAEMON_ID=codex-worker-N`、独立 `MULTICA_AGENT_RUNTIME_NAME`、`MULTICA_WORKSPACES_ROOT` 和 health port。 |
 | Worker 1 busy 时仍排 Worker 1 | issue `78ea40b0-89e3-4c9c-96fc-672dd6222b2f`、`c66fefbe-0576-44c5-966b-a170ced1cb20` 暴露 Master exact mention Worker 1，Worker 2 idle 也不接活。 | claim 阶段不能改变已绑定 agent；问题在 task 创建前缺 role/load delegation。 | 增加 squad delegation API/CLI 和 member status，Master 对新独立 slice 使用 `role=worker + least_busy`，exact mention 仍严格绑定指定 Worker。 |
+| Validator delegation role contract 错写 | 真实 E2E 发现 `multica squad delegate --role validator` 会选中 Validator，但 task context 仍写 `run_role:"worker"`。 | `CreateSquadDelegation` enqueue 前硬编码 `taskcoord.RoleWorker`，没有把请求角色映射到 coordination contract。 | 增加 `taskcoord.RoleValidator`，delegation 根据请求角色写入 `run_role`；补 DB-backed handler 测试覆盖 selected agent、task context、mission milestone 三处一致性。 |
 | gocli 写完产物后未 finish | 部分任务已写 artifact/comment，但最后被 `max_turns_hard_exceeded` 或无 final result 标失败。 | 仅靠 hard turn limit 收口不可靠；Multica 未识别“已有副作用但未 finish”。 | gocli 全局 `runtime.max_turns_hard: -1`；Multica 增加 no-final-result hardening、side-effect-aware recovery 和 issue-bound Completion Contract。 |
 | repo blocker/no_action 反复 | `repo checkout` 曾报 `MULTICA_DAEMON_PORT not set` 或 `repo is not configured for this workspace`，Master 后续 no_action。 | gocli shell env allowlist 漏 `MULTICA_*`；repo resource 缺预检；blocker metadata 不统一。 | gocli allowlist 加入必要 `MULTICA_*`；新增 `multica repo preflight`；blocker kind/metadata/activity 标准化。 |
 | Validator mention 丢失 | LOC-21 / `ad5f6214-a114-409b-881b-9d6e6221579f` 中 Validator 后续复核没有转成 task。 | 同 issue + 同 agent 已有 pending task 时，后续 mention 被静默跳过。 | 不新增独立 follow-up 表；改为让 `agent_task_queue` 对同一 `issue_id + agent_id` 允许不同 `trigger_comment_id` 的 queued/dispatched follow-up，并记录 `mention_task_outcome` 活动，明确 `enqueued/deferred/deduped_pending/skipped_with_reason/failed`。 |
@@ -67,6 +69,12 @@ skills:
     - ./skills
 ```
 
+gocli daemon 启动环境还必须设置：
+
+```bash
+HOME=/data00/home/guangzhe.zhang
+```
+
 Codex 对齐来源：`/data00/home/guangzhe.zhang/.codex/config.toml` 已验证为 `model_provider=custom`、`model=gpt-5.5`、`model_reasoning_effort=xhigh`、`base_url=http://127.0.0.1:8327/v1/`、`wire_api=responses`。
 
 ## 4. 启动规则
@@ -81,6 +89,7 @@ Codex 对齐来源：`/data00/home/guangzhe.zhang/.codex/config.toml` 已验证�
   - `MULTICA_CODEX_PATH=/nonexistent/multica-disabled-codex`
   - `MULTICA_CODEX_GENERAL_PATH=/nonexistent/multica-disabled-codex-general`
   - `MULTICA_GOCLI_PATH=go-cli-agent`
+  - `HOME=/data00/home/guangzhe.zhang`
   - `GO_CLI_AGENT_CONFIG=/data00/home/guangzhe.zhang/.go-cli-agent/config.yaml`
   - `OPENAI_API_KEY` 从 `~/.codex/auth.json` 导出，禁止打印
   - daemon id 使用 `/data00/home/guangzhe.zhang/.go-cli-agent/multica-daemon-ids/gocli-worker-N.id`
