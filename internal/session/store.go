@@ -3478,6 +3478,9 @@ func validateState(state State) error {
 	if state.ProviderAutoResumeCount < 0 {
 		return errors.New("provider_auto_resume_count must be non-negative")
 	}
+	if state.ProviderMaxTokensResumeCount < 0 {
+		return errors.New("provider_max_tokens_resume_count must be non-negative")
+	}
 	if strings.TrimSpace(state.UpdatedAt) == "" {
 		return errors.New("state updated_at is required")
 	}
@@ -4099,7 +4102,7 @@ func validateProviderAttempt(attempt ProviderAttempt) error {
 		return errors.New("provider attempt model is required")
 	}
 	switch attempt.Outcome {
-	case "retry", "auto_resume", "failure", "success":
+	case "retry", "auto_resume", "max_tokens_resume", "failure", "success":
 	default:
 		if strings.TrimSpace(attempt.Outcome) == "" {
 			return errors.New("provider attempt outcome is required")

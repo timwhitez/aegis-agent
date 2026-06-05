@@ -484,6 +484,7 @@ providers:
 - `send_metadata` 默认为主契约路径；只有某个非官方 `openai-compatible` 部署明确不兼容 `metadata` 字段时，才应显式设置 `send_metadata: false`
 - provider retry 只允许有限次数的 transport / rate-limit / upstream 重试；认证错误、请求格式错误、响应解析错误不能被自动吞掉
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，可以按 `runtime.provider_auto_resume` 做有界自动续跑；每次自动续跑必须写入 durable event
+- provider 返回 `max_tokens` / `max_output_tokens` 且已有部分 assistant 输出时，可以按 `runtime.provider_auto_resume` 做有界自动续跑；runtime 必须先落盘部分输出和 `provider.max_tokens_resume` 证据，再让模型补齐 final/handoff，不允许执行不完整响应中的 tool call
 
 ## 9. 验收标准
 

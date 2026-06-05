@@ -340,21 +340,25 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			if e.shouldAutoResumeProviderError(err, state) {
 				state.ProviderAutoResumeCount++
+				backoff := providerAutoResumeBackoff(meta, state.ProviderAutoResumeCount)
 				state.LastError = err.Error()
 				state.Phase = "provider_call"
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
-				if appendErr := recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount); appendErr != nil {
+				if appendErr := recordProviderAutoResumeAttempt(e.store, meta, state.Turn, err, state.ProviderAutoResumeCount, backoff); appendErr != nil {
 					return e.fail(ctx, meta, state, appendErr, hookManager)
 				}
 				_ = writeSessionSummary(e.store, meta.ID)
 				_ = writeLongRunCheckpoint(e.store, meta.ID)
-				if appendErr := e.appendProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount); appendErr != nil {
+				if appendErr := e.appendProviderAutoResume(meta.ID, err, state.ProviderAutoResumeCount, backoff); appendErr != nil {
 					return RunResult{}, appendErr
 				}
-				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_auto_resume"); appendErr != nil {
+				if _, appendErr := e.appendHarnessReminder(meta, "provider_call", providerAutoResumePrompt(err, state.ProviderAutoResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts, backoff), "provider_auto_resume"); appendErr != nil {
 					return RunResult{}, appendErr
+				}
+				if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+					return RunResult{}, sleepErr
 				}
 				continue
 			}
@@ -390,6 +394,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		_ = writeSessionSummary(e.store, meta.ID)
 		if state.ProviderAutoResumeCount != 0 {
 			state.ProviderAutoResumeCount = 0
+			if err := e.store.SaveState(meta.ID, state); err != nil {
+				return RunResult{}, err
+			}
+		}
+		if state.ProviderMaxTokensResumeCount != 0 && result.StopReason != "max_tokens" {
+			state.ProviderMaxTokensResumeCount = 0
 			if err := e.store.SaveState(meta.ID, state); err != nil {
 				return RunResult{}, err
 			}
@@ -451,6 +461,30 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		if len(result.ToolCalls) == 0 {
 			if failureReason, failureText := providerStopFailure(result.StopReason); failureReason != "" {
+				if failureReason == "provider_max_tokens" && !budgetStopRequested && e.shouldAutoResumeProviderMaxTokens(result, state) {
+					state.ProviderMaxTokensResumeCount++
+					backoff := providerAutoResumeBackoff(meta, state.ProviderMaxTokensResumeCount)
+					state.LastError = failureText
+					state.Phase = "turn_decide"
+					if err := e.store.SaveState(meta.ID, state); err != nil {
+						return RunResult{}, err
+					}
+					if appendErr := recordProviderMaxTokensResumeAttempt(e.store, meta, state.Turn, result, state.ProviderMaxTokensResumeCount, backoff); appendErr != nil {
+						return e.fail(ctx, meta, state, appendErr, hookManager)
+					}
+					_ = writeSessionSummary(e.store, meta.ID)
+					_ = writeLongRunCheckpoint(e.store, meta.ID)
+					if appendErr := e.appendProviderMaxTokensResume(meta.ID, result, state.ProviderMaxTokensResumeCount, backoff); appendErr != nil {
+						return RunResult{}, appendErr
+					}
+					if _, appendErr := e.appendHarnessReminder(meta, "turn_decide", providerMaxTokensResumePrompt(state.ProviderMaxTokensResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts, backoff), "provider_max_tokens_resume"); appendErr != nil {
+						return RunResult{}, appendErr
+					}
+					if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+						return RunResult{}, sleepErr
+					}
+					continue
+				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_decide"
 				state.IncompleteReason = failureReason
@@ -1013,6 +1047,7 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 	state.LastError = ""
 	state.IncompleteReason = ""
 	state.ProviderAutoResumeCount = 0
+	state.ProviderMaxTokensResumeCount = 0
 	state.LastAssistantExcerpt = truncateText(text, 500)
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
@@ -1177,15 +1212,44 @@ func (e *Engine) shouldAutoResumeProviderError(err error, state session.State) b
 	return httpErr.Class == "upstream_timeout"
 }
 
-func (e *Engine) appendProviderAutoResume(sessionID string, err error, attempt int) error {
-	data := e.providerAutoResumeEventData(err, attempt)
+func (e *Engine) shouldAutoResumeProviderMaxTokens(result provider.TurnResult, state session.State) bool {
+	if !e.cfg.Runtime.ProviderAutoResume.Enabled {
+		return false
+	}
+	if strings.TrimSpace(result.Text) == "" && strings.TrimSpace(result.Thinking) == "" && len(result.ProviderContentBlocks) == 0 {
+		return false
+	}
+	maxAttempts := e.cfg.Runtime.ProviderAutoResume.MaxAttempts
+	if maxAttempts <= 0 || state.ProviderMaxTokensResumeCount >= maxAttempts {
+		return false
+	}
+	return true
+}
+
+func (e *Engine) appendProviderAutoResume(sessionID string, err error, attempt int, backoff time.Duration) error {
+	data := e.providerAutoResumeEventData(err, attempt, backoff)
 	return e.appendEvent(sessionID, "provider.auto_resume", "provider_call", data)
 }
 
-func (e *Engine) providerAutoResumeEventData(err error, attempt int) map[string]any {
+func (e *Engine) appendProviderMaxTokensResume(sessionID string, result provider.TurnResult, attempt int, backoff time.Duration) error {
 	data := map[string]any{
 		"attempt":      attempt,
 		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
+		"backoff_ms":   backoff.Milliseconds(),
+		"stop_reason":  result.StopReason,
+		"error":        "provider stopped because max output tokens were reached",
+	}
+	if strings.TrimSpace(result.ProviderResponseID) != "" {
+		data["provider_response_id"] = result.ProviderResponseID
+	}
+	return e.appendEvent(sessionID, "provider.max_tokens_resume", "turn_decide", data)
+}
+
+func (e *Engine) providerAutoResumeEventData(err error, attempt int, backoff time.Duration) map[string]any {
+	data := map[string]any{
+		"attempt":      attempt,
+		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
+		"backoff_ms":   backoff.Milliseconds(),
 		"error":        err.Error(),
 	}
 	var httpErr *provider.HTTPError
@@ -1209,8 +1273,57 @@ func (e *Engine) appendProviderCancelled(sessionID, reason string) error {
 	return e.appendEvent(sessionID, "provider.cancelled", "provider_call", map[string]any{"reason": reason})
 }
 
-func providerAutoResumePrompt(err error, attempt, maxAttempts int) string {
-	return fmt.Sprintf("Harness reminder: the provider request timed out while waiting for the model (%s). This is a provider/gateway timeout, not a shell or tool hang; the session is still running and the runtime is auto-resuming (%d/%d). Continue from existing durable evidence. Do not restart broad exploration because of this timeout. If the current task is report finalization, fix the specific finish guard or call finish with current evidence.", err.Error(), attempt, maxAttempts)
+func providerAutoResumePrompt(err error, attempt, maxAttempts int, backoff time.Duration) string {
+	return fmt.Sprintf("Harness reminder: the provider request timed out while waiting for the model (%s). This is a provider/gateway timeout, not a shell or tool hang; the session is still running and the runtime is auto-resuming (%d/%d) after a %s backoff. Continue from existing durable evidence. Do not restart broad exploration because of this timeout. If the current task is report finalization, fix the specific finish guard or call finish with current evidence.", err.Error(), attempt, maxAttempts, formatProviderBackoff(backoff))
+}
+
+func providerMaxTokensResumePrompt(attempt, maxAttempts int, backoff time.Duration) string {
+	return fmt.Sprintf("Harness reminder: the provider stopped because max_output_tokens was reached after producing a partial assistant message. The partial message is already recorded in the session; the runtime is auto-resuming (%d/%d) after a %s backoff. Continue from that existing durable output, finish the missing handoff/report/status action, and avoid restarting broad exploration.", attempt, maxAttempts, formatProviderBackoff(backoff))
+}
+
+func providerAutoResumeBackoff(meta session.SessionMetadata, attempt int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	base := time.Duration(0)
+	if meta.ProviderOptions.RetryPolicy != nil && meta.ProviderOptions.RetryPolicy.BaseDelayMS > 0 {
+		base = time.Duration(meta.ProviderOptions.RetryPolicy.BaseDelayMS) * time.Millisecond
+	}
+	if base <= 0 {
+		return 0
+	}
+	delay := base
+	for i := 1; i < attempt; i++ {
+		if delay >= 30*time.Second {
+			return 30 * time.Second
+		}
+		delay *= 2
+	}
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
+}
+
+func sleepProviderAutoResumeBackoff(ctx context.Context, backoff time.Duration) error {
+	if backoff <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func formatProviderBackoff(backoff time.Duration) string {
+	if backoff <= 0 {
+		return "0ms"
+	}
+	return backoff.String()
 }
 
 func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messages []session.Message) ([]session.Message, error) {

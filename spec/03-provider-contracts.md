@@ -110,6 +110,7 @@ v1 允许 adapter 采用“单次响应 + 事件回放”的伪流式模式。
 - `tool_use` 必须携带至少一个内部 tool call；如果 runtime 在没有 parsed tool calls 的情况下看到 `tool_use`，必须按 provider boundary failure 处理，不能降级为普通等待输入。
 - 若 provider 因 `429` / `5xx` / transport timeout 发生有限重试，必须在事件流里留下 `provider.retry` 证据
 - 若 provider 在没有新工具副作用前因 `upstream_timeout` 失败，runtime 可以按有界策略自动续跑，并必须留下 `provider.auto_resume` 证据
+- 若 provider 因 `max_tokens` / `max_output_tokens` 停止但已经产生可持久化的部分 assistant 输出，runtime 可以在同一自动续跑预算内把部分输出落盘、追加 harness reminder、重新进入下一轮，并必须留下 `provider.max_tokens_resume` 与 `provider-attempts.jsonl` 证据；没有部分输出或预算耗尽时仍按 provider failure 处理
 - runtime 还会把 retry、auto-resume、failure、success 追加到 `provider-attempts.jsonl`；success attempt 会保存 provider 返回的 cache read/write token 计数。该 ledger 只用于诊断、恢复与 WebConsole 展示，不反向驱动 adapter retry policy。
 
 ## 4. Replay 规则
@@ -371,6 +372,7 @@ adapter 至少要把 provider 错误归类为：
 - 所有请求必须接受 `context.Context`
 - 请求超时、等待响应头超时、stream idle 超时应归类为 `upstream_timeout`，并尽量填充 `timeout_kind`
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，runtime 可按 `runtime.provider_auto_resume.max_attempts` 做有界自动续跑；超过预算后必须正常 failed
+- provider 返回 `max_tokens` / `max_output_tokens` 且有部分 assistant 输出时，runtime 可复用同一 `runtime.provider_auto_resume.max_attempts` 预算自动续跑；续跑前只持久化 assistant 部分输出和 harness reminder，不执行不完整响应里的 tool call；超过预算后必须正常 failed
 - cancel 后必须尽快返回，不能伪装成普通失败
 - provider HTTP 响应体必须有硬上限；超限响应归类为 `response_parse_error`，避免兼容网关或异常上游通过超大 JSON / error body 造成内存型拒绝服务
 

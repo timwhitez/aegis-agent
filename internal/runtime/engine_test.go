@@ -1036,6 +1036,7 @@ func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	for _, stopReason := range []string{"max_tokens", "blocked", "error", "cancelled", "tool_use"} {
 		t.Run(stopReason, func(t *testing.T) {
 			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+			engine.cfg.Runtime.ProviderAutoResume.Enabled = false
 			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 				t.Fatalf("append: %v", err)
 			}
@@ -1057,6 +1058,134 @@ func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 				t.Fatalf("expected provider incomplete reason, got %#v", loaded)
 			}
 		})
+	}
+}
+
+func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Return a finish tool call.")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				Text:               "Partial report section already drafted.",
+				StopReason:         "max_tokens",
+				ProviderResponseID: "resp_partial",
+				Usage:              provider.Usage{InputTokens: 10, OutputTokens: 32768},
+			}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			if len(req.Messages) < 2 {
+				t.Fatalf("expected partial assistant and resume reminder in replay, got %#v", req.Messages)
+			}
+			partial := req.Messages[len(req.Messages)-2]
+			if partial.Role != "assistant" || !strings.Contains(partial.Text, "Partial report section") {
+				t.Fatalf("expected partial assistant message before reminder, got %#v", partial)
+			}
+			last := req.Messages[len(req.Messages)-1]
+			source, _ := last.Meta["source"].(string)
+			kind, _ := last.Meta["kind"].(string)
+			if last.Role != "user" || source != "harness_reminder" || kind != "provider_max_tokens_resume" {
+				t.Fatalf("expected max-tokens resume reminder, got %#v", last)
+			}
+			for _, want := range []string{
+				"max_output_tokens was reached",
+				"partial assistant message",
+				"auto-resuming (1/2)",
+				"finish the missing handoff/report/status action",
+			} {
+				if !strings.Contains(last.Text, want) {
+					t.Fatalf("expected resume reminder to contain %q, got %q", want, last.Text)
+				}
+			}
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed after max-tokens auto-resume, got %#v", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.ProviderMaxTokensResumeCount != 0 {
+		t.Fatalf("expected max-tokens resume counter reset after success, got %#v", loaded)
+	}
+	events, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if _, ok := findEventByType(events, "provider.max_tokens_resume"); !ok {
+		t.Fatalf("expected provider.max_tokens_resume event, got %#v", events)
+	}
+	attempts, err := engine.store.LoadProviderAttempts(meta.ID)
+	if err != nil {
+		t.Fatalf("provider attempts: %v", err)
+	}
+	var sawResume bool
+	for _, attempt := range attempts {
+		if attempt.Outcome == "max_tokens_resume" {
+			sawResume = true
+			if attempt.ProviderResponseID != "resp_partial" || !attempt.ResponseCommitted {
+				t.Fatalf("unexpected max_tokens_resume attempt: %#v", attempt)
+			}
+		}
+	}
+	if !sawResume {
+		t.Fatalf("expected max_tokens_resume provider attempt, got %#v", attempts)
+	}
+}
+
+func TestEngineProviderMaxTokensFailsAfterResumeBudget(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "trigger max tokens")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{Text: "partial 1", StopReason: "max_tokens"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{Text: "partial 2", StopReason: "max_tokens"}, nil
+		},
+	)
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected one auto-resume then terminal failure, got %d calls", callCount)
+	}
+	if result.Status != session.StatusFailed || result.LastError != "provider stopped because max output tokens were reached" {
+		t.Fatalf("expected provider max-token failure after budget, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != "provider_max_tokens" {
+		t.Fatalf("expected provider_max_tokens incomplete reason, got %#v", loaded)
 	}
 }
 
@@ -1152,6 +1281,7 @@ func TestEngineProviderStopFailureWinsOverBudgetStop(t *testing.T) {
 
 func TestEngineProviderStopReasonReportsFailedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = false
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}

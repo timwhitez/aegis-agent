@@ -235,20 +235,21 @@ type ParentCoordinationSnapshot struct {
 }
 
 type State struct {
-	Status                   string   `json:"status"`
-	Phase                    string   `json:"phase"`
-	Turn                     int      `json:"turn"`
-	UpdatedAt                string   `json:"updated_at"`
-	CurrentTask              string   `json:"current_task,omitempty"`
-	LastError                string   `json:"last_error,omitempty"`
-	IncompleteReason         string   `json:"incomplete_reason,omitempty"`
-	LastAssistantExcerpt     string   `json:"last_assistant_excerpt,omitempty"`
-	PauseReason              string   `json:"pause_reason,omitempty"`
-	PendingSteerCount        int      `json:"pending_steer_count,omitempty"`
-	LoadedSkills             []string `json:"loaded_skills,omitempty"`
-	RalphLoopCount           int      `json:"ralph_loop_count,omitempty"`
-	ProviderAutoResumeCount  int      `json:"provider_auto_resume_count,omitempty"`
-	LastCompactionInputChars int      `json:"last_compaction_input_chars,omitempty"`
+	Status                       string   `json:"status"`
+	Phase                        string   `json:"phase"`
+	Turn                         int      `json:"turn"`
+	UpdatedAt                    string   `json:"updated_at"`
+	CurrentTask                  string   `json:"current_task,omitempty"`
+	LastError                    string   `json:"last_error,omitempty"`
+	IncompleteReason             string   `json:"incomplete_reason,omitempty"`
+	LastAssistantExcerpt         string   `json:"last_assistant_excerpt,omitempty"`
+	PauseReason                  string   `json:"pause_reason,omitempty"`
+	PendingSteerCount            int      `json:"pending_steer_count,omitempty"`
+	LoadedSkills                 []string `json:"loaded_skills,omitempty"`
+	RalphLoopCount               int      `json:"ralph_loop_count,omitempty"`
+	ProviderAutoResumeCount      int      `json:"provider_auto_resume_count,omitempty"`
+	ProviderMaxTokensResumeCount int      `json:"provider_max_tokens_resume_count,omitempty"`
+	LastCompactionInputChars     int      `json:"last_compaction_input_chars,omitempty"`
 }
 
 type ToolCall struct {

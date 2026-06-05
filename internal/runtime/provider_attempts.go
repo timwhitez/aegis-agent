@@ -70,11 +70,12 @@ func terminalProviderAttempt(store *session.Store, sessionID string, turn int) i
 	return maxAttempt + 1
 }
 
-func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, err error, attemptNo int) error {
+func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, err error, attemptNo int, backoff time.Duration) error {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "auto_resume"
 	attempt.Retryable = true
 	attempt.Attempt = attemptNo
+	attempt.BackoffMS = backoff.Milliseconds()
 	attempt.Error = err.Error()
 	var httpErr *provider.HTTPError
 	if errors.As(err, &httpErr) {
@@ -82,6 +83,21 @@ func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionM
 		attempt.TimeoutKind = httpErr.TimeoutKind
 		attempt.StatusCode = httpErr.StatusCode
 	}
+	return store.AppendProviderAttempt(meta.ID, attempt)
+}
+
+func recordProviderMaxTokensResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult, attemptNo int, backoff time.Duration) error {
+	attempt := baseProviderAttempt(meta, turn)
+	attempt.Outcome = "max_tokens_resume"
+	attempt.Retryable = true
+	attempt.Attempt = attemptNo
+	attempt.BackoffMS = backoff.Milliseconds()
+	attempt.ResponseCommitted = true
+	attempt.ProviderResponseID = result.ProviderResponseID
+	attempt.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
+	attempt.CacheReadInputTokens = result.Usage.CacheReadInputTokens
+	attempt.ErrorClass = "max_output_tokens"
+	attempt.Error = "provider stopped because max output tokens were reached"
 	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
