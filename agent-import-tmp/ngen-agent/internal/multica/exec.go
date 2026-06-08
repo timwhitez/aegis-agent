@@ -1,0 +1,656 @@
+package multica
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	ngenrt "ngen/internal/runtime"
+	"ngen/internal/task"
+)
+
+type ExecOptions struct {
+	Workdir        string
+	ConfigPath     string
+	ConfigScope    string
+	ResumeTaskID   string
+	RunRole        string
+	TimeoutSeconds int
+}
+
+func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, stderr io.Writer) int {
+	if opts.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+	resolution, err := ResolveConfig(opts.Workdir, opts.ConfigPath, opts.ConfigScope)
+	if err != nil {
+		fmt.Fprintf(stderr, "exec: resolve config: %v\n", err)
+		return 13
+	}
+	svc := ngenrt.New(resolution.Workdir, resolution.Config)
+	envelope, err := readInputEnvelope(stdin)
+	if err != nil {
+		fmt.Fprintf(stderr, "exec: read input: %v\n", err)
+		return 13
+	}
+	prompt := envelopeText(envelope)
+	if prompt == "" {
+		fmt.Fprintln(stderr, "exec: input envelope content is empty")
+		return 13
+	}
+
+	taskID := strings.TrimSpace(opts.ResumeTaskID)
+	var metadata task.MulticaRunMetadata
+	if taskID == "" {
+		spec, createErr := svc.Create(ctx, taskFromEnvelope(envelope, prompt, resolution))
+		if createErr != nil {
+			fmt.Fprintf(stderr, "exec: create task: %v\n", createErr)
+			return 13
+		}
+		taskID = spec.TaskID
+		metadata = NewRunMetadata(spec, resolution)
+		if err := svc.Store.SaveMulticaRunMetadata(metadata); err != nil {
+			fmt.Fprintf(stderr, "exec: write run metadata: %v\n", err)
+			return 13
+		}
+		guidance := CollectWorkspaceGuidance(taskID, resolution.Workdir)
+		if err := svc.Store.SaveWorkspaceGuidance(guidance); err != nil {
+			fmt.Fprintf(stderr, "exec: write workspace guidance: %v\n", err)
+			return 13
+		}
+	} else {
+		loaded, loadErr := svc.Store.LoadMulticaRunMetadata(taskID)
+		if loadErr != nil {
+			status := resultStatusBlocked(taskID, opts.RunRole, resolution, "multica_run_metadata_missing", map[string]any{"error": loadErr.Error()})
+			_ = json.NewEncoder(stdout).Encode(status)
+			return 10
+		}
+		metadata = loaded
+		if drift := configDrift(metadata, resolution); len(drift) > 0 {
+			status := resultStatusBlocked(taskID, opts.RunRole, resolution, "multica_model_config_drift", drift)
+			_ = json.NewEncoder(stdout).Encode(status)
+			return 10
+		}
+	}
+
+	encoder := json.NewEncoder(stdout)
+	emit := func(msg StreamOutputMessage) error {
+		return encoder.Encode(msg)
+	}
+	if err := emit(systemMessage(taskID, opts.RunRole, metadata, resolution)); err != nil {
+		fmt.Fprintf(stderr, "exec: stdout write failed: %v\n", err)
+		return 13
+	}
+	if snapshot, err := svc.Status(ctx, taskID); err == nil {
+		if err := emit(statusMessage(snapshot, opts.RunRole, metadata)); err != nil {
+			fmt.Fprintf(stderr, "exec: stdout write failed: %v\n", err)
+			return 13
+		}
+	}
+
+	resultCh := make(chan runResult, 1)
+	go func() {
+		snapshot, events, runErr := svc.Auto(ctx, taskID)
+		resultCh <- runResult{Snapshot: snapshot, Events: events, Err: runErr}
+	}()
+
+	emitted := map[string]struct{}{}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := flushEvents(svc, taskID, opts.RunRole, metadata, emitted, emit); err != nil {
+				fmt.Fprintf(stderr, "exec: stream flush: %v\n", err)
+				return 13
+			}
+		case result := <-resultCh:
+			if err := flushEvents(svc, taskID, opts.RunRole, metadata, emitted, emit); err != nil {
+				fmt.Fprintf(stderr, "exec: final flush: %v\n", err)
+				return 13
+			}
+			status := terminalStatus(result.Snapshot, result.Err, ctx.Err())
+			if result.Snapshot.TaskID == "" {
+				if snapshot, err := svc.Status(context.Background(), taskID); err == nil {
+					result.Snapshot = snapshot
+				}
+			}
+			final := resultMessage(result.Snapshot, opts.RunRole, metadata, resolution, status, result.Err, svc)
+			if err := emit(final); err != nil {
+				fmt.Fprintf(stderr, "exec: stdout write failed: %v\n", err)
+				return 13
+			}
+			return exitCodeFromResult(status)
+		}
+	}
+}
+
+type runResult struct {
+	Snapshot task.StatusSnapshot
+	Events   []task.Event
+	Err      error
+}
+
+func readInputEnvelope(stdin io.Reader) (StreamInputMessage, error) {
+	decoder := json.NewDecoder(stdin)
+	var envelope StreamInputMessage
+	if err := decoder.Decode(&envelope); err != nil {
+		return StreamInputMessage{}, err
+	}
+	var extra any
+	err := decoder.Decode(&extra)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return StreamInputMessage{}, err
+	}
+	if err == nil {
+		return StreamInputMessage{}, errors.New("expected exactly one JSON input envelope")
+	}
+	if envelope.Protocol != ProtocolName || envelope.ProtocolVersion != ProtocolVersion {
+		return StreamInputMessage{}, fmt.Errorf("unsupported protocol %q version %d", envelope.Protocol, envelope.ProtocolVersion)
+	}
+	if envelope.Type != "user" || envelope.Role != "user" {
+		return StreamInputMessage{}, fmt.Errorf("expected user input envelope, got type=%q role=%q", envelope.Type, envelope.Role)
+	}
+	return envelope, nil
+}
+
+func envelopeText(envelope StreamInputMessage) string {
+	var parts []string
+	for _, block := range envelope.Content {
+		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, strings.TrimSpace(block.Text))
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution ConfigResolution) task.TaskFile {
+	kind, preset := inferTaskKind(resolution.Workdir, prompt)
+	objective := prompt
+	if strings.TrimSpace(envelope.SystemPrompt) != "" {
+		objective += "\n\nSystem prompt:\n" + strings.TrimSpace(envelope.SystemPrompt)
+	}
+	if len(envelope.Metadata) > 0 {
+		objective += "\n\nMultica metadata:\n"
+		keys := make([]string, 0, len(envelope.Metadata))
+		for key := range envelope.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			objective += fmt.Sprintf("- %s=%s\n", key, envelope.Metadata[key])
+		}
+	}
+	return task.TaskFile{
+		Kind:             kind,
+		PresetID:         preset,
+		Title:            titleFromPrompt(prompt),
+		Objective:        objective,
+		SuccessCriteria:  criteriaFromPrompt(prompt),
+		WorkspaceRoot:    resolution.Workdir,
+		PermissionModeID: task.EffectivePermissionModeID(resolution.Config.Permission.DefaultMode),
+	}
+}
+
+func inferTaskKind(workdir, prompt string) (task.Kind, task.PresetID) {
+	lower := strings.ToLower(prompt)
+	codeIntent := strings.Contains(lower, "code") || strings.Contains(lower, "implement") || strings.Contains(lower, "fix") || strings.Contains(lower, "test") || strings.Contains(lower, "build")
+	if codeIntent && looksLikeCodeRepo(workdir) {
+		return task.KindCoding, ""
+	}
+	return task.KindGeneral, task.PresetDocsLite
+}
+
+func looksLikeCodeRepo(workdir string) bool {
+	for _, rel := range []string{"go.mod", "package.json", "Cargo.toml", ".git"} {
+		if _, err := os.Stat(filepath.Join(workdir, rel)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func titleFromPrompt(prompt string) string {
+	title := strings.TrimSpace(strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n")[0])
+	if title == "" {
+		return "Multica Task"
+	}
+	runes := []rune(title)
+	if len(runes) > 80 {
+		title = string(runes[:80])
+	}
+	return strings.TrimSpace(title)
+}
+
+func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
+	first := "Produce a verifiable handoff/result for the requested work."
+	lower := strings.ToLower(prompt)
+	if strings.Contains(lower, "test") || strings.Contains(lower, "build") {
+		first = "Requested verification commands pass or failures are reported with evidence."
+	}
+	return []task.SuccessCriterion{{ID: "SC-001", Statement: first}}
+}
+
+func NewRunMetadata(spec task.Spec, resolution ConfigResolution) task.MulticaRunMetadata {
+	now := task.Now()
+	return task.MulticaRunMetadata{
+		ObjectKind:        "multica_run_metadata",
+		SchemaVersion:     task.SchemaVersion,
+		TaskID:            spec.TaskID,
+		SessionID:         spec.TaskID,
+		RunID:             task.NewID("RUN"),
+		Source:            "multica",
+		ModelRoute:        resolution.EffectiveModel.Route,
+		ProviderMode:      resolution.EffectiveModel.ProviderMode,
+		ProviderModel:     resolution.EffectiveModel.ProviderModel,
+		ConfigSource:      resolution.ConfigSource,
+		ConfigFingerprint: resolution.ConfigFingerprint,
+		PermissionModeID:  spec.PermissionModeID,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+}
+
+func configDrift(metadata task.MulticaRunMetadata, resolution ConfigResolution) map[string]any {
+	drift := map[string]any{}
+	if metadata.ModelRoute != resolution.EffectiveModel.Route {
+		drift["previous_model_route"] = metadata.ModelRoute
+		drift["current_model_route"] = resolution.EffectiveModel.Route
+	}
+	if metadata.ProviderMode != resolution.EffectiveModel.ProviderMode {
+		drift["previous_provider_mode"] = metadata.ProviderMode
+		drift["current_provider_mode"] = resolution.EffectiveModel.ProviderMode
+	}
+	if metadata.ProviderModel != resolution.EffectiveModel.ProviderModel {
+		drift["previous_provider_model"] = metadata.ProviderModel
+		drift["current_provider_model"] = resolution.EffectiveModel.ProviderModel
+	}
+	if metadata.ConfigFingerprint != resolution.ConfigFingerprint {
+		drift["previous_config_fingerprint"] = metadata.ConfigFingerprint
+		drift["current_config_fingerprint"] = resolution.ConfigFingerprint
+	}
+	return drift
+}
+
+func systemMessage(taskID, runRole string, metadata task.MulticaRunMetadata, resolution ConfigResolution) StreamOutputMessage {
+	return StreamOutputMessage{
+		Type:            "system",
+		Protocol:        ProtocolName,
+		ProtocolVersion: ProtocolVersion,
+		TaskID:          taskID,
+		SessionID:       taskID,
+		RunRole:         strings.TrimSpace(runRole),
+		ModelRoute:      metadata.ModelRoute,
+		ProviderMode:    metadata.ProviderMode,
+		ProviderModel:   metadata.ProviderModel,
+		Metadata: map[string]any{
+			"config_source":      resolution.ConfigSource,
+			"config_fingerprint": resolution.ConfigFingerprint,
+			"permission_mode_id": metadata.PermissionModeID,
+		},
+	}
+}
+
+func statusMessage(snapshot task.StatusSnapshot, runRole string, metadata task.MulticaRunMetadata) StreamOutputMessage {
+	status := statusFromState(snapshot.State)
+	msg := StreamOutputMessage{
+		Type:          "status",
+		TaskID:        snapshot.TaskID,
+		SessionID:     snapshot.TaskID,
+		RunRole:       strings.TrimSpace(runRole),
+		ModelRoute:    metadata.ModelRoute,
+		ProviderMode:  metadata.ProviderMode,
+		ProviderModel: metadata.ProviderModel,
+		Status:        status,
+		Metadata: map[string]any{
+			"phase":              snapshot.Phase,
+			"state":              snapshot.State,
+			"status_reason_code": snapshot.StatusReasonCode,
+			"status_detail_ref":  snapshot.StatusDetailRef,
+			"last_event_ref":     snapshot.LastEventRef,
+		},
+	}
+	if status == "blocked" {
+		msg.Metadata["needs_input"] = true
+	}
+	return msg
+}
+
+func resultStatusBlocked(taskID, runRole string, resolution ConfigResolution, reason string, metadata map[string]any) StreamOutputMessage {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["status_reason_code"] = reason
+	return StreamOutputMessage{
+		Type:          "result",
+		TaskID:        taskID,
+		SessionID:     taskID,
+		RunRole:       strings.TrimSpace(runRole),
+		ModelRoute:    resolution.EffectiveModel.Route,
+		ProviderMode:  resolution.EffectiveModel.ProviderMode,
+		ProviderModel: resolution.EffectiveModel.ProviderModel,
+		Status:        "blocked",
+		IsError:       true,
+		Handoff: &StructuredHandoff{
+			Summary:          reason,
+			TaskID:           taskID,
+			State:            "Blocked",
+			StatusReasonCode: reason,
+			ModelRoute:       resolution.EffectiveModel.Route,
+			ProviderMode:     resolution.EffectiveModel.ProviderMode,
+			ProviderModel:    resolution.EffectiveModel.ProviderModel,
+		},
+		Metadata: metadata,
+	}
+}
+
+func flushEvents(svc *ngenrt.Service, taskID, runRole string, metadata task.MulticaRunMetadata, emitted map[string]struct{}, emit func(StreamOutputMessage) error) error {
+	events, err := svc.Store.ReadEvents(taskID)
+	if err != nil {
+		return nil
+	}
+	for _, event := range events {
+		if _, ok := emitted[event.EventID]; ok {
+			continue
+		}
+		emitted[event.EventID] = struct{}{}
+		for _, msg := range eventMessages(svc, event, runRole, metadata) {
+			if err := emit(msg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func eventMessages(svc *ngenrt.Service, event task.Event, runRole string, metadata task.MulticaRunMetadata) []StreamOutputMessage {
+	base := StreamOutputMessage{
+		TaskID:        event.TaskID,
+		SessionID:     event.TaskID,
+		RunRole:       strings.TrimSpace(runRole),
+		ModelRoute:    metadata.ModelRoute,
+		ProviderMode:  metadata.ProviderMode,
+		ProviderModel: metadata.ProviderModel,
+		ID:            event.EventID,
+		Metadata: map[string]any{
+			"event_type": event.Type,
+			"event_id":   event.EventID,
+			"refs":       event.Refs,
+			"phase":      event.Phase,
+			"state":      event.State,
+		},
+	}
+	if record, ok := commandRecordForEvent(svc, event); ok {
+		toolName := record.Kind
+		if toolName == "" {
+			toolName = "command"
+		}
+		callID := firstNonEmpty(record.CommandRecordID, record.CommandID)
+		use := base
+		use.Type = "tool_use"
+		use.Tool = &ToolProjection{
+			Name:   toolName,
+			CallID: callID,
+			Input: map[string]any{
+				"argv":   record.Argv,
+				"reason": record.Summary,
+			},
+		}
+		result := base
+		result.Type = "tool_result"
+		result.IsError = record.Status == "failed"
+		result.Tool = &ToolProjection{
+			Name:   toolName,
+			CallID: callID,
+			Output: commandOutputSummary(record),
+			Status: record.Status,
+		}
+		return []StreamOutputMessage{use, result}
+	}
+	msg := base
+	if event.Type == "done" || event.Type == "failed" || strings.Contains(event.Type, "blocked") || strings.HasSuffix(event.Type, "_requested") {
+		msg.Type = "status"
+		msg.Status = statusFromState(event.State)
+		if msg.Status == "blocked" {
+			msg.Metadata["needs_input"] = true
+		}
+	} else {
+		msg.Type = "log"
+		msg.Log = &LogEntry{Level: "info", Message: event.Summary}
+	}
+	return []StreamOutputMessage{msg}
+}
+
+func commandRecordForEvent(svc *ngenrt.Service, event task.Event) (task.CommandRunRecord, bool) {
+	var wanted string
+	for _, ref := range event.Refs {
+		if strings.HasPrefix(ref, "command_runs.jsonl#command_record_id=") {
+			wanted = strings.TrimPrefix(ref, "command_runs.jsonl#command_record_id=")
+			break
+		}
+	}
+	if wanted == "" {
+		return task.CommandRunRecord{}, false
+	}
+	records, err := svc.Store.ReadCommandRuns(event.TaskID)
+	if err != nil {
+		return task.CommandRunRecord{}, false
+	}
+	for _, record := range records {
+		if record.CommandRecordID == wanted {
+			return record, true
+		}
+	}
+	return task.CommandRunRecord{}, false
+}
+
+func commandOutputSummary(record task.CommandRunRecord) string {
+	var parts []string
+	if strings.TrimSpace(record.StdoutExcerpt) != "" {
+		parts = append(parts, "stdout: "+strings.TrimSpace(record.StdoutExcerpt))
+	}
+	if strings.TrimSpace(record.StderrExcerpt) != "" {
+		parts = append(parts, "stderr: "+strings.TrimSpace(record.StderrExcerpt))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, strings.TrimSpace(record.Summary))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func resultMessage(snapshot task.StatusSnapshot, runRole string, metadata task.MulticaRunMetadata, resolution ConfigResolution, status string, runErr error, svc *ngenrt.Service) StreamOutputMessage {
+	handoff := buildStructuredHandoff(snapshot, metadata, svc)
+	msg := StreamOutputMessage{
+		Type:          "result",
+		TaskID:        snapshot.TaskID,
+		SessionID:     snapshot.TaskID,
+		RunRole:       strings.TrimSpace(runRole),
+		ModelRoute:    metadata.ModelRoute,
+		ProviderMode:  metadata.ProviderMode,
+		ProviderModel: metadata.ProviderModel,
+		Status:        status,
+		Usage:         usageForTask(snapshot.TaskID, resolution.EffectiveModel.Route, svc),
+		Handoff:       handoff,
+		Metadata: map[string]any{
+			"status_reason_code": snapshot.StatusReasonCode,
+			"config_source":      metadata.ConfigSource,
+			"config_fingerprint": metadata.ConfigFingerprint,
+		},
+	}
+	if runErr != nil {
+		msg.IsError = true
+		msg.Metadata["error"] = runErr.Error()
+	}
+	return msg
+}
+
+func buildStructuredHandoff(snapshot task.StatusSnapshot, metadata task.MulticaRunMetadata, svc *ngenrt.Service) *StructuredHandoff {
+	summary := "NGEN task finished with state " + string(snapshot.State) + "."
+	if data, err := os.ReadFile(filepath.Join(svc.Store.TaskRoot(snapshot.TaskID), "handoff.md")); err == nil {
+		if extracted := handoffSummary(string(data)); extracted != "" {
+			summary = extracted
+		}
+	}
+	handoff := &StructuredHandoff{
+		Summary:          summary,
+		TaskID:           snapshot.TaskID,
+		State:            string(snapshot.State),
+		Phase:            string(snapshot.Phase),
+		StatusReasonCode: snapshot.StatusReasonCode,
+		ModelRoute:       metadata.ModelRoute,
+		ProviderMode:     metadata.ProviderMode,
+		ProviderModel:    metadata.ProviderModel,
+		HandoffRef:       snapshot.HandoffRef,
+		CompletionRef:    snapshot.CompletionRef,
+		VerificationRef:  snapshot.LastVerificationRef,
+		ReviewRef:        snapshot.LastReviewRef,
+		CriteriaRef:      "criteria/latest.json",
+	}
+	for _, clue := range snapshot.RestoreClues {
+		handoff.RestoreRefs = append(handoff.RestoreRefs, ArtifactRef{Ref: clue.Ref, Kind: "restore", Summary: clue.Summary})
+	}
+	if criteria, err := svc.Store.LoadCriteria(snapshot.TaskID); err == nil {
+		for _, item := range criteria.Criteria {
+			digest := CriterionDigest{
+				ID:           item.CriterionID,
+				Statement:    item.Statement,
+				Status:       item.Status,
+				EvidenceRefs: item.EvidenceRefs,
+			}
+			if item.Status == "met" {
+				handoff.MetCriteria = append(handoff.MetCriteria, digest)
+			} else {
+				handoff.OpenCriteria = append(handoff.OpenCriteria, digest)
+			}
+		}
+	}
+	if workers, err := svc.Store.ListWorkerContracts(snapshot.TaskID); err == nil {
+		for _, worker := range workers {
+			digest := WorkerDigest{
+				WorkerID:                   worker.WorkerID,
+				ChildTaskID:                worker.ChildTaskID,
+				Role:                       worker.Role,
+				Status:                     worker.Status,
+				BlockedReasonCode:          worker.BlockedReasonCode,
+				BlockedDetailRef:           worker.BlockedDetailRef,
+				RequiresParentAction:       worker.RequiresParentAction,
+				ParentActionType:           worker.ParentActionType,
+				ParentActionOptions:        append([]string(nil), worker.ParentActionOptions...),
+				ParentActionSummary:        worker.ParentActionSummary,
+				ParentActionUnresolved:     worker.ParentActionUnresolved,
+				EvidenceScore:              worker.EvidenceScore,
+				EvidenceGrade:              worker.EvidenceGrade,
+				MissingEvidence:            append([]string(nil), worker.MissingEvidence...),
+				TrustedForParentCompletion: worker.TrustedForParentCompletion,
+				ConflictCount:              worker.ConflictCount,
+			}
+			if result, err := svc.Store.LoadWorkerResult(snapshot.TaskID, worker.WorkerID); err == nil {
+				digest.ChildState = string(result.ChildState)
+				digest.CompletionStatus = result.CompletionStatus
+				digest.ReviewStatus = result.ReviewStatus
+				digest.VerificationStatus = result.VerificationStatus
+				digest.Summary = result.Summary
+				digest.EvidenceRefs = append([]string(nil), result.EvidenceRefs...)
+			} else {
+				digest.Summary = worker.ResultSummary
+			}
+			handoff.WorkerResults = append(handoff.WorkerResults, digest)
+		}
+	}
+	if snapshot.MissionID != "" {
+		handoff.Mission = &MissionDigest{
+			MissionID:           snapshot.MissionID,
+			Status:              snapshot.MissionStatus,
+			CurrentMilestoneID:  snapshot.MissionCurrentMilestoneID,
+			LatestValidationRef: snapshot.MissionLatestValidationRef,
+		}
+	}
+	return handoff
+}
+
+func handoffSummary(markdown string) string {
+	var lines []string
+	for _, line := range strings.Split(markdown, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		lines = append(lines, trimmed)
+		if len(strings.Join(lines, " ")) > 320 {
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, " "))
+}
+
+func usageForTask(taskID, modelRoute string, svc *ngenrt.Service) map[string]Usage {
+	records, err := svc.Store.ReadProviderUsage(taskID)
+	if err != nil || len(records) == 0 {
+		return nil
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		if usage, ok := ParseUsageSummary(records[i].TokenUsage, records[i].PromptCacheUsage); ok {
+			return map[string]Usage{modelRoute: usage}
+		}
+	}
+	return nil
+}
+
+func terminalStatus(snapshot task.StatusSnapshot, runErr error, ctxErr error) string {
+	switch {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(ctxErr, context.Canceled):
+		return "cancelled"
+	case runErr != nil:
+		return "failed"
+	default:
+		return statusFromState(snapshot.State)
+	}
+}
+
+func statusFromState(state task.StateName) string {
+	switch state {
+	case task.StateDone:
+		return "completed"
+	case task.StateBlocked, task.StateWaiting:
+		return "blocked"
+	case task.StateFailed:
+		return "failed"
+	case task.StateAborted:
+		return "cancelled"
+	default:
+		return strings.ToLower(string(state))
+	}
+}
+
+func exitCodeFromResult(status string) int {
+	switch status {
+	case "completed":
+		return 0
+	case "blocked":
+		return 10
+	case "cancelled":
+		return 12
+	default:
+		return 11
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
