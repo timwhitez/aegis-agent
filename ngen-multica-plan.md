@@ -6,16 +6,17 @@
 
 ## 0. MVP 决策锁定
 
-以下决策已固定，不再作为开放项留给二开 agent 自行判断：
+以下决策已固定，不再留给二开 agent 自行判断：
 
 - Headless 命令名固定为 `ngen exec`；不新增 `ngen multica run`。
 - Multica 不从外部向 NGEN 传 `--thinking-level`。NGEN 只通过 daemon-owned NGEN 配置持久化 provider thinking/reasoning，例如 OpenAI/GPT 的 `xhigh` 或 Anthropic/Claude 的 `max`；Multica 只展示或记录该配置派生的诊断信息，不提供 per-run thinking 选择。
 - `blocked` / `needs_input` 是 Multica MVP 的 first-class 状态：Multica 数据模型、API、UI 必须明确展示等待用户输入、审批或 parent action，并提供 resume/continue 入口；不能把它退化成普通失败或只写 stderr。
 - NGEN config 在 Multica MVP 中固定为 daemon-owned；不支持 per-agent custom config，也不允许 agent custom env 覆盖 `NGEN_CONFIG`。
 - NGEN provider/model 固定由 daemon-owned NGEN 配置决定；Multica 不传 `--model`，不允许 per-run model switch。NGEN 首次 run 记录 config 派生的 effective model identity，resume 时发现 config/model drift 必须 fail closed。
-- Multica 不开放 per-run permission mode；权限只能来自 daemon/admin 级配置或 NGEN 默认。NGEN 默认 permission mode 为 `yolo`。
+- Multica 不提供 per-run permission mode；权限只能来自 daemon/admin 级配置或 NGEN 默认。NGEN 默认 permission mode 为 `yolo`。
 - NGEN MVP 必须消费 `--workdir` 下的 `AGENTS.md` / workspace guidance，并纳入 session/system context；Multica 注入但 NGEN 不消费不能算 MVP 完成。
 - `ngen exec` MVP 采用 hybrid streaming：运行中通过同进程 event sink/bus 输出低延迟 NDJSON，同时维护 durable high-water mark，并在 service 返回、blocked、failed、cancelled、context timeout、stdout writer shutdown 前，从 durable `events.jsonl` / task artifacts 做 final flush。stdout 只能由单一 encoder goroutine 写。最终 `result` 必须是最后一行。纯 batch 不满足 MVP。
+- Codex 接入口径对齐是 MVP 硬目标：NGEN 必须像 Codex 一样成为 Multica first-class local CLI runtime，覆盖 backend、factory、launch header、model discovery、version gate、thinking metadata 只读展示、daemon path/args probe、env blocklist、execenv runtime brief、workspace skills、fake backend E2E、blocked/resume UI/API，以及 multi-agent handoff/parent-action 显示。原先拆出的 multi-agent hardening 现在纳入同一 MVP。
 
 ## 1. 选型结论
 
@@ -46,13 +47,15 @@ Multica 当前事实：
 - `ExecOptions` 当前包含 `Cwd`、`Model`、`SystemPrompt`、`MaxTurns`、`Timeout`、`SemanticInactivityTimeout`、`ResumeSessionID`、`ExtraArgs`、`CustomArgs`、`McpConfig`、`ThinkingLevel`。
 - `Message` 当前支持 `text`、`thinking`、`tool-use`、`tool-result`、`status`、`error`、`log`；`Result` 包含 `Status`、`Output`、`Error`、`DurationMs`、`SessionID`、`Usage map[string]TokenUsage`。
 - 当前 agent factory 支持 `claude,codex,copilot,opencode,openclaw,hermes,gemini,pi,cursor,kimi,kiro,antigravity`，尚无 `ngen`。
+- Codex 接入已经覆盖 dedicated backend、`codex app-server --listen stdio://`、launch header、static/dynamic model catalog、thinking discovery、daemon `MULTICA_CODEX_PATH/MODEL/ARGS`、per-task `CODEX_HOME`、`AGENTS.md` runtime brief、skills/MCP materialization、stderr tail、semantic inactivity watchdog、resume session pinning和 fake backend tests。NGEN MVP 需要补齐同等级 Multica surface；NGEN 特有的 daemon-owned config/model 决策只改变 NGEN 的 config/model ownership，不削减这些接入面。
+- Multica daemon 当前只把显式 `completed` 当成功；`timeout`、idle watchdog 和多数 agent failure 会保留 `SessionID/WorkDir` 后走 blocked/failure 上报，`cancelled` 是明确的取消状态。NGEN backend 必须按这个状态语义投影，不能把缺 result、protocol error、blocked/needs_input 或 context cancel 误报为 completed。
 
 ## 3. 非目标
 
 - 不让 Multica 直接读取 `.ngen/` 私有目录作为权威状态；Multica 只消费 NGEN stdout 协议、final result、resume id 和 artifact refs。
 - 不把 NGEN 的 phase/review/verifier gate 重写成 Multica 内部 workflow engine。
 - 不把 Multica 的 issue/agent/team 调度状态写回 `.ngen/` 作为 NGEN task truth。
-- 不把 NGEN interactive session bridge 作为第一版 subprocess backend 默认路径；第一版走 task-first headless run/resume。
+- 不把 NGEN interactive session bridge 作为 MVP subprocess backend 默认路径；MVP 固定走 task-first headless run/resume。
 - 不要求 NGEN 支持 hosted SaaS、browser file editor、远程终端或 Multica UI 专属状态源。
 
 ## 4. 总体架构
@@ -76,7 +79,7 @@ Multica 当前事实：
 - Multica `Result.SessionID` = NGEN `task_id`，不是 NGEN `session_id`。
 - `ExecOptions.ResumeSessionID` = NGEN `task_id`。
 - NGEN `run_role` 是 Multica exec metadata，例如 `orchestrator|worker|validator|reviewer`，不能写进 transcript `message.role`，也不能声称等同于 NGEN mission role 常量。NGEN mission roles 仍是 `orchestrator|workers|validators`，worker task roles 仍是 `coding|reviewer|security_review|general_execution`。
-- NGEN `.ngen/` artifact ref 可以进入 result/handoff，但 Multica 不应把这些 ref 解析为权威 schema。
+- NGEN `.ngen/` artifact ref 允许进入 result/handoff，但 Multica 不应把这些 ref 解析为权威 schema。
 
 ### 4.1 拆分完整性与兼容性检查
 
@@ -145,7 +148,7 @@ type VersionInfo struct {
 
 - `internal/app/app.go`
 - 新增 `internal/models/list.go` 或 `internal/multica/models.go`。
-- 必要时扩展 `task.Config` 的 provider/model metadata，但不要破坏现有 `ngen.json`。
+- 必须以兼容方式提供 provider/model metadata；若现有 `task.Config` 字段不足，扩展 `task.Config`，但不得破坏现有 `ngen.json`。
 - 新增 `resolveNGENWorkdirAndConfig(args, env)`：`models` 和 `exec` 必须在构造 `ngenrt.Service` 前解析 `--workdir`、`--config`、`NGEN_CONFIG`，不能沿用当前 cwd-first 的 `RunCLI` 前置 load。
 
 命令：
@@ -184,9 +187,9 @@ type ModelThinkingInfo struct {
 
 - ID 第一段是 NGEN provider mode route key，不是显示分组随意文案。
 - `openai-response/gpt-5.5` 这类 model identity 必须可逆拆分为 `provider.mode=openai-response` 与 `provider.model=gpt-5.5`，但 Multica MVP 不把它作为 per-run `--model` 传回 NGEN。
-- `builtin/default` 和 `command/default` 可以显示为不可选或低优先级默认项；如果实际没有 model override 语义，Multica 仍可列出但 execution 时不要把 `default` 写成远端模型名。
+- `builtin/default` 和 `command/default` 显示为 disabled 或低优先级默认项；如果实际没有 model override 语义，Multica 仍列出 catalog metadata，但 execution 时不得把 `default` 写成远端模型名。
 - `models --json` 和 `exec` 必须读取同一份 config 来源。NGEN 侧支持优先级：显式 `--config` > `NGEN_CONFIG` > `<workdir>/ngen.json` > 默认 config；Multica 侧 MVP 只使用 daemon-owned `NGEN_CONFIG`，见 6.2/6.3。
-- Multica provider=`ngen` MVP 的额外收口：如果 daemon 未设置 `NGEN_CONFIG`，Multica 的 NGEN backend 仍可传 `--workdir` 作为 workspace root，但必须让 NGEN exec 使用与 `models --json` 相同的 provider catalog default config，不能让 `<workdir>/ngen.json` 改变 provider mode/model catalog。MVP 明确新增并使用 `ngen exec --config-scope daemon`，只禁止 workdir config 影响 provider/model discovery 与 provider selection，不禁止 `.ngen/` artifact/workspace root 使用 `--workdir`；若未来保留 `--ignore-workdir-provider-config`，它只能作为兼容别名，不作为 Multica 侧默认接口。
+- Multica provider=`ngen` MVP 的额外收口：daemon 未设置 `NGEN_CONFIG` 时，Multica 的 NGEN backend 仍传 `--workdir` 作为 workspace root，但必须让 NGEN exec 使用与 `models --json` 相同的 provider catalog default config，不能让 `<workdir>/ngen.json` 改变 provider mode/model catalog。MVP 必须新增并使用 `ngen exec --config-scope daemon`；该 flag 只禁止 workdir config 影响 provider/model discovery 与 provider selection，不禁止 `.ngen/` artifact/workspace root 使用 `--workdir`。Multica backend 不实现、不传递 `--ignore-workdir-provider-config`。
 - NGEN effective provider/model 只来自 daemon-owned config。Multica 不传 `--model`，不允许 per-run model switch；`models --json` 只用于 discovery/display 和 config/execution 一致性校验。
 
 ### 5.3 新增 Multica headless exec 命令
@@ -197,7 +200,7 @@ type ModelThinkingInfo struct {
 - 新增 `internal/multica/streamjson.go`
 - 新增 `internal/multica/exec.go`
 - 新增 `internal/multica/run_metadata.go`，定义并持久化 Multica/NGEN run metadata artifact。
-- 必要时在 `ngenrt.Service` 增加小的 facade 方法，避免 CLI 层直接读太多 artifact internals。
+- 必须新增或复用一个 `ngenrt.Service` facade，让 `ngen exec` 通过 runtime/service API 获取 task status、events、handoff、usage 和 run metadata；CLI 层不得直接散读 artifact internals。
 - 不复用当前 `runStreaming` 作为协议实现：当前 `runStreaming` 是 `svc.Run/Resume/Auto` 返回后批量打印事件，不是真实时流。`ngen exec` 必须采用 hybrid streaming：同进程 event sink/bus 负责低延迟输出，durable `events.jsonl` / task artifacts high-water flush 负责补漏、恢复和 final consistency。
 - live stream 实现约束：stdout 必须由单一 encoder goroutine 串行写；event sink/tailer 维护 `event_id` high-water mark；service 返回、blocked、failed、cancelled、context timeout、stdout writer shutdown 前都必须从 durable facts flush 未发关键事件，再输出唯一 final result。
 - bounded-near-real-time 目标：正常事件到 stdout 延迟不超过 1 秒；如果底层只能 polling，poll interval 不超过 500ms。长时间无新事件但 task 仍 running 时，可输出不改变事实源的 heartbeat `status`，避免 Multica inactivity watchdog 误判。
@@ -219,14 +222,14 @@ ngen exec \
 
 行为：
 
-- stdin 必须读取 exactly one JSON envelope，然后关闭输入；第一版不做 stdin 控制流和 mid-run steering。
+- stdin 必须读取 exactly one JSON envelope，然后关闭输入；MVP 不做 stdin 控制流和 mid-run steering。
 - 无 `--resume` 时，用 envelope prompt 创建 root task。
 - 有 `--resume` 时，把值当 NGEN `task_id`，根据 task 当前 state 走 `Resume` 或 `Auto`；不要把它当 `.ngen/sessions` 的 `session_id`。
 - `--workdir` / `--config` / `NGEN_CONFIG` 必须在 service 构造前生效；不能先用当前 cwd 构造 service 再解析 exec flags。
 - effective provider/model 由 daemon-owned NGEN config 决定，并写入 durable run metadata，在 final result `metadata.model_route/provider_mode/provider_model/config_fingerprint` 和 handoff digest 中回显。resume 时必须从 metadata 读取首次运行的 effective model identity；如果当前 daemon config 派生出的 identity 或 config fingerprint 与首次运行不一致，MVP fail closed 并返回 `status_reason_code="multica_model_config_drift"`。
 - stdout 只输出 NDJSON protocol line；stderr 只输出人类可读诊断。
 - final result 必须是最后一条 stdout JSON line。
-- context cancellation 由进程信号/context 处理；第一版不设计 stdin cancel 控制包。
+- context cancellation 由进程信号/context 处理；MVP 不设计 stdin cancel 控制包。Multica/server/user cancellation 必须输出 final `result.status="cancelled"`；context deadline 必须输出 `timeout`；NGEN 内部非取消 abort 必须输出 `failed` 并带 bounded `status_reason_code`。
 
 stdin envelope：
 
@@ -298,8 +301,8 @@ Types:
 - `status`: task status snapshot projection.
 - `assistant`: human-readable progress or final assistant text.
 - `log`: bounded diagnostic/progress line.
-- `tool_use`: optional projection for NGEN command/workspace actions when stable call IDs exist.
-- `tool_result`: optional projection for NGEN command/workspace results when stable call IDs exist.
+- `tool_use`: mandatory projection for NGEN command/workspace actions when durable stable call IDs exist.
+- `tool_result`: mandatory projection for NGEN command/workspace results when durable stable call IDs exist.
 - `result`: final outcome, last line only.
 
 Go structs:
@@ -441,12 +444,13 @@ NGEN `task.Event` -> Multica stream:
 - When a durable command record has a stable command id, emit `tool_use` with `call_id=<command_record_id or command_id>`.
 - Command completion/failure -> `tool_result` with same `call_id`.
 - If no stable ID can be guaranteed, emit only `log`; do not invent unstable call IDs.
+- Stable command IDs are a required MVP feature for NGEN-observed shell/edit/verifier actions that already have durable command/action records. A missing stable ID is allowed only for legacy/freeform events that have no durable action record; tests must cover both the stable tool projection path and the fallback log path.
 
 NGEN `task.StatusSnapshot` -> `status`:
 
 - `StateDone` -> result status candidate `completed`.
 - `StateBlocked` or approval/input wait -> NGEN stream emits `status=blocked` with `metadata.needs_input=true` when user input/approval/parent action is required, and final `result.status="blocked"`。Multica MVP 必须把该状态作为 first-class `blocked/needs_input` 持久化、API 返回并在 UI 展示 resume/continue 入口，不能退化为普通 agent error。
-- `StateFailed|StateAborted` -> `failed`/`aborted`.
+- `StateFailed` -> `failed`; `StateAborted` -> `cancelled` when caused by Multica/server/user cancellation, otherwise `failed` with bounded `status_reason_code`。
 - Preserve `task_id`, `phase`, `state`, `status_reason_code`, `handoff_ref`, `last_checkpoint_ref`, `restore_clues`.
 
 Completion/handoff:
@@ -472,14 +476,14 @@ NGEN config source:
 - Support `--config <file>` and/or `NGEN_CONFIG`.
 - Multica MVP 选择 daemon-owned `NGEN_CONFIG`：daemon 进程环境中的 `NGEN_CONFIG` 同时影响 `ngen models --json` 和 `ngen exec`；agent custom env 不允许覆盖它。
 - `models --json` and `exec` must use the same config resolution function.
-- 如果未来允许 per-agent custom env/config 影响 NGEN discovery，则必须先扩展 Multica `ListModels`/discovery 参数通道和 cache key，把 config/env/workdir fingerprint 纳入 model discovery；在此之前不要声称 per-agent custom config 与 execution catalog 完全一致。
+- Per-agent custom env/config must not affect NGEN discovery or execution config in this integration. Multica must block per-agent `NGEN_CONFIG`; NGEN must ignore workdir config for provider catalog selection under `--config-scope daemon`; tests must prove discovery and execution use the same daemon-owned config fingerprint.
 
 Skills:
 
 - 当前 NGEN 没有已确认的 runtime skill scanner，也没有已确认的 target workspace `AGENTS.md` loader；本方案要求新增 NGEN workspace guidance/skill ingestion feature，而不是假设现有 provider input 已消费这些文件。
-- For Multica workspace runs, NGEN must scan or ingest `<workdir>/skills` as the workspace shared skills directory, ideally materialized into a task artifact/provider input section such as `WorkspaceGuidance` / `WorkspaceSkills`.
+- For Multica workspace runs, NGEN must scan or ingest `<workdir>/skills` as the workspace shared skills directory and must materialize the consumed skill/guidance set into a bounded task artifact/provider input section such as `WorkspaceGuidance` / `WorkspaceSkills`.
 - Do not default Multica runs to `~/.codex/skills` or other private local runtime skill stores.
-- If NGEN already has a native skill scanner elsewhere, add `<workdir>/skills` as an explicit Multica profile scan root rather than silently changing all local behavior.
+- If NGEN already has a native skill scanner elsewhere, add `<workdir>/skills` as an explicit Multica profile scan root and keep non-Multica local behavior unchanged.
 
 AGENTS.md:
 
@@ -581,7 +585,7 @@ Conditional args:
 - `opts.Model` -> ignored/logged for provider=`ngen`; Multica MVP does not support per-run model selection and must not append `--model`.
 - `opts.ThinkingLevel` -> ignored/logged for provider=`ngen`; Multica MVP does not support external `--thinking-level`.
 - `opts.SystemPrompt` -> stdin envelope `system_prompt`, not shell arg.
-- `opts.MaxTurns` -> ignore/log unless NGEN defines a compatible bounded turn count.
+- `opts.MaxTurns` -> unsupported for provider=`ngen`; backend must ignore/log non-zero values and must not append a shell arg.
 
 Blocked args:
 
@@ -654,7 +658,7 @@ Exit code fallback:
 
 - Exit 0 + no result line = `failed` with protocol error.
 - Context deadline = `timeout`.
-- Context cancellation = `aborted` or `cancelled` following existing backend convention.
+- Context cancellation = `cancelled`.
 - Non-zero exit + result line may keep NGEN status only if the result line explicitly reports terminal status; otherwise `failed`.
 
 ### 6.2 Factory and public metadata
@@ -671,11 +675,11 @@ Modify `server/pkg/agent/models.go`:
 - `ngenDiscoveryEnvKey()` returns a sanitized discovery suffix derived only from daemon-owned NGEN config identity, for example `":ngen_config="+sha256(path+"\n"+content)` when `NGEN_CONFIG` is set, or `":ngen_config=default"` when unset. Do not include raw paths containing secrets, API keys, or full config content in logs or cache keys.
 - Implement `discoverNGENModels` by running `ngen models --json` with daemon process env, including daemon-owned `NGEN_CONFIG` when present. Do not read per-agent custom env in MVP because current `ListModels(ctx, providerType, executablePath)` has no custom env/workdir parameter.
 - `ModelSelectionSupported("ngen")` returns false for MVP. `discoverNGENModels` is still used for observability/catalog display and config/execution consistency checks, but Multica UI/API must not expose a per-run model selector for provider=`ngen`.
-- If future Multica allows per-agent `NGEN_CONFIG` or provider env to affect model list, change `ListModels` signature or add a NGEN-specific discovery path that accepts env/config/workdir and includes a sanitized fingerprint in the cache key. Without that change, per-agent custom config must not affect NGEN discovery.
+- Per-agent `NGEN_CONFIG` or provider env must not affect model list. Add tests proving `ListModels("ngen")` uses only executable path plus daemon-owned config fingerprint in its cache key, and that per-agent custom env cannot change discovery or execution config.
 
 Modify `server/pkg/agent/version.go`:
 
-- Add `MinVersions["ngen"]` only after NGEN publishes a stable semver. Suggested initial gate: `"0.1.0"` or first version containing `ngen-stream-json v1`.
+- Add `MinVersions["ngen"] = "0.1.0"` as the MVP gate, and require `ngen --version` / `ngen version --json` to report a semver at or above that version only when `ngen-stream-json v1` is present.
 
 Modify `server/pkg/agent/thinking.go`:
 
@@ -708,7 +712,7 @@ Update `defaultAgentCommandNames`:
 "claude", "codex", "opencode", "openclaw", "ngen", "hermes", ...
 ```
 
-Optional daemon args:
+Daemon args:
 
 ```go
 type Config struct {
@@ -731,14 +735,14 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 }
 ```
 
-Recommendation: do not use `MULTICA_NGEN_ARGS` for config-critical values like `--config`, `--workdir`, `--model`, `--thinking-level`, `--provider-mode`, `--permission-mode`, or protocol format. Prefer daemon env/config so model discovery and execution stay aligned.
+`MULTICA_NGEN_ARGS` support is mandatory for Codex parity with daemon-wide args, but it is non-authoritative: the NGEN backend must filter it through the same blocked-arg table as per-agent `CustomArgs`, and it must not carry config-critical values like `--config`, `--workdir`, `--model`, `--thinking-level`, `--provider-mode`, `--permission-mode`, `--config-scope`, or protocol format. Model discovery and execution alignment must come from daemon-owned `NGEN_CONFIG` / default NGEN config, not from args.
 
 Environment:
 
 - MVP decision: `NGEN_CONFIG` is daemon-owned. Add `NGEN_CONFIG` to blocked custom env so per-agent custom env cannot make execution use a different config than `models --json`.
 - Permission mode is also daemon/admin-owned or NGEN default-owned. Multica MVP does not expose per-run permission mode; NGEN default is `yolo`.
 - If users must provide NGEN API keys or provider base URLs through env, allow those specific provider env vars; continue blocking `MULTICA_*`, `HOME`, `PATH`, `USER`, `SHELL`, `TERM`.
-- If a future version allows `NGEN_CONFIG` from user env, Multica must first pass the same env to discovery and execution and update discovery cache keys; until then, block it.
+- `NGEN_CONFIG` from per-agent custom env is explicitly unsupported in this integration and must stay blocked; changing that requires a new plan, not this MVP.
 
 ### 6.4 Exec environment integration
 
@@ -769,7 +773,7 @@ Brief content requirement:
 - Do not instruct NGEN to bypass its criteria/verifier/review gates.
 - Do not put Multica issue state into `.ngen/` except via normal task objective/metadata.
 - The brief must be consumed by NGEN through `<workDir>/AGENTS.md` ingestion in MVP; merely materializing the file is not sufficient acceptance.
-- Update provider-specific skill brief generation, including `buildMetaSkillContent` or equivalent helper, so it says NGEN scans `<workDir>/skills` only after the NGEN-side ingestion feature exists. Avoid stale `.agent_context/skills` text for provider=`ngen`.
+- Update provider-specific skill brief generation, including `buildMetaSkillContent` or equivalent helper, so provider=`ngen` states that NGEN scans `<workDir>/skills` as the Multica workspace shared skills directory. Avoid stale `.agent_context/skills` text for provider=`ngen`.
 - Update cleanup/collision tests around managed skill directories so NGEN's `<workDir>/skills` path is included in sidecar cleanup and reuse rollback behavior.
 
 ### 6.5 Multica tests
@@ -781,18 +785,18 @@ Backend tests:
 - `session_id` fallback to `task_id`.
 - `usage` converts cache tokens and omits unknown.
 - stable `tool_use/tool_result` call IDs map correctly.
-- invalid JSON stdout is ignored only if non-protocol noise is explicitly allowed; preferred behavior is protocol error for non-empty invalid stdout.
+- any non-empty invalid JSON stdout is a protocol error. NGEN stdout has no non-protocol noise allowance; human diagnostics must go to stderr.
 - stderr tail is attached to start/exit errors.
 
 Args/env tests:
 
 - custom args and daemon-wide `ExtraArgs` cannot override `--output-format`, `--input-format`, `--workdir`, `--resume`, `--model`, `--thinking-level`, `--config`, `--timeout-seconds`, or `--permission-mode`.
 - custom args and daemon-wide `ExtraArgs` cannot override `--config-scope` or `--ignore-workdir-provider-config`.
-- `opts.Model` and `opts.ThinkingLevel` are not appended for provider=`ngen`; if non-empty, they are ignored/logged or rejected by config validation according to Multica's existing UX conventions.
+- `opts.Model` and `opts.ThinkingLevel` are not appended for provider=`ngen`; settings/API validation rejects new NGEN per-run/per-agent selections, and backend clears any stale non-empty value with a warning before exec.
 - zero `opts.Timeout` does not append `--timeout-seconds`; positive timeout appends integer seconds.
 - `ResumeSessionID` becomes `--resume TASK-ID`.
 - `SystemPrompt` is sent in stdin envelope, not shell args.
-- `McpConfig` is ignored/logged unless NGEN gains native MCP config support.
+- `McpConfig` is unsupported for provider=`ngen` under the daemon-owned config decision. Settings/API validation must reject non-empty NGEN `mcp_config`; backend must fail closed if a non-empty `McpConfig` reaches execution, rather than silently ignoring it.
 - per-agent custom env cannot override daemon-owned `NGEN_CONFIG`.
 
 Discovery tests:
@@ -808,7 +812,7 @@ Daemon/execenv tests:
 
 - `MULTICA_NGEN_PATH` probe populates agents map; no `MULTICA_NGEN_MODEL` is introduced.
 - login shell fallback includes `ngen`.
-- `defaultArgsForProvider("ngen")` returns copied args if enabled.
+- `defaultArgsForProvider("ngen")` returns a copy of daemon-wide `NgenArgs`.
 - `runtimeConfigPath(provider="ngen")` is `AGENTS.md`.
 - `skillsDirPath(provider="ngen")` is `<workDir>/skills`.
 - fake end-to-end backend script receives expected args/stdin, emits intermediate status/log before final `result`, and parser exposes streaming progress.
@@ -828,7 +832,7 @@ Daemon/execenv tests:
 - `Result.SessionID` 和 resume 参数必须语义一致；本方案固定为 NGEN `task_id`。
 - unknown usage 不能写 0；nil/omit 才表示未知。
 - skills 注入到 runtime 实际扫描的 workspace skills 目录；NGEN 是 `<workDir>/skills`。
-- cancellation 第一版用 context/process，不设计未验证的 stdin control protocol。
+- cancellation MVP 用 context/process，不设计未验证的 stdin control protocol。
 - 不引用旧 Multica commit 或旧 stderr tail API；每次开发前以当前 upstream 文件签名为准。
 
 ## 8. 前后一致性检查
@@ -861,24 +865,21 @@ Phase A：NGEN protocol MVP
 3. 添加 `models --json`，输出 daemon config-derived model catalog。
 4. 添加 `internal/multica` stream structs、usage parser、encoder。
 5. 添加 `ngen exec` headless command：stdin envelope -> create/resume task -> hybrid event sink/bus + durable high-water flush -> `Run/Resume/Auto` -> final flush -> final result。
-6. 添加 projection tests 和 CLI smoke tests。
+6. 扩展 NGEN handoff projection，覆盖 worker settlement/reconcile/trust、requires_parent_action、parent_action_type/options/summary/unresolved、mission validation refs 和 artifact refs。
+7. 添加 projection tests 和 CLI smoke tests。
 
 Phase B：Multica backend MVP
 
 1. 新增 `server/pkg/agent/ngen.go` backend 和 parser tests。
 2. 注册 `ngen` factory、launch header、models discovery、version gate。
-3. 添加 daemon config probe 和 optional `MULTICA_NGEN_ARGS`。
+3. 添加 daemon config probe 和 mandatory filtered `MULTICA_NGEN_ARGS`。
 4. 确认 daemon-owned `NGEN_CONFIG` discovery/execution 一致，并阻止 per-agent custom env 覆盖。
 5. 添加 execenv `AGENTS.md` 与 `<workDir>/skills` support。
-6. 添加 fake-ngen backend E2E，覆盖 completed、first-class blocked/needs_input、resume 和 streaming progress。
+6. 添加 provider=`ngen` runtime profile/brief，作为 large-project / multi-agent 任务的默认 NGEN 接入口径；该 profile 只改变 prompt/skills/profile，不改变 protocol。
+7. 完整实现 first-class blocked/needs_input 数据模型、API、UI 和 resume/continue 入口，包含 parent-action display；仍不让 Multica 解析 `.ngen/` 为权威。
+8. 添加 fake-ngen backend E2E，覆盖 completed、first-class blocked/needs_input、parent action、resume、streaming progress 和 worker trust handoff。
 
-Phase C：multi-agent hardening
-
-1. 扩展 NGEN handoff projection，覆盖 worker settlement/reconcile/trust 字段。
-2. 对 NGEN worker handoff 增加 richer parent-action display，但仍不让 Multica 解析 `.ngen/` 为权威。
-3. 视需要新增 Multica runtime profile：`ngen-large-project`，只改变 prompt/skills/profile，不改变 protocol。
-
-Phase D：acceptance
+Phase C：acceptance
 
 1. 本地 fake NGEN E2E 通过。
 2. NGEN builtin/default 无 API key smoke 通过。
@@ -888,7 +889,7 @@ Phase D：acceptance
 6. streaming smoke 证明 final result 前已有 status/log/text 进度，模拟 late durable event 后 final flush 不漏关键事件。
 7. worker smoke 证明 child result trust fields 出现在 final handoff。
 
-## 10. 验收命令建议
+## 10. 验收命令
 
 NGEN 仓库：
 
@@ -922,15 +923,17 @@ Expected:
 - blocked run preserves `Result.SessionID=<ngen task_id>` and a structured handoff, API/UI exposes first-class blocked/needs_input with resume/continue action, and next resume uses the same task id。
 - final output contains concise handoff summary plus artifact refs。
 
-## 11. 已决策项与后续非 MVP
+## 11. 已决策项与明确不支持项
 
 - Headless command 已决策为 `ngen exec`。
 - External `--thinking-level` 已决策为不支持；thinking/reasoning level 只来自 daemon-owned NGEN config，例如 GPT `xhigh` 或 Claude `max`。
 - `blocked/needs_input` 已决策为 Multica MVP first-class 状态，必须覆盖数据模型、API、UI 和 resume/continue 入口。
-- `NGEN_CONFIG` 已决策为 daemon-owned；per-agent custom config 是后续非 MVP，必须先扩展 model discovery env/config/workdir 通道和 cache key。
+- `NGEN_CONFIG` 已决策为 daemon-owned；per-agent custom config 在本接入方案中明确不支持，必须被 custom env blocklist 阻断。
 - Per-run model switch 已决策为不支持；effective model 只来自 daemon-owned NGEN config，resume 时 config/model drift fail closed。
 - Per-run permission mode 已决策为不支持；permission 只来自 daemon/admin 配置或 NGEN 默认，默认 `yolo`。
 - Hybrid bounded-near-real-time streaming 已决策为 MVP 要求；纯 batch 不满足 MVP。
+- `McpConfig`、`MaxTurns`、per-agent `NGEN_CONFIG`、per-run model/thinking/permission 都不是 NGEN MVP 扩展点；Multica settings/API/backend 必须拒绝或清理这些 stale 值，不能静默传给 `ngen exec`。
+- Multi-agent worker trust、parent action、large-project runtime profile、blocked resume/continue UI/API 都是 Codex 接入口径对齐所需 MVP 项，必须随 MVP 一起完成。
 
 ## 12. 最小可交付定义
 
