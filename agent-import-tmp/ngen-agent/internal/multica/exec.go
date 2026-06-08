@@ -70,13 +70,13 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 	} else {
 		loaded, loadErr := svc.Store.LoadMulticaRunMetadata(taskID)
 		if loadErr != nil {
-			status := resultStatusBlocked(taskID, opts.RunRole, resolution, "multica_run_metadata_missing", map[string]any{"error": loadErr.Error()})
+			status := resultStatusBlocked(taskID, opts.RunRole, resolution.EffectiveModel, "multica_run_metadata_missing", map[string]any{"error": loadErr.Error()})
 			_ = json.NewEncoder(stdout).Encode(status)
 			return 10
 		}
 		metadata = loaded
 		if drift := configDrift(metadata, resolution); len(drift) > 0 {
-			status := resultStatusBlocked(taskID, opts.RunRole, resolution, "multica_model_config_drift", drift)
+			status := resultStatusBlocked(taskID, opts.RunRole, effectiveModelFromMetadata(metadata), "multica_model_config_drift", drift)
 			_ = json.NewEncoder(stdout).Encode(status)
 			return 10
 		}
@@ -281,6 +281,14 @@ func configDrift(metadata task.MulticaRunMetadata, resolution ConfigResolution) 
 	return drift
 }
 
+func effectiveModelFromMetadata(metadata task.MulticaRunMetadata) EffectiveModel {
+	return EffectiveModel{
+		Route:         metadata.ModelRoute,
+		ProviderMode:  metadata.ProviderMode,
+		ProviderModel: metadata.ProviderModel,
+	}
+}
+
 func systemMessage(taskID, runRole string, metadata task.MulticaRunMetadata, resolution ConfigResolution) StreamOutputMessage {
 	return StreamOutputMessage{
 		Type:            "system",
@@ -325,7 +333,7 @@ func statusMessage(snapshot task.StatusSnapshot, runRole string, metadata task.M
 	return msg
 }
 
-func resultStatusBlocked(taskID, runRole string, resolution ConfigResolution, reason string, metadata map[string]any) StreamOutputMessage {
+func resultStatusBlocked(taskID, runRole string, effective EffectiveModel, reason string, metadata map[string]any) StreamOutputMessage {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
@@ -335,9 +343,9 @@ func resultStatusBlocked(taskID, runRole string, resolution ConfigResolution, re
 		TaskID:        taskID,
 		SessionID:     taskID,
 		RunRole:       strings.TrimSpace(runRole),
-		ModelRoute:    resolution.EffectiveModel.Route,
-		ProviderMode:  resolution.EffectiveModel.ProviderMode,
-		ProviderModel: resolution.EffectiveModel.ProviderModel,
+		ModelRoute:    effective.Route,
+		ProviderMode:  effective.ProviderMode,
+		ProviderModel: effective.ProviderModel,
 		Status:        "blocked",
 		IsError:       true,
 		Handoff: &StructuredHandoff{
@@ -345,9 +353,9 @@ func resultStatusBlocked(taskID, runRole string, resolution ConfigResolution, re
 			TaskID:           taskID,
 			State:            "Blocked",
 			StatusReasonCode: reason,
-			ModelRoute:       resolution.EffectiveModel.Route,
-			ProviderMode:     resolution.EffectiveModel.ProviderMode,
-			ProviderModel:    resolution.EffectiveModel.ProviderModel,
+			ModelRoute:       effective.Route,
+			ProviderMode:     effective.ProviderMode,
+			ProviderModel:    effective.ProviderModel,
 		},
 		Metadata: metadata,
 	}

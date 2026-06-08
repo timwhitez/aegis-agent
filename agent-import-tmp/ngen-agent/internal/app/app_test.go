@@ -234,8 +234,15 @@ func TestMulticaExecResumeBlocksOnMissingMetadataAndConfigDrift(t *testing.T) {
 		t.Fatalf("expected drift blocked exit, got %d stdout=%s stderr=%s", drift.exitCode, drift.stdout, drift.stderr)
 	}
 	driftLines := decodeStreamOutput(t, drift.stdout)
-	if got := driftLines[len(driftLines)-1].Metadata["status_reason_code"]; got != "multica_model_config_drift" {
+	driftFinal := driftLines[len(driftLines)-1]
+	if got := driftFinal.Metadata["status_reason_code"]; got != "multica_model_config_drift" {
 		t.Fatalf("expected config drift reason, got %#v", got)
+	}
+	if driftFinal.ModelRoute != "builtin/default" || driftFinal.Handoff == nil || driftFinal.Handoff.ModelRoute != "builtin/default" {
+		t.Fatalf("expected drift result to preserve original run metadata model route, got %+v", driftFinal)
+	}
+	if got := driftFinal.Metadata["current_model_route"]; got != "command/default" {
+		t.Fatalf("expected current drift metadata, got %#v", got)
 	}
 }
 
