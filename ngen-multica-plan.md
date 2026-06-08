@@ -178,7 +178,7 @@ type ThinkingLevelInfo struct {
 - `--model openai-response/gpt-5.5` 必须可逆拆分为 `provider.mode=openai-response` 与 `provider.model=gpt-5.5`。
 - `builtin/default` 和 `command/default` 可以显示为不可选或低优先级默认项；如果实际没有 model override 语义，Multica 仍可列出但 execution 时不要把 `default` 写成远端模型名。
 - `models --json` 和 `exec` 必须读取同一份 config 来源。NGEN 侧支持优先级：显式 `--config` > `NGEN_CONFIG` > `<workdir>/ngen.json` > 默认 config；Multica 侧 MVP 只使用 daemon-owned `NGEN_CONFIG`，见 6.2/6.3。
-- Multica provider=`ngen` MVP 的额外收口：如果 daemon 未设置 `NGEN_CONFIG`，Multica 的 NGEN backend 仍可传 `--workdir` 作为 workspace root，但必须让 NGEN exec 使用与 `models --json` 相同的 provider catalog default config，不能让 `<workdir>/ngen.json` 改变 provider mode/model catalog。推荐新增 `ngen exec --config-scope daemon` 或 `--ignore-workdir-provider-config`，只禁止 workdir config 影响 provider/model discovery 与 provider selection，不禁止 `.ngen/` artifact/workspace root 使用 `--workdir`。
+- Multica provider=`ngen` MVP 的额外收口：如果 daemon 未设置 `NGEN_CONFIG`，Multica 的 NGEN backend 仍可传 `--workdir` 作为 workspace root，但必须让 NGEN exec 使用与 `models --json` 相同的 provider catalog default config，不能让 `<workdir>/ngen.json` 改变 provider mode/model catalog。MVP 明确新增并使用 `ngen exec --config-scope daemon`，只禁止 workdir config 影响 provider/model discovery 与 provider selection，不禁止 `.ngen/` artifact/workspace root 使用 `--workdir`；若未来保留 `--ignore-workdir-provider-config`，它只能作为兼容别名，不作为 Multica 侧默认接口。
 - `--model <mode>/<model>` 只覆盖本次 exec service 的 effective `ProviderConfig.Mode` / `ProviderConfig.Model`，并用 `provider.CanonicalMode` 校验 mode。`builtin/default`、`command/default` 不写入 `ProviderConfig.Model`；mission `role_models` 仍只是 NGEN native model override，不隐式切 provider mode。
 
 ### 5.3 新增 Multica headless exec 命令
@@ -559,7 +559,7 @@ type ngenInputMessage struct {
 Execution args:
 
 ```text
-ngen exec --output-format stream-json --input-format stream-json --workdir <opts.Cwd>
+ngen exec --output-format stream-json --input-format stream-json --workdir <opts.Cwd> --config-scope daemon
 ```
 
 Only append `--timeout-seconds strconv.Itoa(int(opts.Timeout.Seconds()))` when `opts.Timeout > 0`。When timeout is zero, pass no timeout flag; Multica's context/inactivity watchdog owns lifecycle, matching current `runContext` semantics.
@@ -879,7 +879,7 @@ NGEN 仓库：
 go test ./internal/multica ./internal/app ./internal/task ./internal/runtime
 go run ./cmd/ngen --version
 go run ./cmd/ngen models --json --workdir /tmp/ngen-smoke
-printf '%s\n' '{"protocol":"ngen-stream-json","protocol_version":1,"type":"user","role":"user","content":[{"type":"text","text":"create a tiny handoff"}]}' | go run ./cmd/ngen exec --output-format stream-json --input-format stream-json --workdir /tmp/ngen-smoke
+printf '%s\n' '{"protocol":"ngen-stream-json","protocol_version":1,"type":"user","role":"user","content":[{"type":"text","text":"create a tiny handoff"}]}' | go run ./cmd/ngen exec --output-format stream-json --input-format stream-json --workdir /tmp/ngen-smoke --config-scope daemon
 ```
 
 Multica 仓库：
