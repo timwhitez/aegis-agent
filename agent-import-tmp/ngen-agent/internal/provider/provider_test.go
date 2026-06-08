@@ -788,10 +788,11 @@ func TestOpenAIResponsesDriverUsesResponsesEndpointAndSchema(t *testing.T) {
 	defer server.Close()
 
 	driver := New(task.ProviderConfig{
-		Mode:      "responses",
-		BaseURL:   server.URL + "/v1",
-		Model:     "gpt-5.4",
-		APIKeyEnv: "OPENAI_API_KEY",
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
 	})
 	decision, err := driver.Decide(context.Background(), Input{
 		Task: task.Spec{
@@ -812,6 +813,10 @@ func TestOpenAIResponsesDriverUsesResponsesEndpointAndSchema(t *testing.T) {
 	}
 	if got := seenBody["max_output_tokens"]; got != float64(2048) {
 		t.Fatalf("expected default decision max output tokens 2048, got %#v", got)
+	}
+	reasoning, ok := seenBody["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "xhigh" {
+		t.Fatalf("expected configured reasoning effort in request, got %#v", seenBody["reasoning"])
 	}
 	if decision.Action != "wait" || decision.WatchInterval != "5m" {
 		t.Fatalf("unexpected decision: %+v", decision)

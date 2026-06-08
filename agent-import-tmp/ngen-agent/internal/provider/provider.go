@@ -671,23 +671,25 @@ func (d *CommandDriver) Decide(ctx context.Context, input Input) (Decision, erro
 }
 
 type OpenAIResponsesDriver struct {
-	BaseURL      string
-	APIKeyEnv    string
-	Model        string
-	SystemPrompt string
-	MaxTokens    int
-	Client       *http.Client
+	BaseURL         string
+	APIKeyEnv       string
+	Model           string
+	SystemPrompt    string
+	ReasoningEffort string
+	MaxTokens       int
+	Client          *http.Client
 }
 
 func NewOpenAIResponsesDriver(cfg task.ProviderConfig) *OpenAIResponsesDriver {
 	timeout := decisionTimeout(cfg)
 	keyEnv := normalizedAPIKeyEnv(cfg.APIKeyEnv)
 	return &OpenAIResponsesDriver{
-		BaseURL:      strings.TrimSpace(cfg.BaseURL),
-		APIKeyEnv:    keyEnv,
-		Model:        strings.TrimSpace(cfg.Model),
-		SystemPrompt: strings.TrimSpace(cfg.SystemPrompt),
-		MaxTokens:    decisionMaxOutputTokens(cfg),
+		BaseURL:         strings.TrimSpace(cfg.BaseURL),
+		APIKeyEnv:       keyEnv,
+		Model:           strings.TrimSpace(cfg.Model),
+		SystemPrompt:    strings.TrimSpace(cfg.SystemPrompt),
+		ReasoningEffort: strings.TrimSpace(cfg.ThinkingLevel),
+		MaxTokens:       decisionMaxOutputTokens(cfg),
 		Client: &http.Client{
 			Timeout: timeout,
 		},
@@ -743,6 +745,7 @@ func (d *OpenAIResponsesDriver) requestBody(input Input) ([]byte, error) {
 		Model:           d.Model,
 		Instructions:    defaultSystemPrompt(d.SystemPrompt),
 		MaxOutputTokens: d.MaxTokens,
+		Reasoning:       responsesReasoningConfigFromLevel(d.ReasoningEffort),
 		Input: []responsesInputItem{
 			{
 				Type: "message",
@@ -1406,6 +1409,7 @@ func workspaceEditRequestBody(cfg task.ProviderConfig, input WorkspaceEditInput)
 		Model:           strings.TrimSpace(cfg.Model),
 		Instructions:    workspaceEditSystemPrompt(cfg.SystemPrompt),
 		MaxOutputTokens: 4000,
+		Reasoning:       responsesReasoningConfigFromLevel(cfg.ThinkingLevel),
 		Input: []responsesInputItem{
 			{
 				Type: "message",
@@ -1439,6 +1443,7 @@ func missionValidationRequestBody(cfg task.ProviderConfig, input MissionValidati
 		Model:           strings.TrimSpace(cfg.Model),
 		Instructions:    missionValidationSystemPrompt(cfg.SystemPrompt),
 		MaxOutputTokens: decisionMaxOutputTokens(cfg),
+		Reasoning:       responsesReasoningConfigFromLevel(cfg.ThinkingLevel),
 		Input: []responsesInputItem{
 			{
 				Type: "message",
@@ -1538,6 +1543,7 @@ func workspaceObservationRequestBody(cfg task.ProviderConfig, input WorkspaceObs
 		Model:           strings.TrimSpace(cfg.Model),
 		Instructions:    workspaceObservationSystemPrompt(cfg.SystemPrompt),
 		MaxOutputTokens: 1200,
+		Reasoning:       responsesReasoningConfigFromLevel(cfg.ThinkingLevel),
 		Input: []responsesInputItem{
 			{
 				Type: "message",
@@ -3065,7 +3071,20 @@ type responsesRequest struct {
 	Instructions    string               `json:"instructions,omitempty"`
 	Input           []responsesInputItem `json:"input"`
 	MaxOutputTokens int                  `json:"max_output_tokens,omitempty"`
+	Reasoning       *responsesReasoning  `json:"reasoning,omitempty"`
 	Text            responsesTextConfig  `json:"text"`
+}
+
+type responsesReasoning struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+func responsesReasoningConfigFromLevel(level string) *responsesReasoning {
+	level = strings.TrimSpace(level)
+	if level == "" {
+		return nil
+	}
+	return &responsesReasoning{Effort: level}
 }
 
 type responsesInputItem struct {
