@@ -106,3 +106,101 @@ func TestEventMessagesProjectsWorkspaceEditRecordWithStableCallID(t *testing.T) 
 		t.Fatalf("expected summary and file change in output, got %q", result.Tool.Output)
 	}
 }
+
+func TestResultMessageProjectsWorkerParentActionAndTrustFields(t *testing.T) {
+	dir := t.TempDir()
+	svc := ngenrt.New(dir, task.DefaultConfig())
+	taskID := "TASK-multica-worker"
+	if err := svc.Store.EnsureWorkspaceLayout(); err != nil {
+		t.Fatalf("ensure workspace layout: %v", err)
+	}
+	if err := svc.Store.EnsureTaskLayout(taskID); err != nil {
+		t.Fatalf("ensure task layout: %v", err)
+	}
+	contract := task.WorkerContract{
+		SchemaVersion:              task.SchemaVersion,
+		WorkerID:                   "WKR-001",
+		ParentTaskID:               taskID,
+		ChildTaskID:                "TASK-child",
+		Role:                       string(task.KindReviewer),
+		Status:                     "blocked",
+		BlockedReasonCode:          "blocked_policy",
+		BlockedDetailRef:           "approvals.jsonl#approval_record_id=APRREC-001",
+		RequiresParentAction:       true,
+		ParentActionType:           "owned_approval_pending",
+		ParentActionOptions:        []string{"approve", "deny", "parent_takeover"},
+		ParentActionSummary:        "Worker awaits parent approval.",
+		ParentActionUnresolved:     true,
+		EvidenceScore:              42,
+		EvidenceGrade:              "partial",
+		MissingEvidence:            []string{"verification/latest.json"},
+		TrustedForParentCompletion: false,
+		ConflictCount:              1,
+		CreatedAt:                  task.Now(),
+		UpdatedAt:                  task.Now(),
+	}
+	if err := svc.Store.SaveWorkerContract(contract); err != nil {
+		t.Fatalf("save worker contract: %v", err)
+	}
+	workerResult := task.WorkerResult{
+		SchemaVersion:              task.SchemaVersion,
+		ResultID:                   "WKRRES-001",
+		WorkerID:                   contract.WorkerID,
+		ParentTaskID:               taskID,
+		ChildTaskID:                contract.ChildTaskID,
+		Role:                       contract.Role,
+		ChildState:                 task.StateBlocked,
+		CompletionStatus:           "blocked",
+		ReviewStatus:               "blocking",
+		VerificationStatus:         "failed",
+		RequiresParentAction:       true,
+		ParentActionType:           contract.ParentActionType,
+		ParentActionOptions:        append([]string(nil), contract.ParentActionOptions...),
+		ParentActionSummary:        contract.ParentActionSummary,
+		ParentActionUnresolved:     true,
+		EvidenceScore:              contract.EvidenceScore,
+		EvidenceGrade:              contract.EvidenceGrade,
+		MissingEvidence:            append([]string(nil), contract.MissingEvidence...),
+		TrustedForParentCompletion: false,
+		ConflictCount:              contract.ConflictCount,
+		Summary:                    "Worker is blocked on parent approval.",
+		EvidenceRefs:               []string{"worker_runtime/WKR-001.result.json"},
+		CreatedAt:                  task.Now(),
+		UpdatedAt:                  task.Now(),
+	}
+	if err := svc.Store.SaveWorkerResult(workerResult); err != nil {
+		t.Fatalf("save worker result: %v", err)
+	}
+	metadata := task.MulticaRunMetadata{
+		ModelRoute:    "openai-response/gpt-5.5",
+		ProviderMode:  "openai-response",
+		ProviderModel: "gpt-5.5",
+	}
+	snapshot := task.StatusSnapshot{
+		TaskID:           taskID,
+		Phase:            task.PhaseReview,
+		State:            task.StateBlocked,
+		StatusReasonCode: "blocked_review",
+	}
+
+	msg := resultMessage(snapshot, "orchestrator", metadata, ConfigResolution{}, "blocked", nil, svc)
+	if msg.Type != "result" || msg.Status != "blocked" || msg.SessionID != taskID {
+		t.Fatalf("unexpected result message: %+v", msg)
+	}
+	if msg.Handoff == nil || len(msg.Handoff.WorkerResults) != 1 {
+		t.Fatalf("expected one worker digest, got %+v", msg.Handoff)
+	}
+	digest := msg.Handoff.WorkerResults[0]
+	if digest.WorkerID != contract.WorkerID || digest.RequiresParentAction != true || digest.ParentActionType != contract.ParentActionType {
+		t.Fatalf("expected parent action fields, got %+v", digest)
+	}
+	if strings.Join(digest.ParentActionOptions, ",") != "approve,deny,parent_takeover" || digest.ParentActionSummary != contract.ParentActionSummary {
+		t.Fatalf("unexpected parent action details: %+v", digest)
+	}
+	if digest.TrustedForParentCompletion || digest.EvidenceScore != 42 || digest.EvidenceGrade != "partial" || digest.ConflictCount != 1 {
+		t.Fatalf("expected worker trust fields, got %+v", digest)
+	}
+	if digest.Summary != workerResult.Summary || len(digest.EvidenceRefs) != 1 {
+		t.Fatalf("expected worker result summary/evidence refs, got %+v", digest)
+	}
+}
