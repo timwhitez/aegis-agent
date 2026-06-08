@@ -3653,14 +3653,20 @@ func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
 	cfg.Provider.Model = "gpt-5.5"
 	cfg.Provider.ThinkingLevel = "xhigh"
 	svc := New(t.TempDir(), cfg)
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{
+	spec := task.Spec{
 		TaskID:    "TASK-001",
 		Objective: "Multica issue execution mode for issue " + issueID + ".",
 		SuccessCriteria: []task.SuccessCriterion{
 			{Statement: `multica-result.md contains the phrase "multica issue comment add".`},
-			{Statement: `multica-result.md contains the exact completion marker "` + marker + `".`},
 		},
-	}, fmt.Errorf("responses workspace edit returned empty output text"))
+	}
+	observations := []provider.ObservationResult{
+		{
+			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
+			StdoutExcerpt: `{"description":"Produce marker ` + marker + ` as an issue comment."}`,
+		},
+	}
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
 	if !ok {
 		t.Fatal("expected Multica fallback plan")
 	}
@@ -3679,7 +3685,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
 	if !slices.Equal(plan.Commands[0].Argv, want) {
 		t.Fatalf("unexpected fallback command: %+v", plan.Commands[0].Argv)
 	}
-	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{Objective: "ordinary task"}, fmt.Errorf("responses workspace edit returned empty output text")); ok {
+	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{Objective: "ordinary task"}, observations, fmt.Errorf("responses workspace edit returned empty output text")); ok {
 		t.Fatal("expected fallback to stay disabled for ordinary tasks")
 	}
 }

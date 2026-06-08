@@ -618,7 +618,7 @@ func (s *Service) repairCodingTask(
 		Files:                 files,
 	})
 	if err != nil {
-		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, err); ok {
+		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, err); ok {
 			plan = fallbackPlan
 			fallbackEvent := newEvent(
 				spec.TaskID,
@@ -1632,12 +1632,12 @@ func multicaMarkerFromSpec(spec task.Spec) string {
 	return ""
 }
 
-func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, planningErr error) (provider.WorkspaceEditPlan, bool) {
+func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, planningErr error) (provider.WorkspaceEditPlan, bool) {
 	if planningErr == nil || !strings.Contains(planningErr.Error(), "empty output text") {
 		return provider.WorkspaceEditPlan{}, false
 	}
 	issueID := multicaIssueIDFromSpec(spec)
-	marker := multicaMarkerFromSpec(spec)
+	marker := multicaMarkerFromSpecAndObservations(spec, observations)
 	if issueID == "" || marker == "" {
 		return provider.WorkspaceEditPlan{}, false
 	}
@@ -1655,6 +1655,20 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, planning
 			},
 		},
 	}, true
+}
+
+func multicaMarkerFromSpecAndObservations(spec task.Spec, observations []provider.ObservationResult) string {
+	if marker := multicaMarkerFromSpec(spec); marker != "" {
+		return marker
+	}
+	for _, observation := range observations {
+		for _, value := range []string{observation.StdoutExcerpt, observation.StderrExcerpt, observation.Summary} {
+			if marker := multicaMarkerPattern.FindString(value); marker != "" {
+				return marker
+			}
+		}
+	}
+	return ""
 }
 
 func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID, marker string) string {
