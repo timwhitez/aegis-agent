@@ -416,6 +416,30 @@ func eventMessages(svc *ngenrt.Service, event task.Event, runRole string, metada
 		}
 		return []StreamOutputMessage{use, result}
 	}
+	if record, ok := workspaceEditRecordForEvent(svc, event); ok {
+		callID := firstNonEmpty(record.EditRecordID, record.EditID)
+		use := base
+		use.Type = "tool_use"
+		use.Tool = &ToolProjection{
+			Name:   "workspace_edit",
+			CallID: callID,
+			Input: map[string]any{
+				"provider_mode": record.ProviderMode,
+				"summary":       record.Summary,
+				"file_changes":  record.FileChanges,
+			},
+		}
+		result := base
+		result.Type = "tool_result"
+		result.IsError = record.Status == "failed"
+		result.Tool = &ToolProjection{
+			Name:   "workspace_edit",
+			CallID: callID,
+			Output: workspaceEditOutputSummary(record),
+			Status: record.Status,
+		}
+		return []StreamOutputMessage{use, result}
+	}
 	msg := base
 	if event.Type == "done" || event.Type == "failed" || strings.Contains(event.Type, "blocked") || strings.HasSuffix(event.Type, "_requested") {
 		msg.Type = "status"
@@ -428,6 +452,29 @@ func eventMessages(svc *ngenrt.Service, event task.Event, runRole string, metada
 		msg.Log = &LogEntry{Level: "info", Message: event.Summary}
 	}
 	return []StreamOutputMessage{msg}
+}
+
+func workspaceEditRecordForEvent(svc *ngenrt.Service, event task.Event) (task.WorkspaceEditRecord, bool) {
+	var wanted string
+	for _, ref := range event.Refs {
+		if strings.HasPrefix(ref, "workspace_edits.jsonl#edit_record_id=") {
+			wanted = strings.TrimPrefix(ref, "workspace_edits.jsonl#edit_record_id=")
+			break
+		}
+	}
+	if wanted == "" {
+		return task.WorkspaceEditRecord{}, false
+	}
+	records, err := svc.Store.ReadWorkspaceEdits(event.TaskID)
+	if err != nil {
+		return task.WorkspaceEditRecord{}, false
+	}
+	for _, record := range records {
+		if record.EditRecordID == wanted {
+			return record, true
+		}
+	}
+	return task.WorkspaceEditRecord{}, false
 }
 
 func commandRecordForEvent(svc *ngenrt.Service, event task.Event) (task.CommandRunRecord, bool) {
@@ -451,6 +498,17 @@ func commandRecordForEvent(svc *ngenrt.Service, event task.Event) (task.CommandR
 		}
 	}
 	return task.CommandRunRecord{}, false
+}
+
+func workspaceEditOutputSummary(record task.WorkspaceEditRecord) string {
+	var changes []string
+	for _, change := range record.FileChanges {
+		changes = append(changes, strings.TrimSpace(change.Action)+" "+strings.TrimSpace(change.Path))
+	}
+	if len(changes) == 0 {
+		return strings.TrimSpace(record.Summary)
+	}
+	return strings.TrimSpace(record.Summary + "\n" + strings.Join(changes, "\n"))
 }
 
 func commandOutputSummary(record task.CommandRunRecord) string {
