@@ -37,6 +37,7 @@ var observationUndefinedNamePattern = regexp.MustCompile(`undefined:\s*([A-Za-z_
 var observationNameTokenPattern = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
 var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
+var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -1529,6 +1530,9 @@ func heuristicObservationCommands(
 	collection provider.WorkspaceCollection,
 	budget int,
 ) []provider.ObservationCommand {
+	if commands := multicaIssueObservationCommands(spec, budget); len(commands) > 0 {
+		return commands
+	}
 	if budget <= 0 || collection.StopReason != "skipped large or non-text files" {
 		return nil
 	}
@@ -1557,6 +1561,44 @@ func heuristicObservationCommands(
 		})
 	}
 	return commands
+}
+
+func multicaIssueObservationCommands(spec task.Spec, budget int) []provider.ObservationCommand {
+	if budget <= 0 {
+		return nil
+	}
+	issueID := multicaIssueIDFromSpec(spec)
+	if issueID == "" {
+		return nil
+	}
+	commands := []provider.ObservationCommand{
+		{
+			Argv:   []string{"multica", "issue", "get", issueID, "--output", "json"},
+			Reason: "Read the live Multica issue details before preparing the issue completion artifact.",
+		},
+		{
+			Argv:   []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
+			Reason: "Read the issue comment history before deciding whether to add the required completion marker.",
+		},
+	}
+	if len(commands) > budget {
+		return commands[:budget]
+	}
+	return commands
+}
+
+func multicaIssueIDFromSpec(spec task.Spec) string {
+	for _, value := range []string{spec.Objective, spec.Title} {
+		if issueID := multicaIssueIDPattern.FindString(value); issueID != "" {
+			return issueID
+		}
+	}
+	for _, criterion := range spec.SuccessCriteria {
+		if issueID := multicaIssueIDPattern.FindString(criterion.Statement); issueID != "" {
+			return issueID
+		}
+	}
+	return ""
 }
 
 func observationSearchTerms(values ...string) []string {

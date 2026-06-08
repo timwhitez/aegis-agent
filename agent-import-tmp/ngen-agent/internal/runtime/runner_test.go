@@ -3626,6 +3626,25 @@ func TestValidateObservationCommandRejectsShellWrapper(t *testing.T) {
 	}
 }
 
+func TestHeuristicObservationCommandsIncludeMulticaIssueContext(t *testing.T) {
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	commands := heuristicObservationCommands(task.Spec{
+		Objective: "Multica issue execution mode for issue " + issueID + ".",
+	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2)
+	if len(commands) != 2 {
+		t.Fatalf("expected two Multica issue observation commands, got %+v", commands)
+	}
+	if !slices.Equal(commands[0].Argv, []string{"multica", "issue", "get", issueID, "--output", "json"}) {
+		t.Fatalf("unexpected issue get command: %+v", commands[0])
+	}
+	if !slices.Equal(commands[1].Argv, []string{"multica", "issue", "comment", "list", issueID, "--output", "json"}) {
+		t.Fatalf("unexpected issue comment list command: %+v", commands[1])
+	}
+	if got := heuristicObservationCommands(task.Spec{Objective: "ordinary task"}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2); len(got) != 0 {
+		t.Fatalf("expected ordinary task not to get Multica observation commands, got %+v", got)
+	}
+}
+
 func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	svc := New(t.TempDir(), task.DefaultConfig())
 	if err := svc.validateExecutionCommand([]string{"gofmt", "-w", "calc.go"}, task.PermissionModeStandard); err != nil {
