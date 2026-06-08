@@ -215,7 +215,7 @@ func VerifierCommandsFromStatement(workspaceRoot, statement string) [][]string {
 	var commands [][]string
 	for _, literal := range backtickedLiterals(statement) {
 		args := strings.Fields(strings.TrimSpace(literal))
-		if len(args) == 0 || !looksLikeVerifierCommand(workspaceRoot, args[0]) {
+		if len(args) == 0 || !looksLikeVerifierCommand(workspaceRoot, args) {
 			continue
 		}
 		commands = append(commands, args)
@@ -240,7 +240,11 @@ func backtickedLiterals(statement string) []string {
 	}
 }
 
-func looksLikeVerifierCommand(workspaceRoot, token string) bool {
+func looksLikeVerifierCommand(workspaceRoot string, args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	token := args[0]
 	if token == "" || filepath.IsAbs(token) {
 		return false
 	}
@@ -252,9 +256,26 @@ func looksLikeVerifierCommand(workspaceRoot, token string) bool {
 		info, err := os.Stat(full)
 		return err == nil && !info.IsDir()
 	}
+	if token == "multica" {
+		return isReadOnlyMulticaIssueCommand(args)
+	}
 	switch token {
 	case "go", "bash", "sh", "make", "just", "npm", "pnpm", "yarn", "bun", "pytest", "cargo", "python", "python3":
 		return true
+	default:
+		return false
+	}
+}
+
+func isReadOnlyMulticaIssueCommand(args []string) bool {
+	if len(args) < 3 || args[0] != "multica" || args[1] != "issue" {
+		return false
+	}
+	switch args[2] {
+	case "get", "list":
+		return true
+	case "comment":
+		return len(args) >= 4 && args[3] == "list"
 	default:
 		return false
 	}

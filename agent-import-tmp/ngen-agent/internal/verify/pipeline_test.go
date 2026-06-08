@@ -75,6 +75,22 @@ func TestCodingVerifierUsesCriterionCommandWhenSpecified(t *testing.T) {
 	}
 }
 
+func TestVerifierCommandsFromStatementAllowsOnlyReadOnlyMulticaIssueCommands(t *testing.T) {
+	dir := t.TempDir()
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	commands := VerifierCommandsFromStatement(dir, "`multica issue get "+issueID+" --output json` passes")
+	if len(commands) != 1 || !sameStrings(commands[0], []string{"multica", "issue", "get", issueID, "--output", "json"}) {
+		t.Fatalf("expected read-only multica issue get verifier command, got %+v", commands)
+	}
+	commands = VerifierCommandsFromStatement(dir, "`multica issue comment list "+issueID+" --output json` exits 0")
+	if len(commands) != 1 || !sameStrings(commands[0], []string{"multica", "issue", "comment", "list", issueID, "--output", "json"}) {
+		t.Fatalf("expected read-only multica issue comment list verifier command, got %+v", commands)
+	}
+	if got := VerifierCommandsFromStatement(dir, "`multica issue comment add "+issueID+" --content done --output json` passes"); len(got) != 0 {
+		t.Fatalf("expected mutating multica issue comment add not to be a verifier command, got %+v", got)
+	}
+}
+
 func TestCodingVerifierRunsCriterionCommandSequence(t *testing.T) {
 	dir := t.TempDir()
 	writeVerifyFile(t, filepath.Join(dir, "go.mod"), "module example.com/reposeq\n\ngo 1.24.0\n")

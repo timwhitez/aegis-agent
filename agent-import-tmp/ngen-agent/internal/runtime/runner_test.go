@@ -3605,6 +3605,16 @@ func TestValidateObservationCommandRejectsShellWrapper(t *testing.T) {
 	if err := validateObservationCommand([]string{"rg", "-n", "Add", "."}); err != nil {
 		t.Fatalf("expected rg to be allowed, got %v", err)
 	}
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	if err := validateObservationCommand([]string{"multica", "issue", "get", issueID, "--output", "json"}); err != nil {
+		t.Fatalf("expected read-only multica issue get to be allowed, got %v", err)
+	}
+	if err := validateObservationCommandWorkspacePathsWithDeny(t.TempDir(), []string{"multica", "issue", "get", issueID, "--output", "json"}, []string{".ngen"}); err != nil {
+		t.Fatalf("expected multica issue get not to be interpreted as workspace paths, got %v", err)
+	}
+	if err := validateObservationCommand([]string{"multica", "issue", "comment", "add", issueID, "--content", "done"}); err == nil {
+		t.Fatal("expected mutating multica issue comment add to be rejected as observation")
+	}
 	if err := validateObservationCommand([]string{"bash", "-lc", "touch hacked"}); err == nil {
 		t.Fatal("expected bash shell wrapper to be rejected")
 	}
@@ -3630,6 +3640,14 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	if got := svc.executionCommandPolicyDecision([]string{"bash", "-lc", "printf ok"}, task.PermissionModeStandard); got != "needs_approval" {
 		t.Fatalf("expected bash to be classified needs_approval, got %s", got)
 	}
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	multicaComment := []string{"multica", "issue", "comment", "add", issueID, "--content", "done", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(multicaComment, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected multica issue mutation to be classified needs_approval, got %s", got)
+	}
+	if err := svc.validateExecutionCommand(multicaComment, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected multica issue mutation to be allowed in yolo mode, got %v", err)
+	}
 	if err := svc.validateExecutionCommand([]string{}, task.PermissionModeStandard); err == nil {
 		t.Fatal("expected empty repair command argv to be rejected")
 	}
@@ -3649,6 +3667,7 @@ func TestValidateExecutionCommandBenchmarkIntegrityMode(t *testing.T) {
 		{"go", "mod", "download"},
 		{"git", "clone", "https://example.com/repo.git"},
 		{"./build.sh", "test"},
+		{"multica", "issue", "comment", "add", "0496acb9-ff48-4507-bb79-d122a68c3a98", "--content", "done"},
 	} {
 		if err := svc.validateExecutionCommand(argv, task.PermissionModeYolo); err == nil {
 			t.Fatalf("expected benchmark integrity mode to reject %v", argv)

@@ -1996,6 +1996,8 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 		return "needs_approval"
 	case "npm", "pnpm", "yarn", "make", "./build.sh":
 		return "needs_approval"
+	case "multica":
+		return "needs_approval"
 	case "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "pwsh", "powershell", "cmd":
 		return "needs_approval"
 	default:
@@ -2018,6 +2020,8 @@ func executionCommandBenchmarkIntegrityRisk(argv []string) bool {
 	case "curl", "wget", "aria2c", "http", "https", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "rsync":
 		return true
 	case "gh", "hub":
+		return true
+	case "multica":
 		return true
 	case "pip", "pip3", "uv", "poetry", "pipenv":
 		return true
@@ -2116,6 +2120,10 @@ func commandReplaySafety(argv []string, permissionModeID, policyDecision string)
 		safety.Idempotent = false
 	case "make", "./build.sh":
 		safety.OpenWorld = true
+	case "multica":
+		safety.OpenWorld = true
+		safety.Destructive = true
+		safety.Summary = "Multica repair commands can mutate external issue state; replay requires manual review."
 	case "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "pwsh", "powershell", "cmd":
 		safety.OpenWorld = true
 		safety.Destructive = true
@@ -2435,8 +2443,27 @@ func validateObservationCommand(argv []string) error {
 		default:
 			return fmt.Errorf("go subcommand %s is not allowed", argv[1])
 		}
+	case "multica":
+		if !isReadOnlyMulticaIssueCommand(argv) {
+			return fmt.Errorf("multica observation only allows read-only issue get/list commands")
+		}
+		return nil
 	default:
 		return fmt.Errorf("executable %s is not allowed", argv[0])
+	}
+}
+
+func isReadOnlyMulticaIssueCommand(argv []string) bool {
+	if len(argv) < 3 || argv[0] != "multica" || argv[1] != "issue" {
+		return false
+	}
+	switch argv[2] {
+	case "get", "list":
+		return true
+	case "comment":
+		return len(argv) >= 4 && argv[3] == "list"
+	default:
+		return false
 	}
 }
 
@@ -2459,6 +2486,8 @@ func validateObservationCommandWorkspacePathsWithDeny(workspaceRoot string, argv
 		return validateGitObservationPaths(workspaceRoot, argv[1:], denyPatterns)
 	case "ls":
 		return validateLSObservationPaths(workspaceRoot, argv[1:], denyPatterns)
+	case "multica":
+		return nil
 	default:
 		for _, arg := range argv[1:] {
 			if err := validateObservationPathOperand(workspaceRoot, arg, denyPatterns); err != nil {

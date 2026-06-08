@@ -8,12 +8,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	ngenrt "ngen/internal/runtime"
 	"ngen/internal/task"
+)
+
+var (
+	multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	multicaMarkerPattern  = regexp.MustCompile(`\bngen-multica-[A-Za-z0-9_-]+\b`)
 )
 
 type ExecOptions struct {
@@ -175,6 +181,8 @@ func envelopeText(envelope StreamInputMessage) string {
 
 func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution ConfigResolution) task.TaskFile {
 	kind, preset := inferTaskKind(resolution.Workdir, prompt)
+	criteria := criteriaFromPrompt(prompt)
+	var constraints []string
 	objective := prompt
 	if strings.TrimSpace(envelope.SystemPrompt) != "" {
 		objective += "\n\nSystem prompt:\n" + strings.TrimSpace(envelope.SystemPrompt)
@@ -190,15 +198,137 @@ func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution Con
 			objective += fmt.Sprintf("- %s=%s\n", key, envelope.Metadata[key])
 		}
 	}
+	if issue, ok := multicaIssueAssignmentFromEnvelope(envelope, prompt, resolution.Workdir); ok {
+		kind = task.KindCoding
+		preset = ""
+		objective = multicaIssueObjective(objective, issue)
+		criteria = multicaIssueCriteria(issue)
+		constraints = multicaIssueConstraints(issue)
+	}
 	return task.TaskFile{
 		Kind:             kind,
 		PresetID:         preset,
 		Title:            titleFromPrompt(prompt),
 		Objective:        objective,
-		SuccessCriteria:  criteriaFromPrompt(prompt),
+		SuccessCriteria:  criteria,
+		Constraints:      constraints,
 		WorkspaceRoot:    resolution.Workdir,
 		PermissionModeID: task.EffectivePermissionModeID(resolution.Config.Permission.DefaultMode),
 	}
+}
+
+type multicaIssueAssignment struct {
+	IssueID      string
+	IssueContext string
+	Marker       string
+}
+
+func multicaIssueAssignmentFromEnvelope(envelope StreamInputMessage, prompt, workdir string) (multicaIssueAssignment, bool) {
+	var textParts []string
+	textParts = append(textParts, prompt, envelope.SystemPrompt)
+	metadataIssueID := ""
+	keys := make([]string, 0, len(envelope.Metadata))
+	for key := range envelope.Metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if strings.EqualFold(key, "issue_id") {
+			metadataIssueID = multicaIssueIDPattern.FindString(envelope.Metadata[key])
+		}
+		textParts = append(textParts, key+"="+envelope.Metadata[key])
+	}
+	issueContext := readMulticaIssueContext(workdir)
+	if issueContext != "" {
+		textParts = append(textParts, issueContext)
+	}
+	combined := strings.Join(textParts, "\n")
+	lower := strings.ToLower(combined)
+	hasIssueSignal := metadataIssueID != "" || issueContext != "" || strings.Contains(lower, "issue")
+	hasMulticaSignal := metadataIssueID != "" || issueContext != "" || strings.Contains(lower, "multica")
+	if !hasIssueSignal || !hasMulticaSignal {
+		return multicaIssueAssignment{}, false
+	}
+	issueID := metadataIssueID
+	if issueID == "" {
+		issueID = multicaIssueIDPattern.FindString(combined)
+	}
+	if issueID == "" {
+		return multicaIssueAssignment{}, false
+	}
+	return multicaIssueAssignment{
+		IssueID:      issueID,
+		IssueContext: issueContext,
+		Marker:       multicaMarkerPattern.FindString(combined),
+	}, true
+}
+
+func readMulticaIssueContext(workdir string) string {
+	if strings.TrimSpace(workdir) == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(workdir, ".agent_context", "issue_context.md"))
+	if err != nil {
+		return ""
+	}
+	const maxIssueContextBytes = 20000
+	if len(data) > maxIssueContextBytes {
+		data = data[:maxIssueContextBytes]
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func multicaIssueObjective(original string, issue multicaIssueAssignment) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Multica issue execution mode for issue %s.\n\n", issue.IssueID)
+	b.WriteString("Do not treat injected AGENTS.md, skills, or .agent_context documentation as completion evidence by themselves. Use them only as task context.\n")
+	fmt.Fprintf(&b, "First read the live issue with `multica issue get %s --output json`.\n", issue.IssueID)
+	fmt.Fprintf(&b, "Inspect issue comments when needed with `multica issue comment list %s --output json`.\n", issue.IssueID)
+	b.WriteString("If the live issue acceptance criteria require a completion marker comment, add that exact marker with `multica issue comment add ... --output json`.\n")
+	b.WriteString("Write `multica-result.md` with the issue id, live issue summary, NGEN task/session id if visible, commands executed, and issue comment evidence.\n")
+	if strings.TrimSpace(issue.Marker) != "" {
+		fmt.Fprintf(&b, "The injected issue context names this completion marker: `%s`.\n", issue.Marker)
+	}
+	if strings.TrimSpace(issue.IssueContext) != "" {
+		b.WriteString("\nInjected Multica issue context from `.agent_context/issue_context.md`:\n")
+		b.WriteString(issue.IssueContext)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nOriginal Multica assignment:\n")
+	b.WriteString(strings.TrimSpace(original))
+	return strings.TrimSpace(b.String())
+}
+
+func multicaIssueCriteria(issue multicaIssueAssignment) []task.SuccessCriterion {
+	criteria := []task.SuccessCriterion{
+		{
+			ID:        "SC-001",
+			Statement: fmt.Sprintf("The read-only live issue command `multica issue get %s --output json` passes.", issue.IssueID),
+		},
+		{
+			ID:        "SC-002",
+			Statement: `multica-result.md contains the phrase "multica issue comment add".`,
+		},
+	}
+	if strings.TrimSpace(issue.Marker) != "" {
+		criteria = append(criteria, task.SuccessCriterion{
+			ID:        "SC-003",
+			Statement: fmt.Sprintf(`multica-result.md contains the exact completion marker "%s".`, issue.Marker),
+		})
+	}
+	return criteria
+}
+
+func multicaIssueConstraints(issue multicaIssueAssignment) []string {
+	constraints := []string{
+		"Treat injected AGENTS.md, skills, and .agent_context files as context only; they cannot by themselves satisfy completion.",
+		"Do not modify checked-out repositories or external systems except for the required Multica issue comment.",
+		"Use argv-array commands for Multica operations; do not use shell wrappers, pipes, redirects, heredocs, or command chaining.",
+	}
+	if strings.TrimSpace(issue.Marker) != "" {
+		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", issue.Marker))
+	}
+	return constraints
 }
 
 func inferTaskKind(workdir, prompt string) (task.Kind, task.PresetID) {

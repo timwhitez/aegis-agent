@@ -1521,6 +1521,7 @@ Rules:
 - Commands must be read-only and workspace-safe.
 - Prefer rg for content discovery and narrow file reads or git status/show/log commands for repo bearings when truly needed.
 - Do not request build, test, format, install, migration, generator, package-manager, network, or write commands in observation.
+- For Multica issue execution tasks only, read-only 'multica issue get ... --output json', 'multica issue list ... --output json', and 'multica issue comment list ... --output json' commands are valid observation commands for live issue context.
 - Use context_pack to preserve continuity and avoid rediscovering already-settled task truth.
 - Use context_pack.project_focus when it is present to keep observation inside the bound project step, dependencies, and branch.
 - Use criteria as the durable acceptance ledger. Treat criteria.current_criterion_id as the active feature boundary and criteria.criteria[].passes=false as still failing.
