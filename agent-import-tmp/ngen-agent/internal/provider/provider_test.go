@@ -1241,6 +1241,45 @@ func TestGenerateWorkspaceEditUsesResponsesEndpointAndSchema(t *testing.T) {
 	}
 }
 
+func TestGenerateWorkspaceEditAcceptsResponsesTextContent(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"output": [{
+				"type": "message",
+				"role": "assistant",
+				"content": [{
+					"type": "text",
+					"text": "{\"summary\":\"Write Multica result\",\"patch\":\"\",\"writes\":[{\"path\":\"multica-result.md\",\"content\":\"multica issue comment add 0496acb9-ff48-4507-bb79-d122a68c3a98 --body ngen-multica-real-e2e-ok\\n\"}],\"deletes\":[],\"commands\":[]}"
+				}]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	plan, err := GenerateWorkspaceEdit(context.Background(), task.ProviderConfig{
+		Mode:      "responses",
+		BaseURL:   server.URL + "/v1",
+		Model:     "gpt-5.4",
+		APIKeyEnv: "OPENAI_API_KEY",
+	}, WorkspaceEditInput{
+		Task: task.Spec{
+			TaskID:    "TASK-001",
+			Kind:      task.KindCoding,
+			Objective: "add Multica marker",
+		},
+		Files: []WorkspaceFile{{Path: "AGENTS.md", Content: "runtime brief\n"}},
+	})
+	if err != nil {
+		t.Fatalf("generate workspace edit: %v", err)
+	}
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != "multica-result.md" || !strings.Contains(plan.Writes[0].Content, "ngen-multica-real-e2e-ok") {
+		t.Fatalf("unexpected plan writes: %+v", plan.Writes)
+	}
+}
+
 func TestBuildWorkspaceEditPromptIncludesPreviousFailures(t *testing.T) {
 	prompt, err := buildWorkspaceEditPrompt(WorkspaceEditInput{
 		Task: task.Spec{

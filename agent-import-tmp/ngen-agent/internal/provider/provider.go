@@ -3169,12 +3169,21 @@ func (r responsesResponse) outputText() string {
 	var parts []string
 	for _, item := range r.Output {
 		for _, content := range item.Content {
-			if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
+			if isResponsesTextContentType(content.Type) && strings.TrimSpace(content.Text) != "" {
 				parts = append(parts, strings.TrimSpace(content.Text))
 			}
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func isResponsesTextContentType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "output_text", "text", "json", "output_json":
+		return true
+	default:
+		return false
+	}
 }
 
 type chatCompletionsRequest struct {
