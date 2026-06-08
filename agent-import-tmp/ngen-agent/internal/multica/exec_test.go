@@ -52,6 +52,15 @@ func TestTaskFromEnvelopeTurnsMulticaIssueAssignmentIntoCommandBackedCodingTask(
 	if len(tf.Constraints) == 0 || !strings.Contains(strings.Join(tf.Constraints, "\n"), "context only") {
 		t.Fatalf("expected context-only constraint, got %+v", tf.Constraints)
 	}
+	if got := runModeForObjective(tf.Objective, false); got != "run" {
+		t.Fatalf("expected new Multica issue task to use direct run mode, got %s", got)
+	}
+	if got := runModeForObjective(tf.Objective, true); got != "resume" {
+		t.Fatalf("expected resumed Multica issue task to use direct resume mode, got %s", got)
+	}
+	if got := runModeForObjective("ordinary task", false); got != "auto" {
+		t.Fatalf("expected ordinary task to keep auto mode, got %s", got)
+	}
 }
 
 func writeMulticaTestFile(t *testing.T, path, content string) {

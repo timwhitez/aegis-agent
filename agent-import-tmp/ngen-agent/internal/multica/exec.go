@@ -55,9 +55,12 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 	}
 
 	taskID := strings.TrimSpace(opts.ResumeTaskID)
+	runMode := "auto"
 	var metadata task.MulticaRunMetadata
 	if taskID == "" {
-		spec, createErr := svc.Create(ctx, taskFromEnvelope(envelope, prompt, resolution))
+		taskFile := taskFromEnvelope(envelope, prompt, resolution)
+		runMode = runModeForObjective(taskFile.Objective, false)
+		spec, createErr := svc.Create(ctx, taskFile)
 		if createErr != nil {
 			fmt.Fprintf(stderr, "exec: create task: %v\n", createErr)
 			return 13
@@ -86,6 +89,9 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 			_ = json.NewEncoder(stdout).Encode(status)
 			return 10
 		}
+		if spec, specErr := svc.Store.LoadTask(taskID); specErr == nil {
+			runMode = runModeForObjective(spec.Objective, true)
+		}
 	}
 
 	encoder := json.NewEncoder(stdout)
@@ -105,7 +111,19 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 
 	resultCh := make(chan runResult, 1)
 	go func() {
-		snapshot, events, runErr := svc.Auto(ctx, taskID)
+		var (
+			snapshot task.StatusSnapshot
+			events   []task.Event
+			runErr   error
+		)
+		switch runMode {
+		case "run":
+			snapshot, events, runErr = svc.Run(ctx, taskID)
+		case "resume":
+			snapshot, events, runErr = svc.Resume(ctx, taskID)
+		default:
+			snapshot, events, runErr = svc.Auto(ctx, taskID)
+		}
 		resultCh <- runResult{Snapshot: snapshot, Events: events, Err: runErr}
 	}()
 
@@ -329,6 +347,16 @@ func multicaIssueConstraints(issue multicaIssueAssignment) []string {
 		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", issue.Marker))
 	}
 	return constraints
+}
+
+func runModeForObjective(objective string, resume bool) string {
+	if strings.HasPrefix(strings.TrimSpace(objective), "Multica issue execution mode for issue ") {
+		if resume {
+			return "resume"
+		}
+		return "run"
+	}
+	return "auto"
 }
 
 func inferTaskKind(workdir, prompt string) (task.Kind, task.PresetID) {
