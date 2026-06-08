@@ -3645,6 +3645,45 @@ func TestHeuristicObservationCommandsIncludeMulticaIssueContext(t *testing.T) {
 	}
 }
 
+func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	marker := "ngen-multica-real-e2e-ok"
+	cfg := task.DefaultConfig()
+	cfg.Provider.Mode = "openai-response"
+	cfg.Provider.Model = "gpt-5.5"
+	cfg.Provider.ThinkingLevel = "xhigh"
+	svc := New(t.TempDir(), cfg)
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{
+		TaskID:    "TASK-001",
+		Objective: "Multica issue execution mode for issue " + issueID + ".",
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: `multica-result.md contains the phrase "multica issue comment add".`},
+			{Statement: `multica-result.md contains the exact completion marker "` + marker + `".`},
+		},
+	}, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected Multica fallback plan")
+	}
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != "multica-result.md" {
+		t.Fatalf("unexpected fallback writes: %+v", plan.Writes)
+	}
+	if !strings.Contains(plan.Writes[0].Content, marker) ||
+		!strings.Contains(plan.Writes[0].Content, "Provider route: openai-response/gpt-5.5") ||
+		!strings.Contains(plan.Writes[0].Content, "Reasoning effort: xhigh") {
+		t.Fatalf("fallback content missing marker/provider evidence:\n%s", plan.Writes[0].Content)
+	}
+	if len(plan.Commands) != 1 {
+		t.Fatalf("expected one marker comment command, got %+v", plan.Commands)
+	}
+	want := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}
+	if !slices.Equal(plan.Commands[0].Argv, want) {
+		t.Fatalf("unexpected fallback command: %+v", plan.Commands[0].Argv)
+	}
+	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{Objective: "ordinary task"}, fmt.Errorf("responses workspace edit returned empty output text")); ok {
+		t.Fatal("expected fallback to stay disabled for ordinary tasks")
+	}
+}
+
 func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	svc := New(t.TempDir(), task.DefaultConfig())
 	if err := svc.validateExecutionCommand([]string{"gofmt", "-w", "calc.go"}, task.PermissionModeStandard); err != nil {

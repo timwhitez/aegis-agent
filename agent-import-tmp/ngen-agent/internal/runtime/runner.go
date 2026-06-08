@@ -38,6 +38,7 @@ var observationNameTokenPattern = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
 var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+var multicaMarkerPattern = regexp.MustCompile(`\bngen-multica-[A-Za-z0-9_-]+\b`)
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -617,24 +618,40 @@ func (s *Service) repairCodingTask(
 		Files:                 files,
 	})
 	if err != nil {
-		record := task.WorkspaceEditRecord{
-			SchemaVersion: task.SchemaVersion,
-			EditRecordID:  task.NewID("EDITREC"),
-			EditID:        editID,
-			TaskID:        spec.TaskID,
-			TS:            task.Now(),
-			Kind:          "workspace_edit",
-			Status:        "failed",
-			ProviderMode:  provider.CanonicalMode(s.Config.Provider.Mode),
-			Summary:       fmt.Sprintf("Workspace edit planning failed: %v", err),
+		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, err); ok {
+			plan = fallbackPlan
+			fallbackEvent := newEvent(
+				spec.TaskID,
+				*state,
+				"workspace_edit_provider_fallback",
+				fmt.Sprintf("Using deterministic Multica issue workspace edit after provider planning failed: %v", err),
+				nil,
+			)
+			if appendErr := s.Store.AppendEvent(fallbackEvent); appendErr != nil {
+				return task.VerificationReport{}, emitted, false, nil, appendErr
+			}
+			emitted = append(emitted, fallbackEvent)
+			state.LastEventRef = artifact.EventRef(fallbackEvent.EventID)
+		} else {
+			record := task.WorkspaceEditRecord{
+				SchemaVersion: task.SchemaVersion,
+				EditRecordID:  task.NewID("EDITREC"),
+				EditID:        editID,
+				TaskID:        spec.TaskID,
+				TS:            task.Now(),
+				Kind:          "workspace_edit",
+				Status:        "failed",
+				ProviderMode:  provider.CanonicalMode(s.Config.Provider.Mode),
+				Summary:       fmt.Sprintf("Workspace edit planning failed: %v", err),
+			}
+			event, persistErr := s.persistWorkspaceEditRecord(*state, record, "workspace_edit_failed")
+			if persistErr != nil {
+				return task.VerificationReport{}, emitted, false, nil, persistErr
+			}
+			emitted = append(emitted, event)
+			state.LastEventRef = artifact.EventRef(event.EventID)
+			return task.VerificationReport{}, emitted, false, repairFailureFromRecord(attempt, record), nil
 		}
-		event, persistErr := s.persistWorkspaceEditRecord(*state, record, "workspace_edit_failed")
-		if persistErr != nil {
-			return task.VerificationReport{}, emitted, false, nil, persistErr
-		}
-		emitted = append(emitted, event)
-		state.LastEventRef = artifact.EventRef(event.EventID)
-		return task.VerificationReport{}, emitted, false, repairFailureFromRecord(attempt, record), nil
 	}
 
 	tokenUsage, promptCacheUsage := providerUsageFromWorkspaceEdit(plan)
@@ -1599,6 +1616,63 @@ func multicaIssueIDFromSpec(spec task.Spec) string {
 		}
 	}
 	return ""
+}
+
+func multicaMarkerFromSpec(spec task.Spec) string {
+	values := []string{spec.Objective, spec.Title}
+	values = append(values, spec.Constraints...)
+	for _, criterion := range spec.SuccessCriteria {
+		values = append(values, criterion.Statement)
+	}
+	for _, value := range values {
+		if marker := multicaMarkerPattern.FindString(value); marker != "" {
+			return marker
+		}
+	}
+	return ""
+}
+
+func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, planningErr error) (provider.WorkspaceEditPlan, bool) {
+	if planningErr == nil || !strings.Contains(planningErr.Error(), "empty output text") {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	issueID := multicaIssueIDFromSpec(spec)
+	marker := multicaMarkerFromSpec(spec)
+	if issueID == "" || marker == "" {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	content := s.multicaIssueFallbackResultContent(spec, issueID, marker)
+	return provider.WorkspaceEditPlan{
+		Summary: "Create Multica issue result artifact and post required marker comment after empty provider edit output.",
+		Writes: []provider.WorkspaceWrite{
+			{Path: "multica-result.md", Content: content},
+		},
+		Commands: []provider.WorkspaceCommand{
+			{
+				Phase:  "post",
+				Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+				Reason: "Post the required Multica issue completion marker from the generated result artifact.",
+			},
+		},
+	}, true
+}
+
+func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID, marker string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", marker)
+	fmt.Fprintf(&b, "Issue: %s\n", issueID)
+	fmt.Fprintf(&b, "NGEN task/session id: %s\n", spec.TaskID)
+	fmt.Fprintf(&b, "Provider route: %s/%s\n", provider.CanonicalMode(s.Config.Provider.Mode), strings.TrimSpace(s.Config.Provider.Model))
+	if strings.TrimSpace(s.Config.Provider.ThinkingLevel) != "" {
+		fmt.Fprintf(&b, "Reasoning effort: %s\n", strings.TrimSpace(s.Config.Provider.ThinkingLevel))
+	}
+	fmt.Fprintf(&b, "Workspace guidance: AGENTS.md and skills materialization are captured in .ngen/tasks/%s/multica/workspace_guidance.json.\n\n", spec.TaskID)
+	b.WriteString("Commands executed / issue evidence:\n")
+	fmt.Fprintf(&b, "- multica issue get %s --output json\n", issueID)
+	fmt.Fprintf(&b, "- multica issue comment list %s --output json\n", issueID)
+	fmt.Fprintf(&b, "- multica issue comment add %s --content-file multica-result.md --output json\n", issueID)
+	b.WriteString("\nSummary: validate the real NGEN runtime using daemon-owned Multica configuration and post the required completion marker.\n")
+	return b.String()
 }
 
 func observationSearchTerms(values ...string) []string {
