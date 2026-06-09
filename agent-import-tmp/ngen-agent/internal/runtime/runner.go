@@ -2057,7 +2057,7 @@ func (s *Service) multicaMissionCompleteCommand(spec task.Spec, observations []p
 	if role != "worker" && role != "validator" {
 		return provider.WorkspaceCommand{}, false
 	}
-	runID := multicaIssueRunIDForTask(observations, issueID, role, spec.TaskID)
+	runID := s.multicaIssueRunIDForTask(spec, observations, issueID, role)
 	if runID == "" {
 		return provider.WorkspaceCommand{}, false
 	}
@@ -2073,14 +2073,32 @@ func (s *Service) multicaMissionCompleteCommand(spec task.Spec, observations []p
 	}, true
 }
 
-func multicaIssueRunIDForTask(observations []provider.ObservationResult, issueID, role, taskID string) string {
-	role = strings.ToLower(strings.TrimSpace(role))
-	taskID = strings.TrimSpace(taskID)
+func (s *Service) multicaIssueRunIDForTask(spec task.Spec, observations []provider.ObservationResult, issueID, role string) string {
 	for _, observation := range observations {
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
 			continue
 		}
-		for _, run := range multicaIssueRunSummariesFromText(observation.StdoutExcerpt) {
+		if runID := multicaIssueRunIDForTaskFromValues(s.multicaObservationEvidenceValues(spec.TaskID, observation), role, spec.TaskID); runID != "" {
+			return runID
+		}
+	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
+	for _, record := range records {
+		if record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		if runID := multicaIssueRunIDForTaskFromValues(s.multicaCommandRunEvidenceValues(spec.TaskID, record), role, spec.TaskID); runID != "" {
+			return runID
+		}
+	}
+	return ""
+}
+
+func multicaIssueRunIDForTaskFromValues(values []string, role, taskID string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	taskID = strings.TrimSpace(taskID)
+	for _, value := range values {
+		for _, run := range multicaIssueRunSummariesFromText(value) {
 			if run.ID == "" || run.RunRole != role {
 				continue
 			}

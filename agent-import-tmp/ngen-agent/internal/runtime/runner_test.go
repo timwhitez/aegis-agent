@@ -3895,6 +3895,54 @@ func TestMulticaIssueFallbackWorkspaceEditPlanCompletesMissionMilestone(t *testi
 	}
 }
 
+func TestMulticaIssueFallbackWorkspaceEditPlanCompletesMissionMilestoneFromFullRunOutput(t *testing.T) {
+	issueID := "7a9b8b3f-514f-45cb-a7ec-223f0c9b41bf"
+	runID := "276c7b49-38a7-45ee-9cfe-53b96f27f794"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-worker-full-runs",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: worker.",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609p",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+		},
+	}
+	if err := svc.Store.EnsureTaskLayout(spec.TaskID); err != nil {
+		t.Fatalf("ensure task layout: %v", err)
+	}
+	fullRuns := `[
+  {"id":"leader-run","run_role":"leader","status":"completed","result":{"session_id":"TASK-leader"}},
+  {"id":"validator-run","run_role":"validator","status":"running","result":{"session_id":"TASK-validator"}},
+  {"id":"` + runID + `","run_role":"worker","status":"running","result":{"session_id":"` + spec.TaskID + `"}}
+]`
+	stdoutRef, stderrRef, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-runs-full", []byte(fullRuns), nil)
+	if err != nil {
+		t.Fatalf("save command output: %v", err)
+	}
+	observations := []provider.ObservationResult{
+		{
+			Status:        "completed",
+			CommandID:     "CMD-runs-full",
+			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
+			StdoutRef:     stdoutRef,
+			StderrRef:     stderrRef,
+			StdoutExcerpt: `[{"id":"leader-run","run_role":"leader","status":"completed"}]`,
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected worker Multica fallback plan")
+	}
+	wantComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:" + runID, "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[1].Argv, wantComplete) {
+		t.Fatalf("expected mission complete from full issue-runs output ref, got %+v", plan.Commands)
+	}
+}
+
 func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.T) {
 	issueID := "cb4bbf0b-c107-4e58-8b78-d2945aea0e53"
 	svc := New(t.TempDir(), task.DefaultConfig())
