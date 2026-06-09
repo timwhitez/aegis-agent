@@ -3818,6 +3818,48 @@ func TestMulticaIssueFallbackWorkspaceEditPlanWritesRolePublicArtifact(t *testin
 	}
 }
 
+func TestMulticaIssueFallbackWorkspaceEditPlanRepliesToTriggerComment(t *testing.T) {
+	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
+	triggerCommentID := "6c30802e-b68e-4f9c-aad9-16cb2da2b4a5"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-worker-reply",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: worker.",
+			"**Triggering comment ID:** `" + triggerCommentID + "`",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected worker Multica fallback plan")
+	}
+	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", "multica-result.md", "--output", "json"}
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+		t.Fatalf("expected issue reply command with trigger parent, got %+v", plan.Commands)
+	}
+	var result, handoff string
+	for _, write := range plan.Writes {
+		switch write.Path {
+		case "multica-result.md":
+			result = write.Content
+		case "handoffs/worker-auto-e2e.json":
+			handoff = write.Content
+		}
+	}
+	if !strings.Contains(result, "--parent "+triggerCommentID) {
+		t.Fatalf("result artifact should record the parented comment command:\n%s", result)
+	}
+	if !strings.Contains(handoff, "--parent "+triggerCommentID) {
+		t.Fatalf("worker handoff should record the parented comment command:\n%s", handoff)
+	}
+}
+
 func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.T) {
 	issueID := "cb4bbf0b-c107-4e58-8b78-d2945aea0e53"
 	svc := New(t.TempDir(), task.DefaultConfig())

@@ -1883,7 +1883,7 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 		Commands: []provider.WorkspaceCommand{
 			{
 				Phase:  "post",
-				Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+				Argv:   multicaIssueCommentAddArgv(spec, issueID),
 				Reason: "Post the required Multica issue completion marker from the generated result artifact.",
 			},
 		},
@@ -1913,7 +1913,7 @@ func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, ob
 		Commands: []provider.WorkspaceCommand{
 			{
 				Phase:  "post",
-				Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+				Argv:   multicaIssueCommentAddArgv(spec, issueID),
 				Reason: "Post the leader final marker only after completed worker/validator runs and role marker comments are visible.",
 			},
 		},
@@ -1962,7 +1962,7 @@ func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec
 	if len(pendingRoles) > 0 {
 		commands = append(commands, provider.WorkspaceCommand{
 			Phase:  "post",
-			Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+			Argv:   multicaIssueCommentAddArgv(spec, issueID),
 			Reason: "Post a public leader progress note without final completion markers while delegated roles are still pending.",
 		})
 	}
@@ -2260,6 +2260,38 @@ func (s *Service) multicaMarkersFromSpecAndObservations(spec task.Spec, observat
 	return uniqueNonEmptyStrings(markers)
 }
 
+func multicaIssueCommentAddArgv(spec task.Spec, issueID string) []string {
+	argv := []string{"multica", "issue", "comment", "add", issueID}
+	if parentID := multicaTriggerCommentIDFromSpec(spec); parentID != "" {
+		argv = append(argv, "--parent", parentID)
+	}
+	return append(argv, "--content-file", "multica-result.md", "--output", "json")
+}
+
+func multicaIssueCommentAddDisplayCommand(spec task.Spec, issueID string) string {
+	return strings.Join(multicaIssueCommentAddArgv(spec, issueID), " ")
+}
+
+func multicaTriggerCommentIDFromSpec(spec task.Spec) string {
+	text := strings.Join([]string{
+		spec.Objective,
+		spec.Title,
+		strings.Join(spec.Constraints, "\n"),
+	}, "\n")
+	patterns := []string{
+		"(?is)triggering\\s+comment\\s+id\\s*:\\s*[`*\\s]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+		"(?is)trigger\\s+comment\\s+id\\s*[:=]\\s*[`*\\s]*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+		`(?is)--parent\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`,
+	}
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		if match := re.FindStringSubmatch(text); len(match) > 1 {
+			return strings.ToLower(strings.TrimSpace(match[1]))
+		}
+	}
+	return ""
+}
+
 func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID string, markers []string) string {
 	var b strings.Builder
 	for _, marker := range markers {
@@ -2276,7 +2308,7 @@ func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID stri
 	b.WriteString("Commands executed / issue evidence:\n")
 	fmt.Fprintf(&b, "- multica issue get %s --output json\n", issueID)
 	fmt.Fprintf(&b, "- multica issue comment list %s --output json\n", issueID)
-	fmt.Fprintf(&b, "- multica issue comment add %s --content-file multica-result.md --output json\n", issueID)
+	fmt.Fprintf(&b, "- %s\n", multicaIssueCommentAddDisplayCommand(spec, issueID))
 	b.WriteString("\nSummary: validate the real NGEN runtime using daemon-owned Multica configuration and post the required completion marker.\n")
 	return b.String()
 }
@@ -2297,7 +2329,7 @@ func (s *Service) multicaIssueRoleArtifact(spec task.Spec, issueID string, marke
 			"commands": []string{
 				"multica issue get " + issueID + " --output json",
 				"multica issue comment list " + issueID + " --output json",
-				"multica issue comment add " + issueID + " --content-file multica-result.md --output json",
+				multicaIssueCommentAddDisplayCommand(spec, issueID),
 			},
 			"provider_route": provider.CanonicalMode(s.Config.Provider.Mode) + "/" + strings.TrimSpace(s.Config.Provider.Model),
 		}
@@ -2329,7 +2361,7 @@ func (s *Service) multicaIssueRoleArtifact(spec task.Spec, issueID string, marke
 		b.WriteString("\nEvidence:\n")
 		fmt.Fprintf(&b, "- `multica issue get %s --output json`\n", issueID)
 		fmt.Fprintf(&b, "- `multica issue comment list %s --output json`\n", issueID)
-		fmt.Fprintf(&b, "- `multica issue comment add %s --content-file multica-result.md --output json`\n", issueID)
+		fmt.Fprintf(&b, "- `%s`\n", multicaIssueCommentAddDisplayCommand(spec, issueID))
 		b.WriteString("\nSummary: NGEN validator fallback published command-backed issue evidence after provider workspace-edit planning returned empty output.\n")
 		return multicaDelegationExpectedArtifact(role), b.String(), true
 	default:
