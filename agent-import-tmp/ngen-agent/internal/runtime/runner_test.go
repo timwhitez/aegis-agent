@@ -3860,6 +3860,41 @@ func TestMulticaIssueFallbackWorkspaceEditPlanRepliesToTriggerComment(t *testing
 	}
 }
 
+func TestMulticaIssueFallbackWorkspaceEditPlanCompletesMissionMilestone(t *testing.T) {
+	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
+	runID := "9319b964-4e8d-4e03-a017-89ba33a27390"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-worker-mission-complete",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: worker.",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609m",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+		},
+	}
+	observations := []provider.ObservationResult{
+		{
+			Status:        "completed",
+			CommandID:     "CMD-runs",
+			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
+			StdoutExcerpt: `[{"id":"` + runID + `","run_role":"worker","status":"running","result":{"session_id":"` + spec.TaskID + `"}}]`,
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected worker Multica fallback plan")
+	}
+	wantComment := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
+	wantComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:" + runID, "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, wantComment) || !slices.Equal(plan.Commands[1].Argv, wantComplete) {
+		t.Fatalf("expected comment then mission complete commands, got %+v", plan.Commands)
+	}
+}
+
 func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.T) {
 	issueID := "cb4bbf0b-c107-4e58-8b78-d2945aea0e53"
 	svc := New(t.TempDir(), task.DefaultConfig())
@@ -4181,7 +4216,9 @@ func TestMulticaLeaderFallbackPostsFinalMarkerAfterRoleEvidence(t *testing.T) {
 	if !ok {
 		t.Fatal("expected leader final fallback plan")
 	}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
+	wantComment := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}
+	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609e")
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, wantComment) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
 		t.Fatalf("expected final marker comment command, got %+v", plan.Commands)
 	}
 	var result string
@@ -4235,7 +4272,8 @@ func TestMulticaLeaderFallbackParentsFinalMarkerToCurrentCommentRun(t *testing.T
 		t.Fatal("expected leader final fallback plan")
 	}
 	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609i")
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
 		t.Fatalf("expected parented final marker command, got %+v", plan.Commands)
 	}
 	var result string
@@ -4325,7 +4363,8 @@ func TestMulticaLeaderFallbackParentsFinalMarkerFromFailedParentRequirement(t *t
 		t.Fatal("expected leader final fallback plan")
 	}
 	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609j")
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
 		t.Fatalf("expected parented retry final marker command, got %+v", plan.Commands)
 	}
 	var result string
@@ -4386,7 +4425,8 @@ func TestMulticaLeaderFallbackUsesObservedFinalMarker(t *testing.T) {
 		t.Fatal("expected leader final fallback plan")
 	}
 	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609k")
+	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
 		t.Fatalf("expected observed-marker parented final command, got %+v", plan.Commands)
 	}
 	var result string
@@ -4402,6 +4442,15 @@ func TestMulticaLeaderFallbackUsesObservedFinalMarker(t *testing.T) {
 	}
 	if !strings.Contains(result, "--parent "+triggerCommentID) {
 		t.Fatalf("leader final result should record parented final command:\n%s", result)
+	}
+}
+
+func expectedMulticaMissionPublishArgv(issueID, taskID, marker string) []string {
+	return []string{
+		"multica", "mission", "publish", issueID,
+		"--published-doc-url", "multica://issues/" + issueID + "#marker-" + marker,
+		"--publish-receipt", "ngen-final-marker:" + marker + ";task:" + taskID,
+		"--output", "json",
 	}
 }
 
@@ -4781,6 +4830,10 @@ if [ "$cmd" = "issue comment add" ]; then
   printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609m"}\n'
   exit 0
 fi
+if [ "$1 $2" = "mission publish" ]; then
+  printf '{"status":"published","receipt":"ngen-final-marker:ngen-squad-auto-long-e2e-ok-20260609m"}\n'
+  exit 0
+fi
 echo "unexpected command: $*" >&2
 exit 9
 `)
@@ -4855,12 +4908,16 @@ exit 9
 	}
 	var progressCount int
 	var finalSeen bool
+	var publishSeen bool
 	for _, record := range records {
 		if equalStringSlices(record.Argv, progressArgv) {
 			progressCount++
 		}
 		if record.Status == "completed" && multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "add", issueID}) && containsString(record.Argv, multicaIssueResultPath) {
 			finalSeen = true
+		}
+		if record.Status == "completed" && multicaCommandMatches(record.Argv, []string{"multica", "mission", "publish", issueID}) {
+			publishSeen = true
 		}
 		if record.Status == "failed" && strings.Contains(record.Summary, "Rejected repair command replay") {
 			t.Fatalf("progress polling path should not create replay-blocked command: %+v", record)
@@ -4871,6 +4928,9 @@ exit 9
 	}
 	if !finalSeen {
 		t.Fatalf("expected final marker comment command after polling role evidence, records=%+v", records)
+	}
+	if !publishSeen {
+		t.Fatalf("expected mission publish command after final marker, records=%+v", records)
 	}
 }
 
@@ -4943,6 +5003,10 @@ if [ "$cmd" = "issue comment add" ]; then
     exit 9
   fi
   printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609n"}\n'
+  exit 0
+fi
+if [ "$1 $2" = "mission publish" ]; then
+  printf '{"status":"published","receipt":"ngen-final-marker:ngen-squad-auto-long-e2e-ok-20260609n"}\n'
   exit 0
 fi
 echo "unexpected command: $*" >&2
@@ -5103,6 +5167,20 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	}
 	if err := svc.validateExecutionCommand(multicaActivity, task.PermissionModeYolo); err != nil {
 		t.Fatalf("expected multica squad activity to be allowed in yolo mode, got %v", err)
+	}
+	multicaMissionComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:run-id", "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(multicaMissionComplete, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected multica mission complete to be classified needs_approval, got %s", got)
+	}
+	if err := svc.validateExecutionCommand(multicaMissionComplete, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected multica mission complete to be allowed in yolo mode, got %v", err)
+	}
+	multicaMissionPublish := []string{"multica", "mission", "publish", issueID, "--published-doc-url", "multica://issues/" + issueID, "--publish-receipt", "receipt", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(multicaMissionPublish, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected multica mission publish to be classified needs_approval, got %s", got)
+	}
+	if err := svc.validateExecutionCommand(multicaMissionPublish, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected multica mission publish to be allowed in yolo mode, got %v", err)
 	}
 	if got := svc.executionCommandPolicyDecision([]string{"multica", "agent", "list", "--output", "json"}, task.PermissionModeStandard); got != "denied" {
 		t.Fatalf("expected unrelated multica command to stay denied in standard mode, got %s", got)

@@ -1996,19 +1996,23 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 	writes := []provider.WorkspaceWrite{
 		{Path: multicaIssueResultPath, Content: content},
 	}
+	commands := []provider.WorkspaceCommand{
+		{
+			Phase:  "post",
+			Argv:   multicaIssueCommentAddArgv(spec, issueID),
+			Reason: "Post the required Multica issue completion marker from the generated result artifact.",
+		},
+	}
 	if artifactPath, artifactContent, ok := s.multicaIssueRoleArtifact(spec, issueID, markers); ok {
 		writes = append(writes, provider.WorkspaceWrite{Path: artifactPath, Content: artifactContent})
+		if missionComplete, ok := s.multicaMissionCompleteCommand(spec, observations, issueID, artifactPath); ok {
+			commands = append(commands, missionComplete)
+		}
 	}
 	return provider.WorkspaceEditPlan{
-		Summary: "Create Multica issue result artifact and post required marker comment after empty provider edit output.",
-		Writes:  writes,
-		Commands: []provider.WorkspaceCommand{
-			{
-				Phase:  "post",
-				Argv:   multicaIssueCommentAddArgv(spec, issueID),
-				Reason: "Post the required Multica issue completion marker from the generated result artifact.",
-			},
-		},
+		Summary:  "Create Multica issue result artifact and post required marker comment after empty provider edit output.",
+		Writes:   writes,
+		Commands: commands,
 	}, true
 }
 
@@ -2029,18 +2033,80 @@ func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, ob
 	parentID := s.multicaLeaderFinalTriggerCommentID(spec, observations, issueID)
 	commentArgv := multicaIssueCommentAddArgvWithParent(spec, issueID, multicaIssueResultPath, parentID)
 	content := s.multicaIssueFallbackResultContentWithCommentArgv(spec, issueID, leaderMarkers, commentArgv)
+	commands := []provider.WorkspaceCommand{
+		{
+			Phase:  "post",
+			Argv:   commentArgv,
+			Reason: "Post the leader final marker only after completed worker/validator runs and role marker comments are visible.",
+		},
+	}
+	if publish, ok := multicaMissionPublishCommand(spec, issueID, leaderMarkers); ok {
+		commands = append(commands, publish)
+	}
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue final result artifact after completed worker/validator role evidence is visible.",
 		Writes: []provider.WorkspaceWrite{
 			{Path: multicaIssueResultPath, Content: content},
 		},
-		Commands: []provider.WorkspaceCommand{
-			{
-				Phase:  "post",
-				Argv:   commentArgv,
-				Reason: "Post the leader final marker only after completed worker/validator runs and role marker comments are visible.",
-			},
+		Commands: commands,
+	}, true
+}
+
+func (s *Service) multicaMissionCompleteCommand(spec task.Spec, observations []provider.ObservationResult, issueID, artifactPath string) (provider.WorkspaceCommand, bool) {
+	role := multicaRunRoleFromSpec(spec)
+	if role != "worker" && role != "validator" {
+		return provider.WorkspaceCommand{}, false
+	}
+	runID := multicaIssueRunIDForTask(observations, issueID, role, spec.TaskID)
+	if runID == "" {
+		return provider.WorkspaceCommand{}, false
+	}
+	return provider.WorkspaceCommand{
+		Phase: "post",
+		Argv: []string{
+			"multica", "mission", "complete", issueID,
+			"--work-key", role + ":" + runID,
+			"--artifact", artifactPath,
+			"--output", "json",
 		},
+		Reason: "Mark the Multica mission milestone complete after writing the expected role artifact.",
+	}, true
+}
+
+func multicaIssueRunIDForTask(observations []provider.ObservationResult, issueID, role, taskID string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	taskID = strings.TrimSpace(taskID)
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		for _, run := range multicaIssueRunSummariesFromText(observation.StdoutExcerpt) {
+			if run.ID == "" || run.RunRole != role {
+				continue
+			}
+			if taskID == "" || run.SessionID == "" || run.SessionID == taskID {
+				return run.ID
+			}
+		}
+	}
+	return ""
+}
+
+func multicaMissionPublishCommand(spec task.Spec, issueID string, markers []string) (provider.WorkspaceCommand, bool) {
+	leaderMarkers := multicaMarkersForRunRole(markers, "leader")
+	if len(leaderMarkers) == 0 {
+		return provider.WorkspaceCommand{}, false
+	}
+	marker := leaderMarkers[0]
+	return provider.WorkspaceCommand{
+		Phase: "post",
+		Argv: []string{
+			"multica", "mission", "publish", issueID,
+			"--published-doc-url", "multica://issues/" + issueID + "#marker-" + marker,
+			"--publish-receipt", "ngen-final-marker:" + marker + ";task:" + spec.TaskID,
+			"--output", "json",
+		},
+		Reason: "Record the leader final marker as the Multica mission publish receipt.",
 	}, true
 }
 
@@ -2525,9 +2591,11 @@ func multicaRequiredParentIDFromEvidenceValues(values []string) string {
 }
 
 type multicaIssueRunSummary struct {
+	ID               string
 	Kind             string
 	RunRole          string
 	Status           string
+	SessionID        string
 	TriggerCommentID string
 }
 
@@ -2538,10 +2606,13 @@ func multicaIssueRunSummariesFromText(text string) []multicaIssueRunSummary {
 	}
 	out := make([]multicaIssueRunSummary, 0, len(raw))
 	for _, item := range raw {
+		result, _ := item["result"].(map[string]any)
 		out = append(out, multicaIssueRunSummary{
+			ID:               strings.ToLower(strings.TrimSpace(stringMapValue(item, "id"))),
 			Kind:             strings.ToLower(strings.TrimSpace(stringMapValue(item, "kind"))),
 			RunRole:          strings.ToLower(strings.TrimSpace(stringMapValue(item, "run_role"))),
 			Status:           strings.ToLower(strings.TrimSpace(stringMapValue(item, "status"))),
+			SessionID:        strings.TrimSpace(stringMapValue(result, "session_id")),
 			TriggerCommentID: strings.ToLower(strings.TrimSpace(stringMapValue(item, "trigger_comment_id"))),
 		})
 	}
@@ -3150,6 +3221,9 @@ func isAllowedMulticaIssueMutation(argv []string) bool {
 		return multicaIssueIDPattern.MatchString(argv[3])
 	}
 	if argv[1] == "squad" && argv[2] == "activity" {
+		return multicaIssueIDPattern.MatchString(argv[3])
+	}
+	if argv[1] == "mission" && (argv[2] == "complete" || argv[2] == "publish") {
 		return multicaIssueIDPattern.MatchString(argv[3])
 	}
 	return false
