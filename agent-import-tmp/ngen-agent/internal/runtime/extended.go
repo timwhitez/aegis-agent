@@ -201,10 +201,17 @@ func (s *Service) autoWithOptions(ctx context.Context, taskID string, session *t
 	taskPlanMutationsRemaining := 2
 	projectMutationsRemaining := 2
 	memoryMutationsRemaining := 2
-	for turn := 0; turn < maxTurns; turn++ {
+	multicaIssueNoTurnLimit := false
+	for turn := 0; ; turn++ {
+		if !multicaIssueNoTurnLimit && turn >= maxTurns {
+			break
+		}
 		spec, state, input, err := s.buildProviderInput(ctx, taskID, session)
 		if err != nil {
 			return task.StatusSnapshot{}, all, err
+		}
+		if multicaIssueRunsWithoutAutoTurnLimit(spec) {
+			multicaIssueNoTurnLimit = true
 		}
 		var decision provider.Decision
 		if session != nil {
@@ -548,6 +555,11 @@ func (s *Service) autoWithOptions(ctx context.Context, taskID string, session *t
 		snapshot = refreshed
 	}
 	return snapshot, all, nil
+}
+
+func multicaIssueRunsWithoutAutoTurnLimit(spec task.Spec) bool {
+	return strings.HasPrefix(strings.TrimSpace(spec.Objective), "Multica issue execution mode for issue ") &&
+		multicaIssueIDFromSpec(spec) != ""
 }
 
 func (s *Service) bootstrapExecutionPlan(ctx context.Context, taskID string, spec task.Spec, input provider.Input) ([]task.Event, error) {

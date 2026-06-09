@@ -533,45 +533,88 @@ func (s *Service) runMulticaLeaderFinalization(ctx context.Context, spec task.Sp
 	if !s.multicaLeaderNeedsFinalization(spec, criteria) {
 		return report, criteria, nil, nil
 	}
-	const maxPolls = 24
-	const pollInterval = 5 * time.Second
+	report, criteria, emitted, _, err := s.runMulticaLeaderFinalizationLoop(ctx, spec, state, report, criteria, false, multicaLeaderPollInterval)
+	return report, criteria, emitted, err
+}
+
+const multicaLeaderPollInterval = 5 * time.Second
+
+func (s *Service) runMulticaLeaderFinalizationLoop(
+	ctx context.Context,
+	spec task.Spec,
+	state *task.State,
+	report task.VerificationReport,
+	criteria task.CriteriaSnapshot,
+	retryAfterProgress bool,
+	pollInterval time.Duration,
+) (task.VerificationReport, task.CriteriaSnapshot, []task.Event, bool, error) {
+	issueID := multicaIssueIDFromSpec(spec)
+	if multicaRunRoleFromSpec(spec) != "leader" || issueID == "" {
+		return report, criteria, nil, false, nil
+	}
+	pollReason := "Poll live Multica issue role evidence before leader final marker"
+	waitSummary := "Waiting for completed worker/validator runs and public role markers before leader final marker."
+	editSummary := "Workspace edit started for Multica leader final marker after role evidence."
+	if retryAfterProgress {
+		pollReason = "Poll live Multica issue role evidence before retrying leader final marker"
+		waitSummary = "Waiting for completed worker/validator runs and public role markers before retrying leader final marker."
+		editSummary = "Workspace edit started for Multica leader final marker after polling role evidence."
+	}
 	var emitted []task.Event
-	for poll := 1; poll <= maxPolls; poll++ {
+	for poll := 1; ; poll++ {
 		if poll > 1 {
-			select {
-			case <-ctx.Done():
-				return report, criteria, emitted, ctx.Err()
-			case <-time.After(pollInterval):
+			if pollInterval > 0 {
+				select {
+				case <-ctx.Done():
+					return report, criteria, emitted, false, ctx.Err()
+				case <-time.After(pollInterval):
+				}
+			} else {
+				select {
+				case <-ctx.Done():
+					return report, criteria, emitted, false, ctx.Err()
+				default:
+				}
 			}
 		}
-		observations, observationEvents, err := s.runMulticaIssueObservationCommands(ctx, spec, state, fmt.Sprintf("Poll live Multica issue role evidence before leader final marker (%d/%d).", poll, maxPolls))
+		observations, observationEvents, err := s.runMulticaIssueObservationCommands(ctx, spec, state, fmt.Sprintf("%s (poll %d; no fixed poll limit).", pollReason, poll))
 		if err != nil {
-			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
 		}
 		emitted = append(emitted, observationEvents...)
 		if refreshed, changed := s.criteriaWithMulticaObservationEvidence(spec, &criteria, observations); changed {
 			criteria = refreshed
 		}
-		plan, ok := s.multicaLeaderFinalFallbackWorkspaceEditPlan(spec, observations, multicaIssueIDFromSpec(spec))
+		if s.multicaLeaderFinalMarkerObserved(spec, observations, issueID) {
+			observed := s.verify.Run(ctx, spec)
+			verifyEvent, observed, err := s.persistVerificationReport(state, observed)
+			if err != nil {
+				return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
+			}
+			emitted = append(emitted, verifyEvent)
+			criteria = s.criteriaFromEvidence(spec, observed)
+			return observed, criteria, emitted, true, nil
+		}
+		plan, ok := s.multicaLeaderFinalFallbackWorkspaceEditPlan(spec, observations, issueID)
 		if !ok {
 			waitEvent := newEvent(
 				spec.TaskID,
 				*state,
 				"multica_leader_waiting",
-				fmt.Sprintf("Waiting for completed worker/validator runs and public role markers before leader final marker (%d/%d).", poll, maxPolls),
+				fmt.Sprintf("%s Poll %d; continuing until evidence appears or the run is cancelled.", waitSummary, poll),
 				[]string{"criteria/latest.json"},
 			)
 			if err := s.Store.AppendEvent(waitEvent); err != nil {
-				return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+				return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
 			}
 			emitted = append(emitted, waitEvent)
 			state.LastEventRef = artifact.EventRef(waitEvent.EventID)
 			continue
 		}
 		editID := task.NewID("EDIT")
-		startEvent := newEvent(spec.TaskID, *state, "workspace_edit_started", "Workspace edit started for Multica leader final marker after role evidence.", nil)
+		startEvent := newEvent(spec.TaskID, *state, "workspace_edit_started", editSummary, nil)
 		if err := s.Store.AppendEvent(startEvent); err != nil {
-			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
 		}
 		emitted = append(emitted, startEvent)
 		state.LastEventRef = artifact.EventRef(startEvent.EventID)
@@ -591,34 +634,77 @@ func (s *Service) runMulticaLeaderFinalization(ctx context.Context, spec task.Sp
 		}
 		editEvent, persistErr := s.persistWorkspaceEditRecord(*state, record, eventType)
 		if persistErr != nil {
-			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, persistErr
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, persistErr
 		}
 		emitted = append(emitted, editEvent)
 		state.LastEventRef = artifact.EventRef(editEvent.EventID)
 		if applyErr != nil {
-			return report, criteria, emitted, nil
+			return report, criteria, emitted, false, nil
 		}
 		commandEvents, failure, err := s.runWorkspaceExecutionCommands(ctx, spec, state, plan.Commands, "post")
 		if err != nil {
-			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
 		}
 		emitted = append(emitted, commandEvents...)
 		if len(commandEvents) > 0 {
 			state.LastEventRef = artifact.EventRef(commandEvents[len(commandEvents)-1].EventID)
 		}
 		if failure != nil {
-			return report, criteria, emitted, nil
+			return report, criteria, emitted, false, nil
 		}
 		repaired := s.verify.Run(ctx, spec)
 		verifyEvent, repaired, err := s.persistVerificationReport(state, repaired)
 		if err != nil {
-			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, false, err
 		}
 		emitted = append(emitted, verifyEvent)
 		criteria = s.criteriaFromEvidence(spec, repaired)
-		return repaired, criteria, emitted, nil
+		return repaired, criteria, emitted, true, nil
 	}
-	return report, criteria, emitted, nil
+}
+
+func (s *Service) multicaLeaderFallbackShouldPollForRoleEvidence(spec task.Spec, plan provider.WorkspaceEditPlan) bool {
+	if multicaRunRoleFromSpec(spec) != "leader" || multicaIssueIDFromSpec(spec) == "" {
+		return false
+	}
+	progressCommand := multicaIssueProgressCommentAddArgv(spec, multicaIssueIDFromSpec(spec))
+	hasProgressCommand := false
+	for _, command := range plan.Commands {
+		if equalStringSlices(command.Argv, progressCommand) {
+			hasProgressCommand = true
+			break
+		}
+	}
+	if !hasProgressCommand {
+		return false
+	}
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		return false
+	}
+	for _, record := range records {
+		if record.Kind == "repair_command" && record.Status == "completed" && equalStringSlices(record.Argv, progressCommand) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) pollMulticaLeaderFinalization(ctx context.Context, spec task.Spec, state *task.State, report task.VerificationReport, criteria task.CriteriaSnapshot) (task.VerificationReport, []task.Event, bool, error) {
+	repaired, _, emitted, done, err := s.runMulticaLeaderFinalizationLoop(ctx, spec, state, report, criteria, true, multicaLeaderPollInterval)
+	return repaired, emitted, done, err
+}
+
+func (s *Service) multicaLeaderFinalMarkerObserved(spec task.Spec, observations []provider.ObservationResult, issueID string) bool {
+	leaderMarkers := multicaMarkersForRunRole(s.multicaMarkersFromSpecObservationsAndCommandRuns(spec, observations), "leader")
+	if len(leaderMarkers) == 0 {
+		return false
+	}
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		records = nil
+	}
+	return len(s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, observations, issueID, leaderMarkers)) > 0
 }
 
 func (s *Service) multicaLeaderNeedsFinalization(spec task.Spec, criteria task.CriteriaSnapshot) bool {
@@ -768,6 +854,20 @@ func (s *Service) repairCodingTask(
 	}
 	var plan provider.WorkspaceEditPlan
 	if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, errors.New("responses workspace edit returned empty output text")); ok {
+		if s.multicaLeaderFallbackShouldPollForRoleEvidence(spec, fallbackPlan) {
+			repaired, pollEvents, done, err := s.pollMulticaLeaderFinalization(ctx, spec, state, failed, *criteria)
+			if err != nil {
+				return task.VerificationReport{}, emitted, false, nil, err
+			}
+			emitted = append(emitted, pollEvents...)
+			if done {
+				return repaired, emitted, true, nil, nil
+			}
+			return failed, emitted, false, &provider.RepairFailure{
+				Stage:   "multica_waiting_role_evidence",
+				Summary: "Leader progress has already been posted; waiting for completed worker/validator role evidence before posting the final marker.",
+			}, nil
+		}
 		plan = fallbackPlan
 		fallbackEvent := newEvent(
 			spec.TaskID,
@@ -804,6 +904,20 @@ func (s *Service) repairCodingTask(
 		})
 		if err != nil {
 			if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, err); ok {
+				if s.multicaLeaderFallbackShouldPollForRoleEvidence(spec, fallbackPlan) {
+					repaired, pollEvents, done, pollErr := s.pollMulticaLeaderFinalization(ctx, spec, state, failed, *criteria)
+					if pollErr != nil {
+						return task.VerificationReport{}, emitted, false, nil, pollErr
+					}
+					emitted = append(emitted, pollEvents...)
+					if done {
+						return repaired, emitted, true, nil, nil
+					}
+					return failed, emitted, false, &provider.RepairFailure{
+						Stage:   "multica_waiting_role_evidence",
+						Summary: "Leader progress has already been posted; waiting for completed worker/validator role evidence before posting the final marker.",
+					}, nil
+				}
 				plan = fallbackPlan
 				fallbackEvent := newEvent(
 					spec.TaskID,

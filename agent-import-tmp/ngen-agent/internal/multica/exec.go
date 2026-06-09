@@ -60,11 +60,6 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 	var metadata task.MulticaRunMetadata
 	if taskID == "" {
 		taskFile := taskFromEnvelope(envelope, prompt, resolution, opts.RunRole)
-		if timeoutSeconds <= 0 && multicaLeaderTaskFile(taskFile) {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, 600*time.Second)
-			defer cancel()
-		}
 		runMode = runModeForObjective(taskFile.Objective, false)
 		spec, createErr := svc.Create(ctx, taskFile)
 		if createErr != nil {
@@ -162,12 +157,6 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 			return exitCodeFromResult(status)
 		}
 	}
-}
-
-func multicaLeaderTaskFile(tf task.TaskFile) bool {
-	text := strings.ToLower(strings.Join([]string{tf.Objective, tf.Title}, "\n"))
-	return strings.Contains(text, "multica issue execution mode") &&
-		(strings.Contains(text, "multica run role: leader") || strings.Contains(text, "multica run role: master"))
 }
 
 type runResult struct {

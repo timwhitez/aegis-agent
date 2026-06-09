@@ -4736,6 +4736,275 @@ func TestMulticaLeaderCompletionGateAcceptsCompletedRolesAndMarkers(t *testing.T
 	}
 }
 
+func TestMulticaLeaderPollsAfterProgressInsteadOfReplayingProgress(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "multica"), `#!/bin/sh
+cmd="$1 $2 $3"
+if [ "$1 $2" = "issue get" ]; then
+  printf '{"id":"%s"}\n' "$4"
+  exit 0
+fi
+if [ "$cmd" = "issue comment list" ]; then
+  cat <<'JSON'
+[
+  {"id":"worker-comment","content":"ngen-squad-auto-worker-e2e-ok-20260609m"},
+  {"id":"validator-comment","content":"ngen-squad-auto-validator-e2e-ok-20260609m"}
+]
+JSON
+  exit 0
+fi
+if [ "$1 $2" = "issue runs" ]; then
+  cat <<'JSON'
+[
+  {"kind":"comment","run_role":"worker","status":"completed"},
+  {"kind":"comment","run_role":"validator","status":"completed"}
+]
+JSON
+  exit 0
+fi
+if [ "$cmd" = "issue comment add" ]; then
+  content_file=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--content-file" ]; then
+      content_file="$2"
+    fi
+    shift
+  done
+  if [ "$content_file" = "multica-progress.md" ]; then
+    echo "unexpected duplicate progress comment" >&2
+    exit 9
+  fi
+  if ! grep -q "ngen-squad-auto-long-e2e-ok-20260609m" "$content_file"; then
+    echo "missing final marker" >&2
+    exit 9
+  fi
+  printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609m"}\n'
+  exit 0
+fi
+echo "unexpected command: $*" >&2
+exit 9
+`)
+	if err := os.Chmod(filepath.Join(dir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Provider.Mode = "builtin"
+	cfg.Provider.CodingObservationCommandBudget = 3
+	cfg.Provider.CodingExecutionCommandBudget = 3
+	svc := New(dir, cfg)
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:  task.KindCoding,
+		Title: "multica leader",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: leader.",
+			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609m",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609m",
+			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609m",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
+			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+			{ID: "SC-003", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
+		},
+		WorkspaceRoot:    dir,
+		PermissionModeID: task.PermissionModeYolo,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	progressArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-progress",
+		CommandID:       "CMD-progress",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "repair_command",
+		Status:          "completed",
+		Argv:            progressArgv,
+		StdoutExcerpt:   `{"id":"progress-comment"}`,
+		ReplaySafety: &task.ReplaySafety{
+			SideEffectClass: "external_issue_mutation",
+			ReplayPolicy:    "manual_review_required",
+			OpenWorld:       true,
+		},
+	}); err != nil {
+		t.Fatalf("append progress command: %v", err)
+	}
+
+	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed", RanAt: task.Now()}
+	criteria := svc.criteriaFromEvidence(spec, report)
+	state, err := svc.Store.LoadState(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	repaired, _, ok, failure, err := svc.repairCodingTask(context.Background(), spec, &state, report, &criteria, nil, nil, 2, 3)
+	if err != nil {
+		t.Fatalf("repair coding task: %v", err)
+	}
+	if !ok || failure != nil || repaired.Status != "passed" {
+		t.Fatalf("expected polling path to repair successfully, ok=%v failure=%+v report=%+v", ok, failure, repaired)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	var progressCount int
+	var finalSeen bool
+	for _, record := range records {
+		if equalStringSlices(record.Argv, progressArgv) {
+			progressCount++
+		}
+		if record.Status == "completed" && multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "add", issueID}) && containsString(record.Argv, multicaIssueResultPath) {
+			finalSeen = true
+		}
+		if record.Status == "failed" && strings.Contains(record.Summary, "Rejected repair command replay") {
+			t.Fatalf("progress polling path should not create replay-blocked command: %+v", record)
+		}
+	}
+	if progressCount != 1 {
+		t.Fatalf("expected no duplicate progress comment command, saw %d", progressCount)
+	}
+	if !finalSeen {
+		t.Fatalf("expected final marker comment command after polling role evidence, records=%+v", records)
+	}
+}
+
+func TestMulticaLeaderFinalizationPollsBeyondPreviousFixedLeaderLimit(t *testing.T) {
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "poll-count")
+	writeFile(t, filepath.Join(dir, "multica"), `#!/bin/sh
+cmd="$1 $2 $3"
+count_file="$MULTICA_POLL_COUNT_FILE"
+read_count() {
+  if [ -f "$count_file" ]; then
+    cat "$count_file"
+  else
+    echo 0
+  fi
+}
+if [ "$1 $2" = "issue get" ]; then
+  printf '{"id":"%s"}\n' "$4"
+  exit 0
+fi
+if [ "$cmd" = "issue comment list" ]; then
+  n="$(read_count)"
+  if [ "$n" -gt 25 ]; then
+    cat <<'JSON'
+[
+  {"id":"worker-comment","content":"ngen-squad-auto-worker-e2e-ok-20260609n"},
+  {"id":"validator-comment","content":"ngen-squad-auto-validator-e2e-ok-20260609n"}
+]
+JSON
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+if [ "$1 $2" = "issue runs" ]; then
+  n="$(read_count)"
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$count_file"
+  if [ "$n" -gt 25 ]; then
+    cat <<'JSON'
+[
+  {"kind":"comment","run_role":"worker","status":"completed"},
+  {"kind":"comment","run_role":"validator","status":"completed"}
+]
+JSON
+  else
+    cat <<'JSON'
+[
+  {"kind":"comment","run_role":"worker","status":"running"},
+  {"kind":"comment","run_role":"validator","status":"running"}
+]
+JSON
+  fi
+  exit 0
+fi
+if [ "$cmd" = "issue comment add" ]; then
+  content_file=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--content-file" ]; then
+      content_file="$2"
+    fi
+    shift
+  done
+  if [ "$content_file" = "multica-progress.md" ]; then
+    echo "unexpected duplicate progress comment" >&2
+    exit 9
+  fi
+  if ! grep -q "ngen-squad-auto-long-e2e-ok-20260609n" "$content_file"; then
+    echo "missing final marker" >&2
+    exit 9
+  fi
+  printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609n"}\n'
+  exit 0
+fi
+echo "unexpected command: $*" >&2
+exit 9
+`)
+	if err := os.Chmod(filepath.Join(dir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MULTICA_POLL_COUNT_FILE", countPath)
+
+	cfg := task.DefaultConfig()
+	cfg.Provider.Mode = "builtin"
+	cfg.Provider.CodingObservationCommandBudget = 3
+	cfg.Provider.CodingExecutionCommandBudget = 3
+	svc := New(dir, cfg)
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:  task.KindCoding,
+		Title: "multica leader",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: leader.",
+			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609n",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609n",
+			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609n",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
+			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+			{ID: "SC-003", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
+		},
+		WorkspaceRoot:    dir,
+		PermissionModeID: task.PermissionModeYolo,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed", RanAt: task.Now()}
+	criteria := svc.criteriaFromEvidence(spec, report)
+	state, err := svc.Store.LoadState(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	repaired, _, _, done, err := svc.runMulticaLeaderFinalizationLoop(ctx, spec, &state, report, criteria, true, 0)
+	if err != nil {
+		t.Fatalf("leader finalization loop: %v", err)
+	}
+	if !done || repaired.Status != "passed" {
+		t.Fatalf("expected finalization after delayed role evidence, done=%v report=%+v", done, repaired)
+	}
+	data, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatalf("read poll count: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "27" {
+		t.Fatalf("expected loop to continue past the old 24-poll leader limit before finalizing, got poll count %s", got)
+	}
+}
+
 func TestMulticaIssueArtifactsDoNotTripScopeDrift(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
