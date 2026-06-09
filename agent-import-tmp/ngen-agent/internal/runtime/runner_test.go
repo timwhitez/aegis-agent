@@ -3818,6 +3818,73 @@ func TestMulticaIssueFallbackWorkspaceEditPlanWritesRolePublicArtifact(t *testin
 	}
 }
 
+func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.T) {
+	issueID := "cb4bbf0b-c107-4e58-8b78-d2945aea0e53"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-worker",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: worker.",
+			"Post concise command-backed evidence and the worker marker requested by the issue.",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+		},
+	}
+	observations := []provider.ObservationResult{
+		{
+			Status:        "completed",
+			CommandID:     "CMD-get",
+			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
+			StdoutExcerpt: `{"description":"Required final marker: ngen-squad-auto-long-e2e-ok-20260609c. Worker marker: ngen-squad-auto-worker-e2e-ok-20260609c. Validator marker: ngen-squad-auto-validator-e2e-ok-20260609c."}`,
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected worker Multica fallback plan from observed issue marker")
+	}
+	if len(plan.Writes) != 2 {
+		t.Fatalf("expected result and worker artifact writes, got %+v", plan.Writes)
+	}
+	var result, handoff string
+	for _, write := range plan.Writes {
+		switch write.Path {
+		case "multica-result.md":
+			result = write.Content
+		case "handoffs/worker-auto-e2e.json":
+			handoff = write.Content
+		}
+	}
+	if !strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609c") ||
+		strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609c") ||
+		strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609c") {
+		t.Fatalf("worker result should contain only the observed worker marker:\n%s", result)
+	}
+	if !strings.Contains(handoff, "ngen-squad-auto-worker-e2e-ok-20260609c") {
+		t.Fatalf("worker handoff missing observed marker:\n%s", handoff)
+	}
+}
+
+func TestUseDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(t *testing.T) {
+	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(nil) {
+		t.Fatal("empty failure history must not trigger fallback")
+	}
+	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput([]provider.RepairFailure{{
+		Stage:   "workspace_edit_noop",
+		Summary: "responses workspace edit returned empty output text",
+	}}) {
+		t.Fatal("non-failed workspace edit history must not trigger fallback")
+	}
+	if !useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput([]provider.RepairFailure{{
+		Stage:   "workspace_edit_failed",
+		Summary: "Workspace edit planning failed: responses workspace edit returned empty output text",
+	}}) {
+		t.Fatal("previous empty output workspace edit failure should trigger deterministic fallback")
+	}
+}
+
 func TestMulticaIssueFallbackWorkspaceEditPlanDoesNotUseFinalMarkerForWorker(t *testing.T) {
 	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
 	svc := New(t.TempDir(), task.DefaultConfig())

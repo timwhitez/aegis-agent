@@ -602,33 +602,15 @@ func (s *Service) repairCodingTask(
 	if err != nil {
 		return task.VerificationReport{}, emitted, false, nil, err
 	}
-	plan, err := provider.GenerateWorkspaceEdit(ctx, s.Config.Provider, provider.WorkspaceEditInput{
-		Task:                  spec,
-		Baseline:              baseline,
-		Continuity:            continuity,
-		Sprint:                sprint,
-		RecentVerification:    &failed,
-		Criteria:              criteria,
-		OpenCriteria:          openCriteria(spec, criteria),
-		ContextPack:           contextPack,
-		SessionMessagesRef:    sessionMessagesRef,
-		SessionRecentMessages: sessionRecentMessages,
-		PreviousFailures:      previousFailures,
-		RepairAttempt:         attempt,
-		RepairBudget:          budget,
-		ExecutionBudget:       s.codingExecutionCommandBudget(),
-		Collection:            collection,
-		Observations:          observations,
-		Files:                 files,
-	})
-	if err != nil {
-		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, err); ok {
+	var plan provider.WorkspaceEditPlan
+	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(previousFailures) {
+		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, errors.New("responses workspace edit returned empty output text")); ok {
 			plan = fallbackPlan
 			fallbackEvent := newEvent(
 				spec.TaskID,
 				*state,
 				"workspace_edit_provider_fallback",
-				fmt.Sprintf("Using deterministic Multica issue workspace edit after provider planning failed: %v", err),
+				"Using deterministic Multica issue workspace edit after a previous provider planning attempt returned empty output text.",
 				nil,
 			)
 			if appendErr := s.Store.AppendEvent(fallbackEvent); appendErr != nil {
@@ -636,25 +618,63 @@ func (s *Service) repairCodingTask(
 			}
 			emitted = append(emitted, fallbackEvent)
 			state.LastEventRef = artifact.EventRef(fallbackEvent.EventID)
-		} else {
-			record := task.WorkspaceEditRecord{
-				SchemaVersion: task.SchemaVersion,
-				EditRecordID:  task.NewID("EDITREC"),
-				EditID:        editID,
-				TaskID:        spec.TaskID,
-				TS:            task.Now(),
-				Kind:          "workspace_edit",
-				Status:        "failed",
-				ProviderMode:  provider.CanonicalMode(s.Config.Provider.Mode),
-				Summary:       fmt.Sprintf("Workspace edit planning failed: %v", err),
+		}
+	}
+	if strings.TrimSpace(plan.Summary) == "" {
+		plan, err = provider.GenerateWorkspaceEdit(ctx, s.Config.Provider, provider.WorkspaceEditInput{
+			Task:                  spec,
+			Baseline:              baseline,
+			Continuity:            continuity,
+			Sprint:                sprint,
+			RecentVerification:    &failed,
+			Criteria:              criteria,
+			OpenCriteria:          openCriteria(spec, criteria),
+			ContextPack:           contextPack,
+			SessionMessagesRef:    sessionMessagesRef,
+			SessionRecentMessages: sessionRecentMessages,
+			PreviousFailures:      previousFailures,
+			RepairAttempt:         attempt,
+			RepairBudget:          budget,
+			ExecutionBudget:       s.codingExecutionCommandBudget(),
+			Collection:            collection,
+			Observations:          observations,
+			Files:                 files,
+		})
+		if err != nil {
+			if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, err); ok {
+				plan = fallbackPlan
+				fallbackEvent := newEvent(
+					spec.TaskID,
+					*state,
+					"workspace_edit_provider_fallback",
+					fmt.Sprintf("Using deterministic Multica issue workspace edit after provider planning failed: %v", err),
+					nil,
+				)
+				if appendErr := s.Store.AppendEvent(fallbackEvent); appendErr != nil {
+					return task.VerificationReport{}, emitted, false, nil, appendErr
+				}
+				emitted = append(emitted, fallbackEvent)
+				state.LastEventRef = artifact.EventRef(fallbackEvent.EventID)
+			} else {
+				record := task.WorkspaceEditRecord{
+					SchemaVersion: task.SchemaVersion,
+					EditRecordID:  task.NewID("EDITREC"),
+					EditID:        editID,
+					TaskID:        spec.TaskID,
+					TS:            task.Now(),
+					Kind:          "workspace_edit",
+					Status:        "failed",
+					ProviderMode:  provider.CanonicalMode(s.Config.Provider.Mode),
+					Summary:       fmt.Sprintf("Workspace edit planning failed: %v", err),
+				}
+				event, persistErr := s.persistWorkspaceEditRecord(*state, record, "workspace_edit_failed")
+				if persistErr != nil {
+					return task.VerificationReport{}, emitted, false, nil, persistErr
+				}
+				emitted = append(emitted, event)
+				state.LastEventRef = artifact.EventRef(event.EventID)
+				return task.VerificationReport{}, emitted, false, repairFailureFromRecord(attempt, record), nil
 			}
-			event, persistErr := s.persistWorkspaceEditRecord(*state, record, "workspace_edit_failed")
-			if persistErr != nil {
-				return task.VerificationReport{}, emitted, false, nil, persistErr
-			}
-			emitted = append(emitted, event)
-			state.LastEventRef = artifact.EventRef(event.EventID)
-			return task.VerificationReport{}, emitted, false, repairFailureFromRecord(attempt, record), nil
 		}
 	}
 
@@ -1672,6 +1692,18 @@ func multicaMarkersFromText(text string) []string {
 		out = append(out, marker)
 	}
 	return out
+}
+
+func useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(previousFailures []provider.RepairFailure) bool {
+	for _, failure := range previousFailures {
+		if failure.Stage != "workspace_edit_failed" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(failure.Summary), "empty output text") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, planningErr error) (provider.WorkspaceEditPlan, bool) {
