@@ -89,11 +89,16 @@ go-cli-agent exec \
   --output-format stream-json \
   --input-format stream-json \
   --workdir <task-workdir> \
-  --timeout <seconds> \
+  [--timeout <seconds>] \
   [--provider <go-cli-agent-provider>] \
   [--model <model-id>] \
   [--thinking-level <low|medium|high|xhigh>]
 ```
+
+`--timeout` 只在 Multica runtime profile 配置了正数 `Timeout` 时传递。Long-horizon
+profile 可以把 `Timeout` 设为 `0`，此时 Multica 不安装固定执行时长，也不向
+go-cli-agent 传 `--timeout`；任务生命周期由用户/daemon 取消和显式 idle watchdog
+负责。
 
 恢复 session 时仍走同一个 `exec` 入口，额外带 `--resume <session-id>`；`go-cli-agent` 内部调用 runtime `Continue`。
 本 SPEC 锁定 `ContinueRequest.ProviderOptions` 扩展，因此 resume 时 `--thinking-level` 与首次启动一样生效。

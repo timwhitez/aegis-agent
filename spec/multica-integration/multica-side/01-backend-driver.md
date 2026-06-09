@@ -161,11 +161,7 @@ func (b *gocliBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
     }
     execPath = resolved
 
-    timeout := opts.Timeout
-    if timeout == 0 {
-        timeout = 20 * time.Minute
-    }
-    runCtx, cancel := context.WithTimeout(ctx, timeout)
+    runCtx, cancel := gocliRunContext(ctx, opts.Timeout)
 
     args := b.buildArgs(opts)
     cmd := exec.CommandContext(runCtx, execPath, args...)
@@ -264,7 +260,19 @@ func (b *gocliBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 
     return &Session{Messages: msgCh, Result: resCh}, nil
 }
+
+func gocliRunContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+    if timeout <= 0 {
+        return context.WithCancel(ctx)
+    }
+    return context.WithTimeout(ctx, timeout)
+}
 ```
+
+`opts.Timeout <= 0` 表示 long-horizon profile 不安装固定墙钟 deadline；此时不向
+`go-cli-agent exec` 传 `--timeout`，生命周期由上游取消、daemon 停止和显式 idle
+watchdog 控制。正数 timeout 才安装 backend context deadline，并传递给
+go-cli-agent 自身 run timeout。
 
 ### 1.5 Args builder
 
