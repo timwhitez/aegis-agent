@@ -1899,7 +1899,7 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 }
 
 func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, issueID string) (provider.WorkspaceEditPlan, bool) {
-	markers := multicaMarkersFromSpec(spec)
+	markers := s.multicaMarkersFromSpecObservationsAndCommandRuns(spec, observations)
 	leaderMarkers := multicaMarkersForRunRole(markers, "leader")
 	workerMarkers := multicaMarkersForRunRole(markers, "worker")
 	validatorMarkers := multicaMarkersForRunRole(markers, "validator")

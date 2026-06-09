@@ -4339,6 +4339,72 @@ func TestMulticaLeaderFallbackParentsFinalMarkerFromFailedParentRequirement(t *t
 	}
 }
 
+func TestMulticaLeaderFallbackUsesObservedFinalMarker(t *testing.T) {
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	triggerCommentID := "65bef4e7-1fc8-4a09-907d-57960950e1f4"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-leader-final-observed-marker",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: leader.",
+			"First read the live issue with `multica issue get " + issueID + " --output json`.",
+		}, "\n"),
+	}
+	observations := []provider.ObservationResult{
+		{
+			Status:    "completed",
+			CommandID: "CMD-issue",
+			Argv:      []string{"multica", "issue", "get", issueID, "--output", "json"},
+			StdoutExcerpt: strings.Join([]string{
+				`{"description":"Required public markers:`,
+				`worker: ngen-squad-auto-worker-e2e-ok-20260609k`,
+				`validator: ngen-squad-auto-validator-e2e-ok-20260609k`,
+				`final: ngen-squad-auto-long-e2e-ok-20260609k"}`,
+			}, "\n"),
+		},
+		{
+			Status:    "completed",
+			CommandID: "CMD-runs",
+			Argv:      []string{"multica", "issue", "runs", issueID, "--output", "json"},
+			StdoutExcerpt: `[
+  {"kind":"comment","run_role":"leader","status":"running","trigger_comment_id":"` + triggerCommentID + `"},
+  {"kind":"comment","run_role":"worker","status":"completed"},
+  {"kind":"comment","run_role":"validator","status":"completed"}
+]`,
+		},
+		{
+			Status:        "completed",
+			CommandID:     "CMD-comments",
+			Argv:          []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
+			StdoutExcerpt: `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609k"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609k"}]`,
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected leader final fallback plan")
+	}
+	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+		t.Fatalf("expected observed-marker parented final command, got %+v", plan.Commands)
+	}
+	var result string
+	for _, write := range plan.Writes {
+		if write.Path == multicaIssueResultPath {
+			result = write.Content
+		}
+	}
+	if !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609k") ||
+		strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609k\n") ||
+		strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609k\n") {
+		t.Fatalf("leader final result should contain observed final marker only:\n%s", result)
+	}
+	if !strings.Contains(result, "--parent "+triggerCommentID) {
+		t.Fatalf("leader final result should record parented final command:\n%s", result)
+	}
+}
+
 func TestMulticaIssueCriteriaRequireCommandBackedCommentEvidence(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
