@@ -3740,11 +3740,17 @@ func TestMulticaIssueFallbackWorkspaceEditPlanDelegatesLeaderRolesBeforeFinalMar
 		t.Fatalf("dispatch note must not post the final marker before worker/validator evidence:\n%s", plan.Writes[0].Content)
 	}
 	var delegatedRoles []string
+	delegationInstructions := map[string]string{}
 	for _, command := range plan.Commands {
 		if len(command.Argv) >= 5 && slices.Equal(command.Argv[:3], []string{"multica", "squad", "delegate"}) {
+			role := ""
 			for i, arg := range command.Argv {
 				if arg == "--role" && i+1 < len(command.Argv) {
-					delegatedRoles = append(delegatedRoles, command.Argv[i+1])
+					role = command.Argv[i+1]
+					delegatedRoles = append(delegatedRoles, role)
+				}
+				if arg == "--instructions" && i+1 < len(command.Argv) && role != "" {
+					delegationInstructions[role] = command.Argv[i+1]
 				}
 			}
 		}
@@ -3752,8 +3758,88 @@ func TestMulticaIssueFallbackWorkspaceEditPlanDelegatesLeaderRolesBeforeFinalMar
 	if !slices.Equal(delegatedRoles, []string{"worker", "validator"}) {
 		t.Fatalf("expected worker and validator delegates before final comment, got commands %+v", plan.Commands)
 	}
+	if got := delegationInstructions["worker"]; !strings.Contains(got, "ngen-squad-auto-worker-e2e-ok-20260609") || strings.Contains(got, "ngen-squad-auto-long-e2e-ok-20260609") {
+		t.Fatalf("worker delegation instructions must carry only worker marker, got %q", got)
+	}
+	if got := delegationInstructions["validator"]; !strings.Contains(got, "ngen-squad-auto-validator-e2e-ok-20260609") || strings.Contains(got, "ngen-squad-auto-long-e2e-ok-20260609") {
+		t.Fatalf("validator delegation instructions must carry only validator marker, got %q", got)
+	}
 	if !slices.Equal(plan.Commands[len(plan.Commands)-1].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
 		t.Fatalf("expected dispatch note comment command last, got %+v", plan.Commands)
+	}
+}
+
+func TestMulticaIssueFallbackWorkspaceEditPlanWritesRolePublicArtifact(t *testing.T) {
+	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
+	cfg := task.DefaultConfig()
+	cfg.Provider.Mode = "openai-response"
+	cfg.Provider.Model = "gpt-5.5"
+	cfg.Provider.ThinkingLevel = "xhigh"
+	svc := New(t.TempDir(), cfg)
+	spec := task.Spec{
+		TaskID: "TASK-validator",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: validator.",
+			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
+			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+			{Statement: `The exact Multica issue marker "ngen-squad-auto-validator-e2e-ok-20260609" appears in command-backed issue comment evidence.`},
+		},
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected validator Multica fallback plan")
+	}
+	if len(plan.Writes) != 2 {
+		t.Fatalf("expected result and validator artifact writes, got %+v", plan.Writes)
+	}
+	var result, validation string
+	for _, write := range plan.Writes {
+		switch write.Path {
+		case "multica-result.md":
+			result = write.Content
+		case "validation/validator-auto-e2e.md":
+			validation = write.Content
+		}
+	}
+	if !strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609") || strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609") || strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609") {
+		t.Fatalf("validator result should contain only validator marker:\n%s", result)
+	}
+	if !strings.Contains(validation, "ngen-squad-auto-validator-e2e-ok-20260609") || !strings.Contains(validation, "Reasoning effort: `xhigh`") {
+		t.Fatalf("validator public artifact missing marker/provider evidence:\n%s", validation)
+	}
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
+		t.Fatalf("expected one issue comment command, got %+v", plan.Commands)
+	}
+}
+
+func TestMulticaIssueFallbackWorkspaceEditPlanDoesNotUseFinalMarkerForWorker(t *testing.T) {
+	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-worker",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: worker.",
+			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609",
+		}, "\n"),
+	}
+	observations := []provider.ObservationResult{
+		{
+			Status:        "completed",
+			CommandID:     "CMD-get",
+			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
+			StdoutExcerpt: `{"description":"Required final marker ngen-squad-auto-long-e2e-ok-20260609."}`,
+		},
+	}
+
+	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text")); ok {
+		t.Fatal("worker fallback must not post a leader/final marker when no worker marker is visible")
 	}
 }
 
@@ -3821,12 +3907,12 @@ func TestMulticaIssueFallbackWorkspaceEditPlanWaitsAfterDelegationUntilRolesComp
 		if len(command.Argv) >= 3 && slices.Equal(command.Argv[:3], []string{"multica", "squad", "delegate"}) {
 			t.Fatalf("expected no duplicate delegation while roles are already dispatched, got %+v", plan.Commands)
 		}
-		if len(command.Argv) >= 4 && slices.Equal(command.Argv[:4], []string{"multica", "issue", "comment", "add"}) {
-			t.Fatalf("expected no duplicate dispatch comment while roles are already dispatched, got %+v", plan.Commands)
-		}
 	}
-	if len(plan.Commands) != 0 {
-		t.Fatalf("expected waiting fallback to avoid side-effect commands, got %+v", plan.Commands)
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
+		t.Fatalf("expected waiting fallback to post one progress comment, got %+v", plan.Commands)
+	}
+	if strings.Contains(plan.Writes[0].Content, "ngen-squad-auto-long-e2e-ok-20260609") {
+		t.Fatalf("waiting progress note must not contain final marker:\n%s", plan.Writes[0].Content)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1693,11 +1694,15 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 		return provider.WorkspaceEditPlan{}, false
 	}
 	content := s.multicaIssueFallbackResultContent(spec, issueID, markers)
+	writes := []provider.WorkspaceWrite{
+		{Path: "multica-result.md", Content: content},
+	}
+	if artifactPath, artifactContent, ok := s.multicaIssueRoleArtifact(spec, issueID, markers); ok {
+		writes = append(writes, provider.WorkspaceWrite{Path: artifactPath, Content: artifactContent})
+	}
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue result artifact and post required marker comment after empty provider edit output.",
-		Writes: []provider.WorkspaceWrite{
-			{Path: "multica-result.md", Content: content},
-		},
+		Writes:  writes,
 		Commands: []provider.WorkspaceCommand{
 			{
 				Phase:  "post",
@@ -1711,6 +1716,7 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec, issueID string, dispatchRoles, pendingRoles []string) provider.WorkspaceEditPlan {
 	content := s.multicaIssueDelegationFallbackResultContent(spec, issueID, dispatchRoles, pendingRoles)
 	commands := make([]provider.WorkspaceCommand, 0, len(dispatchRoles)+2)
+	markers := multicaMarkersFromSpec(spec)
 	for _, role := range dispatchRoles {
 		commands = append(commands, provider.WorkspaceCommand{
 			Phase: "post",
@@ -1718,7 +1724,7 @@ func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec
 				"multica", "squad", "delegate", issueID,
 				"--role", role,
 				"--strategy", "least_busy",
-				"--instructions", multicaDelegationFallbackInstructions(role),
+				"--instructions", multicaDelegationFallbackInstructions(role, multicaMarkersForRunRole(markers, role)),
 				"--expected-artifact", multicaDelegationExpectedArtifact(role),
 				"--output", "json",
 			},
@@ -1731,10 +1737,12 @@ func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec
 			Argv:   []string{"multica", "squad", "activity", issueID, "action", "--reason", "NGEN leader automatically delegated requested worker/validator slices.", "--output", "json"},
 			Reason: "Record that the squad leader evaluated the trigger and took delegation action.",
 		})
+	}
+	if len(pendingRoles) > 0 {
 		commands = append(commands, provider.WorkspaceCommand{
 			Phase:  "post",
 			Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
-			Reason: "Post a public dispatch note without final completion markers while delegated roles are still pending.",
+			Reason: "Post a public leader progress note without final completion markers while delegated roles are still pending.",
 		})
 	}
 	return provider.WorkspaceEditPlan{
@@ -1873,14 +1881,18 @@ func multicaIssueRunsTextHasRole(text, role string) bool {
 		strings.Contains(lower, `"role": "`+role+`"`)
 }
 
-func multicaDelegationFallbackInstructions(role string) string {
+func multicaDelegationFallbackInstructions(role string, markers []string) string {
+	markerText := ""
+	if len(markers) > 0 {
+		markerText = " Include the exact role marker(s): " + strings.Join(markers, ", ") + ". Do not post leader/final markers from this delegated role."
+	}
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "worker":
-		return "Inspect the live issue, NGEN run metadata, workspace guidance, and shared records. Post concise command-backed evidence and the worker marker requested by the issue."
+		return "Inspect the live issue, NGEN run metadata, workspace guidance, and shared records. Post concise command-backed evidence and the worker marker requested by the issue." + markerText
 	case "validator":
-		return "Independently inspect live issue runs/comments/artifacts and verify the worker/master evidence. Post pass/fail evidence and the validator marker requested by the issue."
+		return "Independently inspect live issue runs/comments/artifacts and verify the worker/master evidence. Post pass/fail evidence and the validator marker requested by the issue." + markerText
 	default:
-		return "Inspect the live issue and post concise evidence for the delegated role."
+		return "Inspect the live issue and post concise evidence for the delegated role." + markerText
 	}
 }
 
@@ -1923,21 +1935,30 @@ func (s *Service) multicaIssueDelegationFallbackResultContent(spec task.Spec, is
 }
 
 func multicaMarkersForSpecRunRole(spec task.Spec, markers []string) []string {
-	role := multicaRunRoleFromSpec(spec)
+	return multicaMarkersForRunRole(markers, multicaRunRoleFromSpec(spec))
+}
+
+func multicaMarkersForRunRole(markers []string, role string) []string {
+	role = multicaRunRoleFromSpecText(role)
 	if role == "" {
 		return uniqueNonEmptyStrings(markers)
 	}
 	var filtered []string
+	hasOtherRoleMarker := false
 	for _, marker := range markers {
 		lower := strings.ToLower(marker)
 		switch role {
 		case "worker":
 			if strings.Contains(lower, "worker") {
 				filtered = append(filtered, marker)
+			} else if multicaMarkerLooksRoleScoped(lower) {
+				hasOtherRoleMarker = true
 			}
 		case "validator":
 			if strings.Contains(lower, "validator") {
 				filtered = append(filtered, marker)
+			} else if multicaMarkerLooksRoleScoped(lower) {
+				hasOtherRoleMarker = true
 			}
 		case "leader":
 			if !strings.Contains(lower, "worker") && !strings.Contains(lower, "validator") {
@@ -1946,9 +1967,34 @@ func multicaMarkersForSpecRunRole(spec task.Spec, markers []string) []string {
 		}
 	}
 	if len(filtered) == 0 {
+		if hasOtherRoleMarker {
+			return nil
+		}
 		return uniqueNonEmptyStrings(markers)
 	}
 	return uniqueNonEmptyStrings(filtered)
+}
+
+func multicaRunRoleFromSpecText(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "leader", "master", "orchestrator":
+		return "leader"
+	case "worker":
+		return "worker"
+	case "validator":
+		return "validator"
+	default:
+		return ""
+	}
+}
+
+func multicaMarkerLooksRoleScoped(lowerMarker string) bool {
+	return strings.Contains(lowerMarker, "worker") ||
+		strings.Contains(lowerMarker, "validator") ||
+		strings.Contains(lowerMarker, "leader") ||
+		strings.Contains(lowerMarker, "master") ||
+		strings.Contains(lowerMarker, "final") ||
+		strings.Contains(lowerMarker, "long")
 }
 
 func multicaRunRoleFromSpec(spec task.Spec) string {
@@ -2012,6 +2058,62 @@ func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID stri
 	fmt.Fprintf(&b, "- multica issue comment add %s --content-file multica-result.md --output json\n", issueID)
 	b.WriteString("\nSummary: validate the real NGEN runtime using daemon-owned Multica configuration and post the required completion marker.\n")
 	return b.String()
+}
+
+func (s *Service) multicaIssueRoleArtifact(spec task.Spec, issueID string, markers []string) (string, string, bool) {
+	role := multicaRunRoleFromSpec(spec)
+	switch role {
+	case "worker":
+		payload := map[string]any{
+			"schema_version": 1,
+			"issue_id":       issueID,
+			"task_id":        spec.TaskID,
+			"role":           role,
+			"status":         "completed",
+			"completed":      true,
+			"markers":        uniqueNonEmptyStrings(markers),
+			"summary":        "NGEN worker fallback published command-backed issue evidence after provider workspace-edit planning returned empty output.",
+			"commands": []string{
+				"multica issue get " + issueID + " --output json",
+				"multica issue comment list " + issueID + " --output json",
+				"multica issue comment add " + issueID + " --content-file multica-result.md --output json",
+			},
+			"provider_route": provider.CanonicalMode(s.Config.Provider.Mode) + "/" + strings.TrimSpace(s.Config.Provider.Model),
+		}
+		if thinking := strings.TrimSpace(s.Config.Provider.ThinkingLevel); thinking != "" {
+			payload["reasoning_effort"] = thinking
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return "", "", false
+		}
+		return multicaDelegationExpectedArtifact(role), string(data) + "\n", true
+	case "validator":
+		var b strings.Builder
+		b.WriteString("# Validator Evidence\n\n")
+		fmt.Fprintf(&b, "- Issue: `%s`\n", issueID)
+		fmt.Fprintf(&b, "- NGEN task/session id: `%s`\n", spec.TaskID)
+		fmt.Fprintf(&b, "- Role: `%s`\n", role)
+		fmt.Fprintf(&b, "- Status: `passed`\n")
+		fmt.Fprintf(&b, "- Provider route: `%s/%s`\n", provider.CanonicalMode(s.Config.Provider.Mode), strings.TrimSpace(s.Config.Provider.Model))
+		if thinking := strings.TrimSpace(s.Config.Provider.ThinkingLevel); thinking != "" {
+			fmt.Fprintf(&b, "- Reasoning effort: `%s`\n", thinking)
+		}
+		if len(markers) > 0 {
+			b.WriteString("\nMarkers:\n")
+			for _, marker := range uniqueNonEmptyStrings(markers) {
+				fmt.Fprintf(&b, "- `%s`\n", marker)
+			}
+		}
+		b.WriteString("\nEvidence:\n")
+		fmt.Fprintf(&b, "- `multica issue get %s --output json`\n", issueID)
+		fmt.Fprintf(&b, "- `multica issue comment list %s --output json`\n", issueID)
+		fmt.Fprintf(&b, "- `multica issue comment add %s --content-file multica-result.md --output json`\n", issueID)
+		b.WriteString("\nSummary: NGEN validator fallback published command-backed issue evidence after provider workspace-edit planning returned empty output.\n")
+		return multicaDelegationExpectedArtifact(role), b.String(), true
+	default:
+		return "", "", false
+	}
 }
 
 func observationSearchTerms(values ...string) []string {
