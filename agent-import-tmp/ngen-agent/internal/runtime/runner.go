@@ -38,7 +38,7 @@ var observationNameTokenPattern = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
 var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-var multicaMarkerPattern = regexp.MustCompile(`\bngen-multica-[A-Za-z0-9_-]+\b`)
+var multicaMarkerPattern = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -589,6 +589,9 @@ func (s *Service) repairCodingTask(
 		return task.VerificationReport{}, emitted, false, nil, err
 	}
 	emitted = append(emitted, observationEvents...)
+	if refreshed, changed := s.criteriaWithMulticaObservationEvidence(spec, criteria, observations); changed {
+		criteria = &refreshed
+	}
 
 	contextPack := s.loadContextPack(spec.TaskID)
 	baseline := s.loadBaseline(spec.TaskID)
@@ -694,6 +697,8 @@ func (s *Service) repairCodingTask(
 		record.Status = "failed"
 		record.Summary = fmt.Sprintf("%s Apply failed: %v", record.Summary, applyErr)
 		eventType = "workspace_edit_failed"
+	case len(record.FileChanges) == 0 && len(preCommands)+len(postCommands) > 0:
+		record.Status = "applied"
 	case len(record.FileChanges) == 0:
 		record.Status = "noop"
 		eventType = "workspace_edit_noop"
@@ -1597,6 +1602,10 @@ func multicaIssueObservationCommands(spec task.Spec, budget int) []provider.Obse
 			Argv:   []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
 			Reason: "Read the issue comment history before deciding whether to add the required completion marker.",
 		},
+		{
+			Argv:   []string{"multica", "issue", "runs", issueID, "--output", "json"},
+			Reason: "Read issue execution history before deciding whether requested squad roles still need to be scheduled.",
+		},
 	}
 	if len(commands) > budget {
 		return commands[:budget]
@@ -1632,16 +1641,48 @@ func multicaMarkerFromSpec(spec task.Spec) string {
 	return ""
 }
 
+func multicaMarkersFromSpec(spec task.Spec) []string {
+	var values []string
+	values = append(values, spec.Objective, spec.Title)
+	values = append(values, spec.Constraints...)
+	for _, criterion := range spec.SuccessCriteria {
+		values = append(values, criterion.Statement)
+	}
+	return multicaMarkersFromText(strings.Join(values, "\n"))
+}
+
+func multicaMarkersFromText(text string) []string {
+	matches := multicaMarkerPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, match := range matches {
+		marker := strings.TrimSpace(match)
+		if marker == "" {
+			continue
+		}
+		key := strings.ToLower(marker)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, marker)
+	}
+	return out
+}
+
 func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, planningErr error) (provider.WorkspaceEditPlan, bool) {
 	if planningErr == nil || !strings.Contains(planningErr.Error(), "empty output text") {
 		return provider.WorkspaceEditPlan{}, false
 	}
 	issueID := multicaIssueIDFromSpec(spec)
-	marker := multicaMarkerFromSpecAndObservations(spec, observations)
-	if issueID == "" || marker == "" {
+	markers := multicaMarkersFromSpecAndObservations(spec, observations)
+	if issueID == "" || len(markers) == 0 {
 		return provider.WorkspaceEditPlan{}, false
 	}
-	content := s.multicaIssueFallbackResultContent(spec, issueID, marker)
+	content := s.multicaIssueFallbackResultContent(spec, issueID, markers)
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue result artifact and post required marker comment after empty provider edit output.",
 		Writes: []provider.WorkspaceWrite{
@@ -1671,9 +1712,22 @@ func multicaMarkerFromSpecAndObservations(spec task.Spec, observations []provide
 	return ""
 }
 
-func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID, marker string) string {
+func multicaMarkersFromSpecAndObservations(spec task.Spec, observations []provider.ObservationResult) []string {
+	markers := multicaMarkersFromSpec(spec)
+	for _, observation := range observations {
+		for _, value := range []string{observation.StdoutExcerpt, observation.StderrExcerpt, observation.Summary} {
+			markers = append(markers, multicaMarkersFromText(value)...)
+		}
+	}
+	return uniqueNonEmptyStrings(markers)
+}
+
+func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID string, markers []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", marker)
+	for _, marker := range markers {
+		fmt.Fprintf(&b, "%s\n", marker)
+	}
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "Issue: %s\n", issueID)
 	fmt.Fprintf(&b, "NGEN task/session id: %s\n", spec.TaskID)
 	fmt.Fprintf(&b, "Provider route: %s/%s\n", provider.CanonicalMode(s.Config.Provider.Mode), strings.TrimSpace(s.Config.Provider.Model))
@@ -2127,7 +2181,10 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 	case "npm", "pnpm", "yarn", "make", "./build.sh":
 		return "needs_approval"
 	case "multica":
-		return "needs_approval"
+		if isAllowedMulticaIssueMutation(argv) {
+			return "needs_approval"
+		}
+		return "denied"
 	case "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "pwsh", "powershell", "cmd":
 		return "needs_approval"
 	default:
@@ -2136,6 +2193,19 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 		}
 		return "denied"
 	}
+}
+
+func isAllowedMulticaIssueMutation(argv []string) bool {
+	if len(argv) < 5 || argv[0] != "multica" {
+		return false
+	}
+	if argv[1] == "issue" && argv[2] == "comment" && argv[3] == "add" {
+		return multicaIssueIDPattern.MatchString(argv[4])
+	}
+	if argv[1] == "squad" && argv[2] == "delegate" {
+		return multicaIssueIDPattern.MatchString(argv[3])
+	}
+	return false
 }
 
 func executionCommandBenchmarkIntegrityRisk(argv []string) bool {
@@ -2590,6 +2660,8 @@ func isReadOnlyMulticaIssueCommand(argv []string) bool {
 	switch argv[2] {
 	case "get", "list":
 		return true
+	case "runs":
+		return len(argv) >= 4
 	case "comment":
 		return len(argv) >= 4 && argv[3] == "list"
 	default:
@@ -4269,6 +4341,7 @@ func (s *Service) criteriaFromEvidence(spec task.Spec, report task.VerificationR
 	for i, criterion := range spec.SuccessCriteria {
 		snapshot.Criteria[i] = s.criterionStatus(spec, criterion, report, editRefsByPath)
 	}
+	snapshot = s.criteriaWithMulticaCommandEvidence(spec, snapshot, report)
 	return s.finalizeCriteriaSnapshot(spec, snapshot, report.RanAt, criteriaEvaluationSummary(report))
 }
 
@@ -4492,6 +4565,9 @@ func (s *Service) criterionStatus(spec task.Spec, criterion task.SuccessCriterio
 	if statement == "" {
 		return status
 	}
+	if multicaIssueCriterionMode(statement) != "" {
+		return status
+	}
 	if workerAnalysis := analyzeCriterionWorker(statement); workerAnalysis.Active {
 		if refs := s.workerCriterionRefs(spec.TaskID, workerAnalysis); len(refs) > 0 {
 			status.Status = "met"
@@ -4524,6 +4600,231 @@ func (s *Service) criterionStatus(spec task.Spec, criterion task.SuccessCriterio
 	status.Status = "met"
 	status.EvidenceRefs = uniqueRefs(refs)
 	return status
+}
+
+func (s *Service) criteriaWithMulticaObservationEvidence(spec task.Spec, snapshot *task.CriteriaSnapshot, observations []provider.ObservationResult) (task.CriteriaSnapshot, bool) {
+	if snapshot == nil {
+		return task.CriteriaSnapshot{}, false
+	}
+	updated := *snapshot
+	changed := false
+	for i := range updated.Criteria {
+		if updated.Criteria[i].Status == "met" && len(updated.Criteria[i].EvidenceRefs) > 0 {
+			continue
+		}
+		criterion := task.SuccessCriterion{
+			ID:        updated.Criteria[i].CriterionID,
+			Statement: updated.Criteria[i].Statement,
+		}
+		status := s.multicaCriterionStatus(spec, criterion, task.VerificationReport{}, observations)
+		if status.Status != "met" || len(status.EvidenceRefs) == 0 {
+			continue
+		}
+		updated.Criteria[i].Status = "met"
+		updated.Criteria[i].Passes = true
+		updated.Criteria[i].EvidenceRefs = uniqueRefs(append(updated.Criteria[i].EvidenceRefs, status.EvidenceRefs...))
+		updated.Criteria[i].LastSummary = "Criterion is passing with Multica observation evidence."
+		changed = true
+	}
+	if changed {
+		updated = s.finalizeCriteriaSnapshot(spec, updated, task.Now(), "Multica observation evidence refreshed acceptance criteria.")
+	}
+	return updated, changed
+}
+
+func (s *Service) criteriaWithMulticaCommandEvidence(spec task.Spec, snapshot task.CriteriaSnapshot, report task.VerificationReport) task.CriteriaSnapshot {
+	for i, criterion := range spec.SuccessCriteria {
+		if multicaIssueCriterionMode(criterion.Statement) == "" {
+			continue
+		}
+		status := s.multicaCriterionStatus(spec, criterion, report, nil)
+		snapshot.Criteria[i] = status
+	}
+	return snapshot
+}
+
+func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessCriterion, report task.VerificationReport, observations []provider.ObservationResult) task.CriterionStatus {
+	status := task.CriterionStatus{
+		CriterionID: criterion.ID,
+		Status:      "open",
+	}
+	statement := strings.TrimSpace(criterion.Statement)
+	mode := multicaIssueCriterionMode(statement)
+	if mode == "" {
+		return status
+	}
+	issueID := multicaIssueIDFromSpec(spec)
+	if issueID == "" {
+		return status
+	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
+	marker := multicaMarkerPattern.FindString(statement)
+	switch mode {
+	case "issue_comment_command":
+		if refs := multicaCommentCommandRefs(records, issueID, marker); len(refs) > 0 {
+			status.Status = "met"
+			status.EvidenceRefs = refs
+		}
+	case "issue_marker":
+		if refs := multicaMarkerEvidenceRefs(records, observations, issueID, marker); len(refs) > 0 {
+			status.Status = "met"
+			status.EvidenceRefs = refs
+		}
+	case "issue_public_markers":
+		markers := multicaMarkersFromSpecAndObservations(spec, observations)
+		if len(markers) == 0 {
+			markers = multicaMarkersFromVerification(report)
+		}
+		if refs := multicaAllMarkersEvidenceRefs(records, observations, issueID, markers); len(refs) > 0 {
+			status.Status = "met"
+			status.EvidenceRefs = refs
+		}
+	case "issue_runs_roles":
+		if refs := multicaCompletedRunRoleRefs(records, observations, issueID, []string{"worker", "validator"}); len(refs) > 0 {
+			status.Status = "met"
+			status.EvidenceRefs = refs
+		}
+	}
+	return status
+}
+
+func multicaIssueCriterionMode(statement string) string {
+	lower := strings.ToLower(strings.TrimSpace(statement))
+	switch {
+	case strings.Contains(lower, "completed repair command record") && strings.Contains(lower, "multica issue comment add"):
+		return "issue_comment_command"
+	case strings.Contains(lower, "exact multica issue marker") || (strings.Contains(lower, "command-backed issue comment evidence") && multicaMarkerPattern.MatchString(statement)):
+		return "issue_marker"
+	case strings.Contains(lower, "live multica issue acceptance markers") && strings.Contains(lower, "public issue comment evidence"):
+		return "issue_public_markers"
+	case strings.Contains(lower, "issue run evidence") && strings.Contains(lower, "worker") && strings.Contains(lower, "validator"):
+		return "issue_runs_roles"
+	default:
+		return ""
+	}
+}
+
+func multicaCommentCommandRefs(records []task.CommandRunRecord, issueID, marker string) []string {
+	var refs []string
+	for _, record := range records {
+		if record.Kind != "repair_command" || record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "add", issueID}) {
+			continue
+		}
+		text := strings.Join([]string{
+			strings.Join(record.Argv, " "),
+			record.StdoutExcerpt,
+			record.StderrExcerpt,
+			record.Summary,
+		}, "\n")
+		if marker != "" && !strings.Contains(text, marker) {
+			continue
+		}
+		refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+	}
+	return uniqueRefs(refs)
+}
+
+func multicaMarkerEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, marker string) []string {
+	if strings.TrimSpace(marker) == "" {
+		return nil
+	}
+	var refs []string
+	refs = append(refs, multicaCommentCommandRefs(records, issueID, marker)...)
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "comment", "list", issueID}) {
+			continue
+		}
+		if strings.Contains(observation.StdoutExcerpt, marker) {
+			refs = append(refs, artifact.CommandOutputRef(observation.CommandID, "stdout.txt"))
+		}
+	}
+	return uniqueRefs(refs)
+}
+
+func multicaAllMarkersEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, markers []string) []string {
+	markers = uniqueNonEmptyStrings(markers)
+	if len(markers) == 0 {
+		return nil
+	}
+	var refs []string
+	for _, marker := range markers {
+		markerRefs := multicaMarkerEvidenceRefs(records, observations, issueID, marker)
+		if len(markerRefs) == 0 {
+			return nil
+		}
+		refs = append(refs, markerRefs...)
+	}
+	return uniqueRefs(refs)
+}
+
+func multicaCompletedRunRoleRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, roles []string) []string {
+	if len(roles) == 0 {
+		return nil
+	}
+	roleText := map[string]string{}
+	var refs []string
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		for _, role := range roles {
+			roleText[role] += "\n" + observation.StdoutExcerpt
+		}
+		refs = append(refs, artifact.CommandOutputRef(observation.CommandID, "stdout.txt"))
+	}
+	for _, record := range records {
+		if record.Status != "completed" {
+			continue
+		}
+		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		switch {
+		case multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}):
+			for _, role := range roles {
+				roleText[role] += "\n" + text
+			}
+			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+		case multicaCommandMatches(record.Argv, []string{"multica", "squad", "delegate", issueID}):
+			for _, role := range roles {
+				lower := strings.ToLower(text)
+				if strings.Contains(lower, "role="+role) ||
+					strings.Contains(lower, "--role "+role) ||
+					strings.Contains(lower, `"run_role":"`+role+`"`) ||
+					strings.Contains(lower, `"run_role": "`+role+`"`) ||
+					strings.Contains(lower, `"role":"`+role+`"`) ||
+					strings.Contains(lower, `"role": "`+role+`"`) {
+					roleText[role] += "\n" + text
+				}
+			}
+			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+		}
+	}
+	for _, role := range roles {
+		text := strings.ToLower(roleText[role])
+		if !strings.Contains(text, role) || !strings.Contains(text, "completed") {
+			return nil
+		}
+	}
+	return uniqueRefs(refs)
+}
+
+func multicaMarkersFromVerification(report task.VerificationReport) []string {
+	var markers []string
+	for _, check := range report.Checks {
+		markers = append(markers, multicaMarkersFromText(check.Summary)...)
+	}
+	return uniqueNonEmptyStrings(markers)
+}
+
+func multicaCommandMatches(argv, prefix []string) bool {
+	if len(argv) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if argv[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func analyzeCriterionWorker(statement string) criterionWorkerAnalysis {

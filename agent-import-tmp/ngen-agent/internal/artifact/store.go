@@ -1552,6 +1552,10 @@ func CommandRunRecordRef(id string) string {
 	return fmt.Sprintf("command_runs.jsonl#command_record_id=%s", id)
 }
 
+func CommandOutputRef(commandID, name string) string {
+	return filepath.ToSlash(filepath.Join("commands", commandID, name))
+}
+
 func ProviderUsageRecordRef(id string) string {
 	return fmt.Sprintf("provider_usage.jsonl#usage_record_id=%s", id)
 }

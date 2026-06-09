@@ -3630,15 +3630,18 @@ func TestHeuristicObservationCommandsIncludeMulticaIssueContext(t *testing.T) {
 	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
 	commands := heuristicObservationCommands(task.Spec{
 		Objective: "Multica issue execution mode for issue " + issueID + ".",
-	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2)
-	if len(commands) != 2 {
-		t.Fatalf("expected two Multica issue observation commands, got %+v", commands)
+	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 3)
+	if len(commands) != 3 {
+		t.Fatalf("expected three Multica issue observation commands, got %+v", commands)
 	}
 	if !slices.Equal(commands[0].Argv, []string{"multica", "issue", "get", issueID, "--output", "json"}) {
 		t.Fatalf("unexpected issue get command: %+v", commands[0])
 	}
 	if !slices.Equal(commands[1].Argv, []string{"multica", "issue", "comment", "list", issueID, "--output", "json"}) {
 		t.Fatalf("unexpected issue comment list command: %+v", commands[1])
+	}
+	if !slices.Equal(commands[2].Argv, []string{"multica", "issue", "runs", issueID, "--output", "json"}) {
+		t.Fatalf("unexpected issue runs command: %+v", commands[2])
 	}
 	if got := heuristicObservationCommands(task.Spec{Objective: "ordinary task"}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2); len(got) != 0 {
 		t.Fatalf("expected ordinary task not to get Multica observation commands, got %+v", got)
@@ -3690,6 +3693,104 @@ func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
 	}
 }
 
+func TestMulticaIssueCriteriaRequireCommandBackedCommentEvidence(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(dir, task.DefaultConfig())
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
+	marker := "ngen-squad-worker-e2e-ok-20260609"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:      task.KindCoding,
+		Title:     "multica issue marker",
+		Objective: "Multica issue execution mode for issue " + issueID + ".",
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
+			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+			{ID: "SC-003", Statement: `The exact Multica issue marker "` + marker + `" appears in command-backed issue comment evidence.`},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "multica-result.md"), "No `multica issue comment add` execution evidence is present yet. "+marker+"\n")
+	report := task.VerificationReport{
+		SchemaVersion: task.SchemaVersion,
+		TaskID:        spec.TaskID,
+		Status:        "passed",
+		Checks: []task.VerificationCheck{
+			{Status: "passed", Command: []string{"multica", "issue", "get", issueID, "--output", "json"}},
+		},
+	}
+	criteria := svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-002"); got.Status != "open" {
+		t.Fatalf("expected comment command criterion to stay open without command record, got %+v", got)
+	}
+	if got := criterionStatusForID(criteria, "SC-003"); got.Status != "open" {
+		t.Fatalf("expected marker criterion to stay open without command-backed evidence, got %+v", got)
+	}
+
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-comment",
+		CommandID:       "CMD-comment",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "repair_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+		StdoutExcerpt:   `{"content":"` + marker + `"}`,
+	}); err != nil {
+		t.Fatalf("append command run: %v", err)
+	}
+	criteria = svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-002"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-comment") {
+		t.Fatalf("expected command-backed comment criterion to pass, got %+v", got)
+	}
+	if got := criterionStatusForID(criteria, "SC-003"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-comment") {
+		t.Fatalf("expected marker criterion to pass from command-backed evidence, got %+v", got)
+	}
+}
+
+func TestMulticaLeaderCriteriaRequireCompletedWorkerAndValidatorRuns(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(dir, task.DefaultConfig())
+	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:      task.KindCoding,
+		Title:     "multica leader scheduling",
+		Objective: "Multica issue execution mode for issue " + issueID + ".",
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed"}
+	criteria := svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected scheduling criterion to stay open without runs, got %+v", got)
+	}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-runs",
+		CommandID:       "CMD-runs",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "repair_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
+		StdoutExcerpt:   `[{"run_role":"worker","status":"completed"},{"run_role":"validator","status":"completed"}]`,
+	}); err != nil {
+		t.Fatalf("append runs command: %v", err)
+	}
+	criteria = svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-runs") {
+		t.Fatalf("expected scheduling criterion to pass from issue runs evidence, got %+v", got)
+	}
+}
+
 func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	svc := New(t.TempDir(), task.DefaultConfig())
 	if err := svc.validateExecutionCommand([]string{"gofmt", "-w", "calc.go"}, task.PermissionModeStandard); err != nil {
@@ -3711,6 +3812,16 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	}
 	if err := svc.validateExecutionCommand(multicaComment, task.PermissionModeYolo); err != nil {
 		t.Fatalf("expected multica issue mutation to be allowed in yolo mode, got %v", err)
+	}
+	multicaDelegate := []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--instructions", "do bounded work", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(multicaDelegate, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected multica squad delegation to be classified needs_approval, got %s", got)
+	}
+	if err := svc.validateExecutionCommand(multicaDelegate, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected multica squad delegation to be allowed in yolo mode, got %v", err)
+	}
+	if got := svc.executionCommandPolicyDecision([]string{"multica", "agent", "list", "--output", "json"}, task.PermissionModeStandard); got != "denied" {
+		t.Fatalf("expected unrelated multica command to stay denied in standard mode, got %s", got)
 	}
 	if err := svc.validateExecutionCommand([]string{}, task.PermissionModeStandard); err == nil {
 		t.Fatal("expected empty repair command argv to be rejected")

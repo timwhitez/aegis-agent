@@ -1376,6 +1376,8 @@ Rules:
 - You may include bounded workspace commands when file edits alone are insufficient. Commands run from workspace root.
 - Use argv arrays only for commands. Prefer direct safe executables and never return shell strings, pipes, redirects, heredocs, or command chaining.
 - Repair commands are policy-gated by task.permission_mode_id: standard mode allows only a small safe command set and rejects shell wrappers or repo scripts as needs_approval; yolo mode is intentionally broader but still records the command.
+- For Multica issue execution tasks, when live issue observations explicitly require squad role scheduling, use direct argv repair commands shaped like: multica squad delegate <issue-id> --role <role> --instructions <text> --expected-artifact <path> --output json. Do not wait for an operator to manually delegate.
+- For Multica issue execution tasks, when a public marker/comment is required, write the comment body to multica-result.md and use a direct argv repair command shaped like: multica issue comment add <issue-id> --content-file multica-result.md --output json. Do not satisfy comment criteria by merely mentioning the command. If the task asks for worker and validator markers, include all required markers in the final comment body after their issue run evidence exists.
 - Use command phase "pre" only when a command must run before file edits. Otherwise prefer "post" for formatters, generators, dependency sync, builds, installs, or migrations that should happen after edits.
 - Keep paths relative to workspace root.
 - Never write absolute paths or .ngen paths.

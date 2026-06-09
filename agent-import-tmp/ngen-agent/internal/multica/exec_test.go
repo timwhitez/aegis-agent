@@ -25,7 +25,7 @@ func TestTaskFromEnvelopeTurnsMulticaIssueAssignmentIntoCommandBackedCodingTask(
 		Content:         []ContentBlock{{Type: "text", Text: prompt}},
 		SystemPrompt:    "Use injected workspace guidance.",
 		Metadata:        map[string]string{"issue_id": issueID},
-	}, prompt, ConfigResolution{Workdir: dir, Config: cfg})
+	}, prompt, ConfigResolution{Workdir: dir, Config: cfg}, "worker")
 
 	if tf.Kind != task.KindCoding || tf.PresetID != "" {
 		t.Fatalf("expected Multica issue assignment to become coding task, got kind=%s preset=%s", tf.Kind, tf.PresetID)
@@ -42,9 +42,9 @@ func TestTaskFromEnvelopeTurnsMulticaIssueAssignmentIntoCommandBackedCodingTask(
 	if !strings.Contains(tf.SuccessCriteria[0].Statement, "`multica issue get "+issueID+" --output json` passes") {
 		t.Fatalf("expected command-backed issue read criterion, got %+v", tf.SuccessCriteria[0])
 	}
-	if !strings.Contains(tf.SuccessCriteria[1].Statement, `multica-result.md`) ||
+	if !strings.Contains(tf.SuccessCriteria[1].Statement, `repair command record`) ||
 		!strings.Contains(tf.SuccessCriteria[1].Statement, `multica issue comment add`) {
-		t.Fatalf("expected result artifact to require issue comment command evidence, got %+v", tf.SuccessCriteria[1])
+		t.Fatalf("expected command-backed issue comment evidence criterion, got %+v", tf.SuccessCriteria[1])
 	}
 	if !strings.Contains(tf.SuccessCriteria[2].Statement, "ngen-multica-real-e2e-ok") {
 		t.Fatalf("expected marker criterion, got %+v", tf.SuccessCriteria[2])
@@ -60,6 +60,51 @@ func TestTaskFromEnvelopeTurnsMulticaIssueAssignmentIntoCommandBackedCodingTask(
 	}
 	if got := runModeForObjective("ordinary task", false); got != "auto" {
 		t.Fatalf("expected ordinary task to keep auto mode, got %s", got)
+	}
+}
+
+func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *testing.T) {
+	dir := t.TempDir()
+	writeMulticaTestFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), strings.Join([]string{
+		"# Issue",
+		"",
+		"Required final marker: ngen-squad-long-e2e-ok-20260609",
+		"Worker marker: ngen-squad-worker-e2e-ok-20260609",
+		"Validator marker: ngen-squad-validator-e2e-ok-20260609",
+	}, "\n"))
+	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
+	prompt := "You have been assigned issue ID: " + issueID
+
+	tf := taskFromEnvelope(StreamInputMessage{
+		Protocol:        ProtocolName,
+		ProtocolVersion: ProtocolVersion,
+		Type:            "user",
+		Role:            "user",
+		Content:         []ContentBlock{{Type: "text", Text: prompt}},
+		Metadata:        map[string]string{"issue_id": issueID},
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
+
+	criteriaText := strings.Join(func() []string {
+		var out []string
+		for _, criterion := range tf.SuccessCriteria {
+			out = append(out, criterion.Statement)
+		}
+		return out
+	}(), "\n")
+	for _, marker := range []string{
+		"ngen-squad-long-e2e-ok-20260609",
+		"ngen-squad-worker-e2e-ok-20260609",
+		"ngen-squad-validator-e2e-ok-20260609",
+	} {
+		if !strings.Contains(criteriaText, marker) {
+			t.Fatalf("expected criteria to include marker %s:\n%s", marker, criteriaText)
+		}
+	}
+	if !strings.Contains(criteriaText, "issue run evidence") {
+		t.Fatalf("expected leader criteria to require automatic worker/validator run evidence:\n%s", criteriaText)
+	}
+	if !strings.Contains(strings.Join(tf.Constraints, "\n"), "squad delegation") {
+		t.Fatalf("expected leader constraints to allow issue-scoped squad delegation, got %+v", tf.Constraints)
 	}
 }
 

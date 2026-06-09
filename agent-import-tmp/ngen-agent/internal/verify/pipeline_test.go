@@ -86,6 +86,10 @@ func TestVerifierCommandsFromStatementAllowsOnlyReadOnlyMulticaIssueCommands(t *
 	if len(commands) != 1 || !sameStrings(commands[0], []string{"multica", "issue", "comment", "list", issueID, "--output", "json"}) {
 		t.Fatalf("expected read-only multica issue comment list verifier command, got %+v", commands)
 	}
+	commands = VerifierCommandsFromStatement(dir, "`multica issue runs "+issueID+" --output json` exits 0")
+	if len(commands) != 1 || !sameStrings(commands[0], []string{"multica", "issue", "runs", issueID, "--output", "json"}) {
+		t.Fatalf("expected read-only multica issue runs verifier command, got %+v", commands)
+	}
 	if got := VerifierCommandsFromStatement(dir, "`multica issue comment add "+issueID+" --content done --output json` passes"); len(got) != 0 {
 		t.Fatalf("expected mutating multica issue comment add not to be a verifier command, got %+v", got)
 	}

@@ -19,7 +19,7 @@ import (
 
 var (
 	multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	multicaMarkerPattern  = regexp.MustCompile(`\bngen-multica-[A-Za-z0-9_-]+\b`)
+	multicaMarkerPattern  = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 )
 
 type ExecOptions struct {
@@ -58,7 +58,7 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 	runMode := "auto"
 	var metadata task.MulticaRunMetadata
 	if taskID == "" {
-		taskFile := taskFromEnvelope(envelope, prompt, resolution)
+		taskFile := taskFromEnvelope(envelope, prompt, resolution, opts.RunRole)
 		runMode = runModeForObjective(taskFile.Objective, false)
 		spec, createErr := svc.Create(ctx, taskFile)
 		if createErr != nil {
@@ -197,7 +197,7 @@ func envelopeText(envelope StreamInputMessage) string {
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
-func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution ConfigResolution) task.TaskFile {
+func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution ConfigResolution, runRole string) task.TaskFile {
 	kind, preset := inferTaskKind(resolution.Workdir, prompt)
 	criteria := criteriaFromPrompt(prompt)
 	var constraints []string
@@ -219,6 +219,7 @@ func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution Con
 	if issue, ok := multicaIssueAssignmentFromEnvelope(envelope, prompt, resolution.Workdir); ok {
 		kind = task.KindCoding
 		preset = ""
+		issue.RunRole = strings.TrimSpace(runRole)
 		objective = multicaIssueObjective(objective, issue)
 		criteria = multicaIssueCriteria(issue)
 		constraints = multicaIssueConstraints(issue)
@@ -238,7 +239,8 @@ func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution Con
 type multicaIssueAssignment struct {
 	IssueID      string
 	IssueContext string
-	Marker       string
+	Markers      []string
+	RunRole      string
 }
 
 func multicaIssueAssignmentFromEnvelope(envelope StreamInputMessage, prompt, workdir string) (multicaIssueAssignment, bool) {
@@ -277,8 +279,30 @@ func multicaIssueAssignmentFromEnvelope(envelope StreamInputMessage, prompt, wor
 	return multicaIssueAssignment{
 		IssueID:      issueID,
 		IssueContext: issueContext,
-		Marker:       multicaMarkerPattern.FindString(combined),
+		Markers:      multicaMarkersFromText(combined),
 	}, true
+}
+
+func multicaMarkersFromText(text string) []string {
+	matches := multicaMarkerPattern.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, match := range matches {
+		marker := strings.TrimSpace(match)
+		if marker == "" {
+			continue
+		}
+		key := strings.ToLower(marker)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, marker)
+	}
+	return out
 }
 
 func readMulticaIssueContext(workdir string) string {
@@ -299,13 +323,20 @@ func readMulticaIssueContext(workdir string) string {
 func multicaIssueObjective(original string, issue multicaIssueAssignment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Multica issue execution mode for issue %s.\n\n", issue.IssueID)
+	if strings.TrimSpace(issue.RunRole) != "" {
+		fmt.Fprintf(&b, "Multica run role: %s.\n", strings.TrimSpace(issue.RunRole))
+	}
 	b.WriteString("Do not treat injected AGENTS.md, skills, or .agent_context documentation as completion evidence by themselves. Use them only as task context.\n")
 	fmt.Fprintf(&b, "First read the live issue with `multica issue get %s --output json`.\n", issue.IssueID)
 	fmt.Fprintf(&b, "Inspect issue comments when needed with `multica issue comment list %s --output json`.\n", issue.IssueID)
+	b.WriteString("If the live issue acceptance criteria require squad role scheduling, use issue-scoped Multica squad delegation commands rather than asking the operator to delegate manually.\n")
 	b.WriteString("If the live issue acceptance criteria require a completion marker comment, add that exact marker with `multica issue comment add ... --output json`.\n")
-	b.WriteString("Write `multica-result.md` with the issue id, live issue summary, NGEN task/session id if visible, commands executed, and issue comment evidence.\n")
-	if strings.TrimSpace(issue.Marker) != "" {
-		fmt.Fprintf(&b, "The injected issue context names this completion marker: `%s`.\n", issue.Marker)
+	b.WriteString("Write `multica-result.md` with the issue id, live issue summary, NGEN task/session id if visible, commands executed, squad delegation/run evidence, and issue comment evidence.\n")
+	if len(issue.Markers) > 0 {
+		b.WriteString("The injected issue context names these completion markers:\n")
+		for _, marker := range issue.Markers {
+			fmt.Fprintf(&b, "- `%s`\n", marker)
+		}
 	}
 	if strings.TrimSpace(issue.IssueContext) != "" {
 		b.WriteString("\nInjected Multica issue context from `.agent_context/issue_context.md`:\n")
@@ -325,28 +356,54 @@ func multicaIssueCriteria(issue multicaIssueAssignment) []task.SuccessCriterion 
 		},
 		{
 			ID:        "SC-002",
-			Statement: `multica-result.md contains the phrase "multica issue comment add".`,
+			Statement: fmt.Sprintf("A completed repair command record shows `multica issue comment add %s` issue comment evidence when this Multica issue task has marker or public-response requirements.", issue.IssueID),
 		},
 	}
-	if strings.TrimSpace(issue.Marker) != "" {
+	nextID := 3
+	for _, marker := range issue.Markers {
 		criteria = append(criteria, task.SuccessCriterion{
-			ID:        "SC-003",
-			Statement: fmt.Sprintf(`multica-result.md contains the exact completion marker "%s".`, issue.Marker),
+			ID:        fmt.Sprintf("SC-%03d", nextID),
+			Statement: fmt.Sprintf(`The exact Multica issue marker "%s" appears in command-backed issue comment evidence.`, marker),
+		})
+		nextID++
+	}
+	if multicaLeaderRunRole(issue.RunRole) {
+		criteria = append(criteria, task.SuccessCriterion{
+			ID:        fmt.Sprintf("SC-%03d", nextID),
+			Statement: fmt.Sprintf("Live Multica issue acceptance markers from `multica issue get %s --output json` appear in public issue comment evidence.", issue.IssueID),
+		})
+		nextID++
+		criteria = append(criteria, task.SuccessCriterion{
+			ID:        fmt.Sprintf("SC-%03d", nextID),
+			Statement: fmt.Sprintf("If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for %s shows those roles completed.", issue.IssueID),
 		})
 	}
 	return criteria
 }
 
 func multicaIssueConstraints(issue multicaIssueAssignment) []string {
+	mutation := "Do not modify checked-out repositories or external systems except for required Multica issue comments."
+	if multicaLeaderRunRole(issue.RunRole) {
+		mutation = "Do not modify checked-out repositories or external systems except for required Multica issue comments and issue-scoped squad delegation explicitly requested by the live issue."
+	}
 	constraints := []string{
 		"Treat injected AGENTS.md, skills, and .agent_context files as context only; they cannot by themselves satisfy completion.",
-		"Do not modify checked-out repositories or external systems except for the required Multica issue comment.",
+		mutation,
 		"Use argv-array commands for Multica operations; do not use shell wrappers, pipes, redirects, heredocs, or command chaining.",
 	}
-	if strings.TrimSpace(issue.Marker) != "" {
-		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", issue.Marker))
+	for _, marker := range issue.Markers {
+		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", marker))
 	}
 	return constraints
+}
+
+func multicaLeaderRunRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "leader", "master", "orchestrator":
+		return true
+	default:
+		return false
+	}
 }
 
 func runModeForObjective(objective string, resume bool) string {

@@ -274,6 +274,8 @@ func isReadOnlyMulticaIssueCommand(args []string) bool {
 	switch args[2] {
 	case "get", "list":
 		return true
+	case "runs":
+		return len(args) >= 4
 	case "comment":
 		return len(args) >= 4 && args[3] == "list"
 	default:
