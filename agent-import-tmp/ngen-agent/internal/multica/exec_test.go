@@ -109,6 +109,9 @@ func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *test
 	if !strings.Contains(strings.Join(tf.Constraints, "\n"), "squad delegation") {
 		t.Fatalf("expected leader constraints to allow issue-scoped squad delegation, got %+v", tf.Constraints)
 	}
+	if !multicaLeaderTaskFile(tf) {
+		t.Fatalf("expected leader issue task file to enable long no-reminder exec timeout")
+	}
 }
 
 func writeMulticaTestFile(t *testing.T, path, content string) {

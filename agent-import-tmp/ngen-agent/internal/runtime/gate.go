@@ -2,6 +2,11 @@ package ngenrt
 
 import "ngen/internal/task"
 
+func (s *Service) buildCompletion(spec task.Spec, criteria task.CriteriaSnapshot, review task.ReviewReport, handoffExists bool) task.CompletionReport {
+	report := buildCompletion(spec, criteria, review, handoffExists)
+	return s.applyMulticaCompletionGate(spec, report)
+}
+
 func buildCompletion(spec task.Spec, criteria task.CriteriaSnapshot, review task.ReviewReport, handoffExists bool) task.CompletionReport {
 	report := task.CompletionReport{
 		SchemaVersion:    task.SchemaVersion,

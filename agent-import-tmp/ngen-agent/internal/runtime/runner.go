@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -239,6 +240,19 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 	if err := s.Store.SaveCriteria(criteria); err != nil {
 		return task.StatusSnapshot{}, nil, err
 	}
+	if report.Status == "passed" {
+		var finalEvents []task.Event
+		report, criteria, finalEvents, err = s.runMulticaLeaderFinalization(ctx, spec, &state, report, criteria)
+		if err != nil {
+			return task.StatusSnapshot{}, nil, err
+		}
+		emitted = append(emitted, finalEvents...)
+		if len(finalEvents) > 0 {
+			if err := s.Store.SaveCriteria(criteria); err != nil {
+				return task.StatusSnapshot{}, nil, err
+			}
+		}
+	}
 	provisionalReview := task.ReviewReport{
 		SchemaVersion: task.SchemaVersion,
 		TaskID:        spec.TaskID,
@@ -290,7 +304,7 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 		}
 	}
 
-	completion := buildCompletion(spec, criteria, reportReview, handoffExists)
+	completion := s.buildCompletion(spec, criteria, reportReview, handoffExists)
 	if err := s.Store.SaveCompletion(completion); err != nil {
 		return task.StatusSnapshot{}, nil, err
 	}
@@ -505,6 +519,148 @@ func (s *Service) runCriteriaRepairSequence(
 	emitted = append(emitted, budgetEvent)
 	state.LastEventRef = artifact.EventRef(budgetEvent.EventID)
 	return report, criteria, emitted, nil
+}
+
+func (s *Service) runMulticaLeaderFinalization(ctx context.Context, spec task.Spec, state *task.State, report task.VerificationReport, criteria task.CriteriaSnapshot) (task.VerificationReport, task.CriteriaSnapshot, []task.Event, error) {
+	if !s.multicaLeaderNeedsFinalization(spec, criteria) {
+		return report, criteria, nil, nil
+	}
+	const maxPolls = 24
+	const pollInterval = 5 * time.Second
+	var emitted []task.Event
+	for poll := 1; poll <= maxPolls; poll++ {
+		if poll > 1 {
+			select {
+			case <-ctx.Done():
+				return report, criteria, emitted, ctx.Err()
+			case <-time.After(pollInterval):
+			}
+		}
+		observations, observationEvents, err := s.runMulticaIssueObservationCommands(ctx, spec, state, fmt.Sprintf("Poll live Multica issue role evidence before leader final marker (%d/%d).", poll, maxPolls))
+		if err != nil {
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+		}
+		emitted = append(emitted, observationEvents...)
+		if refreshed, changed := s.criteriaWithMulticaObservationEvidence(spec, &criteria, observations); changed {
+			criteria = refreshed
+		}
+		plan, ok := s.multicaLeaderFinalFallbackWorkspaceEditPlan(spec, observations, multicaIssueIDFromSpec(spec))
+		if !ok {
+			waitEvent := newEvent(
+				spec.TaskID,
+				*state,
+				"multica_leader_waiting",
+				fmt.Sprintf("Waiting for completed worker/validator runs and public role markers before leader final marker (%d/%d).", poll, maxPolls),
+				[]string{"criteria/latest.json"},
+			)
+			if err := s.Store.AppendEvent(waitEvent); err != nil {
+				return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+			}
+			emitted = append(emitted, waitEvent)
+			state.LastEventRef = artifact.EventRef(waitEvent.EventID)
+			continue
+		}
+		editID := task.NewID("EDIT")
+		startEvent := newEvent(spec.TaskID, *state, "workspace_edit_started", "Workspace edit started for Multica leader final marker after role evidence.", nil)
+		if err := s.Store.AppendEvent(startEvent); err != nil {
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+		}
+		emitted = append(emitted, startEvent)
+		state.LastEventRef = artifact.EventRef(startEvent.EventID)
+
+		record, applyErr := s.applyWorkspaceEditPlan(spec, editID, plan)
+		eventType := "workspace_edit_applied"
+		switch {
+		case applyErr != nil:
+			record.Status = "failed"
+			record.Summary = fmt.Sprintf("%s Apply failed: %v", record.Summary, applyErr)
+			eventType = "workspace_edit_failed"
+		case len(record.FileChanges) == 0:
+			record.Status = "noop"
+			eventType = "workspace_edit_noop"
+		default:
+			record.Status = "applied"
+		}
+		editEvent, persistErr := s.persistWorkspaceEditRecord(*state, record, eventType)
+		if persistErr != nil {
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, persistErr
+		}
+		emitted = append(emitted, editEvent)
+		state.LastEventRef = artifact.EventRef(editEvent.EventID)
+		if applyErr != nil {
+			return report, criteria, emitted, nil
+		}
+		commandEvents, failure, err := s.runWorkspaceExecutionCommands(ctx, spec, state, plan.Commands, "post")
+		if err != nil {
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+		}
+		emitted = append(emitted, commandEvents...)
+		if len(commandEvents) > 0 {
+			state.LastEventRef = artifact.EventRef(commandEvents[len(commandEvents)-1].EventID)
+		}
+		if failure != nil {
+			return report, criteria, emitted, nil
+		}
+		repaired := s.verify.Run(ctx, spec)
+		verifyEvent, repaired, err := s.persistVerificationReport(state, repaired)
+		if err != nil {
+			return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+		}
+		emitted = append(emitted, verifyEvent)
+		criteria = s.criteriaFromEvidence(spec, repaired)
+		return repaired, criteria, emitted, nil
+	}
+	return report, criteria, emitted, nil
+}
+
+func (s *Service) multicaLeaderNeedsFinalization(spec task.Spec, criteria task.CriteriaSnapshot) bool {
+	if multicaRunRoleFromSpec(spec) != "leader" || multicaIssueIDFromSpec(spec) == "" {
+		return false
+	}
+	markers := multicaMarkersFromSpec(spec)
+	if len(multicaMarkersForRunRole(markers, "leader")) == 0 ||
+		len(multicaMarkersForRunRole(markers, "worker")) == 0 ||
+		len(multicaMarkersForRunRole(markers, "validator")) == 0 {
+		return false
+	}
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		return false
+	}
+	issueID := multicaIssueIDFromSpec(spec)
+	if len(s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, nil, issueID, multicaMarkersForRunRole(markers, "leader"))) > 0 {
+		return false
+	}
+	for _, item := range criteria.Criteria {
+		if item.Status != "met" || len(item.EvidenceRefs) == 0 {
+			return true
+		}
+	}
+	return true
+}
+
+func (s *Service) runMulticaIssueObservationCommands(ctx context.Context, spec task.Spec, state *task.State, reason string) ([]provider.ObservationResult, []task.Event, error) {
+	commands := multicaIssueObservationCommands(spec, 3)
+	if len(commands) == 0 {
+		return nil, nil, nil
+	}
+	for i := range commands {
+		commands[i].Reason = reason
+	}
+	results := make([]provider.ObservationResult, 0, len(commands))
+	var emitted []task.Event
+	for _, command := range commands {
+		result, events, err := s.executeObservationCommand(ctx, spec, *state, command)
+		if err != nil {
+			return nil, emitted, err
+		}
+		emitted = append(emitted, events...)
+		if len(events) > 0 {
+			state.LastEventRef = artifact.EventRef(events[len(events)-1].EventID)
+		}
+		results = append(results, result)
+	}
+	return results, emitted, nil
 }
 
 func (s *Service) persistVerificationReport(state *task.State, report task.VerificationReport) (task.Event, task.VerificationReport, error) {
@@ -1701,10 +1857,13 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 		return provider.WorkspaceEditPlan{}, false
 	}
 	if multicaRunRoleFromSpec(spec) == "leader" {
-		requestedRoles := multicaRequestedDelegationRoles(spec, observations, issueID)
-		if pendingRoles := multicaIncompleteRunRoles(observations, issueID, requestedRoles); len(pendingRoles) > 0 {
+		requestedRoles := s.multicaRequestedDelegationRoles(spec, observations, issueID)
+		if pendingRoles := s.multicaIncompleteRunRoles(spec, observations, issueID, requestedRoles); len(pendingRoles) > 0 {
 			dispatchRoles := s.missingMulticaDelegationRoles(spec, observations, issueID, requestedRoles)
 			return s.multicaIssueDelegationFallbackWorkspaceEditPlan(spec, issueID, dispatchRoles, pendingRoles), true
+		}
+		if plan, ok := s.multicaLeaderFinalFallbackWorkspaceEditPlan(spec, observations, issueID); ok {
+			return plan, true
 		}
 	}
 	markers := multicaMarkersForSpecRunRole(spec, s.multicaMarkersFromSpecObservationsAndCommandRuns(spec, observations))
@@ -1731,14 +1890,44 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 	}, true
 }
 
+func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, issueID string) (provider.WorkspaceEditPlan, bool) {
+	markers := multicaMarkersFromSpec(spec)
+	leaderMarkers := multicaMarkersForRunRole(markers, "leader")
+	workerMarkers := multicaMarkersForRunRole(markers, "worker")
+	validatorMarkers := multicaMarkersForRunRole(markers, "validator")
+	if len(leaderMarkers) == 0 || len(workerMarkers) == 0 || len(validatorMarkers) == 0 {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
+	if len(s.multicaRunRoleEvidenceRefs(spec.TaskID, records, observations, issueID, []string{"worker", "validator"}, false)) == 0 ||
+		len(s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, observations, issueID, workerMarkers)) == 0 ||
+		len(s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, observations, issueID, validatorMarkers)) == 0 {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	content := s.multicaIssueFallbackResultContent(spec, issueID, leaderMarkers)
+	return provider.WorkspaceEditPlan{
+		Summary: "Create Multica issue final result artifact after completed worker/validator role evidence is visible.",
+		Writes: []provider.WorkspaceWrite{
+			{Path: "multica-result.md", Content: content},
+		},
+		Commands: []provider.WorkspaceCommand{
+			{
+				Phase:  "post",
+				Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+				Reason: "Post the leader final marker only after completed worker/validator runs and role marker comments are visible.",
+			},
+		},
+	}, true
+}
+
 func (s *Service) multicaMarkersFromSpecObservationsAndCommandRuns(spec task.Spec, observations []provider.ObservationResult) []string {
-	markers := multicaMarkersFromSpecAndObservations(spec, observations)
+	markers := s.multicaMarkersFromSpecAndObservations(spec, observations)
 	records, err := s.Store.ReadCommandRuns(spec.TaskID)
 	if err != nil {
 		return uniqueNonEmptyStrings(markers)
 	}
 	for _, record := range records {
-		for _, value := range []string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary} {
+		for _, value := range s.multicaCommandRunEvidenceValues(spec.TaskID, record) {
 			markers = append(markers, multicaMarkersFromText(value)...)
 		}
 	}
@@ -1793,7 +1982,7 @@ func (s *Service) missingMulticaDelegationRoles(spec task.Spec, observations []p
 	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
 	var missing []string
 	for _, role := range requestedRoles {
-		if multicaRoleDispatchedOrCompleted(records, observations, issueID, role) {
+		if s.multicaRoleDispatchedOrCompleted(spec.TaskID, records, observations, issueID, role) {
 			continue
 		}
 		missing = append(missing, role)
@@ -1801,7 +1990,7 @@ func (s *Service) missingMulticaDelegationRoles(spec task.Spec, observations []p
 	return missing
 }
 
-func multicaRequestedDelegationRoles(spec task.Spec, observations []provider.ObservationResult, issueID string) []string {
+func (s *Service) multicaRequestedDelegationRoles(spec task.Spec, observations []provider.ObservationResult, issueID string) []string {
 	var values []string
 	values = append(values, spec.Objective, spec.Title)
 	for _, criterion := range spec.SuccessCriteria {
@@ -1811,7 +2000,7 @@ func multicaRequestedDelegationRoles(spec task.Spec, observations []provider.Obs
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "get", issueID}) {
 			continue
 		}
-		values = append(values, observation.StdoutExcerpt)
+		values = append(values, s.multicaObservationEvidenceValues(spec.TaskID, observation)...)
 	}
 	text := strings.ToLower(strings.Join(values, "\n"))
 	var roles []string
@@ -1832,7 +2021,7 @@ func multicaRequestedDelegationRoles(spec task.Spec, observations []provider.Obs
 	return uniqueNonEmptyStrings(roles)
 }
 
-func multicaIncompleteRunRoles(observations []provider.ObservationResult, issueID string, requestedRoles []string) []string {
+func (s *Service) multicaIncompleteRunRoles(spec task.Spec, observations []provider.ObservationResult, issueID string, requestedRoles []string) []string {
 	var pending []string
 	for _, role := range requestedRoles {
 		completed := false
@@ -1840,7 +2029,7 @@ func multicaIncompleteRunRoles(observations []provider.ObservationResult, issueI
 			if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
 				continue
 			}
-			if multicaIssueRunsTextHasCompletedRole(observation.StdoutExcerpt, role) {
+			if multicaIssueRunsTextHasCompletedRole(strings.Join(s.multicaObservationEvidenceValues(spec.TaskID, observation), "\n"), role) {
 				completed = true
 				break
 			}
@@ -1852,7 +2041,7 @@ func multicaIncompleteRunRoles(observations []provider.ObservationResult, issueI
 	return pending
 }
 
-func multicaRoleDispatchedOrCompleted(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, role string) bool {
+func (s *Service) multicaRoleDispatchedOrCompleted(taskID string, records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, role string) bool {
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" {
 		return false
@@ -1861,7 +2050,7 @@ func multicaRoleDispatchedOrCompleted(records []task.CommandRunRecord, observati
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
 			continue
 		}
-		if multicaIssueRunsTextHasRole(observation.StdoutExcerpt, role) {
+		if multicaIssueRunsTextHasRole(strings.Join(s.multicaObservationEvidenceValues(taskID, observation), "\n"), role) {
 			return true
 		}
 	}
@@ -1869,7 +2058,7 @@ func multicaRoleDispatchedOrCompleted(records []task.CommandRunRecord, observati
 		if record.Status != "completed" {
 			continue
 		}
-		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		text := strings.Join(s.multicaCommandRunEvidenceValues(taskID, record), "\n")
 		switch {
 		case multicaCommandMatches(record.Argv, []string{"multica", "squad", "delegate", issueID}) && multicaCommandHasRole(record.Argv, text, role):
 			return true
@@ -2061,10 +2250,10 @@ func multicaMarkerFromSpecAndObservations(spec task.Spec, observations []provide
 	return ""
 }
 
-func multicaMarkersFromSpecAndObservations(spec task.Spec, observations []provider.ObservationResult) []string {
+func (s *Service) multicaMarkersFromSpecAndObservations(spec task.Spec, observations []provider.ObservationResult) []string {
 	markers := multicaMarkersFromSpec(spec)
 	for _, observation := range observations {
-		for _, value := range []string{observation.StdoutExcerpt, observation.StderrExcerpt, observation.Summary} {
+		for _, value := range s.multicaObservationEvidenceValues(spec.TaskID, observation) {
 			markers = append(markers, multicaMarkersFromText(value)...)
 		}
 	}
@@ -2334,6 +2523,62 @@ func observationResultFromRecord(record task.CommandRunRecord) provider.Observat
 		StdoutExcerpt: record.StdoutExcerpt,
 		StderrExcerpt: record.StderrExcerpt,
 	}
+}
+
+func (s *Service) multicaCommandRunEvidenceValues(taskID string, record task.CommandRunRecord) []string {
+	values := []string{
+		strings.Join(record.Argv, " "),
+		record.StdoutExcerpt,
+		record.StderrExcerpt,
+		record.Summary,
+	}
+	values = append(values, s.multicaCommandOutputRefText(taskID, record.StdoutRef)...)
+	values = append(values, s.multicaCommandOutputRefText(taskID, record.StderrRef)...)
+	return values
+}
+
+func (s *Service) multicaObservationEvidenceValues(taskID string, observation provider.ObservationResult) []string {
+	values := []string{
+		strings.Join(observation.Argv, " "),
+		observation.StdoutExcerpt,
+		observation.StderrExcerpt,
+		observation.Summary,
+	}
+	values = append(values, s.multicaCommandOutputRefText(taskID, observation.StdoutRef)...)
+	values = append(values, s.multicaCommandOutputRefText(taskID, observation.StderrRef)...)
+	return values
+}
+
+func (s *Service) multicaCommandOutputRefText(taskID, ref string) []string {
+	ref = filepath.ToSlash(strings.TrimSpace(ref))
+	if taskID == "" || ref == "" {
+		return nil
+	}
+	clean := path.Clean(ref)
+	if clean == "." || strings.HasPrefix(clean, "../") || path.IsAbs(clean) || !strings.HasPrefix(clean, "commands/") {
+		return nil
+	}
+	full := filepath.Join(s.Store.TaskRoot(taskID), filepath.FromSlash(clean))
+	taskRoot := filepath.Clean(s.Store.TaskRoot(taskID))
+	fullClean := filepath.Clean(full)
+	rel, err := filepath.Rel(taskRoot, fullClean)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return nil
+	}
+	f, err := os.Open(fullClean)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	limited := io.LimitReader(f, commandOutputMaxBytes+1)
+	data, err := io.ReadAll(limited)
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	if len(data) > commandOutputMaxBytes {
+		data = data[:commandOutputMaxBytes]
+	}
+	return []string{string(data)}
 }
 
 func splitWorkspaceCommands(commands []provider.WorkspaceCommand) ([]provider.WorkspaceCommand, []provider.WorkspaceCommand) {
@@ -3883,7 +4128,7 @@ func (s *Service) Review(ctx context.Context, taskID string) (task.ReviewReport,
 		return task.ReviewReport{}, err
 	}
 	state.LastEventRef = artifact.EventRef(event.EventID)
-	completion := buildCompletion(spec, criteria, report, handoffExists)
+	completion := s.buildCompletion(spec, criteria, report, handoffExists)
 	if err := s.Store.SaveCompletion(completion); err != nil {
 		return task.ReviewReport{}, err
 	}
@@ -5069,28 +5314,31 @@ func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessC
 	marker := multicaMarkerPattern.FindString(statement)
 	switch mode {
 	case "issue_comment_command":
-		if refs := multicaCommentCommandRefs(records, issueID, marker); len(refs) > 0 {
+		if refs := s.multicaCommentCommandRefs(spec.TaskID, records, issueID, marker); len(refs) > 0 {
 			status.Status = "met"
 			status.EvidenceRefs = refs
 		}
 	case "issue_marker":
-		if refs := multicaMarkerEvidenceRefs(records, observations, issueID, marker); len(refs) > 0 {
+		if refs := s.multicaMarkerEvidenceRefs(spec.TaskID, records, observations, issueID, marker); len(refs) > 0 {
 			status.Status = "met"
 			status.EvidenceRefs = refs
 		}
 	case "issue_public_markers":
-		markers := multicaMarkersFromSpecAndObservations(spec, observations)
+		markers := s.multicaMarkersFromSpecAndObservations(spec, observations)
 		if len(markers) == 0 {
 			markers = multicaMarkersFromVerification(report)
 		}
-		if refs := multicaAllMarkersEvidenceRefs(records, observations, issueID, markers); len(refs) > 0 {
+		if refs := s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, observations, issueID, markers); len(refs) > 0 {
 			status.Status = "met"
 			status.EvidenceRefs = refs
 		}
 	case "issue_runs_roles":
 		acceptScheduled := strings.Contains(strings.ToLower(statement), "scheduled or completed") ||
 			strings.Contains(strings.ToLower(statement), "run/delegation evidence")
-		if refs := multicaRunRoleEvidenceRefs(records, observations, issueID, []string{"worker", "validator"}, acceptScheduled); len(refs) > 0 {
+		if strings.Contains(strings.ToLower(statement), "final completion still requires completed role evidence") {
+			acceptScheduled = false
+		}
+		if refs := s.multicaRunRoleEvidenceRefs(spec.TaskID, records, observations, issueID, []string{"worker", "validator"}, acceptScheduled); len(refs) > 0 {
 			status.Status = "met"
 			status.EvidenceRefs = refs
 		}
@@ -5116,18 +5364,74 @@ func multicaIssueCriterionMode(statement string) string {
 	}
 }
 
+func (s *Service) applyMulticaCompletionGate(spec task.Spec, report task.CompletionReport) task.CompletionReport {
+	if report.Status != "accepted" || multicaRunRoleFromSpec(spec) != "leader" {
+		return report
+	}
+	issueID := multicaIssueIDFromSpec(spec)
+	if issueID == "" {
+		return report
+	}
+	markers := multicaMarkersFromSpec(spec)
+	leaderMarkers := multicaMarkersForRunRole(markers, "leader")
+	workerMarkers := multicaMarkersForRunRole(markers, "worker")
+	validatorMarkers := multicaMarkersForRunRole(markers, "validator")
+	if len(leaderMarkers) == 0 || len(workerMarkers) == 0 || len(validatorMarkers) == 0 {
+		return report
+	}
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		report.Status = "rejected"
+		report.Summary = fmt.Sprintf("Done gate rejected: Multica leader final marker requires command-backed role evidence, but command records could not be read: %v", err)
+		report.BlockingRefs = uniqueRefs(append(report.BlockingRefs, "command_runs.jsonl"))
+		return report
+	}
+	roleRefs := s.multicaRunRoleEvidenceRefs(spec.TaskID, records, nil, issueID, []string{"worker", "validator"}, false)
+	workerRefs := s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, nil, issueID, workerMarkers)
+	validatorRefs := s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, nil, issueID, validatorMarkers)
+	leaderRefs := s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, nil, issueID, leaderMarkers)
+	if len(roleRefs) > 0 && len(workerRefs) > 0 && len(validatorRefs) > 0 && len(leaderRefs) > 0 {
+		return report
+	}
+	var missing []string
+	if len(roleRefs) == 0 {
+		missing = append(missing, "completed worker/validator issue runs")
+	}
+	if len(workerRefs) == 0 {
+		missing = append(missing, "worker marker issue comment evidence")
+	}
+	if len(validatorRefs) == 0 {
+		missing = append(missing, "validator marker issue comment evidence")
+	}
+	if len(leaderRefs) == 0 {
+		missing = append(missing, "leader final marker issue comment evidence")
+	}
+	report.Status = "rejected"
+	report.Summary = "Done gate rejected: Multica leader final marker requires completed worker/validator runs and command-backed role marker evidence; missing " + strings.Join(missing, ", ") + "."
+	report.BlockingRefs = uniqueRefs(append(report.BlockingRefs, "criteria/latest.json", "command_runs.jsonl"))
+	return report
+}
+
 func multicaCommentCommandRefs(records []task.CommandRunRecord, issueID, marker string) []string {
+	return multicaCommentCommandRefsFromEvidence(records, nil, issueID, marker)
+}
+
+func (s *Service) multicaCommentCommandRefs(taskID string, records []task.CommandRunRecord, issueID, marker string) []string {
+	return multicaCommentCommandRefsFromEvidence(records, func(record task.CommandRunRecord) string {
+		return strings.Join(s.multicaCommandRunEvidenceValues(taskID, record), "\n")
+	}, issueID, marker)
+}
+
+func multicaCommentCommandRefsFromEvidence(records []task.CommandRunRecord, evidenceText func(task.CommandRunRecord) string, issueID, marker string) []string {
 	var refs []string
 	for _, record := range records {
 		if record.Kind != "repair_command" || record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "add", issueID}) {
 			continue
 		}
-		text := strings.Join([]string{
-			strings.Join(record.Argv, " "),
-			record.StdoutExcerpt,
-			record.StderrExcerpt,
-			record.Summary,
-		}, "\n")
+		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		if evidenceText != nil {
+			text = evidenceText(record)
+		}
 		if marker != "" && !strings.Contains(text, marker) {
 			continue
 		}
@@ -5137,16 +5441,44 @@ func multicaCommentCommandRefs(records []task.CommandRunRecord, issueID, marker 
 }
 
 func multicaMarkerEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, marker string) []string {
+	return multicaMarkerEvidenceRefsFromEvidence(records, observations, nil, nil, issueID, marker)
+}
+
+func (s *Service) multicaMarkerEvidenceRefs(taskID string, records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, marker string) []string {
+	return multicaMarkerEvidenceRefsFromEvidence(records, observations, func(record task.CommandRunRecord) string {
+		return strings.Join(s.multicaCommandRunEvidenceValues(taskID, record), "\n")
+	}, func(observation provider.ObservationResult) string {
+		return strings.Join(s.multicaObservationEvidenceValues(taskID, observation), "\n")
+	}, issueID, marker)
+}
+
+func multicaMarkerEvidenceRefsFromEvidence(records []task.CommandRunRecord, observations []provider.ObservationResult, recordText func(task.CommandRunRecord) string, observationText func(provider.ObservationResult) string, issueID, marker string) []string {
 	if strings.TrimSpace(marker) == "" {
 		return nil
 	}
 	var refs []string
-	refs = append(refs, multicaCommentCommandRefs(records, issueID, marker)...)
+	refs = append(refs, multicaCommentCommandRefsFromEvidence(records, recordText, issueID, marker)...)
+	for _, record := range records {
+		if record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "list", issueID}) {
+			continue
+		}
+		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		if recordText != nil {
+			text = recordText(record)
+		}
+		if strings.Contains(text, marker) {
+			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+		}
+	}
 	for _, observation := range observations {
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "comment", "list", issueID}) {
 			continue
 		}
-		if strings.Contains(observation.StdoutExcerpt, marker) {
+		text := observation.StdoutExcerpt
+		if observationText != nil {
+			text = observationText(observation)
+		}
+		if strings.Contains(text, marker) {
 			refs = append(refs, artifact.CommandOutputRef(observation.CommandID, "stdout.txt"))
 		}
 	}
@@ -5154,13 +5486,25 @@ func multicaMarkerEvidenceRefs(records []task.CommandRunRecord, observations []p
 }
 
 func multicaAllMarkersEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, markers []string) []string {
+	return multicaAllMarkersEvidenceRefsFromEvidence(records, observations, nil, nil, issueID, markers)
+}
+
+func (s *Service) multicaAllMarkersEvidenceRefs(taskID string, records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, markers []string) []string {
+	return multicaAllMarkersEvidenceRefsFromEvidence(records, observations, func(record task.CommandRunRecord) string {
+		return strings.Join(s.multicaCommandRunEvidenceValues(taskID, record), "\n")
+	}, func(observation provider.ObservationResult) string {
+		return strings.Join(s.multicaObservationEvidenceValues(taskID, observation), "\n")
+	}, issueID, markers)
+}
+
+func multicaAllMarkersEvidenceRefsFromEvidence(records []task.CommandRunRecord, observations []provider.ObservationResult, recordText func(task.CommandRunRecord) string, observationText func(provider.ObservationResult) string, issueID string, markers []string) []string {
 	markers = uniqueNonEmptyStrings(markers)
 	if len(markers) == 0 {
 		return nil
 	}
 	var refs []string
 	for _, marker := range markers {
-		markerRefs := multicaMarkerEvidenceRefs(records, observations, issueID, marker)
+		markerRefs := multicaMarkerEvidenceRefsFromEvidence(records, observations, recordText, observationText, issueID, marker)
 		if len(markerRefs) == 0 {
 			return nil
 		}
@@ -5170,6 +5514,18 @@ func multicaAllMarkersEvidenceRefs(records []task.CommandRunRecord, observations
 }
 
 func multicaRunRoleEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, roles []string, acceptScheduled bool) []string {
+	return multicaRunRoleEvidenceRefsFromEvidence(records, observations, nil, nil, issueID, roles, acceptScheduled)
+}
+
+func (s *Service) multicaRunRoleEvidenceRefs(taskID string, records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, roles []string, acceptScheduled bool) []string {
+	return multicaRunRoleEvidenceRefsFromEvidence(records, observations, func(record task.CommandRunRecord) string {
+		return strings.Join(s.multicaCommandRunEvidenceValues(taskID, record), "\n")
+	}, func(observation provider.ObservationResult) string {
+		return strings.Join(s.multicaObservationEvidenceValues(taskID, observation), "\n")
+	}, issueID, roles, acceptScheduled)
+}
+
+func multicaRunRoleEvidenceRefsFromEvidence(records []task.CommandRunRecord, observations []provider.ObservationResult, recordText func(task.CommandRunRecord) string, observationText func(provider.ObservationResult) string, issueID string, roles []string, acceptScheduled bool) []string {
 	if len(roles) == 0 {
 		return nil
 	}
@@ -5180,6 +5536,9 @@ func multicaRunRoleEvidenceRefs(records []task.CommandRunRecord, observations []
 			continue
 		}
 		text := observation.StdoutExcerpt
+		if observationText != nil {
+			text = observationText(observation)
+		}
 		ref := artifact.CommandOutputRef(observation.CommandID, "stdout.txt")
 		for _, role := range roles {
 			if multicaRoleEvidenceTextSatisfies(text, role, acceptScheduled) {
@@ -5193,6 +5552,9 @@ func multicaRunRoleEvidenceRefs(records []task.CommandRunRecord, observations []
 			continue
 		}
 		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		if recordText != nil {
+			text = recordText(record)
+		}
 		ref := artifact.CommandRunRecordRef(record.CommandRecordID)
 		switch {
 		case multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}):

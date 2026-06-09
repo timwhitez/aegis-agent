@@ -32,9 +32,10 @@ type ExecOptions struct {
 }
 
 func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, stderr io.Writer) int {
-	if opts.TimeoutSeconds > 0 {
+	timeoutSeconds := opts.TimeoutSeconds
+	if timeoutSeconds > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(opts.TimeoutSeconds)*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 		defer cancel()
 	}
 	resolution, err := ResolveConfig(opts.Workdir, opts.ConfigPath, opts.ConfigScope)
@@ -59,6 +60,11 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 	var metadata task.MulticaRunMetadata
 	if taskID == "" {
 		taskFile := taskFromEnvelope(envelope, prompt, resolution, opts.RunRole)
+		if timeoutSeconds <= 0 && multicaLeaderTaskFile(taskFile) {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, 600*time.Second)
+			defer cancel()
+		}
 		runMode = runModeForObjective(taskFile.Objective, false)
 		spec, createErr := svc.Create(ctx, taskFile)
 		if createErr != nil {
@@ -156,6 +162,12 @@ func RunExec(ctx context.Context, opts ExecOptions, stdin io.Reader, stdout, std
 			return exitCodeFromResult(status)
 		}
 	}
+}
+
+func multicaLeaderTaskFile(tf task.TaskFile) bool {
+	text := strings.ToLower(strings.Join([]string{tf.Objective, tf.Title}, "\n"))
+	return strings.Contains(text, "multica issue execution mode") &&
+		(strings.Contains(text, "multica run role: leader") || strings.Contains(text, "multica run role: master"))
 }
 
 type runResult struct {
