@@ -47,6 +47,7 @@ const (
 
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 var multicaMarkerPattern = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
+var multicaTriggerCommentFieldPattern = regexp.MustCompile(`(?is)"trigger_comment_id"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"`)
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -1910,7 +1911,9 @@ func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, ob
 		len(s.multicaAllMarkersEvidenceRefs(spec.TaskID, records, observations, issueID, validatorMarkers)) == 0 {
 		return provider.WorkspaceEditPlan{}, false
 	}
-	content := s.multicaIssueFallbackResultContent(spec, issueID, leaderMarkers)
+	parentID := s.multicaLeaderFinalTriggerCommentID(spec, observations, issueID)
+	commentArgv := multicaIssueCommentAddArgvWithParent(spec, issueID, multicaIssueResultPath, parentID)
+	content := s.multicaIssueFallbackResultContentWithCommentArgv(spec, issueID, leaderMarkers, commentArgv)
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue final result artifact after completed worker/validator role evidence is visible.",
 		Writes: []provider.WorkspaceWrite{
@@ -1919,7 +1922,7 @@ func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, ob
 		Commands: []provider.WorkspaceCommand{
 			{
 				Phase:  "post",
-				Argv:   multicaIssueCommentAddArgv(spec, issueID),
+				Argv:   commentArgv,
 				Reason: "Post the leader final marker only after completed worker/validator runs and role marker comments are visible.",
 			},
 		},
@@ -2275,8 +2278,12 @@ func multicaIssueProgressCommentAddArgv(spec task.Spec, issueID string) []string
 }
 
 func multicaIssueCommentAddArgvForContentFile(spec task.Spec, issueID, contentFile string) []string {
+	return multicaIssueCommentAddArgvWithParent(spec, issueID, contentFile, "")
+}
+
+func multicaIssueCommentAddArgvWithParent(spec task.Spec, issueID, contentFile, parentID string) []string {
 	argv := []string{"multica", "issue", "comment", "add", issueID}
-	if parentID := multicaTriggerCommentIDFromSpec(spec); parentID != "" {
+	if parentID = firstNonEmpty(parentID, multicaTriggerCommentIDFromSpec(spec)); parentID != "" {
 		argv = append(argv, "--parent", parentID)
 	}
 	return append(argv, "--content-file", contentFile, "--output", "json")
@@ -2307,6 +2314,10 @@ func multicaTriggerCommentIDFromSpec(spec task.Spec) string {
 }
 
 func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID string, markers []string) string {
+	return s.multicaIssueFallbackResultContentWithCommentArgv(spec, issueID, markers, multicaIssueCommentAddArgv(spec, issueID))
+}
+
+func (s *Service) multicaIssueFallbackResultContentWithCommentArgv(spec task.Spec, issueID string, markers []string, commentArgv []string) string {
 	var b strings.Builder
 	for _, marker := range markers {
 		fmt.Fprintf(&b, "%s\n", marker)
@@ -2322,9 +2333,83 @@ func (s *Service) multicaIssueFallbackResultContent(spec task.Spec, issueID stri
 	b.WriteString("Commands executed / issue evidence:\n")
 	fmt.Fprintf(&b, "- multica issue get %s --output json\n", issueID)
 	fmt.Fprintf(&b, "- multica issue comment list %s --output json\n", issueID)
-	fmt.Fprintf(&b, "- %s\n", multicaIssueCommentAddDisplayCommand(spec, issueID))
+	fmt.Fprintf(&b, "- %s\n", strings.Join(commentArgv, " "))
 	b.WriteString("\nSummary: validate the real NGEN runtime using daemon-owned Multica configuration and post the required completion marker.\n")
 	return b.String()
+}
+
+func (s *Service) multicaLeaderFinalTriggerCommentID(spec task.Spec, observations []provider.ObservationResult, issueID string) string {
+	if parentID := multicaTriggerCommentIDFromSpec(spec); parentID != "" {
+		return parentID
+	}
+	var latest string
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		for _, value := range s.multicaObservationEvidenceValues(spec.TaskID, observation) {
+			for _, run := range multicaIssueRunSummariesFromText(value) {
+				if run.TriggerCommentID == "" || run.RunRole != "leader" || run.Kind != "comment" {
+					continue
+				}
+				if run.Status == "running" || run.Status == "queued" || run.Status == "" {
+					latest = run.TriggerCommentID
+				}
+			}
+		}
+	}
+	return latest
+}
+
+type multicaIssueRunSummary struct {
+	Kind             string
+	RunRole          string
+	Status           string
+	TriggerCommentID string
+}
+
+func multicaIssueRunSummariesFromText(text string) []multicaIssueRunSummary {
+	var raw []map[string]any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return multicaIssueRunSummariesFromFields(text)
+	}
+	out := make([]multicaIssueRunSummary, 0, len(raw))
+	for _, item := range raw {
+		out = append(out, multicaIssueRunSummary{
+			Kind:             strings.ToLower(strings.TrimSpace(stringMapValue(item, "kind"))),
+			RunRole:          strings.ToLower(strings.TrimSpace(stringMapValue(item, "run_role"))),
+			Status:           strings.ToLower(strings.TrimSpace(stringMapValue(item, "status"))),
+			TriggerCommentID: strings.ToLower(strings.TrimSpace(stringMapValue(item, "trigger_comment_id"))),
+		})
+	}
+	return out
+}
+
+func multicaIssueRunSummariesFromFields(text string) []multicaIssueRunSummary {
+	if !strings.Contains(strings.ToLower(text), `"run_role":"leader"`) && !strings.Contains(strings.ToLower(text), `"run_role": "leader"`) {
+		return nil
+	}
+	matches := multicaTriggerCommentFieldPattern.FindAllStringSubmatch(text, -1)
+	out := make([]multicaIssueRunSummary, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 {
+			out = append(out, multicaIssueRunSummary{Kind: "comment", RunRole: "leader", TriggerCommentID: strings.ToLower(strings.TrimSpace(match[1]))})
+		}
+	}
+	return out
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return fmt.Sprint(typed)
+	}
 }
 
 func (s *Service) multicaIssueRoleArtifact(spec task.Spec, issueID string, markers []string) (string, string, bool) {
