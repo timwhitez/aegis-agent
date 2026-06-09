@@ -603,22 +603,20 @@ func (s *Service) repairCodingTask(
 		return task.VerificationReport{}, emitted, false, nil, err
 	}
 	var plan provider.WorkspaceEditPlan
-	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(previousFailures) {
-		if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, errors.New("responses workspace edit returned empty output text")); ok {
-			plan = fallbackPlan
-			fallbackEvent := newEvent(
-				spec.TaskID,
-				*state,
-				"workspace_edit_provider_fallback",
-				"Using deterministic Multica issue workspace edit after a previous provider planning attempt returned empty output text.",
-				nil,
-			)
-			if appendErr := s.Store.AppendEvent(fallbackEvent); appendErr != nil {
-				return task.VerificationReport{}, emitted, false, nil, appendErr
-			}
-			emitted = append(emitted, fallbackEvent)
-			state.LastEventRef = artifact.EventRef(fallbackEvent.EventID)
+	if fallbackPlan, ok := s.multicaIssueFallbackWorkspaceEditPlan(spec, observations, errors.New("responses workspace edit returned empty output text")); ok {
+		plan = fallbackPlan
+		fallbackEvent := newEvent(
+			spec.TaskID,
+			*state,
+			"workspace_edit_provider_fallback",
+			"Using deterministic Multica issue workspace edit for explicit issue comment, marker, or delegation requirements.",
+			nil,
+		)
+		if appendErr := s.Store.AppendEvent(fallbackEvent); appendErr != nil {
+			return task.VerificationReport{}, emitted, false, nil, appendErr
 		}
+		emitted = append(emitted, fallbackEvent)
+		state.LastEventRef = artifact.EventRef(fallbackEvent.EventID)
 	}
 	if strings.TrimSpace(plan.Summary) == "" {
 		plan, err = provider.GenerateWorkspaceEdit(ctx, s.Config.Provider, provider.WorkspaceEditInput{
@@ -1694,18 +1692,6 @@ func multicaMarkersFromText(text string) []string {
 	return out
 }
 
-func useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(previousFailures []provider.RepairFailure) bool {
-	for _, failure := range previousFailures {
-		if failure.Stage != "workspace_edit_failed" {
-			continue
-		}
-		if strings.Contains(strings.ToLower(failure.Summary), "empty output text") {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observations []provider.ObservationResult, planningErr error) (provider.WorkspaceEditPlan, bool) {
 	if planningErr == nil || !strings.Contains(planningErr.Error(), "empty output text") {
 		return provider.WorkspaceEditPlan{}, false
@@ -1721,7 +1707,7 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 			return s.multicaIssueDelegationFallbackWorkspaceEditPlan(spec, issueID, dispatchRoles, pendingRoles), true
 		}
 	}
-	markers := multicaMarkersForSpecRunRole(spec, multicaMarkersFromSpecAndObservations(spec, observations))
+	markers := multicaMarkersForSpecRunRole(spec, s.multicaMarkersFromSpecObservationsAndCommandRuns(spec, observations))
 	if len(markers) == 0 {
 		return provider.WorkspaceEditPlan{}, false
 	}
@@ -1743,6 +1729,20 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 			},
 		},
 	}, true
+}
+
+func (s *Service) multicaMarkersFromSpecObservationsAndCommandRuns(spec task.Spec, observations []provider.ObservationResult) []string {
+	markers := multicaMarkersFromSpecAndObservations(spec, observations)
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		return uniqueNonEmptyStrings(markers)
+	}
+	for _, record := range records {
+		for _, value := range []string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary} {
+			markers = append(markers, multicaMarkersFromText(value)...)
+		}
+	}
+	return uniqueNonEmptyStrings(markers)
 }
 
 func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec, issueID string, dispatchRoles, pendingRoles []string) provider.WorkspaceEditPlan {

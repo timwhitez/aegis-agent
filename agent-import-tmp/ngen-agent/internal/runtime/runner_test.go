@@ -3867,21 +3867,48 @@ func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.
 	}
 }
 
-func TestUseDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(t *testing.T) {
-	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput(nil) {
-		t.Fatal("empty failure history must not trigger fallback")
+func TestMulticaIssueFallbackWorkspaceEditPlanUsesPersistedCommandMarker(t *testing.T) {
+	issueID := "b3c2cea4-533e-459b-a2e9-f30c87dc4667"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-validator",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: validator.",
+			"Post pass/fail evidence and the validator marker requested by the issue.",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
+		},
 	}
-	if useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput([]provider.RepairFailure{{
-		Stage:   "workspace_edit_noop",
-		Summary: "responses workspace edit returned empty output text",
-	}}) {
-		t.Fatal("non-failed workspace edit history must not trigger fallback")
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-get",
+		CommandID:       "CMD-get",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "observation_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "issue", "get", issueID, "--output", "json"},
+		StdoutExcerpt:   `{"description":"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609d. Validator marker: ngen-squad-auto-validator-e2e-ok-20260609d. Required final marker: ngen-squad-auto-long-e2e-ok-20260609d."}`,
+	}); err != nil {
+		t.Fatalf("append command run: %v", err)
 	}
-	if !useDeterministicMulticaIssueFallbackAfterProviderEmptyOutput([]provider.RepairFailure{{
-		Stage:   "workspace_edit_failed",
-		Summary: "Workspace edit planning failed: responses workspace edit returned empty output text",
-	}}) {
-		t.Fatal("previous empty output workspace edit failure should trigger deterministic fallback")
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected validator Multica fallback plan from persisted command marker")
+	}
+	var result string
+	for _, write := range plan.Writes {
+		if write.Path == "multica-result.md" {
+			result = write.Content
+		}
+	}
+	if !strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609d") ||
+		strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609d") ||
+		strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609d") {
+		t.Fatalf("validator result should contain only the persisted validator marker:\n%s", result)
 	}
 }
 
