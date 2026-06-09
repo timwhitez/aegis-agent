@@ -68,7 +68,7 @@ func (s *Service) captureQualityDiagnostic(spec task.Spec, changedPaths []string
 	diag.ChangedPaths = uniqueStrings(diag.ChangedPaths)
 	diag.TestFileChanges = uniqueStrings(diag.TestFileChanges)
 	diag.GeneratedFileChanges = uniqueStrings(diag.GeneratedFileChanges)
-	diag.ScopeDriftPaths = s.reviewScopeDriftPaths(spec.TaskID, diag.ChangedPaths)
+	diag.ScopeDriftPaths = s.reviewScopeDriftPaths(spec, diag.ChangedPaths)
 	diag.SprintBoundaryViolations = append([]string(nil), diag.ScopeDriftPaths...)
 	diag.ChangedPathCount = len(diag.ChangedPaths)
 	diag.SameFailureCount = maxStringCount(failureCounts)

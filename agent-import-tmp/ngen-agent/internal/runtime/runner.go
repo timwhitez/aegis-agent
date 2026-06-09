@@ -4373,7 +4373,7 @@ func (s *Service) buildReviewInput(ctx context.Context, spec task.Spec, verifica
 		Criteria:        criteria,
 		ContextRefs:     contextRefs,
 		ChangedPaths:    changedPaths,
-		ScopeDriftPaths: s.reviewScopeDriftPaths(spec.TaskID, changedPaths),
+		ScopeDriftPaths: s.reviewScopeDriftPaths(spec, changedPaths),
 		WorkerEvidence:  workerEvidence,
 		QualityFindings: qualityFindings,
 	}, nil
@@ -4432,22 +4432,38 @@ func (s *Service) reviewChangedPaths(ctx context.Context, spec task.Spec) []stri
 	return paths
 }
 
-func (s *Service) reviewScopeDriftPaths(taskID string, changedPaths []string) []string {
+func (s *Service) reviewScopeDriftPaths(spec task.Spec, changedPaths []string) []string {
 	if len(changedPaths) == 0 {
 		return nil
 	}
-	sprint, err := s.Store.LoadSprint(taskID)
+	sprint, err := s.Store.LoadSprint(spec.TaskID)
 	if err != nil || len(sprint.WorkingSetPaths) == 0 {
 		return nil
 	}
 	var drift []string
 	for _, changed := range changedPaths {
-		if strings.HasPrefix(changed, ".ngen/") || reviewPathAllowedByScope(changed, sprint.WorkingSetPaths) {
+		changed = filepath.ToSlash(strings.TrimSpace(changed))
+		if changed == "" {
+			continue
+		}
+		if strings.HasPrefix(changed, ".ngen/") || multicaIssueArtifactPathAllowed(spec, changed) || reviewPathAllowedByScope(changed, sprint.WorkingSetPaths) {
 			continue
 		}
 		drift = append(drift, changed)
 	}
 	return uniqueStrings(drift)
+}
+
+func multicaIssueArtifactPathAllowed(spec task.Spec, path string) bool {
+	if multicaIssueIDFromSpec(spec) == "" {
+		return false
+	}
+	switch filepath.ToSlash(strings.TrimSpace(path)) {
+	case multicaIssueResultPath, multicaIssueProgressPath:
+		return true
+	default:
+		return false
+	}
 }
 
 func reviewPathAllowedByScope(path string, scopes []string) bool {

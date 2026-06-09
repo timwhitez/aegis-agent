@@ -4736,6 +4736,69 @@ func TestMulticaLeaderCompletionGateAcceptsCompletedRolesAndMarkers(t *testing.T
 	}
 }
 
+func TestMulticaIssueArtifactsDoNotTripScopeDrift(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(dir, task.DefaultConfig())
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:  task.KindCoding,
+		Title: "multica leader issue",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: leader.",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Post command-backed Multica issue evidence."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := svc.Store.SaveSprint(task.SprintSnapshot{
+		SchemaVersion:   task.SchemaVersion,
+		SnapshotID:      task.NewID("SPRINT"),
+		TaskID:          spec.TaskID,
+		UpdatedAt:       task.Now(),
+		WorkingSetPaths: []string{"README.md"},
+	}); err != nil {
+		t.Fatalf("save sprint: %v", err)
+	}
+
+	drift := svc.reviewScopeDriftPaths(spec, []string{multicaIssueResultPath, multicaIssueProgressPath, "outside.md"})
+	if !slices.Equal(drift, []string{"outside.md"}) {
+		t.Fatalf("expected only non-Multica artifact to drift, got %+v", drift)
+	}
+	if err := svc.Store.AppendWorkspaceEdit(task.WorkspaceEditRecord{
+		SchemaVersion: task.SchemaVersion,
+		EditRecordID:  "EDITREC-multica-artifacts",
+		EditID:        "EDIT-multica-artifacts",
+		TaskID:        spec.TaskID,
+		TS:            task.Now(),
+		Kind:          "provider_workspace_edit",
+		Status:        "applied",
+		FileChanges: []task.WorkspaceFileChange{
+			{Path: multicaIssueResultPath, Action: "write", AfterExists: true},
+			{Path: multicaIssueProgressPath, Action: "write", AfterExists: true},
+		},
+	}); err != nil {
+		t.Fatalf("append workspace edit: %v", err)
+	}
+	quality, findings, err := svc.captureQualityDiagnostic(spec, nil)
+	if err != nil {
+		t.Fatalf("capture quality diagnostic: %v", err)
+	}
+	if len(quality.ScopeDriftPaths) != 0 || len(findings) != 0 || quality.Status != "clear" {
+		t.Fatalf("expected Multica issue artifacts to stay clear, quality=%+v findings=%+v", quality, findings)
+	}
+
+	ordinary := spec
+	ordinary.Objective = "ordinary coding task"
+	if got := svc.reviewScopeDriftPaths(ordinary, []string{multicaIssueResultPath}); !slices.Equal(got, []string{multicaIssueResultPath}) {
+		t.Fatalf("expected ordinary task to keep scope drift for result artifact, got %+v", got)
+	}
+}
+
 func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	svc := New(t.TempDir(), task.DefaultConfig())
 	if err := svc.validateExecutionCommand([]string{"gofmt", "-w", "calc.go"}, task.PermissionModeStandard); err != nil {
