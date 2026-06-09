@@ -48,6 +48,7 @@ const (
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 var multicaMarkerPattern = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 var multicaTriggerCommentFieldPattern = regexp.MustCompile(`(?is)"trigger_comment_id"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"`)
+var multicaRequiredParentIDPattern = regexp.MustCompile(`(?is)parent_id\s+must\s+equal\s+this\s+task'?s\s+trigger\s+comment\s+id\s*\(\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*\)`)
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -2342,23 +2343,71 @@ func (s *Service) multicaLeaderFinalTriggerCommentID(spec task.Spec, observation
 	if parentID := multicaTriggerCommentIDFromSpec(spec); parentID != "" {
 		return parentID
 	}
-	var latest string
 	for _, observation := range observations {
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
 			continue
 		}
-		for _, value := range s.multicaObservationEvidenceValues(spec.TaskID, observation) {
-			for _, run := range multicaIssueRunSummariesFromText(value) {
-				if run.TriggerCommentID == "" || run.RunRole != "leader" || run.Kind != "comment" {
-					continue
-				}
-				if run.Status == "running" || run.Status == "queued" || run.Status == "" {
-					latest = run.TriggerCommentID
-				}
+		if parentID := multicaLeaderTriggerCommentIDFromEvidenceValues(s.multicaObservationEvidenceValues(spec.TaskID, observation)); parentID != "" {
+			return parentID
+		}
+	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
+	for _, record := range records {
+		if record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		if parentID := multicaLeaderTriggerCommentIDFromEvidenceValues(s.multicaCommandRunEvidenceValues(spec.TaskID, record)); parentID != "" {
+			return parentID
+		}
+	}
+	for _, observation := range observations {
+		if parentID := multicaRequiredParentIDFromEvidenceValues(s.multicaObservationEvidenceValues(spec.TaskID, observation)); parentID != "" {
+			return parentID
+		}
+	}
+	for _, record := range records {
+		if parentID := multicaRequiredParentIDFromEvidenceValues(s.multicaCommandRunEvidenceValues(spec.TaskID, record)); parentID != "" {
+			return parentID
+		}
+	}
+	return ""
+}
+
+func multicaLeaderTriggerCommentIDFromEvidenceValues(values []string) string {
+	statusPriority := map[string]int{
+		"running":   4,
+		"queued":    3,
+		"":          2,
+		"failed":    1,
+		"completed": 1,
+	}
+	bestPriority := 0
+	best := ""
+	for _, value := range values {
+		for _, run := range multicaIssueRunSummariesFromText(value) {
+			if run.TriggerCommentID == "" || run.RunRole != "leader" || run.Kind != "comment" {
+				continue
+			}
+			priority, ok := statusPriority[run.Status]
+			if !ok {
+				continue
+			}
+			if priority > bestPriority {
+				bestPriority = priority
+				best = run.TriggerCommentID
 			}
 		}
 	}
-	return latest
+	return best
+}
+
+func multicaRequiredParentIDFromEvidenceValues(values []string) string {
+	for _, value := range values {
+		if match := multicaRequiredParentIDPattern.FindStringSubmatch(value); len(match) > 1 {
+			return strings.ToLower(strings.TrimSpace(match[1]))
+		}
+	}
+	return ""
 }
 
 type multicaIssueRunSummary struct {

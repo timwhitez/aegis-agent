@@ -4249,6 +4249,96 @@ func TestMulticaLeaderFallbackParentsFinalMarkerToCurrentCommentRun(t *testing.T
 	}
 }
 
+func TestMulticaLeaderFallbackParentsFinalMarkerFromFailedParentRequirement(t *testing.T) {
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	triggerCommentID := "3258a54c-994d-4aa4-aa6e-bc6494b16a50"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	spec := task.Spec{
+		TaskID: "TASK-leader-final-parent-retry",
+		Objective: strings.Join([]string{
+			"Multica issue execution mode for issue " + issueID + ".",
+			"Multica run role: leader.",
+			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609j",
+			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609j",
+			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609j",
+		}, "\n"),
+	}
+	runsJSON := `[
+  {"kind":"comment","run_role":"worker","status":"completed"},
+  {"kind":"comment","run_role":"validator","status":"completed"}
+]`
+	runsStdout, runsStderr, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-runs-retry", []byte(runsJSON), nil)
+	if err != nil {
+		t.Fatalf("save runs output: %v", err)
+	}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-runs-retry",
+		CommandID:       "CMD-runs-retry",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "observation_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
+		StdoutRef:       runsStdout,
+		StderrRef:       runsStderr,
+		StdoutExcerpt:   "[truncated before role completion evidence]",
+	}); err != nil {
+		t.Fatalf("append runs record: %v", err)
+	}
+	commentsJSON := `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609j"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609j"}]`
+	commentsStdout, commentsStderr, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-comments-retry", []byte(commentsJSON), nil)
+	if err != nil {
+		t.Fatalf("save comments output: %v", err)
+	}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-comments-retry",
+		CommandID:       "CMD-comments-retry",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "observation_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
+		StdoutRef:       commentsStdout,
+		StderrRef:       commentsStderr,
+		StdoutExcerpt:   "[truncated before role markers]",
+	}); err != nil {
+		t.Fatalf("append comments record: %v", err)
+	}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-unparented-final",
+		CommandID:       "CMD-unparented-final",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "repair_command",
+		Status:          "failed",
+		Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"},
+		StderrExcerpt:   `Error: add comment: POST /api/issues/` + issueID + `/comments returned 409: {"error":"parent_id must equal this task's trigger comment id (` + triggerCommentID + `)"}`,
+	}); err != nil {
+		t.Fatalf("append failed final record: %v", err)
+	}
+
+	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
+	if !ok {
+		t.Fatal("expected leader final fallback plan")
+	}
+	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
+		t.Fatalf("expected parented retry final marker command, got %+v", plan.Commands)
+	}
+	var result string
+	for _, write := range plan.Writes {
+		if write.Path == multicaIssueResultPath {
+			result = write.Content
+		}
+	}
+	if !strings.Contains(result, "--parent "+triggerCommentID) || !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609j") {
+		t.Fatalf("leader final retry result should record parented final command and final marker:\n%s", result)
+	}
+}
+
 func TestMulticaIssueCriteriaRequireCommandBackedCommentEvidence(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
