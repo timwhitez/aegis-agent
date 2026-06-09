@@ -72,6 +72,12 @@ func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *test
 		"Worker marker: ngen-squad-worker-e2e-ok-20260609",
 		"Validator marker: ngen-squad-validator-e2e-ok-20260609",
 	}, "\n"))
+	writeMulticaTestFile(t, filepath.Join(dir, "AGENTS.md"), strings.Join([]string{
+		"# Runtime",
+		"",
+		"## Task Coordination Guidance",
+		"- Run role: `leader`",
+	}, "\n"))
 	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
 	prompt := "You have been assigned issue ID: " + issueID
 
@@ -82,7 +88,7 @@ func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *test
 		Role:            "user",
 		Content:         []ContentBlock{{Type: "text", Text: prompt}},
 		Metadata:        map[string]string{"issue_id": issueID},
-	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "")
 
 	criteriaText := strings.Join(func() []string {
 		var out []string
@@ -91,17 +97,14 @@ func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *test
 		}
 		return out
 	}(), "\n")
-	for _, marker := range []string{
-		"ngen-squad-long-e2e-ok-20260609",
-		"ngen-squad-worker-e2e-ok-20260609",
-		"ngen-squad-validator-e2e-ok-20260609",
-	} {
-		if !strings.Contains(criteriaText, marker) {
-			t.Fatalf("expected criteria to include marker %s:\n%s", marker, criteriaText)
-		}
+	if strings.Contains(criteriaText, `exact Multica issue marker "ngen-squad-long-e2e-ok-20260609"`) {
+		t.Fatalf("leader dispatch criteria must not require final marker before delegated roles complete:\n%s", criteriaText)
 	}
-	if !strings.Contains(criteriaText, "issue run evidence") {
+	if !strings.Contains(criteriaText, "issue run/delegation evidence") {
 		t.Fatalf("expected leader criteria to require automatic worker/validator run evidence:\n%s", criteriaText)
+	}
+	if !strings.Contains(tf.Objective, "Multica run role: leader") {
+		t.Fatalf("expected AGENTS.md role hint to be preserved in objective:\n%s", tf.Objective)
 	}
 	if !strings.Contains(strings.Join(tf.Constraints, "\n"), "squad delegation") {
 		t.Fatalf("expected leader constraints to allow issue-scoped squad delegation, got %+v", tf.Constraints)

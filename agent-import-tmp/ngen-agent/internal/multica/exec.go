@@ -219,7 +219,7 @@ func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution Con
 	if issue, ok := multicaIssueAssignmentFromEnvelope(envelope, prompt, resolution.Workdir); ok {
 		kind = task.KindCoding
 		preset = ""
-		issue.RunRole = strings.TrimSpace(runRole)
+		issue.RunRole = multicaRunRoleFromInputs(runRole, envelope, prompt, resolution.Workdir)
 		objective = multicaIssueObjective(objective, issue)
 		criteria = multicaIssueCriteria(issue)
 		constraints = multicaIssueConstraints(issue)
@@ -320,6 +320,91 @@ func readMulticaIssueContext(workdir string) string {
 	return strings.TrimSpace(string(data))
 }
 
+func multicaRunRoleFromInputs(runRole string, envelope StreamInputMessage, prompt, workdir string) string {
+	if role := normalizeMulticaRunRole(runRole); role != "" {
+		return role
+	}
+	var values []string
+	values = append(values, prompt, envelope.SystemPrompt)
+	keys := make([]string, 0, len(envelope.Metadata))
+	for key := range envelope.Metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := envelope.Metadata[key]
+		if strings.EqualFold(key, "run_role") || strings.EqualFold(key, "squad_role") || strings.EqualFold(key, "role") {
+			if role := normalizeMulticaRunRole(value); role != "" {
+				return role
+			}
+		}
+		values = append(values, key+"="+value)
+	}
+	if strings.TrimSpace(workdir) != "" {
+		if data, err := os.ReadFile(filepath.Join(workdir, "AGENTS.md")); err == nil {
+			const maxRuntimeContextBytes = 40000
+			if len(data) > maxRuntimeContextBytes {
+				data = data[:maxRuntimeContextBytes]
+			}
+			values = append(values, string(data))
+		}
+	}
+	return detectMulticaRunRole(strings.Join(values, "\n"))
+}
+
+func detectMulticaRunRole(text string) string {
+	lower := strings.ToLower(text)
+	for _, needle := range []string{
+		"run role: `leader`",
+		"run role: leader",
+		"you are the leader",
+		"role: ngen long horizon master",
+		"you are: ngen long horizon master",
+		"multica run role: leader",
+		"multica run role: master",
+	} {
+		if strings.Contains(lower, needle) {
+			return "leader"
+		}
+	}
+	for _, needle := range []string{
+		"run role: `validator`",
+		"run role: validator",
+		"role: ngen long horizon validator",
+		"you are: ngen long horizon validator",
+		"multica run role: validator",
+	} {
+		if strings.Contains(lower, needle) {
+			return "validator"
+		}
+	}
+	for _, needle := range []string{
+		"run role: `worker`",
+		"run role: worker",
+		"role: ngen long horizon worker",
+		"you are: ngen long horizon worker",
+		"multica run role: worker",
+	} {
+		if strings.Contains(lower, needle) {
+			return "worker"
+		}
+	}
+	return ""
+}
+
+func normalizeMulticaRunRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "leader", "master", "orchestrator":
+		return "leader"
+	case "worker":
+		return "worker"
+	case "validator":
+		return "validator"
+	default:
+		return ""
+	}
+}
+
 func multicaIssueObjective(original string, issue multicaIssueAssignment) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Multica issue execution mode for issue %s.\n\n", issue.IssueID)
@@ -360,25 +445,71 @@ func multicaIssueCriteria(issue multicaIssueAssignment) []task.SuccessCriterion 
 		},
 	}
 	nextID := 3
-	for _, marker := range issue.Markers {
-		criteria = append(criteria, task.SuccessCriterion{
-			ID:        fmt.Sprintf("SC-%03d", nextID),
-			Statement: fmt.Sprintf(`The exact Multica issue marker "%s" appears in command-backed issue comment evidence.`, marker),
-		})
-		nextID++
+	if !multicaLeaderRunRole(issue.RunRole) {
+		roleMarkers := multicaMarkersForRunRole(issue.Markers, issue.RunRole)
+		for _, marker := range roleMarkers {
+			criteria = append(criteria, task.SuccessCriterion{
+				ID:        fmt.Sprintf("SC-%03d", nextID),
+				Statement: fmt.Sprintf(`The exact Multica issue marker "%s" appears in command-backed issue comment evidence.`, marker),
+			})
+			nextID++
+		}
 	}
 	if multicaLeaderRunRole(issue.RunRole) {
 		criteria = append(criteria, task.SuccessCriterion{
 			ID:        fmt.Sprintf("SC-%03d", nextID),
-			Statement: fmt.Sprintf("Live Multica issue acceptance markers from `multica issue get %s --output json` appear in public issue comment evidence.", issue.IssueID),
-		})
-		nextID++
-		criteria = append(criteria, task.SuccessCriterion{
-			ID:        fmt.Sprintf("SC-%03d", nextID),
-			Statement: fmt.Sprintf("If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for %s shows those roles completed.", issue.IssueID),
+			Statement: fmt.Sprintf("If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for %s shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker.", issue.IssueID),
 		})
 	}
 	return criteria
+}
+
+func multicaMarkersForRunRole(markers []string, role string) []string {
+	markers = uniqueMulticaMarkers(markers)
+	normalizedRole := normalizeMulticaRunRole(role)
+	if normalizedRole == "" {
+		return markers
+	}
+	var filtered []string
+	for _, marker := range markers {
+		lower := strings.ToLower(marker)
+		switch normalizedRole {
+		case "worker":
+			if strings.Contains(lower, "worker") {
+				filtered = append(filtered, marker)
+			}
+		case "validator":
+			if strings.Contains(lower, "validator") {
+				filtered = append(filtered, marker)
+			}
+		case "leader":
+			if !strings.Contains(lower, "worker") && !strings.Contains(lower, "validator") {
+				filtered = append(filtered, marker)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		return markers
+	}
+	return filtered
+}
+
+func uniqueMulticaMarkers(markers []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, marker := range markers {
+		marker = strings.TrimSpace(marker)
+		if marker == "" {
+			continue
+		}
+		key := strings.ToLower(marker)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, marker)
+	}
+	return out
 }
 
 func multicaIssueConstraints(issue multicaIssueAssignment) []string {
@@ -391,7 +522,7 @@ func multicaIssueConstraints(issue multicaIssueAssignment) []string {
 		mutation,
 		"Use argv-array commands for Multica operations; do not use shell wrappers, pipes, redirects, heredocs, or command chaining.",
 	}
-	for _, marker := range issue.Markers {
+	for _, marker := range multicaMarkersForRunRole(issue.Markers, issue.RunRole) {
 		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", marker))
 	}
 	return constraints

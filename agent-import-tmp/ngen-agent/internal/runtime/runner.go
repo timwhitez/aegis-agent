@@ -1678,8 +1678,18 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 		return provider.WorkspaceEditPlan{}, false
 	}
 	issueID := multicaIssueIDFromSpec(spec)
-	markers := multicaMarkersFromSpecAndObservations(spec, observations)
-	if issueID == "" || len(markers) == 0 {
+	if issueID == "" {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	if multicaRunRoleFromSpec(spec) == "leader" {
+		requestedRoles := multicaRequestedDelegationRoles(spec, observations, issueID)
+		if pendingRoles := multicaIncompleteRunRoles(observations, issueID, requestedRoles); len(pendingRoles) > 0 {
+			dispatchRoles := s.missingMulticaDelegationRoles(spec, observations, issueID, requestedRoles)
+			return s.multicaIssueDelegationFallbackWorkspaceEditPlan(spec, issueID, dispatchRoles, pendingRoles), true
+		}
+	}
+	markers := multicaMarkersForSpecRunRole(spec, multicaMarkersFromSpecAndObservations(spec, observations))
+	if len(markers) == 0 {
 		return provider.WorkspaceEditPlan{}, false
 	}
 	content := s.multicaIssueFallbackResultContent(spec, issueID, markers)
@@ -1696,6 +1706,267 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 			},
 		},
 	}, true
+}
+
+func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec, issueID string, dispatchRoles, pendingRoles []string) provider.WorkspaceEditPlan {
+	content := s.multicaIssueDelegationFallbackResultContent(spec, issueID, dispatchRoles, pendingRoles)
+	commands := make([]provider.WorkspaceCommand, 0, len(dispatchRoles)+2)
+	for _, role := range dispatchRoles {
+		commands = append(commands, provider.WorkspaceCommand{
+			Phase: "post",
+			Argv: []string{
+				"multica", "squad", "delegate", issueID,
+				"--role", role,
+				"--strategy", "least_busy",
+				"--instructions", multicaDelegationFallbackInstructions(role),
+				"--expected-artifact", multicaDelegationExpectedArtifact(role),
+				"--output", "json",
+			},
+			Reason: fmt.Sprintf("Automatically delegate the requested %s-role slice for the live Multica issue.", role),
+		})
+	}
+	if len(dispatchRoles) > 0 {
+		commands = append(commands, provider.WorkspaceCommand{
+			Phase:  "post",
+			Argv:   []string{"multica", "squad", "activity", issueID, "action", "--reason", "NGEN leader automatically delegated requested worker/validator slices.", "--output", "json"},
+			Reason: "Record that the squad leader evaluated the trigger and took delegation action.",
+		})
+		commands = append(commands, provider.WorkspaceCommand{
+			Phase:  "post",
+			Argv:   []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
+			Reason: "Post a public dispatch note without final completion markers while delegated roles are still pending.",
+		})
+	}
+	return provider.WorkspaceEditPlan{
+		Summary: "Create Multica issue dispatch artifact and automatically delegate requested worker/validator roles after empty provider edit output.",
+		Writes: []provider.WorkspaceWrite{
+			{Path: "multica-result.md", Content: content},
+		},
+		Commands: commands,
+	}
+}
+
+func (s *Service) missingMulticaDelegationRoles(spec task.Spec, observations []provider.ObservationResult, issueID string, requestedRoles []string) []string {
+	if len(requestedRoles) == 0 {
+		return nil
+	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
+	var missing []string
+	for _, role := range requestedRoles {
+		if multicaRoleDispatchedOrCompleted(records, observations, issueID, role) {
+			continue
+		}
+		missing = append(missing, role)
+	}
+	return missing
+}
+
+func multicaRequestedDelegationRoles(spec task.Spec, observations []provider.ObservationResult, issueID string) []string {
+	var values []string
+	values = append(values, spec.Objective, spec.Title)
+	for _, criterion := range spec.SuccessCriteria {
+		values = append(values, criterion.Statement)
+	}
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "get", issueID}) {
+			continue
+		}
+		values = append(values, observation.StdoutExcerpt)
+	}
+	text := strings.ToLower(strings.Join(values, "\n"))
+	var roles []string
+	if strings.Contains(text, "worker-role") ||
+		strings.Contains(text, "role worker") ||
+		strings.Contains(text, "--role worker") ||
+		strings.Contains(text, `"run_role":"worker"`) ||
+		strings.Contains(text, `"role":"worker"`) {
+		roles = append(roles, "worker")
+	}
+	if strings.Contains(text, "validator-role") ||
+		strings.Contains(text, "role validator") ||
+		strings.Contains(text, "--role validator") ||
+		strings.Contains(text, `"run_role":"validator"`) ||
+		strings.Contains(text, `"role":"validator"`) {
+		roles = append(roles, "validator")
+	}
+	return uniqueNonEmptyStrings(roles)
+}
+
+func multicaIncompleteRunRoles(observations []provider.ObservationResult, issueID string, requestedRoles []string) []string {
+	var pending []string
+	for _, role := range requestedRoles {
+		completed := false
+		for _, observation := range observations {
+			if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
+				continue
+			}
+			if multicaIssueRunsTextHasCompletedRole(observation.StdoutExcerpt, role) {
+				completed = true
+				break
+			}
+		}
+		if !completed {
+			pending = append(pending, role)
+		}
+	}
+	return pending
+}
+
+func multicaRoleDispatchedOrCompleted(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID, role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return false
+	}
+	for _, observation := range observations {
+		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
+			continue
+		}
+		if multicaIssueRunsTextHasRole(observation.StdoutExcerpt, role) {
+			return true
+		}
+	}
+	for _, record := range records {
+		if record.Status != "completed" {
+			continue
+		}
+		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		switch {
+		case multicaCommandMatches(record.Argv, []string{"multica", "squad", "delegate", issueID}) && multicaCommandHasRole(record.Argv, text, role):
+			return true
+		case multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}) && multicaIssueRunsTextHasRole(text, role):
+			return true
+		}
+	}
+	return false
+}
+
+func multicaIssueRunsTextHasCompletedRole(text, role string) bool {
+	lower := strings.ToLower(text)
+	if !multicaIssueRunsTextHasRole(lower, role) {
+		return false
+	}
+	return strings.Contains(lower, `"status":"completed"`) ||
+		strings.Contains(lower, `"status": "completed"`)
+}
+
+func multicaCommandHasRole(argv []string, text, role string) bool {
+	role = strings.ToLower(strings.TrimSpace(role))
+	for i, arg := range argv {
+		if strings.EqualFold(arg, "--role") && i+1 < len(argv) && strings.EqualFold(argv[i+1], role) {
+			return true
+		}
+	}
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "role="+role) ||
+		strings.Contains(lower, "--role "+role) ||
+		strings.Contains(lower, `"run_role":"`+role+`"`) ||
+		strings.Contains(lower, `"run_role": "`+role+`"`) ||
+		strings.Contains(lower, `"role":"`+role+`"`) ||
+		strings.Contains(lower, `"role": "`+role+`"`)
+}
+
+func multicaIssueRunsTextHasRole(text, role string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, `"run_role":"`+role+`"`) ||
+		strings.Contains(lower, `"run_role": "`+role+`"`) ||
+		strings.Contains(lower, `"role":"`+role+`"`) ||
+		strings.Contains(lower, `"role": "`+role+`"`)
+}
+
+func multicaDelegationFallbackInstructions(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "worker":
+		return "Inspect the live issue, NGEN run metadata, workspace guidance, and shared records. Post concise command-backed evidence and the worker marker requested by the issue."
+	case "validator":
+		return "Independently inspect live issue runs/comments/artifacts and verify the worker/master evidence. Post pass/fail evidence and the validator marker requested by the issue."
+	default:
+		return "Inspect the live issue and post concise evidence for the delegated role."
+	}
+}
+
+func multicaDelegationExpectedArtifact(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "worker":
+		return "handoffs/worker-auto-e2e.json"
+	case "validator":
+		return "validation/validator-auto-e2e.md"
+	default:
+		return "handoffs/delegated-auto-e2e.md"
+	}
+}
+
+func (s *Service) multicaIssueDelegationFallbackResultContent(spec task.Spec, issueID string, roles, pendingRoles []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Issue: %s\n", issueID)
+	fmt.Fprintf(&b, "NGEN task/session id: %s\n", spec.TaskID)
+	fmt.Fprintf(&b, "Provider route: %s/%s\n", provider.CanonicalMode(s.Config.Provider.Mode), strings.TrimSpace(s.Config.Provider.Model))
+	if strings.TrimSpace(s.Config.Provider.ThinkingLevel) != "" {
+		fmt.Fprintf(&b, "Reasoning effort: %s\n", strings.TrimSpace(s.Config.Provider.ThinkingLevel))
+	}
+	fmt.Fprintf(&b, "Workspace guidance: AGENTS.md and skills materialization are captured in .ngen/tasks/%s/multica/workspace_guidance.json.\n\n", spec.TaskID)
+	fmt.Fprintf(&b, "Generated at: %s\n\n", task.Now())
+	b.WriteString("Automatic squad dispatch:\n")
+	if len(roles) == 0 {
+		b.WriteString("- no new delegation command is needed; waiting for already-dispatched roles to complete\n")
+	}
+	for _, role := range roles {
+		fmt.Fprintf(&b, "- delegated %s via multica squad delegate\n", role)
+	}
+	if len(pendingRoles) > 0 {
+		b.WriteString("\nPending role completion:\n")
+		for _, role := range pendingRoles {
+			fmt.Fprintf(&b, "- %s\n", role)
+		}
+	}
+	b.WriteString("\nNo final completion marker is posted in this dispatch note. Worker/validator evidence must land first, and the leader should post the final marker only after issue run/comment evidence exists.\n")
+	return b.String()
+}
+
+func multicaMarkersForSpecRunRole(spec task.Spec, markers []string) []string {
+	role := multicaRunRoleFromSpec(spec)
+	if role == "" {
+		return uniqueNonEmptyStrings(markers)
+	}
+	var filtered []string
+	for _, marker := range markers {
+		lower := strings.ToLower(marker)
+		switch role {
+		case "worker":
+			if strings.Contains(lower, "worker") {
+				filtered = append(filtered, marker)
+			}
+		case "validator":
+			if strings.Contains(lower, "validator") {
+				filtered = append(filtered, marker)
+			}
+		case "leader":
+			if !strings.Contains(lower, "worker") && !strings.Contains(lower, "validator") {
+				filtered = append(filtered, marker)
+			}
+		}
+	}
+	if len(filtered) == 0 {
+		return uniqueNonEmptyStrings(markers)
+	}
+	return uniqueNonEmptyStrings(filtered)
+}
+
+func multicaRunRoleFromSpec(spec task.Spec) string {
+	values := []string{spec.Objective, spec.Title}
+	for _, criterion := range spec.SuccessCriteria {
+		values = append(values, criterion.Statement)
+	}
+	lower := strings.ToLower(strings.Join(values, "\n"))
+	switch {
+	case strings.Contains(lower, "multica run role: leader") || strings.Contains(lower, "multica run role: master"):
+		return "leader"
+	case strings.Contains(lower, "multica run role: worker"):
+		return "worker"
+	case strings.Contains(lower, "multica run role: validator"):
+		return "validator"
+	default:
+		return ""
+	}
 }
 
 func multicaMarkerFromSpecAndObservations(spec task.Spec, observations []provider.ObservationResult) string {
@@ -2203,6 +2474,9 @@ func isAllowedMulticaIssueMutation(argv []string) bool {
 		return multicaIssueIDPattern.MatchString(argv[4])
 	}
 	if argv[1] == "squad" && argv[2] == "delegate" {
+		return multicaIssueIDPattern.MatchString(argv[3])
+	}
+	if argv[1] == "squad" && argv[2] == "activity" {
 		return multicaIssueIDPattern.MatchString(argv[3])
 	}
 	return false
@@ -4680,7 +4954,9 @@ func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessC
 			status.EvidenceRefs = refs
 		}
 	case "issue_runs_roles":
-		if refs := multicaCompletedRunRoleRefs(records, observations, issueID, []string{"worker", "validator"}); len(refs) > 0 {
+		acceptScheduled := strings.Contains(strings.ToLower(statement), "scheduled or completed") ||
+			strings.Contains(strings.ToLower(statement), "run/delegation evidence")
+		if refs := multicaRunRoleEvidenceRefs(records, observations, issueID, []string{"worker", "validator"}, acceptScheduled); len(refs) > 0 {
 			status.Status = "met"
 			status.EvidenceRefs = refs
 		}
@@ -4698,6 +4974,8 @@ func multicaIssueCriterionMode(statement string) string {
 	case strings.Contains(lower, "live multica issue acceptance markers") && strings.Contains(lower, "public issue comment evidence"):
 		return "issue_public_markers"
 	case strings.Contains(lower, "issue run evidence") && strings.Contains(lower, "worker") && strings.Contains(lower, "validator"):
+		return "issue_runs_roles"
+	case strings.Contains(lower, "issue run/delegation evidence") && strings.Contains(lower, "worker") && strings.Contains(lower, "validator"):
 		return "issue_runs_roles"
 	default:
 		return ""
@@ -4757,54 +5035,68 @@ func multicaAllMarkersEvidenceRefs(records []task.CommandRunRecord, observations
 	return uniqueRefs(refs)
 }
 
-func multicaCompletedRunRoleRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, roles []string) []string {
+func multicaRunRoleEvidenceRefs(records []task.CommandRunRecord, observations []provider.ObservationResult, issueID string, roles []string, acceptScheduled bool) []string {
 	if len(roles) == 0 {
 		return nil
 	}
-	roleText := map[string]string{}
+	roleMet := map[string]bool{}
 	var refs []string
 	for _, observation := range observations {
 		if observation.Status != "completed" || !multicaCommandMatches(observation.Argv, []string{"multica", "issue", "runs", issueID}) {
 			continue
 		}
+		text := observation.StdoutExcerpt
+		ref := artifact.CommandOutputRef(observation.CommandID, "stdout.txt")
 		for _, role := range roles {
-			roleText[role] += "\n" + observation.StdoutExcerpt
+			if multicaRoleEvidenceTextSatisfies(text, role, acceptScheduled) {
+				roleMet[role] = true
+				refs = append(refs, ref)
+			}
 		}
-		refs = append(refs, artifact.CommandOutputRef(observation.CommandID, "stdout.txt"))
 	}
 	for _, record := range records {
 		if record.Status != "completed" {
 			continue
 		}
 		text := strings.Join([]string{strings.Join(record.Argv, " "), record.StdoutExcerpt, record.StderrExcerpt, record.Summary}, "\n")
+		ref := artifact.CommandRunRecordRef(record.CommandRecordID)
 		switch {
 		case multicaCommandMatches(record.Argv, []string{"multica", "issue", "runs", issueID}):
 			for _, role := range roles {
-				roleText[role] += "\n" + text
-			}
-			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
-		case multicaCommandMatches(record.Argv, []string{"multica", "squad", "delegate", issueID}):
-			for _, role := range roles {
-				lower := strings.ToLower(text)
-				if strings.Contains(lower, "role="+role) ||
-					strings.Contains(lower, "--role "+role) ||
-					strings.Contains(lower, `"run_role":"`+role+`"`) ||
-					strings.Contains(lower, `"run_role": "`+role+`"`) ||
-					strings.Contains(lower, `"role":"`+role+`"`) ||
-					strings.Contains(lower, `"role": "`+role+`"`) {
-					roleText[role] += "\n" + text
+				if multicaRoleEvidenceTextSatisfies(text, role, acceptScheduled) {
+					roleMet[role] = true
+					refs = append(refs, ref)
 				}
 			}
-			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+		case multicaCommandMatches(record.Argv, []string{"multica", "squad", "delegate", issueID}):
+			if !acceptScheduled {
+				continue
+			}
+			for _, role := range roles {
+				if multicaCommandHasRole(record.Argv, text, role) {
+					roleMet[role] = true
+					refs = append(refs, ref)
+				}
+			}
 		}
 	}
 	for _, role := range roles {
-		text := strings.ToLower(roleText[role])
-		if !strings.Contains(text, role) || !strings.Contains(text, "completed") {
+		if !roleMet[role] {
 			return nil
 		}
 	}
 	return uniqueRefs(refs)
+}
+
+func multicaRoleEvidenceTextSatisfies(text, role string, acceptScheduled bool) bool {
+	if !multicaIssueRunsTextHasRole(text, role) {
+		return false
+	}
+	if acceptScheduled {
+		return true
+	}
+	return strings.Contains(strings.ToLower(text), `"status":"completed"`) ||
+		strings.Contains(strings.ToLower(text), `"status": "completed"`)
 }
 
 func multicaMarkersFromVerification(report task.VerificationReport) []string {
