@@ -39,6 +39,12 @@ var observationUndefinedNamePattern = regexp.MustCompile(`undefined:\s*([A-Za-z_
 var observationNameTokenPattern = regexp.MustCompile(`\b([A-Z][A-Za-z0-9_]*)\b`)
 var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
+
+const (
+	multicaIssueResultPath   = "multica-result.md"
+	multicaIssueProgressPath = "multica-progress.md"
+)
+
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 var multicaMarkerPattern = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 
@@ -1872,7 +1878,7 @@ func (s *Service) multicaIssueFallbackWorkspaceEditPlan(spec task.Spec, observat
 	}
 	content := s.multicaIssueFallbackResultContent(spec, issueID, markers)
 	writes := []provider.WorkspaceWrite{
-		{Path: "multica-result.md", Content: content},
+		{Path: multicaIssueResultPath, Content: content},
 	}
 	if artifactPath, artifactContent, ok := s.multicaIssueRoleArtifact(spec, issueID, markers); ok {
 		writes = append(writes, provider.WorkspaceWrite{Path: artifactPath, Content: artifactContent})
@@ -1908,7 +1914,7 @@ func (s *Service) multicaLeaderFinalFallbackWorkspaceEditPlan(spec task.Spec, ob
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue final result artifact after completed worker/validator role evidence is visible.",
 		Writes: []provider.WorkspaceWrite{
-			{Path: "multica-result.md", Content: content},
+			{Path: multicaIssueResultPath, Content: content},
 		},
 		Commands: []provider.WorkspaceCommand{
 			{
@@ -1962,14 +1968,14 @@ func (s *Service) multicaIssueDelegationFallbackWorkspaceEditPlan(spec task.Spec
 	if len(pendingRoles) > 0 {
 		commands = append(commands, provider.WorkspaceCommand{
 			Phase:  "post",
-			Argv:   multicaIssueCommentAddArgv(spec, issueID),
+			Argv:   multicaIssueProgressCommentAddArgv(spec, issueID),
 			Reason: "Post a public leader progress note without final completion markers while delegated roles are still pending.",
 		})
 	}
 	return provider.WorkspaceEditPlan{
 		Summary: "Create Multica issue dispatch artifact and automatically delegate requested worker/validator roles after empty provider edit output.",
 		Writes: []provider.WorkspaceWrite{
-			{Path: "multica-result.md", Content: content},
+			{Path: multicaIssueProgressPath, Content: content},
 		},
 		Commands: commands,
 	}
@@ -2261,11 +2267,19 @@ func (s *Service) multicaMarkersFromSpecAndObservations(spec task.Spec, observat
 }
 
 func multicaIssueCommentAddArgv(spec task.Spec, issueID string) []string {
+	return multicaIssueCommentAddArgvForContentFile(spec, issueID, multicaIssueResultPath)
+}
+
+func multicaIssueProgressCommentAddArgv(spec task.Spec, issueID string) []string {
+	return multicaIssueCommentAddArgvForContentFile(spec, issueID, multicaIssueProgressPath)
+}
+
+func multicaIssueCommentAddArgvForContentFile(spec task.Spec, issueID, contentFile string) []string {
 	argv := []string{"multica", "issue", "comment", "add", issueID}
 	if parentID := multicaTriggerCommentIDFromSpec(spec); parentID != "" {
 		argv = append(argv, "--parent", parentID)
 	}
-	return append(argv, "--content-file", "multica-result.md", "--output", "json")
+	return append(argv, "--content-file", contentFile, "--output", "json")
 }
 
 func multicaIssueCommentAddDisplayCommand(spec task.Spec, issueID string) string {

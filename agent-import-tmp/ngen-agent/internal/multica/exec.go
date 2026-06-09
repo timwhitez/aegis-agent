@@ -429,6 +429,7 @@ func multicaIssueObjective(original string, issue multicaIssueAssignment) string
 	b.WriteString("If the live issue acceptance criteria require squad role scheduling, use issue-scoped Multica squad delegation commands rather than asking the operator to delegate manually.\n")
 	b.WriteString("If the live issue acceptance criteria require a completion marker comment, add that exact marker with `multica issue comment add ... --output json`.\n")
 	b.WriteString("Write `multica-result.md` with the issue id, live issue summary, NGEN task/session id if visible, commands executed, squad delegation/run evidence, and issue comment evidence.\n")
+	b.WriteString("For leader progress comments before worker/validator evidence is complete, write `multica-progress.md` and reserve `multica-result.md` for role/final marker comments.\n")
 	if len(issue.Markers) > 0 {
 		b.WriteString("The injected issue context names these completion markers:\n")
 		for _, marker := range issue.Markers {

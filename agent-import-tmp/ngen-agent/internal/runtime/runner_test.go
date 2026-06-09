@@ -3673,7 +3673,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
 	if !ok {
 		t.Fatal("expected Multica fallback plan")
 	}
-	if len(plan.Writes) != 1 || plan.Writes[0].Path != "multica-result.md" {
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != multicaIssueResultPath {
 		t.Fatalf("unexpected fallback writes: %+v", plan.Writes)
 	}
 	if !strings.Contains(plan.Writes[0].Content, marker) ||
@@ -3684,7 +3684,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
 	if len(plan.Commands) != 1 {
 		t.Fatalf("expected one marker comment command, got %+v", plan.Commands)
 	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}
+	want := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
 	if !slices.Equal(plan.Commands[0].Argv, want) {
 		t.Fatalf("unexpected fallback command: %+v", plan.Commands[0].Argv)
 	}
@@ -3733,7 +3733,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanDelegatesLeaderRolesBeforeFinalMar
 	if !ok {
 		t.Fatal("expected Multica leader fallback plan")
 	}
-	if len(plan.Writes) != 1 || plan.Writes[0].Path != "multica-result.md" {
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != multicaIssueProgressPath {
 		t.Fatalf("unexpected fallback writes: %+v", plan.Writes)
 	}
 	if strings.Contains(plan.Writes[0].Content, "ngen-squad-auto-long-e2e-ok-20260609") {
@@ -3764,7 +3764,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanDelegatesLeaderRolesBeforeFinalMar
 	if got := delegationInstructions["validator"]; !strings.Contains(got, "ngen-squad-auto-validator-e2e-ok-20260609") || strings.Contains(got, "ngen-squad-auto-long-e2e-ok-20260609") {
 		t.Fatalf("validator delegation instructions must carry only validator marker, got %q", got)
 	}
-	if !slices.Equal(plan.Commands[len(plan.Commands)-1].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
+	if !slices.Equal(plan.Commands[len(plan.Commands)-1].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}) {
 		t.Fatalf("expected dispatch note comment command last, got %+v", plan.Commands)
 	}
 }
@@ -4138,7 +4138,7 @@ func TestMulticaIssueFallbackWorkspaceEditPlanWaitsAfterDelegationUntilRolesComp
 			t.Fatalf("expected no duplicate delegation while roles are already dispatched, got %+v", plan.Commands)
 		}
 	}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
+	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}) {
 		t.Fatalf("expected waiting fallback to post one progress comment, got %+v", plan.Commands)
 	}
 	if strings.Contains(plan.Writes[0].Content, "ngen-squad-auto-long-e2e-ok-20260609") {
@@ -5050,6 +5050,60 @@ func TestUnsafeRepairCommandReplayIsRejected(t *testing.T) {
 	last := records[len(records)-1]
 	if last.Status != "failed" || last.ReplaySafety == nil || last.ReplaySafety.ReplayPolicy != "manual_review_required" {
 		t.Fatalf("expected failed replay record with safety metadata, got %+v", last)
+	}
+}
+
+func TestMulticaLeaderProgressCommentDoesNotBlockFinalReplaySafety(t *testing.T) {
+	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
+	taskID := "TASK-multica-replay"
+	svc := New(t.TempDir(), task.DefaultConfig())
+	if err := svc.Store.EnsureTaskLayout(taskID); err != nil {
+		t.Fatalf("ensure task layout: %v", err)
+	}
+	progressArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}
+	finalArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:    task.SchemaVersion,
+		CommandRecordID:  "CMDREC-progress",
+		CommandID:        "CMD-progress",
+		TaskID:           taskID,
+		TS:               task.Now(),
+		Kind:             "repair_command",
+		Status:           "completed",
+		Summary:          "previous leader progress comment",
+		Argv:             progressArgv,
+		PermissionModeID: task.PermissionModeYolo,
+		PolicyDecision:   "allow_yolo",
+		ReplaySafety: &task.ReplaySafety{
+			SideEffectClass: "external_issue_mutation",
+			ReplayPolicy:    "manual_review_required",
+			OpenWorld:       true,
+		},
+	}); err != nil {
+		t.Fatalf("append progress command run: %v", err)
+	}
+
+	if previous, blocked := svc.previousUnsafeCommandReplay(taskID, task.CommandRunRecord{
+		TaskID: taskID,
+		Kind:   "repair_command",
+		Argv:   finalArgv,
+		ReplaySafety: &task.ReplaySafety{
+			SideEffectClass: "external_issue_mutation",
+			ReplayPolicy:    "manual_review_required",
+		},
+	}); blocked {
+		t.Fatalf("progress comment must not block distinct final comment argv, previous=%+v", previous)
+	}
+	if previous, blocked := svc.previousUnsafeCommandReplay(taskID, task.CommandRunRecord{
+		TaskID: taskID,
+		Kind:   "repair_command",
+		Argv:   progressArgv,
+		ReplaySafety: &task.ReplaySafety{
+			SideEffectClass: "external_issue_mutation",
+			ReplayPolicy:    "manual_review_required",
+		},
+	}); !blocked || previous.CommandRecordID != "CMDREC-progress" {
+		t.Fatalf("same progress comment argv should still be replay-blocked, previous=%+v blocked=%v", previous, blocked)
 	}
 }
 
