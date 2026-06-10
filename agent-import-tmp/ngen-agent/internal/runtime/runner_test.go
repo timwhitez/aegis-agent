@@ -5202,6 +5202,13 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	if err := svc.validateExecutionCommand(multicaComment, task.PermissionModeYolo); err != nil {
 		t.Fatalf("expected multica issue mutation to be allowed in yolo mode, got %v", err)
 	}
+	multicaCreate := []string{"multica", "issue", "create", "--title", "new issue", "--description-file", "multica-description.md", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(multicaCreate, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected multica issue create to be classified needs_approval, got %s", got)
+	}
+	if err := svc.validateExecutionCommand(multicaCreate, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected multica issue create to be allowed in yolo mode, got %v", err)
+	}
 	multicaDelegate := []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--instructions", "do bounded work", "--output", "json"}
 	if got := svc.executionCommandPolicyDecision(multicaDelegate, task.PermissionModeStandard); got != "needs_approval" {
 		t.Fatalf("expected multica squad delegation to be classified needs_approval, got %s", got)
@@ -5264,6 +5271,40 @@ func TestValidateExecutionCommandBenchmarkIntegrityMode(t *testing.T) {
 		if safety == nil || safety.ReplayPolicy != "do_not_auto_replay" || !safety.Network || !safety.OpenWorld {
 			t.Fatalf("expected benchmark integrity replay safety to block %v, got %+v", argv, safety)
 		}
+	}
+}
+
+func TestMulticaIssueHelpersRequireExplicitIssueExecutionObjective(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(dir, task.DefaultConfig())
+	squadID := "3b0ca27f-5db0-42ff-98ea-7750fc40500a"
+	projectID := "ae886a17-0ef6-4b02-b154-3ac601df7239"
+	spec := task.Spec{
+		TaskID:        "TASK-uuid-gap",
+		Kind:          task.KindCoding,
+		WorkspaceRoot: dir,
+		Objective: strings.Join([]string{
+			"Create a new Multica issue from this user request.",
+			"Pass --assignee-id " + squadID + ".",
+			"Pass --project " + projectID + ".",
+			"Run exactly one `multica issue create --output json` invocation.",
+		}, "\n"),
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "A created issue is visible in Multica."},
+		},
+	}
+
+	if got := multicaIssueIDFromSpec(spec); got != "" {
+		t.Fatalf("ordinary objective must not treat squad/project UUID as issue id, got %q", got)
+	}
+	if commands := multicaIssueObservationCommands(spec, 3); len(commands) != 0 {
+		t.Fatalf("ordinary objective must not synthesize issue observation commands, got %+v", commands)
+	}
+	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text")); ok {
+		t.Fatalf("ordinary objective must not synthesize Multica issue fallback plan")
+	}
+	if multicaIssueArtifactPathAllowed(spec, multicaIssueResultPath) {
+		t.Fatalf("ordinary objective must not whitelist Multica issue artifacts")
 	}
 }
 

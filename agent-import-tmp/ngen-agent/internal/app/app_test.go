@@ -164,7 +164,7 @@ func TestMulticaExecCreatesMetadataGuidanceAndFinalResult(t *testing.T) {
 		t.Fatalf("unexpected system line: %+v", lines[0])
 	}
 	final := lines[len(lines)-1]
-	if final.Type != "result" || final.Status != "completed" || final.SessionID == "" || final.SessionID != final.TaskID {
+	if final.Type != "result" || final.Status != "completed" || final.SessionID == "" || final.SessionID != final.TaskID || final.Result == "" {
 		t.Fatalf("expected final completed result with task session id, got %+v", final)
 	}
 	taskID := final.TaskID
@@ -184,6 +184,65 @@ func TestMulticaExecCreatesMetadataGuidanceAndFinalResult(t *testing.T) {
 	}
 	if len(guidance.Skills) != 1 || guidance.Skills[0].Name != "audit" || !strings.Contains(guidance.Skills[0].Content, "audit evidence") {
 		t.Fatalf("expected workspace skill to be captured, got %+v", guidance.Skills)
+	}
+}
+
+func TestMulticaExecMetadataAndSystemPromptArePassThrough(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "multica-calls.log")
+	writeFile(t, filepath.Join(dir, "multica"), `#!/bin/sh
+printf '%s\n' "$*" >> multica-calls.log
+echo "adapter should not call multica directly" >&2
+exit 9
+`)
+	if err := os.Chmod(filepath.Join(dir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFile(t, filepath.Join(dir, "README.md"), "# Multica pass-through fixture\n")
+	writeFile(t, filepath.Join(dir, "ngen.json"), `{
+  "permission": {"default_mode": "yolo"},
+  "provider": {
+    "mode": "builtin",
+    "coding_repair_budget": 1,
+    "coding_execution_command_budget": 1
+  }
+}`)
+
+	envelope := `{
+  "protocol":"ngen-stream-json",
+  "protocol_version":1,
+  "type":"user",
+  "role":"user",
+  "content":[{"type":"text","text":"你是一名资深全栈安全工程师、架构师和测试负责人。请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。\n\n密钥：OPENAI_API_KEY:\"sk-test-redaction-00000000000000000000000000000000\""}],
+  "system_prompt":"You are running as a quick-create assistant for a Multica workspace. This task was triggered by quick-create. There is NO existing Multica issue.",
+  "metadata":{
+    "type":"quick_create",
+    "run_role":"assignee",
+    "squad_id":"3b0ca27f-5db0-42ff-98ea-7750fc40500a",
+    "project_id":"ae886a17-0ef6-4b02-b154-3ac601df7239",
+    "delegation_boundary":"quick-create-issue",
+    "validation_contract_ref":"quick-create.issue_create",
+    "expected_public_artifacts":"created_issue"
+  }
+}`
+	result := runExecForTest(t, t.TempDir(), []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--config-scope", "daemon",
+		"--workdir", dir,
+		"--role", "leader",
+	}, envelope)
+	if result.exitCode != 0 {
+		t.Fatalf("expected pass-through completion, got %d stderr=%s stdout=%s", result.exitCode, result.stderr, result.stdout)
+	}
+	lines := decodeStreamOutput(t, result.stdout)
+	final := lines[len(lines)-1]
+	if final.Type != "result" || final.Status != "completed" || final.Result == "" {
+		t.Fatalf("expected completed pass-through result, got %+v", final)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatalf("expected no adapter-issued multica calls, got:\n%s", readFile(t, logPath))
 	}
 }
 

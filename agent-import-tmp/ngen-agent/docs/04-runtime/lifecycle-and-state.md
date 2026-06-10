@@ -8,7 +8,7 @@
 
 - runtime 自己拥有 artifacts、state machine、verifier、review、handoff、done gate；
 - 当前已经拥有 provider-driven `auto` loop；
-- 对 `coding` task，`Execute` phase 现在也允许在 verifier 失败后执行最多 3 次 bounded workspace repair；当 verifier 已通过但 workspace-backed success criteria 仍未满足时，同一预算内也允许继续做 bounded repair。这里的 workspace-backed 既包括显式 path / glob criterion，也包括带 readme/docs/config 语义和具体 token 的 criterion。failed/noop repair attempt 与 failed repair command 不再默认把 task 提前打回人工 `resume`；它们会作为 durable failure evidence 留在同一预算内继续推进，并把 prior failure summaries 带入下一次 provider observation/edit prompt。当前 active 写路径已覆盖全部当前 provider mode：`builtin`、`command`、`openai-response`、`openai-comp`、`anthropic`。
+- 对 `coding` task，`Execute` phase 现在也允许在 verifier 失败后执行最多 3 次 bounded workspace repair；当 verifier 已通过但 workspace-backed success criteria 仍未满足时，同一预算内也允许继续做 bounded repair。这里的 workspace-backed 既包括显式 path / glob criterion，也包括带 readme/docs/config 语义和具体 token 的 criterion。failed/noop repair attempt 与 failed repair command 不再默认把 task 提前打回人工 `resume`；它们会作为 durable failure evidence 留在同一预算内继续推进，并把 prior failure summaries 带入下一次 provider observation/edit prompt。Multica/headless `exec` 不在输入读取阶段合成特殊 task：stdin adapter 只把 user text blocks 作为 prompt 交给 runtime；`metadata`、`system_prompt`、AGENTS.md 和 `.agent_context` 只可能作为普通 workspace/context 事实被模型显式读取或使用，不能由 adapter 变成 quick-create、issue-read 或 delegation flow。当前 active 写路径已覆盖全部当前 provider mode：`builtin`、`command`、`openai-response`、`openai-comp`、`anthropic`。
 
 ## 2. phase 定义
 
@@ -79,7 +79,7 @@ Foundation v0.1 的标准推进顺序：
    - 若 provider 在同一 auto loop 中先下发 `project_update` / `project_patch`，workspace project graph mutation 不得吞掉后续真实执行机会；同一 auto pass 仍要继续进入下一轮 decision 或真正的 `run` / `resume`。
    - 进入 `Execute`。
    - 运行 verifier，写 `verification/latest.json`。
-   - 若 `coding` task 满足当前 provider 条件，可在 verifier failure 或 workspace-backed criteria gap 下追加 `workspace_edits.jsonl`、`command_runs.jsonl` 并重跑 verifier；当前默认最多 3 次 repair cycles。若某次 edit plan `failed` / `noop`，或某次 repair command `failed`，runtime 仍会在同一 pass 内继续下一次 bounded attempt，并把 prior failure summaries 注入后续 observation/edit prompt；同一 repair target 重复、edit plan 违反 task constraints、或 repair command 超出 budget/timeout 时仍会提前停止。
+   - 若 `coding` task 满足当前 provider 条件，可在 verifier failure 或 workspace-backed criteria gap 下追加 `workspace_edits.jsonl`、`command_runs.jsonl` 并重跑 verifier；当前默认最多 3 次 repair cycles。若某次 edit plan `failed` / `noop`，或某次 repair command `failed`，runtime 仍会在同一 pass 内继续下一次 bounded attempt，并把 prior failure summaries 注入后续 observation/edit prompt；同一 repair target 重复、edit plan 违反 task constraints、或 repair command 超出 budget/timeout 时仍会提前停止。Multica 相关命令没有输入读取器级别的 quick-create verifier 例外；它们必须作为普通 observation/repair command 留下 policy、stdout/stderr 与 replay-safety evidence，再由 verifier/review/done gate 消费。
    - 运行 review，写 `reviews/latest.json`。
    - 更新 `criteria/latest.json|history.jsonl`、`sprint/latest.json|history.jsonl`、`handoff.md` 与 `completion/latest.json`。
    - 若 gate 通过，转 `Done`；否则转 `Failed` 或 `Blocked/blocked_review`。

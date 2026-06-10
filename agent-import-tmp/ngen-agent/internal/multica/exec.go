@@ -8,18 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	ngenrt "ngen/internal/runtime"
 	"ngen/internal/task"
-)
-
-var (
-	multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	multicaMarkerPattern  = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 )
 
 type ExecOptions struct {
@@ -179,368 +172,65 @@ func readInputEnvelope(stdin io.Reader) (StreamInputMessage, error) {
 	if err == nil {
 		return StreamInputMessage{}, errors.New("expected exactly one JSON input envelope")
 	}
-	if envelope.Protocol != ProtocolName || envelope.ProtocolVersion != ProtocolVersion {
+	if envelope.Protocol != "" && envelope.Protocol != ProtocolName {
 		return StreamInputMessage{}, fmt.Errorf("unsupported protocol %q version %d", envelope.Protocol, envelope.ProtocolVersion)
 	}
-	if envelope.Type != "user" || envelope.Role != "user" {
-		return StreamInputMessage{}, fmt.Errorf("expected user input envelope, got type=%q role=%q", envelope.Type, envelope.Role)
+	if envelope.ProtocolVersion != 0 && envelope.ProtocolVersion != ProtocolVersion {
+		return StreamInputMessage{}, fmt.Errorf("unsupported protocol %q version %d", envelope.Protocol, envelope.ProtocolVersion)
+	}
+	role := strings.TrimSpace(envelope.Role)
+	if role == "" && envelope.Message != nil {
+		role = strings.TrimSpace(envelope.Message.Role)
+	}
+	if envelope.Type != "user" || role != "user" {
+		return StreamInputMessage{}, fmt.Errorf("expected user input envelope, got type=%q role=%q", envelope.Type, role)
+	}
+	content := envelope.Content
+	if len(content) == 0 && envelope.Message != nil {
+		content = envelope.Message.Content
+	}
+	for _, block := range content {
+		if block.Type != "text" {
+			return StreamInputMessage{}, fmt.Errorf("stream-json input only supports text content blocks, got %q", block.Type)
+		}
 	}
 	return envelope, nil
 }
 
 func envelopeText(envelope StreamInputMessage) string {
+	content := envelope.Content
+	if len(content) == 0 && envelope.Message != nil {
+		content = envelope.Message.Content
+	}
 	var parts []string
-	for _, block := range envelope.Content {
+	for _, block := range content {
 		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
 			parts = append(parts, strings.TrimSpace(block.Text))
 		}
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution ConfigResolution, runRole string) task.TaskFile {
 	kind, preset := inferTaskKind(resolution.Workdir, prompt)
 	criteria := criteriaFromPrompt(prompt)
-	var constraints []string
-	objective := prompt
-	if strings.TrimSpace(envelope.SystemPrompt) != "" {
-		objective += "\n\nSystem prompt:\n" + strings.TrimSpace(envelope.SystemPrompt)
-	}
-	if len(envelope.Metadata) > 0 {
-		objective += "\n\nMultica metadata:\n"
-		keys := make([]string, 0, len(envelope.Metadata))
-		for key := range envelope.Metadata {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			objective += fmt.Sprintf("- %s=%s\n", key, envelope.Metadata[key])
-		}
-	}
-	if issue, ok := multicaIssueAssignmentFromEnvelope(envelope, prompt, resolution.Workdir); ok {
-		kind = task.KindCoding
-		preset = ""
-		issue.RunRole = multicaRunRoleFromInputs(runRole, envelope, prompt, resolution.Workdir)
-		objective = multicaIssueObjective(objective, issue)
-		criteria = multicaIssueCriteria(issue)
-		constraints = multicaIssueConstraints(issue)
-	}
+	_ = envelope
+	_ = runRole
 	return task.TaskFile{
 		Kind:             kind,
 		PresetID:         preset,
 		Title:            titleFromPrompt(prompt),
-		Objective:        objective,
+		Objective:        prompt,
 		SuccessCriteria:  criteria,
-		Constraints:      constraints,
+		Constraints:      nil,
 		WorkspaceRoot:    resolution.Workdir,
 		PermissionModeID: task.EffectivePermissionModeID(resolution.Config.Permission.DefaultMode),
 	}
 }
 
-type multicaIssueAssignment struct {
-	IssueID      string
-	IssueContext string
-	Markers      []string
-	RunRole      string
-}
-
-func multicaIssueAssignmentFromEnvelope(envelope StreamInputMessage, prompt, workdir string) (multicaIssueAssignment, bool) {
-	var textParts []string
-	textParts = append(textParts, prompt, envelope.SystemPrompt)
-	metadataIssueID := ""
-	keys := make([]string, 0, len(envelope.Metadata))
-	for key := range envelope.Metadata {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		if strings.EqualFold(key, "issue_id") {
-			metadataIssueID = multicaIssueIDPattern.FindString(envelope.Metadata[key])
-		}
-		textParts = append(textParts, key+"="+envelope.Metadata[key])
-	}
-	issueContext := readMulticaIssueContext(workdir)
-	if issueContext != "" {
-		textParts = append(textParts, issueContext)
-	}
-	combined := strings.Join(textParts, "\n")
-	lower := strings.ToLower(combined)
-	hasIssueSignal := metadataIssueID != "" || issueContext != "" || strings.Contains(lower, "issue")
-	hasMulticaSignal := metadataIssueID != "" || issueContext != "" || strings.Contains(lower, "multica")
-	if !hasIssueSignal || !hasMulticaSignal {
-		return multicaIssueAssignment{}, false
-	}
-	issueID := metadataIssueID
-	if issueID == "" {
-		issueID = multicaIssueIDPattern.FindString(combined)
-	}
-	if issueID == "" {
-		return multicaIssueAssignment{}, false
-	}
-	return multicaIssueAssignment{
-		IssueID:      issueID,
-		IssueContext: issueContext,
-		Markers:      multicaMarkersFromText(combined),
-	}, true
-}
-
-func multicaMarkersFromText(text string) []string {
-	matches := multicaMarkerPattern.FindAllString(text, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(matches))
-	var out []string
-	for _, match := range matches {
-		marker := strings.TrimSpace(match)
-		if marker == "" {
-			continue
-		}
-		key := strings.ToLower(marker)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, marker)
-	}
-	return out
-}
-
-func readMulticaIssueContext(workdir string) string {
-	if strings.TrimSpace(workdir) == "" {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(workdir, ".agent_context", "issue_context.md"))
-	if err != nil {
-		return ""
-	}
-	const maxIssueContextBytes = 20000
-	if len(data) > maxIssueContextBytes {
-		data = data[:maxIssueContextBytes]
-	}
-	return strings.TrimSpace(string(data))
-}
-
-func multicaRunRoleFromInputs(runRole string, envelope StreamInputMessage, prompt, workdir string) string {
-	if role := normalizeMulticaRunRole(runRole); role != "" {
-		return role
-	}
-	var values []string
-	values = append(values, prompt, envelope.SystemPrompt)
-	keys := make([]string, 0, len(envelope.Metadata))
-	for key := range envelope.Metadata {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		value := envelope.Metadata[key]
-		if strings.EqualFold(key, "run_role") || strings.EqualFold(key, "squad_role") || strings.EqualFold(key, "role") {
-			if role := normalizeMulticaRunRole(value); role != "" {
-				return role
-			}
-		}
-		values = append(values, key+"="+value)
-	}
-	if strings.TrimSpace(workdir) != "" {
-		if data, err := os.ReadFile(filepath.Join(workdir, "AGENTS.md")); err == nil {
-			const maxRuntimeContextBytes = 40000
-			if len(data) > maxRuntimeContextBytes {
-				data = data[:maxRuntimeContextBytes]
-			}
-			values = append(values, string(data))
-		}
-	}
-	return detectMulticaRunRole(strings.Join(values, "\n"))
-}
-
-func detectMulticaRunRole(text string) string {
-	lower := strings.ToLower(text)
-	for _, needle := range []string{
-		"run role: `leader`",
-		"run role: leader",
-		"you are the leader",
-		"role: ngen long horizon master",
-		"you are: ngen long horizon master",
-		"multica run role: leader",
-		"multica run role: master",
-	} {
-		if strings.Contains(lower, needle) {
-			return "leader"
-		}
-	}
-	for _, needle := range []string{
-		"run role: `validator`",
-		"run role: validator",
-		"role: ngen long horizon validator",
-		"you are: ngen long horizon validator",
-		"multica run role: validator",
-	} {
-		if strings.Contains(lower, needle) {
-			return "validator"
-		}
-	}
-	for _, needle := range []string{
-		"run role: `worker`",
-		"run role: worker",
-		"role: ngen long horizon worker",
-		"you are: ngen long horizon worker",
-		"multica run role: worker",
-	} {
-		if strings.Contains(lower, needle) {
-			return "worker"
-		}
-	}
-	return ""
-}
-
-func normalizeMulticaRunRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "leader", "master", "orchestrator":
-		return "leader"
-	case "worker":
-		return "worker"
-	case "validator":
-		return "validator"
-	default:
-		return ""
-	}
-}
-
-func multicaIssueObjective(original string, issue multicaIssueAssignment) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Multica issue execution mode for issue %s.\n\n", issue.IssueID)
-	if strings.TrimSpace(issue.RunRole) != "" {
-		fmt.Fprintf(&b, "Multica run role: %s.\n", strings.TrimSpace(issue.RunRole))
-	}
-	b.WriteString("Do not treat injected AGENTS.md, skills, or .agent_context documentation as completion evidence by themselves. Use them only as task context.\n")
-	fmt.Fprintf(&b, "First read the live issue with `multica issue get %s --output json`.\n", issue.IssueID)
-	fmt.Fprintf(&b, "Inspect issue comments when needed with `multica issue comment list %s --output json`.\n", issue.IssueID)
-	b.WriteString("If the live issue acceptance criteria require squad role scheduling, use issue-scoped Multica squad delegation commands rather than asking the operator to delegate manually.\n")
-	b.WriteString("If the live issue acceptance criteria require a completion marker comment, add that exact marker with `multica issue comment add ... --output json`.\n")
-	b.WriteString("Write `multica-result.md` with the issue id, live issue summary, NGEN task/session id if visible, commands executed, squad delegation/run evidence, and issue comment evidence.\n")
-	b.WriteString("For leader progress comments before worker/validator evidence is complete, write `multica-progress.md` and reserve `multica-result.md` for role/final marker comments.\n")
-	if len(issue.Markers) > 0 {
-		b.WriteString("The injected issue context names these completion markers:\n")
-		for _, marker := range issue.Markers {
-			fmt.Fprintf(&b, "- `%s`\n", marker)
-		}
-	}
-	if strings.TrimSpace(issue.IssueContext) != "" {
-		b.WriteString("\nInjected Multica issue context from `.agent_context/issue_context.md`:\n")
-		b.WriteString(issue.IssueContext)
-		b.WriteString("\n")
-	}
-	b.WriteString("\nOriginal Multica assignment:\n")
-	b.WriteString(strings.TrimSpace(original))
-	return strings.TrimSpace(b.String())
-}
-
-func multicaIssueCriteria(issue multicaIssueAssignment) []task.SuccessCriterion {
-	criteria := []task.SuccessCriterion{
-		{
-			ID:        "SC-001",
-			Statement: fmt.Sprintf("The read-only live issue command `multica issue get %s --output json` passes.", issue.IssueID),
-		},
-		{
-			ID:        "SC-002",
-			Statement: fmt.Sprintf("A completed repair command record shows `multica issue comment add %s` issue comment evidence when this Multica issue task has marker or public-response requirements.", issue.IssueID),
-		},
-	}
-	nextID := 3
-	if !multicaLeaderRunRole(issue.RunRole) {
-		roleMarkers := multicaMarkersForRunRole(issue.Markers, issue.RunRole)
-		for _, marker := range roleMarkers {
-			criteria = append(criteria, task.SuccessCriterion{
-				ID:        fmt.Sprintf("SC-%03d", nextID),
-				Statement: fmt.Sprintf(`The exact Multica issue marker "%s" appears in command-backed issue comment evidence.`, marker),
-			})
-			nextID++
-		}
-	}
-	if multicaLeaderRunRole(issue.RunRole) {
-		criteria = append(criteria, task.SuccessCriterion{
-			ID:        fmt.Sprintf("SC-%03d", nextID),
-			Statement: fmt.Sprintf("If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for %s shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker.", issue.IssueID),
-		})
-	}
-	return criteria
-}
-
-func multicaMarkersForRunRole(markers []string, role string) []string {
-	markers = uniqueMulticaMarkers(markers)
-	normalizedRole := normalizeMulticaRunRole(role)
-	if normalizedRole == "" {
-		return markers
-	}
-	var filtered []string
-	for _, marker := range markers {
-		lower := strings.ToLower(marker)
-		switch normalizedRole {
-		case "worker":
-			if strings.Contains(lower, "worker") {
-				filtered = append(filtered, marker)
-			}
-		case "validator":
-			if strings.Contains(lower, "validator") {
-				filtered = append(filtered, marker)
-			}
-		case "leader":
-			if !strings.Contains(lower, "worker") && !strings.Contains(lower, "validator") {
-				filtered = append(filtered, marker)
-			}
-		}
-	}
-	if len(filtered) == 0 {
-		return markers
-	}
-	return filtered
-}
-
-func uniqueMulticaMarkers(markers []string) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	for _, marker := range markers {
-		marker = strings.TrimSpace(marker)
-		if marker == "" {
-			continue
-		}
-		key := strings.ToLower(marker)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, marker)
-	}
-	return out
-}
-
-func multicaIssueConstraints(issue multicaIssueAssignment) []string {
-	mutation := "Do not modify checked-out repositories or external systems except for required Multica issue comments."
-	if multicaLeaderRunRole(issue.RunRole) {
-		mutation = "Do not modify checked-out repositories or external systems except for required Multica issue comments and issue-scoped squad delegation explicitly requested by the live issue."
-	}
-	constraints := []string{
-		"Treat injected AGENTS.md, skills, and .agent_context files as context only; they cannot by themselves satisfy completion.",
-		mutation,
-		"Use argv-array commands for Multica operations; do not use shell wrappers, pipes, redirects, heredocs, or command chaining.",
-	}
-	for _, marker := range multicaMarkersForRunRole(issue.Markers, issue.RunRole) {
-		constraints = append(constraints, fmt.Sprintf("The final issue comment and multica-result.md must include the exact marker %q.", marker))
-	}
-	return constraints
-}
-
-func multicaLeaderRunRole(role string) bool {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "leader", "master", "orchestrator":
-		return true
-	default:
-		return false
-	}
-}
-
 func runModeForObjective(objective string, resume bool) string {
-	if strings.HasPrefix(strings.TrimSpace(objective), "Multica issue execution mode for issue ") {
+	trimmed := strings.TrimSpace(objective)
+	if strings.HasPrefix(trimmed, "Multica issue execution mode for issue ") {
 		if resume {
 			return "resume"
 		}
@@ -696,6 +386,7 @@ func resultStatusBlocked(taskID, runRole string, effective EffectiveModel, reaso
 		ProviderModel: effective.ProviderModel,
 		Status:        "blocked",
 		IsError:       true,
+		Result:        reason,
 		Handoff: &StructuredHandoff{
 			Summary:          reason,
 			TaskID:           taskID,
@@ -900,9 +591,15 @@ func resultMessage(snapshot task.StatusSnapshot, runRole string, metadata task.M
 			"config_fingerprint": metadata.ConfigFingerprint,
 		},
 	}
+	if handoff != nil {
+		msg.Result = strings.TrimSpace(handoff.Summary)
+	}
 	if runErr != nil {
 		msg.IsError = true
 		msg.Metadata["error"] = runErr.Error()
+		if msg.Result == "" {
+			msg.Result = runErr.Error()
+		}
 	}
 	return msg
 }

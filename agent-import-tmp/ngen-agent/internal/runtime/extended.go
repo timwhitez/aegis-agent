@@ -558,7 +558,7 @@ func (s *Service) autoWithOptions(ctx context.Context, taskID string, session *t
 }
 
 func multicaIssueRunsWithoutAutoTurnLimit(spec task.Spec) bool {
-	return strings.HasPrefix(strings.TrimSpace(spec.Objective), "Multica issue execution mode for issue ") &&
+	return strings.HasPrefix(strings.TrimSpace(spec.Objective), multicaIssueExecutionObjectivePrefix) &&
 		multicaIssueIDFromSpec(spec) != ""
 }
 

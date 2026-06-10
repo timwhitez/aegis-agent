@@ -25,14 +25,13 @@ type ContentMessage struct {
 }
 
 type StreamInputMessage struct {
-	Protocol        string            `json:"protocol"`
-	ProtocolVersion int               `json:"protocol_version"`
-	Type            string            `json:"type"`
-	ID              string            `json:"id,omitempty"`
-	Role            string            `json:"role"`
-	Content         []ContentBlock    `json:"content"`
-	SystemPrompt    string            `json:"system_prompt,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Protocol        string          `json:"protocol,omitempty"`
+	ProtocolVersion int             `json:"protocol_version,omitempty"`
+	Type            string          `json:"type"`
+	ID              string          `json:"id,omitempty"`
+	Role            string          `json:"role,omitempty"`
+	Content         []ContentBlock  `json:"content,omitempty"`
+	Message         *ContentMessage `json:"message,omitempty"`
 }
 
 type StreamOutputMessage struct {
@@ -49,6 +48,7 @@ type StreamOutputMessage struct {
 	Status          string             `json:"status,omitempty"`
 	IsError         bool               `json:"is_error,omitempty"`
 	Message         *ContentMessage    `json:"message,omitempty"`
+	Result          string             `json:"result,omitempty"`
 	Tool            *ToolProjection    `json:"tool,omitempty"`
 	Log             *LogEntry          `json:"log,omitempty"`
 	Usage           map[string]Usage   `json:"usage,omitempty"`

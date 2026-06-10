@@ -41,8 +41,9 @@ var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
 
 const (
-	multicaIssueResultPath   = "multica-result.md"
-	multicaIssueProgressPath = "multica-progress.md"
+	multicaIssueResultPath               = "multica-result.md"
+	multicaIssueProgressPath             = "multica-progress.md"
+	multicaIssueExecutionObjectivePrefix = "Multica issue execution mode for issue "
 )
 
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
@@ -487,7 +488,6 @@ func (s *Service) runCriteriaRepairSequence(
 		if report.Status == "passed" && criteriaAllMet(criteria) {
 			return report, criteria, emitted, nil
 		}
-
 		nextFingerprint := verificationFingerprint(report)
 		if report.Status == "passed" {
 			nextFingerprint = criteriaFingerprint(spec, criteria)
@@ -770,7 +770,7 @@ func (s *Service) persistVerificationReport(state *task.State, report task.Verif
 	}
 	verifyEvent := newEvent(report.TaskID, *state, verifyType, verifySummary, nil)
 	for i := range report.Checks {
-		report.Checks[i].EvidenceRefs = []string{artifact.EventRef(verifyEvent.EventID)}
+		report.Checks[i].EvidenceRefs = uniqueRefs(append(report.Checks[i].EvidenceRefs, artifact.EventRef(verifyEvent.EventID)))
 	}
 	if err := s.Store.SaveVerification(report); err != nil {
 		return task.Event{}, task.VerificationReport{}, err
@@ -1911,17 +1911,21 @@ func multicaIssueObservationCommands(spec task.Spec, budget int) []provider.Obse
 }
 
 func multicaIssueIDFromSpec(spec task.Spec) string {
-	for _, value := range []string{spec.Objective, spec.Title} {
-		if issueID := multicaIssueIDPattern.FindString(value); issueID != "" {
-			return issueID
-		}
+	objective := strings.TrimSpace(spec.Objective)
+	if !strings.HasPrefix(objective, multicaIssueExecutionObjectivePrefix) {
+		return ""
 	}
-	for _, criterion := range spec.SuccessCriteria {
-		if issueID := multicaIssueIDPattern.FindString(criterion.Statement); issueID != "" {
-			return issueID
-		}
+	if issueID := multicaIssueIDPattern.FindString(objective); issueID != "" {
+		return issueID
 	}
 	return ""
+}
+
+func ensureTrailingNewline(value string) string {
+	if strings.HasSuffix(value, "\n") {
+		return value
+	}
+	return value + "\n"
 }
 
 func multicaMarkerFromSpec(spec task.Spec) string {
@@ -3229,7 +3233,13 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 }
 
 func isAllowedMulticaIssueMutation(argv []string) bool {
-	if len(argv) < 5 || argv[0] != "multica" {
+	if len(argv) < 3 || argv[0] != "multica" {
+		return false
+	}
+	if len(argv) >= 4 && argv[1] == "issue" && argv[2] == "create" {
+		return true
+	}
+	if len(argv) < 5 {
 		return false
 	}
 	if argv[1] == "issue" && argv[2] == "comment" && argv[3] == "add" {
@@ -5708,11 +5718,11 @@ func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessC
 	if mode == "" {
 		return status
 	}
+	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
 	issueID := multicaIssueIDFromSpec(spec)
 	if issueID == "" {
 		return status
 	}
-	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
 	marker := multicaMarkerPattern.FindString(statement)
 	switch mode {
 	case "issue_comment_command":

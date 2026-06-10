@@ -1,85 +1,77 @@
 package multica
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	ngenrt "ngen/internal/runtime"
 	"ngen/internal/task"
 )
 
-func TestTaskFromEnvelopeTurnsMulticaIssueAssignmentIntoCommandBackedCodingTask(t *testing.T) {
-	dir := t.TempDir()
-	writeMulticaTestFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Issue\n\nAcceptance: add marker ngen-multica-real-e2e-ok as an issue comment.\n")
-	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
-	prompt := "You have been assigned issue ID: " + issueID
-	cfg := task.DefaultConfig()
-	cfg.Permission.DefaultMode = task.PermissionModeYolo
-
-	tf := taskFromEnvelope(StreamInputMessage{
-		Protocol:        ProtocolName,
-		ProtocolVersion: ProtocolVersion,
-		Type:            "user",
-		Role:            "user",
-		Content:         []ContentBlock{{Type: "text", Text: prompt}},
-		SystemPrompt:    "Use injected workspace guidance.",
-		Metadata:        map[string]string{"issue_id": issueID},
-	}, prompt, ConfigResolution{Workdir: dir, Config: cfg}, "worker")
-
-	if tf.Kind != task.KindCoding || tf.PresetID != "" {
-		t.Fatalf("expected Multica issue assignment to become coding task, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+func TestReadInputEnvelopeAcceptsTopLevelAndNestedUserText(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "top_level_ngen_shape",
+			input: `{"protocol":"ngen-stream-json","protocol_version":1,"type":"user","role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}],"system_prompt":"ignored","metadata":{"issue_id":"ignored"}}`,
+			want:  "hello\nworld",
+		},
+		{
+			name:  "nested_go_cli_shape",
+			input: `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"},{"type":"text","text":"world"}]},"system_prompt":"ignored","metadata":{"type":"quick_create"}}`,
+			want:  "hello\nworld",
+		},
 	}
-	if !strings.Contains(tf.Objective, "Multica issue execution mode") ||
-		!strings.Contains(tf.Objective, "multica issue get "+issueID+" --output json") ||
-		!strings.Contains(tf.Objective, "ngen-multica-real-e2e-ok") ||
-		!strings.Contains(tf.Objective, "Original Multica assignment") {
-		t.Fatalf("objective did not preserve Multica issue execution guidance:\n%s", tf.Objective)
-	}
-	if len(tf.SuccessCriteria) != 3 {
-		t.Fatalf("expected read command, comment evidence, and marker criteria, got %+v", tf.SuccessCriteria)
-	}
-	if !strings.Contains(tf.SuccessCriteria[0].Statement, "`multica issue get "+issueID+" --output json` passes") {
-		t.Fatalf("expected command-backed issue read criterion, got %+v", tf.SuccessCriteria[0])
-	}
-	if !strings.Contains(tf.SuccessCriteria[1].Statement, `repair command record`) ||
-		!strings.Contains(tf.SuccessCriteria[1].Statement, `multica issue comment add`) {
-		t.Fatalf("expected command-backed issue comment evidence criterion, got %+v", tf.SuccessCriteria[1])
-	}
-	if !strings.Contains(tf.SuccessCriteria[2].Statement, "ngen-multica-real-e2e-ok") {
-		t.Fatalf("expected marker criterion, got %+v", tf.SuccessCriteria[2])
-	}
-	if len(tf.Constraints) == 0 || !strings.Contains(strings.Join(tf.Constraints, "\n"), "context only") {
-		t.Fatalf("expected context-only constraint, got %+v", tf.Constraints)
-	}
-	if got := runModeForObjective(tf.Objective, false); got != "run" {
-		t.Fatalf("expected new Multica issue task to use direct run mode, got %s", got)
-	}
-	if got := runModeForObjective(tf.Objective, true); got != "resume" {
-		t.Fatalf("expected resumed Multica issue task to use direct resume mode, got %s", got)
-	}
-	if got := runModeForObjective("ordinary task", false); got != "auto" {
-		t.Fatalf("expected ordinary task to keep auto mode, got %s", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			envelope, err := readInputEnvelope(strings.NewReader(tc.input))
+			if err != nil {
+				t.Fatalf("read input envelope: %v", err)
+			}
+			if got := envelopeText(envelope); got != tc.want {
+				t.Fatalf("unexpected prompt %q", got)
+			}
+		})
 	}
 }
 
-func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *testing.T) {
+func TestTaskFromEnvelopePassesThroughUserTextOnly(t *testing.T) {
 	dir := t.TempDir()
+	squadID := "3b0ca27f-5db0-42ff-98ea-7750fc40500a"
+	projectID := "ae886a17-0ef6-4b02-b154-3ac601df7239"
+	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
 	writeMulticaTestFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), strings.Join([]string{
-		"# Issue",
+		"# Injected Context",
 		"",
-		"Required final marker: ngen-squad-long-e2e-ok-20260609",
-		"Worker marker: ngen-squad-worker-e2e-ok-20260609",
-		"Validator marker: ngen-squad-validator-e2e-ok-20260609",
+		"Existing issue: " + issueID,
+		"Required marker: ngen-multica-real-e2e-ok",
 	}, "\n"))
 	writeMulticaTestFile(t, filepath.Join(dir, "AGENTS.md"), strings.Join([]string{
 		"# Runtime",
 		"",
-		"## Task Coordination Guidance",
-		"- Run role: `leader`",
+		"Multica run role: leader.",
+		"Delegation boundary: `quick-create-issue`.",
+		"Expected public artifacts: `created_issue`.",
 	}, "\n"))
-	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
-	prompt := "You have been assigned issue ID: " + issueID
+	prompt := strings.Join([]string{
+		"You are running as a quick-create assistant for a Multica workspace.",
+		"",
+		"User input:",
+		"> 请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。",
+		"",
+		"Field rules:",
+		"- pass `--assignee-id \"" + squadID + "\"`.",
+		"- pass `--project \"" + projectID + "\"`.",
+		"",
+		"Output format:",
+		"- Run exactly one `multica issue create --output json` invocation.",
+	}, "\n")
 
 	tf := taskFromEnvelope(StreamInputMessage{
 		Protocol:        ProtocolName,
@@ -87,30 +79,66 @@ func TestTaskFromEnvelopeExtractsSquadMarkersAndLeaderSchedulingCriteria(t *test
 		Type:            "user",
 		Role:            "user",
 		Content:         []ContentBlock{{Type: "text", Text: prompt}},
-		Metadata:        map[string]string{"issue_id": issueID},
-	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "")
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
 
-	criteriaText := strings.Join(func() []string {
-		var out []string
-		for _, criterion := range tf.SuccessCriteria {
-			out = append(out, criterion.Statement)
+	if tf.Objective != prompt {
+		t.Fatalf("expected objective to be user text only, got:\n%s", tf.Objective)
+	}
+	for _, forbidden := range []string{
+		"System prompt:",
+		"Multica metadata:",
+		"Multica quick-create mode.",
+		"Multica issue execution mode",
+		"multica issue get " + squadID,
+		"multica issue get " + issueID,
+		"multica issue comment add " + issueID,
+		"Assignee ID:",
+		"Project ID:",
+		"ngen-multica-real-e2e-ok",
+	} {
+		if strings.Contains(tf.Objective, forbidden) {
+			t.Fatalf("objective should not contain adapter-synthesized %q:\n%s", forbidden, tf.Objective)
 		}
-		return out
-	}(), "\n")
-	if strings.Contains(criteriaText, `exact Multica issue marker "ngen-squad-long-e2e-ok-20260609"`) {
-		t.Fatalf("leader dispatch criteria must not require final marker before delegated roles complete:\n%s", criteriaText)
 	}
-	if !strings.Contains(criteriaText, "issue run/delegation evidence") {
-		t.Fatalf("expected leader criteria to require automatic worker/validator run evidence:\n%s", criteriaText)
+	if len(tf.Constraints) != 0 {
+		t.Fatalf("expected no adapter-synthesized constraints, got %+v", tf.Constraints)
 	}
-	if !strings.Contains(tf.Objective, "Multica run role: leader") {
-		t.Fatalf("expected AGENTS.md role hint to be preserved in objective:\n%s", tf.Objective)
+	if got := runModeForObjective(tf.Objective, false); got != "auto" {
+		t.Fatalf("expected pass-through objective to use auto mode, got %s", got)
 	}
-	if !strings.Contains(strings.Join(tf.Constraints, "\n"), "squad delegation") {
-		t.Fatalf("expected leader constraints to allow issue-scoped squad delegation, got %+v", tf.Constraints)
+}
+
+func TestResultMessageSetsTopLevelResultFromHandoff(t *testing.T) {
+	dir := t.TempDir()
+	svc := ngenrt.New(dir, task.DefaultConfig())
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:      task.KindGeneral,
+		PresetID:  task.PresetDocsLite,
+		Title:     "handoff result",
+		Objective: "summarize",
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Produce a result."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
 	}
-	if got := runModeForObjective(tf.Objective, false); got != "run" {
-		t.Fatalf("expected leader issue task file to bypass auto turn limits with direct run mode, got %s", got)
+	if err := svc.Store.SaveHandoff(spec.TaskID, []byte("# Handoff\n\nFinal visible result text.\n")); err != nil {
+		t.Fatalf("save handoff: %v", err)
+	}
+
+	msg := resultMessage(task.StatusSnapshot{
+		TaskID: spec.TaskID,
+		State:  task.StateDone,
+		Phase:  task.PhaseReview,
+	}, "", task.MulticaRunMetadata{}, ConfigResolution{EffectiveModel: EffectiveModel{Route: "builtin/default"}}, "completed", nil, svc)
+
+	if msg.Type != "result" || msg.Result != "Final visible result text." {
+		t.Fatalf("expected top-level result from handoff summary, got %+v", msg)
+	}
+	if msg.Message != nil {
+		t.Fatalf("result should not synthesize assistant message blocks, got %+v", msg.Message)
 	}
 }
 
