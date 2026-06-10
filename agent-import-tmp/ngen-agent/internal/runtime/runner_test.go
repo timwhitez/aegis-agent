@@ -3626,13 +3626,17 @@ func TestValidateObservationCommandRejectsShellWrapper(t *testing.T) {
 	}
 }
 
-func TestHeuristicObservationCommandsIncludeMulticaIssueContext(t *testing.T) {
+func TestHeuristicObservationCommandsRunsExplicitReadOnlyCommands(t *testing.T) {
 	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
 	commands := heuristicObservationCommands(task.Spec{
-		Objective: "Multica issue execution mode for issue " + issueID + ".",
-	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 3)
-	if len(commands) != 3 {
-		t.Fatalf("expected three Multica issue observation commands, got %+v", commands)
+		Objective: strings.Join([]string{
+			"Start by running `multica issue get " + issueID + " --output json`.",
+			"Then execute `multica issue comment list " + issueID + " --output json` before deciding.",
+			"Do not run `multica issue comment add " + issueID + " --content done` as observation.",
+		}, "\n"),
+	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 5)
+	if len(commands) != 2 {
+		t.Fatalf("expected two explicit read-only commands, got %+v", commands)
 	}
 	if !slices.Equal(commands[0].Argv, []string{"multica", "issue", "get", issueID, "--output", "json"}) {
 		t.Fatalf("unexpected issue get command: %+v", commands[0])
@@ -3640,1496 +3644,103 @@ func TestHeuristicObservationCommandsIncludeMulticaIssueContext(t *testing.T) {
 	if !slices.Equal(commands[1].Argv, []string{"multica", "issue", "comment", "list", issueID, "--output", "json"}) {
 		t.Fatalf("unexpected issue comment list command: %+v", commands[1])
 	}
-	if !slices.Equal(commands[2].Argv, []string{"multica", "issue", "runs", issueID, "--output", "json"}) {
-		t.Fatalf("unexpected issue runs command: %+v", commands[2])
-	}
-	if got := heuristicObservationCommands(task.Spec{Objective: "ordinary task"}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2); len(got) != 0 {
-		t.Fatalf("expected ordinary task not to get Multica observation commands, got %+v", got)
+}
+
+func TestExplicitCommandExtractionSkipsNegatedCommands(t *testing.T) {
+	argvs := explicitCommandArgvs(strings.Join([]string{
+		"Run `git status --short` before editing.",
+		"Do not run `multica issue comment add 0496acb9-ff48-4507-bb79-d122a68c3a98 --content done` as observation.",
+	}, "\n"))
+	if len(argvs) != 1 || !slices.Equal(argvs[0], []string{"git", "status", "--short"}) {
+		t.Fatalf("expected only non-negated command, got %+v", argvs)
 	}
 }
 
-func TestMulticaIssueFallbackWorkspaceEditPlanPostsMarkerComment(t *testing.T) {
-	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
-	marker := "ngen-multica-real-e2e-ok"
-	cfg := task.DefaultConfig()
-	cfg.Provider.Mode = "openai-response"
-	cfg.Provider.Model = "gpt-5.5"
-	cfg.Provider.ThinkingLevel = "xhigh"
-	svc := New(t.TempDir(), cfg)
-	spec := task.Spec{
-		TaskID:    "TASK-001",
-		Objective: "Multica issue execution mode for issue " + issueID + ".",
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: `multica-result.md contains the phrase "multica issue comment add".`},
-		},
-	}
-	observations := []provider.ObservationResult{
-		{
-			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: `{"description":"Produce marker ` + marker + ` as an issue comment."}`,
-		},
-	}
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected Multica fallback plan")
-	}
-	if len(plan.Writes) != 1 || plan.Writes[0].Path != multicaIssueResultPath {
-		t.Fatalf("unexpected fallback writes: %+v", plan.Writes)
-	}
-	if !strings.Contains(plan.Writes[0].Content, marker) ||
-		!strings.Contains(plan.Writes[0].Content, "Provider route: openai-response/gpt-5.5") ||
-		!strings.Contains(plan.Writes[0].Content, "Reasoning effort: xhigh") {
-		t.Fatalf("fallback content missing marker/provider evidence:\n%s", plan.Writes[0].Content)
-	}
-	if len(plan.Commands) != 1 {
-		t.Fatalf("expected one marker comment command, got %+v", plan.Commands)
-	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	if !slices.Equal(plan.Commands[0].Argv, want) {
-		t.Fatalf("unexpected fallback command: %+v", plan.Commands[0].Argv)
-	}
-	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(task.Spec{Objective: "ordinary task"}, observations, fmt.Errorf("responses workspace edit returned empty output text")); ok {
-		t.Fatal("expected fallback to stay disabled for ordinary tasks")
+func TestHeuristicObservationCommandsSupportsGenericReadOnlyCommand(t *testing.T) {
+	commands := heuristicObservationCommands(task.Spec{
+		Objective: "Run `git status --short` before editing.",
+	}, task.VerificationReport{}, provider.WorkspaceCollection{}, 2)
+	if len(commands) != 1 || !slices.Equal(commands[0].Argv, []string{"git", "status", "--short"}) {
+		t.Fatalf("expected explicit git status command, got %+v", commands)
 	}
 }
 
-func TestMulticaIssueFallbackWorkspaceEditPlanDelegatesLeaderRolesBeforeFinalMarker(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	cfg := task.DefaultConfig()
-	cfg.Provider.Mode = "openai-response"
-	cfg.Provider.Model = "gpt-5.5"
-	cfg.Provider.ThinkingLevel = "xhigh"
-	svc := New(t.TempDir(), cfg)
-	spec := task.Spec{
-		TaskID: "TASK-001",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-			{Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
-		},
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-get",
-			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: `{"description":"The leader/master must automatically schedule a worker-role NGEN agent. The worker must leave marker ngen-squad-auto-worker-e2e-ok-20260609. The leader/master must automatically schedule a validator-role NGEN agent. The validator must leave marker ngen-squad-auto-validator-e2e-ok-20260609. Required final marker ngen-squad-auto-long-e2e-ok-20260609."}`,
-		},
-		{
-			Status:        "completed",
-			CommandID:     "CMD-runs",
-			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"run_role":"leader","status":"running"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected Multica leader fallback plan")
-	}
-	if len(plan.Writes) != 1 || plan.Writes[0].Path != multicaIssueProgressPath {
-		t.Fatalf("unexpected fallback writes: %+v", plan.Writes)
-	}
-	if strings.Contains(plan.Writes[0].Content, "ngen-squad-auto-long-e2e-ok-20260609") {
-		t.Fatalf("dispatch note must not post the final marker before worker/validator evidence:\n%s", plan.Writes[0].Content)
-	}
-	var delegatedRoles []string
-	delegationInstructions := map[string]string{}
-	for _, command := range plan.Commands {
-		if len(command.Argv) >= 5 && slices.Equal(command.Argv[:3], []string{"multica", "squad", "delegate"}) {
-			role := ""
-			for i, arg := range command.Argv {
-				if arg == "--role" && i+1 < len(command.Argv) {
-					role = command.Argv[i+1]
-					delegatedRoles = append(delegatedRoles, role)
-				}
-				if arg == "--instructions" && i+1 < len(command.Argv) && role != "" {
-					delegationInstructions[role] = command.Argv[i+1]
-				}
-			}
-		}
-	}
-	if !slices.Equal(delegatedRoles, []string{"worker", "validator"}) {
-		t.Fatalf("expected worker and validator delegates before final comment, got commands %+v", plan.Commands)
-	}
-	if got := delegationInstructions["worker"]; !strings.Contains(got, "ngen-squad-auto-worker-e2e-ok-20260609") || strings.Contains(got, "ngen-squad-auto-long-e2e-ok-20260609") {
-		t.Fatalf("worker delegation instructions must carry only worker marker, got %q", got)
-	}
-	if got := delegationInstructions["validator"]; !strings.Contains(got, "ngen-squad-auto-validator-e2e-ok-20260609") || strings.Contains(got, "ngen-squad-auto-long-e2e-ok-20260609") {
-		t.Fatalf("validator delegation instructions must carry only validator marker, got %q", got)
-	}
-	if !slices.Equal(plan.Commands[len(plan.Commands)-1].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}) {
-		t.Fatalf("expected dispatch note comment command last, got %+v", plan.Commands)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanWritesRolePublicArtifact(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	cfg := task.DefaultConfig()
-	cfg.Provider.Mode = "openai-response"
-	cfg.Provider.Model = "gpt-5.5"
-	cfg.Provider.ThinkingLevel = "xhigh"
-	svc := New(t.TempDir(), cfg)
-	spec := task.Spec{
-		TaskID: "TASK-validator",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: validator.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-			{Statement: `The exact Multica issue marker "ngen-squad-auto-validator-e2e-ok-20260609" appears in command-backed issue comment evidence.`},
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected validator Multica fallback plan")
-	}
-	if len(plan.Writes) != 2 {
-		t.Fatalf("expected result and validator artifact writes, got %+v", plan.Writes)
-	}
-	var result, validation string
-	for _, write := range plan.Writes {
-		switch write.Path {
-		case "multica-result.md":
-			result = write.Content
-		case "validation/validator-auto-e2e.md":
-			validation = write.Content
-		}
-	}
-	if !strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609") || strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609") || strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609") {
-		t.Fatalf("validator result should contain only validator marker:\n%s", result)
-	}
-	if !strings.Contains(validation, "ngen-squad-auto-validator-e2e-ok-20260609") || !strings.Contains(validation, "Reasoning effort: `xhigh`") {
-		t.Fatalf("validator public artifact missing marker/provider evidence:\n%s", validation)
-	}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}) {
-		t.Fatalf("expected one issue comment command, got %+v", plan.Commands)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanRepliesToTriggerComment(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	triggerCommentID := "6c30802e-b68e-4f9c-aad9-16cb2da2b4a5"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-worker-reply",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: worker.",
-			"**Triggering comment ID:** `" + triggerCommentID + "`",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected worker Multica fallback plan")
-	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", "multica-result.md", "--output", "json"}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, want) {
-		t.Fatalf("expected issue reply command with trigger parent, got %+v", plan.Commands)
-	}
-	var result, handoff string
-	for _, write := range plan.Writes {
-		switch write.Path {
-		case "multica-result.md":
-			result = write.Content
-		case "handoffs/worker-auto-e2e.json":
-			handoff = write.Content
-		}
-	}
-	if !strings.Contains(result, "--parent "+triggerCommentID) {
-		t.Fatalf("result artifact should record the parented comment command:\n%s", result)
-	}
-	if !strings.Contains(handoff, "--parent "+triggerCommentID) {
-		t.Fatalf("worker handoff should record the parented comment command:\n%s", handoff)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanCompletesMissionMilestone(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	runID := "9319b964-4e8d-4e03-a017-89ba33a27390"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-worker-mission-complete",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: worker.",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609m",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-		},
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-runs",
-			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"id":"` + runID + `","run_role":"worker","status":"running","result":{"session_id":"` + spec.TaskID + `"}}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected worker Multica fallback plan")
-	}
-	wantComment := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	wantComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:" + runID, "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, wantComment) || !slices.Equal(plan.Commands[1].Argv, wantComplete) {
-		t.Fatalf("expected comment then mission complete commands, got %+v", plan.Commands)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanCompletesMissionMilestoneFromFullRunOutput(t *testing.T) {
-	issueID := "7a9b8b3f-514f-45cb-a7ec-223f0c9b41bf"
-	runID := "276c7b49-38a7-45ee-9cfe-53b96f27f794"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-worker-full-runs",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: worker.",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609p",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-		},
-	}
-	if err := svc.Store.EnsureTaskLayout(spec.TaskID); err != nil {
-		t.Fatalf("ensure task layout: %v", err)
-	}
-	fullRuns := `[
-  {"id":"leader-run","run_role":"leader","status":"completed","result":{"session_id":"TASK-leader"}},
-  {"id":"validator-run","run_role":"validator","status":"running","result":{"session_id":"TASK-validator"}},
-  {"id":"` + runID + `","run_role":"worker","status":"running","result":{"session_id":"` + spec.TaskID + `"}}
-]`
-	stdoutRef, stderrRef, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-runs-full", []byte(fullRuns), nil)
-	if err != nil {
-		t.Fatalf("save command output: %v", err)
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-runs-full",
-			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutRef:     stdoutRef,
-			StderrRef:     stderrRef,
-			StdoutExcerpt: `[{"id":"leader-run","run_role":"leader","status":"completed"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected worker Multica fallback plan")
-	}
-	wantComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:" + runID, "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[1].Argv, wantComplete) {
-		t.Fatalf("expected mission complete from full issue-runs output ref, got %+v", plan.Commands)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanUsesObservedRoleMarker(t *testing.T) {
-	issueID := "cb4bbf0b-c107-4e58-8b78-d2945aea0e53"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-worker",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: worker.",
-			"Post concise command-backed evidence and the worker marker requested by the issue.",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-		},
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-get",
-			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: `{"description":"Required final marker: ngen-squad-auto-long-e2e-ok-20260609c. Worker marker: ngen-squad-auto-worker-e2e-ok-20260609c. Validator marker: ngen-squad-auto-validator-e2e-ok-20260609c."}`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected worker Multica fallback plan from observed issue marker")
-	}
-	if len(plan.Writes) != 2 {
-		t.Fatalf("expected result and worker artifact writes, got %+v", plan.Writes)
-	}
-	var result, handoff string
-	for _, write := range plan.Writes {
-		switch write.Path {
-		case "multica-result.md":
-			result = write.Content
-		case "handoffs/worker-auto-e2e.json":
-			handoff = write.Content
-		}
-	}
-	if !strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609c") ||
-		strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609c") ||
-		strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609c") {
-		t.Fatalf("worker result should contain only the observed worker marker:\n%s", result)
-	}
-	if !strings.Contains(handoff, "ngen-squad-auto-worker-e2e-ok-20260609c") {
-		t.Fatalf("worker handoff missing observed marker:\n%s", handoff)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanUsesPersistedCommandMarker(t *testing.T) {
-	issueID := "b3c2cea4-533e-459b-a2e9-f30c87dc4667"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-validator",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: validator.",
-			"Post pass/fail evidence and the validator marker requested by the issue.",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-		},
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-get",
-		CommandID:       "CMD-get",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "observation_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "get", issueID, "--output", "json"},
-		StdoutExcerpt:   `{"description":"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609d. Validator marker: ngen-squad-auto-validator-e2e-ok-20260609d. Required final marker: ngen-squad-auto-long-e2e-ok-20260609d."}`,
-	}); err != nil {
-		t.Fatalf("append command run: %v", err)
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected validator Multica fallback plan from persisted command marker")
-	}
-	var result string
-	for _, write := range plan.Writes {
-		if write.Path == "multica-result.md" {
-			result = write.Content
-		}
-	}
-	if !strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609d") ||
-		strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609d") ||
-		strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609d") {
-		t.Fatalf("validator result should contain only the persisted validator marker:\n%s", result)
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanUsesFullCommandOutputRef(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		role         string
-		taskID       string
-		wantMarker   string
-		wantArtifact string
-		blocked      []string
-	}{
-		{
-			name:         "worker",
-			role:         "worker",
-			taskID:       "TASK-worker-ref",
-			wantMarker:   "ngen-squad-auto-worker-e2e-ok-20260609e",
-			wantArtifact: "handoffs/worker-auto-e2e.json",
-			blocked:      []string{"ngen-squad-auto-long-e2e-ok-20260609e", "ngen-squad-auto-validator-e2e-ok-20260609e"},
-		},
-		{
-			name:         "validator",
-			role:         "validator",
-			taskID:       "TASK-validator-ref",
-			wantMarker:   "ngen-squad-auto-validator-e2e-ok-20260609e",
-			wantArtifact: "validation/validator-auto-e2e.md",
-			blocked:      []string{"ngen-squad-auto-long-e2e-ok-20260609e", "ngen-squad-auto-worker-e2e-ok-20260609e"},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-			dir := t.TempDir()
-			svc := New(dir, task.DefaultConfig())
-			if err := svc.Store.EnsureTaskLayout(tc.taskID); err != nil {
-				t.Fatalf("ensure task layout: %v", err)
-			}
-			spec := task.Spec{
-				TaskID: tc.taskID,
-				Objective: strings.Join([]string{
-					"Multica issue execution mode for issue " + issueID + ".",
-					"Multica run role: " + tc.role + ".",
-					"Post concise command-backed evidence and the " + tc.role + " marker requested by the issue.",
-				}, "\n"),
-				SuccessCriteria: []task.SuccessCriterion{
-					{Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-				},
-			}
-			fullIssueJSON := strings.Join([]string{
-				`{"description":"Required final marker: ngen-squad-auto-long-e2e-ok-20260609e.`,
-				`Worker marker: ngen-squad-auto-worker-e2e-ok-20260609e.`,
-				`Validator marker: ngen-squad-auto-validator-e2e-ok-20260609e."}`,
-			}, " ")
-			stdoutRef, stderrRef, err := svc.Store.SaveCommandOutput(tc.taskID, "CMD-get-full", []byte(fullIssueJSON), nil)
-			if err != nil {
-				t.Fatalf("save command output: %v", err)
-			}
-			if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-				SchemaVersion:   task.SchemaVersion,
-				CommandRecordID: "CMDREC-get-full",
-				CommandID:       "CMD-get-full",
-				TaskID:          spec.TaskID,
-				TS:              task.Now(),
-				Kind:            "observation_command",
-				Status:          "completed",
-				Argv:            []string{"multica", "issue", "get", issueID, "--output", "json"},
-				StdoutRef:       stdoutRef,
-				StderrRef:       stderrRef,
-				StdoutExcerpt:   `[truncated before role markers]`,
-			}); err != nil {
-				t.Fatalf("append command run: %v", err)
-			}
-
-			plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
-			if !ok {
-				t.Fatal("expected role Multica fallback plan from full command output ref")
-			}
-			var result, artifactContent string
-			for _, write := range plan.Writes {
-				switch write.Path {
-				case "multica-result.md":
-					result = write.Content
-				case tc.wantArtifact:
-					artifactContent = write.Content
-				}
-			}
-			if !strings.Contains(result, tc.wantMarker) || !strings.Contains(artifactContent, tc.wantMarker) {
-				t.Fatalf("fallback did not include role marker from full command output; result=%q artifact=%q", result, artifactContent)
-			}
-			for _, marker := range tc.blocked {
-				if strings.Contains(result, marker) {
-					t.Fatalf("fallback result should not contain non-role marker %s:\n%s", marker, result)
-				}
-			}
-		})
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanDoesNotUseFinalMarkerForWorker(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-worker",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: worker.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609",
-		}, "\n"),
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-get",
-			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: `{"description":"Required final marker ngen-squad-auto-long-e2e-ok-20260609."}`,
-		},
-	}
-
-	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text")); ok {
-		t.Fatal("worker fallback must not post a leader/final marker when no worker marker is visible")
-	}
-}
-
-func TestMulticaIssueFallbackWorkspaceEditPlanWaitsAfterDelegationUntilRolesComplete(t *testing.T) {
-	issueID := "c8cd762b-d0b5-4d05-bac8-d7b7615ff362"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-001",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
-		},
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-worker",
-		CommandID:       "CMD-worker",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "repair_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--output", "json"},
-		StdoutExcerpt:   `{"run_role":"worker","status":"queued"}`,
-	}); err != nil {
-		t.Fatalf("append worker delegate: %v", err)
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-validator",
-		CommandID:       "CMD-validator",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "repair_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "validator", "--output", "json"},
-		StdoutExcerpt:   `{"run_role":"validator","status":"queued"}`,
-	}); err != nil {
-		t.Fatalf("append validator delegate: %v", err)
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-get",
-			Argv:          []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: `{"description":"worker-role and validator-role squad scheduling required"}`,
-		},
-		{
-			Status:        "completed",
-			CommandID:     "CMD-runs",
-			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"run_role":"leader","status":"running"},{"run_role":"worker","status":"running"},{"run_role":"validator","status":"running"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected Multica leader waiting fallback plan")
-	}
-	for _, command := range plan.Commands {
-		if len(command.Argv) >= 3 && slices.Equal(command.Argv[:3], []string{"multica", "squad", "delegate"}) {
-			t.Fatalf("expected no duplicate delegation while roles are already dispatched, got %+v", plan.Commands)
-		}
-	}
-	if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}) {
-		t.Fatalf("expected waiting fallback to post one progress comment, got %+v", plan.Commands)
-	}
-	if strings.Contains(plan.Writes[0].Content, "ngen-squad-auto-long-e2e-ok-20260609") {
-		t.Fatalf("waiting progress note must not contain final marker:\n%s", plan.Writes[0].Content)
-	}
-}
-
-func TestMulticaLeaderFallbackPostsFinalMarkerAfterRoleEvidence(t *testing.T) {
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-leader-final",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609e",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609e",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609e",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
-		},
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:        "completed",
-			CommandID:     "CMD-runs",
-			Argv:          []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"run_role":"worker","status":"completed"},{"run_role":"validator","status":"completed"}]`,
-		},
-		{
-			Status:        "completed",
-			CommandID:     "CMD-comments",
-			Argv:          []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609e"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609e"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected leader final fallback plan")
-	}
-	wantComment := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"}
-	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609e")
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, wantComment) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
-		t.Fatalf("expected final marker comment command, got %+v", plan.Commands)
-	}
-	var result string
-	for _, write := range plan.Writes {
-		if write.Path == "multica-result.md" {
-			result = write.Content
-		}
-	}
-	if !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609e") ||
-		strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609e") ||
-		strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609e") {
-		t.Fatalf("leader final result should contain only final marker:\n%s", result)
-	}
-}
-
-func TestMulticaLeaderFallbackParentsFinalMarkerToCurrentCommentRun(t *testing.T) {
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	triggerCommentID := "02fa52c1-d639-4e98-a451-11e7a673c546"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-leader-final-parent",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609i",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609i",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609i",
-		}, "\n"),
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:    "completed",
-			CommandID: "CMD-runs",
-			Argv:      []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[
-  {"kind":"comment","run_role":"leader","status":"running","trigger_comment_id":"` + triggerCommentID + `"},
-  {"kind":"comment","run_role":"worker","status":"completed"},
-  {"kind":"comment","run_role":"validator","status":"completed"}
-]`,
-		},
-		{
-			Status:        "completed",
-			CommandID:     "CMD-comments",
-			Argv:          []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609i"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609i"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected leader final fallback plan")
-	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609i")
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
-		t.Fatalf("expected parented final marker command, got %+v", plan.Commands)
-	}
-	var result string
-	for _, write := range plan.Writes {
-		if write.Path == multicaIssueResultPath {
-			result = write.Content
-		}
-	}
-	if !strings.Contains(result, "--parent "+triggerCommentID) || !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609i") {
-		t.Fatalf("leader final result should record parented final command and final marker:\n%s", result)
-	}
-}
-
-func TestMulticaLeaderFallbackParentsFinalMarkerFromFailedParentRequirement(t *testing.T) {
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	triggerCommentID := "3258a54c-994d-4aa4-aa6e-bc6494b16a50"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-leader-final-parent-retry",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609j",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609j",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609j",
-		}, "\n"),
-	}
-	runsJSON := `[
-  {"kind":"comment","run_role":"worker","status":"completed"},
-  {"kind":"comment","run_role":"validator","status":"completed"}
-]`
-	runsStdout, runsStderr, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-runs-retry", []byte(runsJSON), nil)
-	if err != nil {
-		t.Fatalf("save runs output: %v", err)
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-runs-retry",
-		CommandID:       "CMD-runs-retry",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "observation_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
-		StdoutRef:       runsStdout,
-		StderrRef:       runsStderr,
-		StdoutExcerpt:   "[truncated before role completion evidence]",
-	}); err != nil {
-		t.Fatalf("append runs record: %v", err)
-	}
-	commentsJSON := `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609j"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609j"}]`
-	commentsStdout, commentsStderr, err := svc.Store.SaveCommandOutput(spec.TaskID, "CMD-comments-retry", []byte(commentsJSON), nil)
-	if err != nil {
-		t.Fatalf("save comments output: %v", err)
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-comments-retry",
-		CommandID:       "CMD-comments-retry",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "observation_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
-		StdoutRef:       commentsStdout,
-		StderrRef:       commentsStderr,
-		StdoutExcerpt:   "[truncated before role markers]",
-	}); err != nil {
-		t.Fatalf("append comments record: %v", err)
-	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-unparented-final",
-		CommandID:       "CMD-unparented-final",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "repair_command",
-		Status:          "failed",
-		Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"},
-		StderrExcerpt:   `Error: add comment: POST /api/issues/` + issueID + `/comments returned 409: {"error":"parent_id must equal this task's trigger comment id (` + triggerCommentID + `)"}`,
-	}); err != nil {
-		t.Fatalf("append failed final record: %v", err)
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected leader final fallback plan")
-	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609j")
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
-		t.Fatalf("expected parented retry final marker command, got %+v", plan.Commands)
-	}
-	var result string
-	for _, write := range plan.Writes {
-		if write.Path == multicaIssueResultPath {
-			result = write.Content
-		}
-	}
-	if !strings.Contains(result, "--parent "+triggerCommentID) || !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609j") {
-		t.Fatalf("leader final retry result should record parented final command and final marker:\n%s", result)
-	}
-}
-
-func TestMulticaLeaderFallbackUsesObservedFinalMarker(t *testing.T) {
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	triggerCommentID := "65bef4e7-1fc8-4a09-907d-57960950e1f4"
-	svc := New(t.TempDir(), task.DefaultConfig())
-	spec := task.Spec{
-		TaskID: "TASK-leader-final-observed-marker",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"First read the live issue with `multica issue get " + issueID + " --output json`.",
-		}, "\n"),
-	}
-	observations := []provider.ObservationResult{
-		{
-			Status:    "completed",
-			CommandID: "CMD-issue",
-			Argv:      []string{"multica", "issue", "get", issueID, "--output", "json"},
-			StdoutExcerpt: strings.Join([]string{
-				`{"description":"Required public markers:`,
-				`worker: ngen-squad-auto-worker-e2e-ok-20260609k`,
-				`validator: ngen-squad-auto-validator-e2e-ok-20260609k`,
-				`final: ngen-squad-auto-long-e2e-ok-20260609k"}`,
-			}, "\n"),
-		},
-		{
-			Status:    "completed",
-			CommandID: "CMD-runs",
-			Argv:      []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt: `[
-  {"kind":"comment","run_role":"leader","status":"running","trigger_comment_id":"` + triggerCommentID + `"},
-  {"kind":"comment","run_role":"worker","status":"completed"},
-  {"kind":"comment","run_role":"validator","status":"completed"}
-]`,
-		},
-		{
-			Status:        "completed",
-			CommandID:     "CMD-comments",
-			Argv:          []string{"multica", "issue", "comment", "list", issueID, "--output", "json"},
-			StdoutExcerpt: `[{"content":"ngen-squad-auto-worker-e2e-ok-20260609k"},{"content":"ngen-squad-auto-validator-e2e-ok-20260609k"}]`,
-		},
-	}
-
-	plan, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, observations, fmt.Errorf("responses workspace edit returned empty output text"))
-	if !ok {
-		t.Fatal("expected leader final fallback plan")
-	}
-	want := []string{"multica", "issue", "comment", "add", issueID, "--parent", triggerCommentID, "--content-file", multicaIssueResultPath, "--output", "json"}
-	wantPublish := expectedMulticaMissionPublishArgv(issueID, spec.TaskID, "ngen-squad-auto-long-e2e-ok-20260609k")
-	if len(plan.Commands) != 2 || !slices.Equal(plan.Commands[0].Argv, want) || !slices.Equal(plan.Commands[1].Argv, wantPublish) {
-		t.Fatalf("expected observed-marker parented final command, got %+v", plan.Commands)
-	}
-	var result string
-	for _, write := range plan.Writes {
-		if write.Path == multicaIssueResultPath {
-			result = write.Content
-		}
-	}
-	if !strings.Contains(result, "ngen-squad-auto-long-e2e-ok-20260609k") ||
-		strings.Contains(result, "ngen-squad-auto-worker-e2e-ok-20260609k\n") ||
-		strings.Contains(result, "ngen-squad-auto-validator-e2e-ok-20260609k\n") {
-		t.Fatalf("leader final result should contain observed final marker only:\n%s", result)
-	}
-	if !strings.Contains(result, "--parent "+triggerCommentID) {
-		t.Fatalf("leader final result should record parented final command:\n%s", result)
-	}
-}
-
-func expectedMulticaMissionPublishArgv(issueID, taskID, marker string) []string {
-	return []string{
-		"multica", "mission", "publish", issueID,
-		"--published-doc-url", "multica://issues/" + issueID + "#marker-" + marker,
-		"--publish-receipt", "ngen-final-marker:" + marker + ";task:" + taskID,
-		"--output", "json",
-	}
-}
-
-func TestMulticaIssueCriteriaRequireCommandBackedCommentEvidence(t *testing.T) {
+func TestGenericExecutionEvidenceCriterionRequiresDurableAction(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
-	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
-	marker := "ngen-squad-worker-e2e-ok-20260609"
 	spec, err := svc.Create(context.Background(), task.TaskFile{
 		Kind:      task.KindCoding,
-		Title:     "multica issue marker",
-		Objective: "Multica issue execution mode for issue " + issueID + ".",
+		Title:     "action evidence",
+		Objective: "Run the requested implementation task.",
 		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
-			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-			{ID: "SC-003", Statement: `The exact Multica issue marker "` + marker + `" appears in command-backed issue comment evidence.`},
+			{ID: "SC-001", Statement: "Concrete execution progress is recorded in durable workspace edit or completed repair command evidence; result prose alone is not sufficient."},
 		},
 		WorkspaceRoot: dir,
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	writeFile(t, filepath.Join(dir, "multica-result.md"), "No `multica issue comment add` execution evidence is present yet. "+marker+"\n")
-	report := task.VerificationReport{
-		SchemaVersion: task.SchemaVersion,
-		TaskID:        spec.TaskID,
-		Status:        "passed",
-		Checks: []task.VerificationCheck{
-			{Status: "passed", Command: []string{"multica", "issue", "get", issueID, "--output", "json"}},
-		},
-	}
-	criteria := svc.criteriaFromEvidence(spec, report)
-	if got := criterionStatusForID(criteria, "SC-002"); got.Status != "open" {
-		t.Fatalf("expected comment command criterion to stay open without command record, got %+v", got)
-	}
-	if got := criterionStatusForID(criteria, "SC-003"); got.Status != "open" {
-		t.Fatalf("expected marker criterion to stay open without command-backed evidence, got %+v", got)
-	}
-
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-comment",
-		CommandID:       "CMD-comment",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "repair_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
-		StdoutExcerpt:   `{"content":"` + marker + `"}`,
-	}); err != nil {
-		t.Fatalf("append command run: %v", err)
-	}
-	criteria = svc.criteriaFromEvidence(spec, report)
-	if got := criterionStatusForID(criteria, "SC-002"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-comment") {
-		t.Fatalf("expected command-backed comment criterion to pass, got %+v", got)
-	}
-	if got := criterionStatusForID(criteria, "SC-003"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-comment") {
-		t.Fatalf("expected marker criterion to pass from command-backed evidence, got %+v", got)
-	}
-}
-
-func TestMulticaLeaderCriteriaRequireCompletedWorkerAndValidatorRuns(t *testing.T) {
-	dir := t.TempDir()
-	svc := New(dir, task.DefaultConfig())
-	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
-	spec, err := svc.Create(context.Background(), task.TaskFile{
-		Kind:      task.KindCoding,
-		Title:     "multica leader scheduling",
-		Objective: "Multica issue execution mode for issue " + issueID + ".",
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
-		},
-		WorkspaceRoot: dir,
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed"}
+	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed", RanAt: task.Now()}
 	criteria := svc.criteriaFromEvidence(spec, report)
 	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
-		t.Fatalf("expected scheduling criterion to stay open without runs, got %+v", got)
+		t.Fatalf("expected generic action criterion to stay open without durable action evidence, got %+v", got)
 	}
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-runs",
-		CommandID:       "CMD-runs",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "repair_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
-		StdoutExcerpt:   `[{"run_role":"worker","status":"completed"},{"run_role":"validator","status":"completed"}]`,
+
+	if err := svc.Store.AppendWorkspaceEdit(task.WorkspaceEditRecord{
+		SchemaVersion: task.SchemaVersion,
+		EditRecordID:  "EDITREC-applied",
+		EditID:        "EDIT-applied",
+		TaskID:        spec.TaskID,
+		TS:            task.Now(),
+		Kind:          "workspace_edit",
+		Status:        "applied",
+		FileChanges: []task.WorkspaceFileChange{
+			{Path: "README.md", Action: "write", AfterExists: true},
+		},
 	}); err != nil {
-		t.Fatalf("append runs command: %v", err)
+		t.Fatalf("append workspace edit: %v", err)
 	}
 	criteria = svc.criteriaFromEvidence(spec, report)
-	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-runs") {
-		t.Fatalf("expected scheduling criterion to pass from issue runs evidence, got %+v", got)
-	}
-}
-
-func TestMulticaLeaderSchedulingCriteriaRequiresCompletedEvidenceBeforeFinalMarker(t *testing.T) {
-	dir := t.TempDir()
-	svc := New(dir, task.DefaultConfig())
-	issueID := "bbda949c-1a3d-4c37-a42d-1367ce702d75"
-	spec, err := svc.Create(context.Background(), task.TaskFile{
-		Kind:      task.KindCoding,
-		Title:     "multica leader scheduling",
-		Objective: "Multica issue execution mode for issue " + issueID + ".\nMultica run role: leader.",
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
-		},
-		WorkspaceRoot: dir,
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	for _, record := range []task.CommandRunRecord{
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-worker",
-			CommandID:       "CMD-worker",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--output", "json"},
-			StdoutExcerpt:   `{"run_role":"worker","status":"queued"}`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-validator",
-			CommandID:       "CMD-validator",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "validator", "--output", "json"},
-			StdoutExcerpt:   `{"run_role":"validator","status":"queued"}`,
-		},
-	} {
-		if err := svc.Store.AppendCommandRun(record); err != nil {
-			t.Fatalf("append command run: %v", err)
-		}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, "workspace_edits.jsonl#edit_record_id=EDITREC-applied") {
+		t.Fatalf("expected generic action criterion to pass from workspace edit evidence, got %+v", got)
 	}
 
-	criteria := svc.criteriaFromEvidence(spec, task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed"})
-	got := criterionStatusForID(criteria, "SC-001")
-	if got.Status != "open" {
-		t.Fatalf("expected final-gated scheduling criterion to stay open with only delegate records, got %+v", got)
-	}
-
-	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
-		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-runs-completed",
-		CommandID:       "CMD-runs-completed",
-		TaskID:          spec.TaskID,
-		TS:              task.Now(),
-		Kind:            "observation_command",
-		Status:          "completed",
-		Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
-		StdoutExcerpt:   `[{"run_role":"worker","status":"completed"},{"run_role":"validator","status":"completed"}]`,
-	}); err != nil {
-		t.Fatalf("append completed runs: %v", err)
-	}
-
-	criteria = svc.criteriaFromEvidence(spec, task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed"})
-	got = criterionStatusForID(criteria, "SC-001")
-	if got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-runs-completed") {
-		t.Fatalf("expected final-gated scheduling criterion to pass from completed run evidence, got %+v", got)
-	}
-}
-
-func TestMulticaLeaderCompletionGateRejectsPrematureFinalMarker(t *testing.T) {
-	dir := t.TempDir()
-	svc := New(dir, task.DefaultConfig())
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	spec := task.Spec{
-		TaskID: "TASK-leader-gate",
-		Kind:   task.KindCoding,
-		Title:  "multica leader final gate",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609e",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609e",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609e",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: `The exact Multica issue marker "ngen-squad-auto-long-e2e-ok-20260609e" appears in command-backed issue comment evidence.`},
-			{ID: "SC-002", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
-		},
-		WorkspaceRoot: dir,
-	}
+	spec.TaskID = "TASK-command-evidence"
 	if err := svc.Store.EnsureTaskLayout(spec.TaskID); err != nil {
 		t.Fatalf("ensure task layout: %v", err)
 	}
-	for _, record := range []task.CommandRunRecord{
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-worker",
-			CommandID:       "CMD-worker",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--output", "json"},
-			StdoutExcerpt:   `{"run_role":"worker","status":"queued"}`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-validator",
-			CommandID:       "CMD-validator",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "squad", "delegate", issueID, "--role", "validator", "--output", "json"},
-			StdoutExcerpt:   `{"run_role":"validator","status":"queued"}`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-final",
-			CommandID:       "CMD-final",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "multica-result.md", "--output", "json"},
-			StdoutExcerpt:   `{"content":"ngen-squad-auto-long-e2e-ok-20260609e"}`,
-		},
-	} {
-		if err := svc.Store.AppendCommandRun(record); err != nil {
-			t.Fatalf("append command run: %v", err)
-		}
+	report.TaskID = spec.TaskID
+	criteria = svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected generic action criterion to stay open for new task, got %+v", got)
 	}
-	criteria := task.NewInitialCriteria(spec)
-	for i := range criteria.Criteria {
-		criteria.Criteria[i].Status = "met"
-		criteria.Criteria[i].Passes = true
-		criteria.Criteria[i].EvidenceRefs = []string{"command_runs.jsonl#command_record_id=CMDREC-final"}
-	}
-	completion := svc.buildCompletion(spec, criteria, task.ReviewReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "clear"}, true)
-	if completion.Status != "rejected" || !strings.Contains(completion.Summary, "completed worker/validator runs") {
-		t.Fatalf("expected Multica leader completion gate rejection, got %+v", completion)
-	}
-}
-
-func TestMulticaLeaderCompletionGateAcceptsCompletedRolesAndMarkers(t *testing.T) {
-	dir := t.TempDir()
-	svc := New(dir, task.DefaultConfig())
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	spec := task.Spec{
-		TaskID: "TASK-leader-gate-ok",
-		Kind:   task.KindCoding,
-		Title:  "multica leader final gate",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609e",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609e",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609e",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: `The exact Multica issue marker "ngen-squad-auto-long-e2e-ok-20260609e" appears in command-backed issue comment evidence.`},
-			{ID: "SC-002", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run evidence for " + issueID + " shows those roles completed."},
-		},
-		WorkspaceRoot: dir,
-	}
-	if err := svc.Store.EnsureTaskLayout(spec.TaskID); err != nil {
-		t.Fatalf("ensure task layout: %v", err)
-	}
-	for _, record := range []task.CommandRunRecord{
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-runs",
-			CommandID:       "CMD-runs",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "observation_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "issue", "runs", issueID, "--output", "json"},
-			StdoutExcerpt:   `[{"run_role":"worker","status":"completed"},{"run_role":"validator","status":"completed"}]`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-worker-marker",
-			CommandID:       "CMD-worker-marker",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "worker.md", "--output", "json"},
-			StdoutExcerpt:   `{"content":"ngen-squad-auto-worker-e2e-ok-20260609e"}`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-validator-marker",
-			CommandID:       "CMD-validator-marker",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "validator.md", "--output", "json"},
-			StdoutExcerpt:   `{"content":"ngen-squad-auto-validator-e2e-ok-20260609e"}`,
-		},
-		{
-			SchemaVersion:   task.SchemaVersion,
-			CommandRecordID: "CMDREC-final-marker",
-			CommandID:       "CMD-final-marker",
-			TaskID:          spec.TaskID,
-			TS:              task.Now(),
-			Kind:            "repair_command",
-			Status:          "completed",
-			Argv:            []string{"multica", "issue", "comment", "add", issueID, "--content-file", "final.md", "--output", "json"},
-			StdoutExcerpt:   `{"content":"ngen-squad-auto-long-e2e-ok-20260609e"}`,
-		},
-	} {
-		if err := svc.Store.AppendCommandRun(record); err != nil {
-			t.Fatalf("append command run: %v", err)
-		}
-	}
-	criteria := task.NewInitialCriteria(spec)
-	for i := range criteria.Criteria {
-		criteria.Criteria[i].Status = "met"
-		criteria.Criteria[i].Passes = true
-		criteria.Criteria[i].EvidenceRefs = []string{"command_runs.jsonl#command_record_id=CMDREC-runs"}
-	}
-	completion := svc.buildCompletion(spec, criteria, task.ReviewReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "clear"}, true)
-	if completion.Status != "accepted" {
-		t.Fatalf("expected Multica leader completion gate to accept completed role evidence, got %+v", completion)
-	}
-}
-
-func TestMulticaLeaderPollsAfterProgressInsteadOfReplayingProgress(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "multica"), `#!/bin/sh
-cmd="$1 $2 $3"
-if [ "$1 $2" = "issue get" ]; then
-  printf '{"id":"%s"}\n' "$4"
-  exit 0
-fi
-if [ "$cmd" = "issue comment list" ]; then
-  cat <<'JSON'
-[
-  {"id":"worker-comment","content":"ngen-squad-auto-worker-e2e-ok-20260609m"},
-  {"id":"validator-comment","content":"ngen-squad-auto-validator-e2e-ok-20260609m"}
-]
-JSON
-  exit 0
-fi
-if [ "$1 $2" = "issue runs" ]; then
-  cat <<'JSON'
-[
-  {"kind":"comment","run_role":"worker","status":"completed"},
-  {"kind":"comment","run_role":"validator","status":"completed"}
-]
-JSON
-  exit 0
-fi
-if [ "$cmd" = "issue comment add" ]; then
-  content_file=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--content-file" ]; then
-      content_file="$2"
-    fi
-    shift
-  done
-  if [ "$content_file" = "multica-progress.md" ]; then
-    echo "unexpected duplicate progress comment" >&2
-    exit 9
-  fi
-  if ! grep -q "ngen-squad-auto-long-e2e-ok-20260609m" "$content_file"; then
-    echo "missing final marker" >&2
-    exit 9
-  fi
-  printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609m"}\n'
-  exit 0
-fi
-if [ "$1 $2" = "mission publish" ]; then
-  printf '{"status":"published","receipt":"ngen-final-marker:ngen-squad-auto-long-e2e-ok-20260609m"}\n'
-  exit 0
-fi
-echo "unexpected command: $*" >&2
-exit 9
-`)
-	if err := os.Chmod(filepath.Join(dir, "multica"), 0o755); err != nil {
-		t.Fatalf("chmod multica stub: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	cfg := task.DefaultConfig()
-	cfg.Provider.Mode = "builtin"
-	cfg.Provider.CodingObservationCommandBudget = 3
-	cfg.Provider.CodingExecutionCommandBudget = 3
-	svc := New(dir, cfg)
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	spec, err := svc.Create(context.Background(), task.TaskFile{
-		Kind:  task.KindCoding,
-		Title: "multica leader",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609m",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609m",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609m",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
-			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-			{ID: "SC-003", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
-		},
-		WorkspaceRoot:    dir,
-		PermissionModeID: task.PermissionModeYolo,
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	progressArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}
 	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
 		SchemaVersion:   task.SchemaVersion,
-		CommandRecordID: "CMDREC-progress",
-		CommandID:       "CMD-progress",
+		CommandRecordID: "CMDREC-repair",
+		CommandID:       "CMD-repair",
 		TaskID:          spec.TaskID,
 		TS:              task.Now(),
 		Kind:            "repair_command",
 		Status:          "completed",
-		Argv:            progressArgv,
-		StdoutExcerpt:   `{"id":"progress-comment"}`,
-		ReplaySafety: &task.ReplaySafety{
-			SideEffectClass: "external_issue_mutation",
-			ReplayPolicy:    "manual_review_required",
-			OpenWorld:       true,
-		},
+		Argv:            []string{"go", "generate", "./..."},
 	}); err != nil {
-		t.Fatalf("append progress command: %v", err)
+		t.Fatalf("append command run: %v", err)
 	}
-
-	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed", RanAt: task.Now()}
-	criteria := svc.criteriaFromEvidence(spec, report)
-	state, err := svc.Store.LoadState(spec.TaskID)
-	if err != nil {
-		t.Fatalf("load state: %v", err)
-	}
-	repaired, _, ok, failure, err := svc.repairCodingTask(context.Background(), spec, &state, report, &criteria, nil, nil, 2, 3)
-	if err != nil {
-		t.Fatalf("repair coding task: %v", err)
-	}
-	if !ok || failure != nil || repaired.Status != "passed" {
-		t.Fatalf("expected polling path to repair successfully, ok=%v failure=%+v report=%+v", ok, failure, repaired)
-	}
-	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
-	if err != nil {
-		t.Fatalf("read command runs: %v", err)
-	}
-	var progressCount int
-	var finalSeen bool
-	var publishSeen bool
-	for _, record := range records {
-		if equalStringSlices(record.Argv, progressArgv) {
-			progressCount++
-		}
-		if record.Status == "completed" && multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "add", issueID}) && containsString(record.Argv, multicaIssueResultPath) {
-			finalSeen = true
-		}
-		if record.Status == "completed" && multicaCommandMatches(record.Argv, []string{"multica", "mission", "publish", issueID}) {
-			publishSeen = true
-		}
-		if record.Status == "failed" && strings.Contains(record.Summary, "Rejected repair command replay") {
-			t.Fatalf("progress polling path should not create replay-blocked command: %+v", record)
-		}
-	}
-	if progressCount != 1 {
-		t.Fatalf("expected no duplicate progress comment command, saw %d", progressCount)
-	}
-	if !finalSeen {
-		t.Fatalf("expected final marker comment command after polling role evidence, records=%+v", records)
-	}
-	if !publishSeen {
-		t.Fatalf("expected mission publish command after final marker, records=%+v", records)
+	criteria = svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-repair") {
+		t.Fatalf("expected generic action criterion to pass from repair command evidence, got %+v", got)
 	}
 }
 
-func TestMulticaLeaderFinalizationPollsBeyondPreviousFixedLeaderLimit(t *testing.T) {
-	dir := t.TempDir()
-	countPath := filepath.Join(dir, "poll-count")
-	writeFile(t, filepath.Join(dir, "multica"), `#!/bin/sh
-cmd="$1 $2 $3"
-count_file="$MULTICA_POLL_COUNT_FILE"
-read_count() {
-  if [ -f "$count_file" ]; then
-    cat "$count_file"
-  else
-    echo 0
-  fi
-}
-if [ "$1 $2" = "issue get" ]; then
-  printf '{"id":"%s"}\n' "$4"
-  exit 0
-fi
-if [ "$cmd" = "issue comment list" ]; then
-  n="$(read_count)"
-  if [ "$n" -gt 25 ]; then
-    cat <<'JSON'
-[
-  {"id":"worker-comment","content":"ngen-squad-auto-worker-e2e-ok-20260609n"},
-  {"id":"validator-comment","content":"ngen-squad-auto-validator-e2e-ok-20260609n"}
-]
-JSON
-  else
-    printf '[]\n'
-  fi
-  exit 0
-fi
-if [ "$1 $2" = "issue runs" ]; then
-  n="$(read_count)"
-  n=$((n + 1))
-  printf '%s\n' "$n" > "$count_file"
-  if [ "$n" -gt 25 ]; then
-    cat <<'JSON'
-[
-  {"kind":"comment","run_role":"worker","status":"completed"},
-  {"kind":"comment","run_role":"validator","status":"completed"}
-]
-JSON
-  else
-    cat <<'JSON'
-[
-  {"kind":"comment","run_role":"worker","status":"running"},
-  {"kind":"comment","run_role":"validator","status":"running"}
-]
-JSON
-  fi
-  exit 0
-fi
-if [ "$cmd" = "issue comment add" ]; then
-  content_file=""
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--content-file" ]; then
-      content_file="$2"
-    fi
-    shift
-  done
-  if [ "$content_file" = "multica-progress.md" ]; then
-    echo "unexpected duplicate progress comment" >&2
-    exit 9
-  fi
-  if ! grep -q "ngen-squad-auto-long-e2e-ok-20260609n" "$content_file"; then
-    echo "missing final marker" >&2
-    exit 9
-  fi
-  printf '{"id":"final-comment","content":"ngen-squad-auto-long-e2e-ok-20260609n"}\n'
-  exit 0
-fi
-if [ "$1 $2" = "mission publish" ]; then
-  printf '{"status":"published","receipt":"ngen-final-marker:ngen-squad-auto-long-e2e-ok-20260609n"}\n'
-  exit 0
-fi
-echo "unexpected command: $*" >&2
-exit 9
-`)
-	if err := os.Chmod(filepath.Join(dir, "multica"), 0o755); err != nil {
-		t.Fatalf("chmod multica stub: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("MULTICA_POLL_COUNT_FILE", countPath)
-
-	cfg := task.DefaultConfig()
-	cfg.Provider.Mode = "builtin"
-	cfg.Provider.CodingObservationCommandBudget = 3
-	cfg.Provider.CodingExecutionCommandBudget = 3
-	svc := New(dir, cfg)
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
-	spec, err := svc.Create(context.Background(), task.TaskFile{
-		Kind:  task.KindCoding,
-		Title: "multica leader",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-			"Required final marker: ngen-squad-auto-long-e2e-ok-20260609n",
-			"Worker marker: ngen-squad-auto-worker-e2e-ok-20260609n",
-			"Validator marker: ngen-squad-auto-validator-e2e-ok-20260609n",
-		}, "\n"),
-		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "The read-only live issue command `multica issue get " + issueID + " --output json` passes."},
-			{ID: "SC-002", Statement: "A completed repair command record shows `multica issue comment add " + issueID + "` issue comment evidence when this Multica issue task has marker or public-response requirements."},
-			{ID: "SC-003", Statement: "If the live issue requests worker-role or validator-role squad scheduling, Multica issue run/delegation evidence for " + issueID + " shows those roles were scheduled or completed; final completion still requires completed role evidence before the final marker."},
-		},
-		WorkspaceRoot:    dir,
-		PermissionModeID: task.PermissionModeYolo,
-	})
-	if err != nil {
-		t.Fatalf("create task: %v", err)
-	}
-	report := task.VerificationReport{SchemaVersion: task.SchemaVersion, TaskID: spec.TaskID, Status: "passed", RanAt: task.Now()}
-	criteria := svc.criteriaFromEvidence(spec, report)
-	state, err := svc.Store.LoadState(spec.TaskID)
-	if err != nil {
-		t.Fatalf("load state: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	repaired, _, _, done, err := svc.runMulticaLeaderFinalizationLoop(ctx, spec, &state, report, criteria, true, 0)
-	if err != nil {
-		t.Fatalf("leader finalization loop: %v", err)
-	}
-	if !done || repaired.Status != "passed" {
-		t.Fatalf("expected finalization after delayed role evidence, done=%v report=%+v", done, repaired)
-	}
-	data, err := os.ReadFile(countPath)
-	if err != nil {
-		t.Fatalf("read poll count: %v", err)
-	}
-	if got := strings.TrimSpace(string(data)); got != "27" {
-		t.Fatalf("expected loop to continue past the old 24-poll leader limit before finalizing, got poll count %s", got)
-	}
-}
-
-func TestMulticaIssueArtifactsDoNotTripScopeDrift(t *testing.T) {
+func TestUnscopedExternalArtifactsTripScopeDrift(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
-	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
 	spec, err := svc.Create(context.Background(), task.TaskFile{
-		Kind:  task.KindCoding,
-		Title: "multica leader issue",
-		Objective: strings.Join([]string{
-			"Multica issue execution mode for issue " + issueID + ".",
-			"Multica run role: leader.",
-		}, "\n"),
+		Kind:      task.KindCoding,
+		Title:     "external artifact",
+		Objective: "Post external issue evidence.",
 		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "Post command-backed Multica issue evidence."},
+			{ID: "SC-001", Statement: "Post command-backed external issue evidence."},
 		},
 		WorkspaceRoot: dir,
 	})
@@ -5146,21 +3757,21 @@ func TestMulticaIssueArtifactsDoNotTripScopeDrift(t *testing.T) {
 		t.Fatalf("save sprint: %v", err)
 	}
 
-	drift := svc.reviewScopeDriftPaths(spec, []string{multicaIssueResultPath, multicaIssueProgressPath, "outside.md"})
-	if !slices.Equal(drift, []string{"outside.md"}) {
-		t.Fatalf("expected only non-Multica artifact to drift, got %+v", drift)
+	drift := svc.reviewScopeDriftPaths(spec, []string{"external-result.md", "external-progress.md", "outside.md"})
+	if !slices.Equal(drift, []string{"external-result.md", "external-progress.md", "outside.md"}) {
+		t.Fatalf("expected unscoped external artifacts to drift, got %+v", drift)
 	}
 	if err := svc.Store.AppendWorkspaceEdit(task.WorkspaceEditRecord{
 		SchemaVersion: task.SchemaVersion,
-		EditRecordID:  "EDITREC-multica-artifacts",
-		EditID:        "EDIT-multica-artifacts",
+		EditRecordID:  "EDITREC-external-artifacts",
+		EditID:        "EDIT-external-artifacts",
 		TaskID:        spec.TaskID,
 		TS:            task.Now(),
 		Kind:          "provider_workspace_edit",
 		Status:        "applied",
 		FileChanges: []task.WorkspaceFileChange{
-			{Path: multicaIssueResultPath, Action: "write", AfterExists: true},
-			{Path: multicaIssueProgressPath, Action: "write", AfterExists: true},
+			{Path: "external-result.md", Action: "write", AfterExists: true},
+			{Path: "external-progress.md", Action: "write", AfterExists: true},
 		},
 	}); err != nil {
 		t.Fatalf("append workspace edit: %v", err)
@@ -5169,14 +3780,8 @@ func TestMulticaIssueArtifactsDoNotTripScopeDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture quality diagnostic: %v", err)
 	}
-	if len(quality.ScopeDriftPaths) != 0 || len(findings) != 0 || quality.Status != "clear" {
-		t.Fatalf("expected Multica issue artifacts to stay clear, quality=%+v findings=%+v", quality, findings)
-	}
-
-	ordinary := spec
-	ordinary.Objective = "ordinary coding task"
-	if got := svc.reviewScopeDriftPaths(ordinary, []string{multicaIssueResultPath}); !slices.Equal(got, []string{multicaIssueResultPath}) {
-		t.Fatalf("expected ordinary task to keep scope drift for result artifact, got %+v", got)
+	if !slices.Equal(quality.ScopeDriftPaths, []string{"external-result.md", "external-progress.md"}) || len(findings) == 0 || quality.Status != "blocking" {
+		t.Fatalf("expected unscoped external artifacts to block as scope drift, quality=%+v findings=%+v", quality, findings)
 	}
 }
 
@@ -5274,7 +3879,7 @@ func TestValidateExecutionCommandBenchmarkIntegrityMode(t *testing.T) {
 	}
 }
 
-func TestMulticaIssueHelpersRequireExplicitIssueExecutionObjective(t *testing.T) {
+func TestExplicitCommandTaskUsesOnlyUserRequestedCommand(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(dir, task.DefaultConfig())
 	squadID := "3b0ca27f-5db0-42ff-98ea-7750fc40500a"
@@ -5287,31 +3892,40 @@ func TestMulticaIssueHelpersRequireExplicitIssueExecutionObjective(t *testing.T)
 			"Create a new Multica issue from this user request.",
 			"Pass --assignee-id " + squadID + ".",
 			"Pass --project " + projectID + ".",
-			"Run exactly one `multica issue create --output json` invocation.",
+			"Run exactly one `multica issue create --title WebFirst --description-file request.md --assignee-id " + squadID + " --project " + projectID + " --output json` invocation.",
 		}, "\n"),
 		SuccessCriteria: []task.SuccessCriterion{
 			{ID: "SC-001", Statement: "A created issue is visible in Multica."},
 		},
 	}
 
-	if got := multicaIssueIDFromSpec(spec); got != "" {
-		t.Fatalf("ordinary objective must not treat squad/project UUID as issue id, got %q", got)
+	if commands := explicitObservationCommands(spec, 3); len(commands) != 0 {
+		t.Fatalf("ordinary objective must not treat mutation commands as observation commands, got %+v", commands)
 	}
-	if !multicaIssueCreateRequested(spec) {
-		t.Fatalf("ordinary objective should still recognize explicit issue-create command requirement")
+	if explicitCommandTaskRequested(spec) {
+		t.Fatalf("ordinary criterion must not trigger explicit command execution")
 	}
-	if commands := multicaIssueObservationCommands(spec, 3); len(commands) != 0 {
-		t.Fatalf("ordinary objective must not synthesize issue observation commands, got %+v", commands)
+	spec.SuccessCriteria = []task.SuccessCriterion{
+		{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
 	}
-	if _, ok := svc.multicaIssueFallbackWorkspaceEditPlan(spec, nil, fmt.Errorf("responses workspace edit returned empty output text")); ok {
-		t.Fatalf("ordinary objective must not synthesize Multica issue fallback plan")
+	if !explicitCommandTaskRequested(spec) {
+		t.Fatalf("expected explicit command task to be recognized")
 	}
-	if multicaIssueArtifactPathAllowed(spec, multicaIssueResultPath) {
-		t.Fatalf("ordinary objective must not whitelist Multica issue artifacts")
+	plan, ok := svc.explicitCommandWorkspaceEditPlan(spec)
+	if !ok || len(plan.Commands) != 1 {
+		t.Fatalf("expected explicit command-backed plan, got ok=%v plan=%+v", ok, plan)
+	}
+	for _, required := range []string{"--title", "WebFirst", "--description-file", "request.md", "--assignee-id", squadID, "--project", projectID, "--output", "json"} {
+		if !containsString(plan.Commands[0].Argv, required) {
+			t.Fatalf("expected argv to contain %q, got %+v", required, plan.Commands[0].Argv)
+		}
+	}
+	if len(plan.Writes) != 0 {
+		t.Fatalf("generic runtime must not synthesize files for explicit commands, got %+v", plan.Writes)
 	}
 }
 
-func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T) {
+func TestExplicitCommandTaskExecutesOnceAndClosesCriteria(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "README.md"), "# quick create\n")
 	binDir := t.TempDir()
@@ -5331,10 +3945,10 @@ func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T
 		Kind:             task.KindGeneral,
 		PresetID:         task.PresetDocsLite,
 		Title:            "quick create",
-		Objective:        quickCreatePrompt(squadID, projectID),
+		Objective:        quickCreatePromptWithDescription(squadID, projectID, "request.md"),
 		PermissionModeID: task.PermissionModeYolo,
 		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient."},
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
 		},
 		WorkspaceRoot: dir,
 	})
@@ -5347,7 +3961,7 @@ func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T
 		t.Fatalf("run task: %v", err)
 	}
 	if snapshot.State != task.StateDone {
-		t.Fatalf("expected done quick-create task, got %+v", snapshot)
+		t.Fatalf("expected done explicit command task, got %+v", snapshot)
 	}
 	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
 	if err != nil {
@@ -5366,7 +3980,7 @@ func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T
 	if create.Status != "completed" || create.PermissionModeID != task.PermissionModeYolo || create.PolicyDecision != "allow_yolo" {
 		t.Fatalf("unexpected command record: %+v", create)
 	}
-	for _, required := range []string{"--title", "--description-file", multicaIssueCreateDescriptionPath, "--assignee-id", squadID, "--project", projectID, "--output", "json"} {
+	for _, required := range []string{"--title", "--description-file", "request.md", "--assignee-id", squadID, "--project", projectID, "--output", "json"} {
 		if !containsString(create.Argv, required) {
 			t.Fatalf("expected argv to contain %q, got %+v", required, create.Argv)
 		}
@@ -5380,11 +3994,7 @@ func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T
 	}
 	got := criterionStatusForID(criteria, "SC-001")
 	if got.Status != "met" || !containsString(got.EvidenceRefs, artifactCommandRef(create.CommandRecordID)) {
-		t.Fatalf("expected issue-create criterion to close with command evidence, got %+v", got)
-	}
-	desc := readFile(t, filepath.Join(dir, multicaIssueCreateDescriptionPath))
-	if !strings.Contains(desc, "Web First") {
-		t.Fatalf("expected description artifact to contain user request, got %q", desc)
+		t.Fatalf("expected explicit command criterion to close with command evidence, got %+v", got)
 	}
 	log := readFile(t, logPath)
 	if strings.Count(log, "issue create") != 1 {
@@ -5403,7 +4013,7 @@ func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T
 	}
 }
 
-func TestMulticaIssueCreateCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T) {
+func TestExplicitCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "README.md"), "# quick create\n")
 	binDir := t.TempDir()
@@ -5421,10 +4031,10 @@ func TestMulticaIssueCreateCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T
 		Kind:             task.KindGeneral,
 		PresetID:         task.PresetDocsLite,
 		Title:            "quick create fails",
-		Objective:        quickCreatePrompt("3b0ca27f-5db0-42ff-98ea-7750fc40500a", "ae886a17-0ef6-4b02-b154-3ac601df7239"),
+		Objective:        quickCreatePromptWithDescription("3b0ca27f-5db0-42ff-98ea-7750fc40500a", "ae886a17-0ef6-4b02-b154-3ac601df7239", "request.md"),
 		PermissionModeID: task.PermissionModeYolo,
 		SuccessCriteria: []task.SuccessCriterion{
-			{ID: "SC-001", Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient."},
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
 		},
 		WorkspaceRoot: dir,
 	})
@@ -5444,7 +4054,7 @@ func TestMulticaIssueCreateCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T
 		t.Fatalf("load criteria: %v", err)
 	}
 	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
-		t.Fatalf("expected issue-create criterion to remain open after failed command, got %+v", got)
+		t.Fatalf("expected explicit command criterion to remain open after failed command, got %+v", got)
 	}
 	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
 	if err != nil {
@@ -5918,25 +4528,25 @@ func TestUnsafeRepairCommandReplayIsRejected(t *testing.T) {
 	}
 }
 
-func TestMulticaLeaderProgressCommentDoesNotBlockFinalReplaySafety(t *testing.T) {
+func TestDistinctExternalMutationCommandDoesNotBlockReplaySafety(t *testing.T) {
 	issueID := "354bc8bf-35cb-4448-beab-770ec84f3898"
 	taskID := "TASK-multica-replay"
 	svc := New(t.TempDir(), task.DefaultConfig())
 	if err := svc.Store.EnsureTaskLayout(taskID); err != nil {
 		t.Fatalf("ensure task layout: %v", err)
 	}
-	progressArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueProgressPath, "--output", "json"}
-	finalArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", multicaIssueResultPath, "--output", "json"}
+	firstArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "progress.md", "--output", "json"}
+	secondArgv := []string{"multica", "issue", "comment", "add", issueID, "--content-file", "result.md", "--output", "json"}
 	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
 		SchemaVersion:    task.SchemaVersion,
-		CommandRecordID:  "CMDREC-progress",
-		CommandID:        "CMD-progress",
+		CommandRecordID:  "CMDREC-first",
+		CommandID:        "CMD-first",
 		TaskID:           taskID,
 		TS:               task.Now(),
 		Kind:             "repair_command",
 		Status:           "completed",
-		Summary:          "previous leader progress comment",
-		Argv:             progressArgv,
+		Summary:          "previous external mutation command",
+		Argv:             firstArgv,
 		PermissionModeID: task.PermissionModeYolo,
 		PolicyDecision:   "allow_yolo",
 		ReplaySafety: &task.ReplaySafety{
@@ -5951,24 +4561,24 @@ func TestMulticaLeaderProgressCommentDoesNotBlockFinalReplaySafety(t *testing.T)
 	if previous, blocked := svc.previousUnsafeCommandReplay(taskID, task.CommandRunRecord{
 		TaskID: taskID,
 		Kind:   "repair_command",
-		Argv:   finalArgv,
+		Argv:   secondArgv,
 		ReplaySafety: &task.ReplaySafety{
 			SideEffectClass: "external_issue_mutation",
 			ReplayPolicy:    "manual_review_required",
 		},
 	}); blocked {
-		t.Fatalf("progress comment must not block distinct final comment argv, previous=%+v", previous)
+		t.Fatalf("distinct external mutation argv must not be replay-blocked, previous=%+v", previous)
 	}
 	if previous, blocked := svc.previousUnsafeCommandReplay(taskID, task.CommandRunRecord{
 		TaskID: taskID,
 		Kind:   "repair_command",
-		Argv:   progressArgv,
+		Argv:   firstArgv,
 		ReplaySafety: &task.ReplaySafety{
 			SideEffectClass: "external_issue_mutation",
 			ReplayPolicy:    "manual_review_required",
 		},
-	}); !blocked || previous.CommandRecordID != "CMDREC-progress" {
-		t.Fatalf("same progress comment argv should still be replay-blocked, previous=%+v blocked=%v", previous, blocked)
+	}); !blocked || previous.CommandRecordID != "CMDREC-first" {
+		t.Fatalf("same external mutation argv should still be replay-blocked, previous=%+v blocked=%v", previous, blocked)
 	}
 }
 
@@ -6924,7 +5534,7 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func quickCreatePrompt(squadID, projectID string) string {
+func quickCreatePromptWithDescription(squadID, projectID, descriptionPath string) string {
 	return strings.Join([]string{
 		"You are running as a quick-create assistant for a Multica workspace.",
 		"",
@@ -6936,7 +5546,7 @@ func quickCreatePrompt(squadID, projectID string) string {
 		"- pass `--project \"" + projectID + "\"`.",
 		"",
 		"Output format:",
-		"- Run exactly one `multica issue create --output json` invocation.",
+		"- Run exactly one `multica issue create --title WebFirst --description-file " + descriptionPath + " --assignee-id " + squadID + " --project " + projectID + " --output json` invocation.",
 	}, "\n")
 }
 

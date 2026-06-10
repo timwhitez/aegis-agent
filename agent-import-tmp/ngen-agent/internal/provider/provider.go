@@ -1096,30 +1096,25 @@ func generateWorkspaceEditWithResponses(ctx context.Context, cfg task.ProviderCo
 		return WorkspaceEditPlan{}, err
 	}
 	client := &http.Client{Timeout: decisionTimeout(cfg)}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesEndpoint(cfg.BaseURL), bytes.NewReader(body))
+	parsed, err := doResponsesRequest(ctx, client, cfg, apiKey, "responses workspace edit", body)
 	if err != nil {
 		return WorkspaceEditPlan{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	var parsed responsesResponse
-	if err := decodeLimitedJSON("responses workspace edit", resp.Body, &parsed); err != nil {
-		return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit returned invalid JSON: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit returned %s: %s", resp.Status, parsed.Error.Message)
-		}
-		return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit returned %s", resp.Status)
-	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		return WorkspaceEditPlan{}, errors.New("responses workspace edit returned empty output text")
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, 8000)
+		if retryErr != nil {
+			return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit could not prepare empty-output retry: %w", retryErr)
+		}
+		retried, retryErr := doResponsesRequest(ctx, client, cfg, apiKey, "responses workspace edit retry", retryBody)
+		if retryErr != nil {
+			return WorkspaceEditPlan{}, retryErr
+		}
+		text = strings.TrimSpace(retried.outputText())
+		if text == "" {
+			return WorkspaceEditPlan{}, responsesEmptyOutputError("responses workspace edit", parsed, retried)
+		}
+		parsed = retried
 	}
 	return decodeWorkspaceEditPayload(responsePayloadSource("responses workspace edit", parsed.ID), []byte(text))
 }
@@ -1137,30 +1132,25 @@ func generateWorkspaceObservationsWithResponses(ctx context.Context, cfg task.Pr
 		return WorkspaceObservationPlan{}, err
 	}
 	client := &http.Client{Timeout: decisionTimeout(cfg)}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesEndpoint(cfg.BaseURL), bytes.NewReader(body))
+	parsed, err := doResponsesRequest(ctx, client, cfg, apiKey, "responses workspace observation", body)
 	if err != nil {
 		return WorkspaceObservationPlan{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	var parsed responsesResponse
-	if err := decodeLimitedJSON("responses workspace observation", resp.Body, &parsed); err != nil {
-		return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation returned invalid JSON: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation returned %s: %s", resp.Status, parsed.Error.Message)
-		}
-		return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation returned %s", resp.Status)
-	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		return WorkspaceObservationPlan{}, errors.New("responses workspace observation returned empty output text")
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, 4000)
+		if retryErr != nil {
+			return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation could not prepare empty-output retry: %w", retryErr)
+		}
+		retried, retryErr := doResponsesRequest(ctx, client, cfg, apiKey, "responses workspace observation retry", retryBody)
+		if retryErr != nil {
+			return WorkspaceObservationPlan{}, retryErr
+		}
+		text = strings.TrimSpace(retried.outputText())
+		if text == "" {
+			return WorkspaceObservationPlan{}, responsesEmptyOutputError("responses workspace observation", parsed, retried)
+		}
+		parsed = retried
 	}
 	return decodeWorkspaceObservationPayload(responsePayloadSource("responses workspace observation", parsed.ID), []byte(text))
 }
@@ -1178,32 +1168,84 @@ func generateMissionValidationWithResponses(ctx context.Context, cfg task.Provid
 		return MissionValidationResult{}, err
 	}
 	client := &http.Client{Timeout: decisionTimeout(cfg)}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesEndpoint(cfg.BaseURL), bytes.NewReader(body))
+	parsed, err := doResponsesRequest(ctx, client, cfg, apiKey, "responses mission validation", body)
 	if err != nil {
 		return MissionValidationResult{}, err
+	}
+	text := strings.TrimSpace(parsed.outputText())
+	if text == "" {
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, 4000)
+		if retryErr != nil {
+			return MissionValidationResult{}, fmt.Errorf("responses mission validation could not prepare empty-output retry: %w", retryErr)
+		}
+		retried, retryErr := doResponsesRequest(ctx, client, cfg, apiKey, "responses mission validation retry", retryBody)
+		if retryErr != nil {
+			return MissionValidationResult{}, retryErr
+		}
+		text = strings.TrimSpace(retried.outputText())
+		if text == "" {
+			return MissionValidationResult{}, responsesEmptyOutputError("responses mission validation", parsed, retried)
+		}
+		parsed = retried
+	}
+	return decodeMissionValidationPayload(responsePayloadSource("responses mission validation", parsed.ID), []byte(text))
+}
+
+func doResponsesRequest(ctx context.Context, client *http.Client, cfg task.ProviderConfig, apiKey, operation string, body []byte) (responsesResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesEndpoint(cfg.BaseURL), bytes.NewReader(body))
+	if err != nil {
+		return responsesResponse{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return MissionValidationResult{}, fmt.Errorf("responses mission validation request failed: %w", err)
+		return responsesResponse{}, fmt.Errorf("%s request failed: %w", operation, err)
 	}
 	defer resp.Body.Close()
 	var parsed responsesResponse
-	if err := decodeLimitedJSON("responses mission validation", resp.Body, &parsed); err != nil {
-		return MissionValidationResult{}, fmt.Errorf("responses mission validation returned invalid JSON: %w", err)
+	if err := decodeLimitedJSON(operation, resp.Body, &parsed); err != nil {
+		return responsesResponse{}, fmt.Errorf("%s returned invalid JSON: %w", operation, err)
 	}
 	if resp.StatusCode >= 400 {
 		if parsed.Error != nil && parsed.Error.Message != "" {
-			return MissionValidationResult{}, fmt.Errorf("responses mission validation returned %s: %s", resp.Status, parsed.Error.Message)
+			return responsesResponse{}, fmt.Errorf("%s returned %s: %s", operation, resp.Status, parsed.Error.Message)
 		}
-		return MissionValidationResult{}, fmt.Errorf("responses mission validation returned %s", resp.Status)
+		return responsesResponse{}, fmt.Errorf("%s returned %s", operation, resp.Status)
 	}
-	text := strings.TrimSpace(parsed.outputText())
-	if text == "" {
-		return MissionValidationResult{}, errors.New("responses mission validation returned empty output text")
+	return parsed, nil
+}
+
+func responsesRetryWithoutReasoning(body []byte, minMaxOutputTokens int) ([]byte, error) {
+	var payload responsesRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
 	}
-	return decodeMissionValidationPayload(responsePayloadSource("responses mission validation", parsed.ID), []byte(text))
+	if payload.MaxOutputTokens < minMaxOutputTokens {
+		payload.MaxOutputTokens = minMaxOutputTokens
+	}
+	payload.Reasoning = nil
+	return json.Marshal(payload)
+}
+
+func responsesEmptyOutputError(operation string, first, second responsesResponse) error {
+	var details []string
+	if first.ID != "" {
+		details = append(details, "first_response_id="+first.ID)
+	}
+	if first.Status != "" {
+		details = append(details, "first_status="+first.Status)
+	}
+	if second.ID != "" {
+		details = append(details, "retry_response_id="+second.ID)
+	}
+	if second.Status != "" {
+		details = append(details, "retry_status="+second.Status)
+	}
+	if len(details) == 0 {
+		return fmt.Errorf("%s returned empty output text after retry", operation)
+	}
+	return fmt.Errorf("%s returned empty output text after retry (%s)", operation, strings.Join(details, " "))
 }
 
 func generateWorkspaceEditWithAnthropic(ctx context.Context, cfg task.ProviderConfig, input WorkspaceEditInput) (WorkspaceEditPlan, error) {
@@ -1376,9 +1418,6 @@ Rules:
 - You may include bounded workspace commands when file edits alone are insufficient. Commands run from workspace root.
 - Use argv arrays only for commands. Prefer direct safe executables and never return shell strings, pipes, redirects, heredocs, or command chaining.
 - Repair commands are policy-gated by task.permission_mode_id: standard mode allows only a small safe command set and rejects shell wrappers or repo scripts as needs_approval; yolo mode is intentionally broader but still records the command.
-- For Multica issue execution tasks, when live issue observations explicitly require squad role scheduling, use direct argv repair commands shaped like: multica squad delegate <issue-id> --role <role> --instructions <text> --expected-artifact <path> --output json. Do not wait for an operator to manually delegate.
-- For Multica issue execution tasks, when a public marker/comment is required, write the comment body to multica-result.md and use a direct argv repair command shaped like: multica issue comment add <issue-id> --content-file multica-result.md --output json. Do not satisfy comment criteria by merely mentioning the command. If the task asks for worker and validator markers, include all required markers in the final comment body after their issue run evidence exists.
-- For Multica leader progress comments before role evidence is complete, use a separate multica-progress.md content file and reserve multica-result.md for role/final marker comments.
 - Use command phase "pre" only when a command must run before file edits. Otherwise prefer "post" for formatters, generators, dependency sync, builds, installs, or migrations that should happen after edits.
 - Keep paths relative to workspace root.
 - Never write absolute paths or .ngen paths.
@@ -1524,7 +1563,7 @@ Rules:
 - Commands must be read-only and workspace-safe.
 - Prefer rg for content discovery and narrow file reads or git status/show/log commands for repo bearings when truly needed.
 - Do not request build, test, format, install, migration, generator, package-manager, network, or write commands in observation.
-- For Multica issue execution tasks only, read-only 'multica issue get ... --output json', 'multica issue list ... --output json', and 'multica issue comment list ... --output json' commands are valid observation commands for live issue context.
+- When the task text explicitly asks for a read-only external CLI inspection command, you may request it only if the runtime command validator permits it.
 - Use context_pack to preserve continuity and avoid rediscovering already-settled task truth.
 - Use context_pack.project_focus when it is present to keep observation inside the bound project step, dependencies, and branch.
 - Use criteria as the durable acceptance ledger. Treat criteria.current_criterion_id as the active feature boundary and criteria.criteria[].passes=false as still failing.
@@ -3114,9 +3153,11 @@ type responsesTextFormat struct {
 }
 
 type responsesResponse struct {
-	ID     string                `json:"id,omitempty"`
-	Error  *responsesError       `json:"error,omitempty"`
-	Output []responsesOutputItem `json:"output"`
+	ID         string                `json:"id,omitempty"`
+	Status     string                `json:"status,omitempty"`
+	Error      *responsesError       `json:"error,omitempty"`
+	OutputText responseText          `json:"output_text,omitempty"`
+	Output     []responsesOutputItem `json:"output"`
 }
 
 type responsesError struct {
@@ -3160,20 +3201,53 @@ func (e *responsesError) UnmarshalJSON(data []byte) error {
 type responsesOutputItem struct {
 	Type    string                   `json:"type"`
 	Role    string                   `json:"role,omitempty"`
+	Text    responseText             `json:"text,omitempty"`
 	Content []responsesOutputContent `json:"content,omitempty"`
 }
 
 type responsesOutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  responseText    `json:"text,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
+	JSON  json.RawMessage `json:"json,omitempty"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+type responseText string
+
+func (t *responseText) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*t = ""
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err == nil {
+		*t = responseText(strings.TrimSpace(value))
+		return nil
+	}
+	*t = responseText(trimmed)
+	return nil
 }
 
 func (r responsesResponse) outputText() string {
 	var parts []string
+	appendPart := func(value string) {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	appendPart(string(r.OutputText))
 	for _, item := range r.Output {
+		if isResponsesTextContentType(item.Type) || strings.TrimSpace(item.Type) == "message" {
+			appendPart(string(item.Text))
+		}
 		for _, content := range item.Content {
-			if isResponsesTextContentType(content.Type) && strings.TrimSpace(content.Text) != "" {
-				parts = append(parts, strings.TrimSpace(content.Text))
+			if isResponsesTextContentType(content.Type) || strings.TrimSpace(content.Type) == "" {
+				appendPart(string(content.Text))
+				appendPart(responsesRawJSONText(content.Input))
+				appendPart(responsesRawJSONText(content.JSON))
+				appendPart(responsesRawJSONText(content.Value))
 			}
 		}
 	}
@@ -3182,11 +3256,23 @@ func (r responsesResponse) outputText() string {
 
 func isResponsesTextContentType(value string) bool {
 	switch strings.TrimSpace(value) {
-	case "output_text", "text", "json", "output_json":
+	case "output_text", "text", "json", "output_json", "input_json":
 		return true
 	default:
 		return false
 	}
+}
+
+func responsesRawJSONText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(trimmed, &value); err == nil {
+		return strings.TrimSpace(value)
+	}
+	return string(trimmed)
 }
 
 type chatCompletionsRequest struct {

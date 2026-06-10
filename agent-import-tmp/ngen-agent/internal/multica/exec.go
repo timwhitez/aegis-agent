@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	ngenrt "ngen/internal/runtime"
 	"ngen/internal/task"
@@ -229,23 +230,106 @@ func taskFromEnvelope(envelope StreamInputMessage, prompt string, resolution Con
 }
 
 func runModeForObjective(objective string, resume bool) string {
-	trimmed := strings.TrimSpace(objective)
-	if strings.HasPrefix(trimmed, "Multica issue execution mode for issue ") {
-		if resume {
-			return "resume"
-		}
-		return "run"
-	}
+	_ = objective
+	_ = resume
 	return "auto"
 }
 
 func inferTaskKind(workdir, prompt string) (task.Kind, task.PresetID) {
-	lower := strings.ToLower(prompt)
-	codeIntent := strings.Contains(lower, "code") || strings.Contains(lower, "implement") || strings.Contains(lower, "fix") || strings.Contains(lower, "test") || strings.Contains(lower, "build")
-	if codeIntent && looksLikeCodeRepo(workdir) {
+	if promptLooksCodeOrBuildOriented(prompt) && looksLikeCodeRepo(workdir) {
 		return task.KindCoding, ""
 	}
 	return task.KindGeneral, task.PresetDocsLite
+}
+
+func promptLooksCodeOrBuildOriented(prompt string) bool {
+	if strings.TrimSpace(prompt) == "" {
+		return false
+	}
+	lower := strings.ToLower(prompt)
+	for _, phrase := range []string{
+		"start by running",
+		"run `",
+		"execute `",
+		"code",
+		"implement",
+		"fix",
+		"build",
+		"test",
+		"develop",
+		"create",
+		"update",
+		"write",
+		"generate",
+		"deploy",
+		"validate",
+		"run:",
+		"execute:",
+		"运行",
+		"执行",
+		"实现",
+		"修复",
+		"构建",
+		"测试",
+		"开发",
+		"创建",
+		"更新",
+		"编写",
+		"生成",
+		"部署",
+		"验证",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, ">"))
+		lowerLine := strings.ToLower(trimmed)
+		if strings.HasPrefix(lowerLine, "- run ") ||
+			strings.HasPrefix(lowerLine, "* run ") ||
+			strings.HasPrefix(lowerLine, "run ") ||
+			strings.HasPrefix(lowerLine, "- execute ") ||
+			strings.HasPrefix(lowerLine, "* execute ") ||
+			strings.HasPrefix(lowerLine, "execute ") {
+			return true
+		}
+		if strings.Contains(trimmed, "`") && lineContainsCommandVerb(lowerLine) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineContainsCommandVerb(line string) bool {
+	for _, verb := range []string{"run", "execute", "invoke", "call", "运行", "执行", "调用"} {
+		if hasWord(line, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasWord(text, word string) bool {
+	start := 0
+	for {
+		idx := strings.Index(text[start:], word)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		beforeOK := idx == 0 || !isWordRune(rune(text[idx-1]))
+		afterIdx := idx + len(word)
+		afterOK := afterIdx >= len(text) || !isWordRune(rune(text[afterIdx]))
+		if beforeOK && afterOK {
+			return true
+		}
+		start = afterIdx
+	}
+}
+
+func isWordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_'
 }
 
 func looksLikeCodeRepo(workdir string) bool {
@@ -272,10 +356,10 @@ func titleFromPrompt(prompt string) string {
 func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
 	first := "Produce a verifiable handoff/result for the requested work."
 	lower := strings.ToLower(prompt)
-	if promptRequestsMulticaIssueCreate(prompt) {
+	if promptRequestsExplicitCommand(prompt) {
 		return []task.SuccessCriterion{{
 			ID:        "SC-001",
-			Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient.",
+			Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient.",
 		}}
 	}
 	if strings.Contains(lower, "test") || strings.Contains(lower, "build") {
@@ -284,15 +368,36 @@ func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
 	return []task.SuccessCriterion{{ID: "SC-001", Statement: first}}
 }
 
-func promptRequestsMulticaIssueCreate(prompt string) bool {
-	lower := strings.ToLower(prompt)
-	if !strings.Contains(lower, "multica issue create") {
+func promptRequestsExplicitCommand(prompt string) bool {
+	if strings.TrimSpace(prompt) == "" {
 		return false
 	}
-	return strings.Contains(lower, "--output json") ||
-		strings.Contains(lower, "--output=json") ||
-		(strings.Contains(lower, "--output") && strings.Contains(lower, "json") &&
-			(strings.Contains(lower, "run exactly one") || strings.Contains(lower, "single `multica issue create") || strings.Contains(lower, "single multica issue create")))
+	for _, line := range strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if lineNegatesCommand(lower) {
+			continue
+		}
+		if strings.Contains(lower, "run exactly one `") ||
+			strings.Contains(lower, "execute exactly one `") ||
+			strings.Contains(lower, "run the command `") ||
+			strings.Contains(lower, "execute the command `") ||
+			strings.Contains(lower, "运行一次 `") ||
+			strings.Contains(lower, "执行一次 `") ||
+			strings.Contains(lower, "运行命令 `") ||
+			strings.Contains(lower, "执行命令 `") {
+			return true
+		}
+	}
+	return false
+}
+
+func lineNegatesCommand(line string) bool {
+	for _, phrase := range []string{"do not", "don't", "never", "不要", "别", "不得", "禁止"} {
+		if strings.Contains(line, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func NewRunMetadata(spec task.Spec, resolution ConfigResolution) task.MulticaRunMetadata {

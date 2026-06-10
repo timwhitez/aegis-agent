@@ -1252,7 +1252,7 @@ func TestGenerateWorkspaceEditAcceptsResponsesTextContent(t *testing.T) {
 				"role": "assistant",
 				"content": [{
 					"type": "text",
-					"text": "{\"summary\":\"Write Multica result\",\"patch\":\"\",\"writes\":[{\"path\":\"multica-result.md\",\"content\":\"multica issue comment add 0496acb9-ff48-4507-bb79-d122a68c3a98 --body ngen-multica-real-e2e-ok\\n\"}],\"deletes\":[],\"commands\":[]}"
+					"text": "{\"summary\":\"Write external result\",\"patch\":\"\",\"writes\":[{\"path\":\"external-result.md\",\"content\":\"external command evidence\\n\"}],\"deletes\":[],\"commands\":[]}"
 				}]
 			}]
 		}`))
@@ -1268,15 +1268,145 @@ func TestGenerateWorkspaceEditAcceptsResponsesTextContent(t *testing.T) {
 		Task: task.Spec{
 			TaskID:    "TASK-001",
 			Kind:      task.KindCoding,
-			Objective: "add Multica marker",
+			Objective: "add external result",
 		},
 		Files: []WorkspaceFile{{Path: "AGENTS.md", Content: "runtime brief\n"}},
 	})
 	if err != nil {
 		t.Fatalf("generate workspace edit: %v", err)
 	}
-	if len(plan.Writes) != 1 || plan.Writes[0].Path != "multica-result.md" || !strings.Contains(plan.Writes[0].Content, "ngen-multica-real-e2e-ok") {
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != "external-result.md" || !strings.Contains(plan.Writes[0].Content, "external command evidence") {
 		t.Fatalf("unexpected plan writes: %+v", plan.Writes)
+	}
+}
+
+func TestGenerateWorkspaceEditAcceptsResponsesAlternateOutputShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		path string
+	}{
+		{
+			name: "top_level_output_text",
+			body: `{
+				"output_text": "{\"summary\":\"Top-level text\",\"patch\":\"\",\"writes\":[{\"path\":\"reports/mission-plan.md\",\"content\":\"# Mission Plan\\n\"}],\"deletes\":[],\"commands\":[]}"
+			}`,
+			path: "reports/mission-plan.md",
+		},
+		{
+			name: "item_text_object",
+			body: `{
+				"output": [{
+					"type": "message",
+					"role": "assistant",
+					"text": {"summary":"Item text object","patch":"","writes":[{"path":"reports/item.md","content":"item\n"}],"deletes":[],"commands":[]}
+				}]
+			}`,
+			path: "reports/item.md",
+		},
+		{
+			name: "content_input_json_object",
+			body: `{
+				"output": [{
+					"type": "message",
+					"role": "assistant",
+					"content": [{
+						"type": "output_json",
+						"input": {"summary":"Input JSON","patch":"","writes":[{"path":"reports/input.md","content":"input\n"}],"deletes":[],"commands":[]}
+					}]
+				}]
+			}`,
+			path: "reports/input.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("OPENAI_API_KEY", "test-key")
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			plan, err := GenerateWorkspaceEdit(context.Background(), task.ProviderConfig{
+				Mode:      "responses",
+				BaseURL:   server.URL + "/v1",
+				Model:     "gpt-5.4",
+				APIKeyEnv: "OPENAI_API_KEY",
+			}, WorkspaceEditInput{
+				Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindCoding, Objective: "write report"},
+				Files: []WorkspaceFile{{Path: "README.md", Content: "context\n"}},
+			})
+			if err != nil {
+				t.Fatalf("generate workspace edit: %v", err)
+			}
+			if len(plan.Writes) != 1 || plan.Writes[0].Path != tc.path {
+				t.Fatalf("unexpected writes: %+v", plan.Writes)
+			}
+		})
+	}
+}
+
+func TestGenerateWorkspaceEditRetriesResponsesEmptyOutputWithoutReasoning(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	var seenBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seenBodies = append(seenBodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		switch len(seenBodies) {
+		case 1:
+			_, _ = w.Write([]byte(`{"id":"resp-empty-1","status":"completed","output":[]}`))
+		case 2:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-ok-2",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"summary\":\"Retry ok\",\"patch\":\"\",\"writes\":[{\"path\":\"done.md\",\"content\":\"done\\n\"}],\"deletes\":[],\"commands\":[]}"
+					}]
+				}]
+			}`))
+		default:
+			t.Fatalf("unexpected extra responses request %d", len(seenBodies))
+		}
+	}))
+	defer server.Close()
+
+	plan, err := GenerateWorkspaceEdit(context.Background(), task.ProviderConfig{
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
+	}, WorkspaceEditInput{
+		Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindCoding, Objective: "write done"},
+		Files: []WorkspaceFile{{Path: "README.md", Content: "context\n"}},
+	})
+	if err != nil {
+		t.Fatalf("generate workspace edit: %v", err)
+	}
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != "done.md" {
+		t.Fatalf("unexpected retry plan: %+v", plan)
+	}
+	if len(seenBodies) != 2 {
+		t.Fatalf("expected two responses requests, got %d", len(seenBodies))
+	}
+	if _, ok := seenBodies[0]["reasoning"]; !ok {
+		t.Fatalf("expected initial request to include reasoning, got %#v", seenBodies[0])
+	}
+	if _, ok := seenBodies[1]["reasoning"]; ok {
+		t.Fatalf("expected retry request to omit reasoning, got %#v", seenBodies[1])
+	}
+	maxTokens, ok := seenBodies[1]["max_output_tokens"].(float64)
+	if !ok || maxTokens < 8000 {
+		t.Fatalf("expected retry max_output_tokens >= 8000, got %#v", seenBodies[1]["max_output_tokens"])
 	}
 }
 

@@ -103,11 +103,45 @@ func TestTaskFromEnvelopePassesThroughUserTextOnly(t *testing.T) {
 	if len(tf.Constraints) != 0 {
 		t.Fatalf("expected no adapter-synthesized constraints, got %+v", tf.Constraints)
 	}
-	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "completed repair command record") || !strings.Contains(tf.SuccessCriteria[0].Statement, "multica issue create") {
-		t.Fatalf("expected command-backed issue-create criterion from user text, got %+v", tf.SuccessCriteria)
+	if tf.Kind != task.KindGeneral || tf.PresetID != task.PresetDocsLite {
+		t.Fatalf("expected explicit command prompt outside code repo to stay generic docs_lite, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+	}
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "completed repair command record") || !strings.Contains(tf.SuccessCriteria[0].Statement, "explicit user-requested command") {
+		t.Fatalf("expected generic command-backed criterion from user text, got %+v", tf.SuccessCriteria)
 	}
 	if got := runModeForObjective(tf.Objective, false); got != "auto" {
 		t.Fatalf("expected pass-through objective to use auto mode, got %s", got)
+	}
+}
+
+func TestTaskFromEnvelopeTreatsChineseActionPromptAsCoding(t *testing.T) {
+	dir := t.TempDir()
+	writeMulticaTestFile(t, filepath.Join(dir, "go.mod"), "module example.com/action\n\ngo 1.24.0\n")
+	tf := taskFromEnvelope(StreamInputMessage{
+		Type:    "user",
+		Role:    "user",
+		Content: []ContentBlock{{Type: "text", Text: "请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。"}},
+	}, "请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。", ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
+	if tf.Kind != task.KindCoding || tf.PresetID != "" {
+		t.Fatalf("expected Chinese action prompt to become coding task, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+	}
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "Produce a verifiable handoff/result") {
+		t.Fatalf("expected generic handoff criterion, got %+v", tf.SuccessCriteria)
+	}
+}
+
+func TestTaskFromEnvelopeKeepsActionPromptGeneralOutsideCodeRepo(t *testing.T) {
+	dir := t.TempDir()
+	tf := taskFromEnvelope(StreamInputMessage{
+		Type:    "user",
+		Role:    "user",
+		Content: []ContentBlock{{Type: "text", Text: "请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。"}},
+	}, "请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。", ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
+	if tf.Kind != task.KindGeneral || tf.PresetID != task.PresetDocsLite {
+		t.Fatalf("expected non-code workspace action prompt to stay generic docs_lite, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+	}
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "Produce a verifiable handoff/result") {
+		t.Fatalf("expected generic handoff criterion, got %+v", tf.SuccessCriteria)
 	}
 }
 
