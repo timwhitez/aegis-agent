@@ -103,6 +103,9 @@ func TestTaskFromEnvelopePassesThroughUserTextOnly(t *testing.T) {
 	if len(tf.Constraints) != 0 {
 		t.Fatalf("expected no adapter-synthesized constraints, got %+v", tf.Constraints)
 	}
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "completed repair command record") || !strings.Contains(tf.SuccessCriteria[0].Statement, "multica issue create") {
+		t.Fatalf("expected command-backed issue-create criterion from user text, got %+v", tf.SuccessCriteria)
+	}
 	if got := runModeForObjective(tf.Objective, false); got != "auto" {
 		t.Fatalf("expected pass-through objective to use auto mode, got %s", got)
 	}

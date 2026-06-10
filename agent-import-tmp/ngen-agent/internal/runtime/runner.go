@@ -43,10 +43,13 @@ var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-
 const (
 	multicaIssueResultPath               = "multica-result.md"
 	multicaIssueProgressPath             = "multica-progress.md"
+	multicaIssueCreateDescriptionPath    = "multica-issue-description.md"
 	multicaIssueExecutionObjectivePrefix = "Multica issue execution mode for issue "
 )
 
 var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+var multicaIssueCreateAssigneePattern = regexp.MustCompile(`(?is)--assignee-id(?:\s+|=)["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?`)
+var multicaIssueCreateProjectPattern = regexp.MustCompile(`(?is)--project(?:\s+|=)["']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})["']?`)
 var multicaMarkerPattern = regexp.MustCompile(`(?i)\bngen-[a-z0-9_-]*(?:ok|e2e|done|complete|marker)[a-z0-9_-]*\b`)
 var multicaTriggerCommentFieldPattern = regexp.MustCompile(`(?is)"trigger_comment_id"\s*:\s*"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"`)
 var multicaRequiredParentIDPattern = regexp.MustCompile(`(?is)parent_id\s+must\s+equal\s+this\s+task'?s\s+trigger\s+comment\s+id\s*\(\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*\)`)
@@ -245,6 +248,15 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 		report = repairedReport
 		criteria = repairedCriteria
 		emitted = append(emitted, repairEvents...)
+	}
+	if report.Status == "passed" && !criteriaAllMet(criteria) && multicaIssueCreateRequested(spec) {
+		commandReport, commandCriteria, commandEvents, err := s.runMulticaIssueCreateCommandTask(ctx, spec, &state, report, criteria)
+		if err != nil {
+			return task.StatusSnapshot{}, nil, err
+		}
+		report = commandReport
+		criteria = commandCriteria
+		emitted = append(emitted, commandEvents...)
 	}
 	if err := s.Store.SaveCriteria(criteria); err != nil {
 		return task.StatusSnapshot{}, nil, err
@@ -450,6 +462,69 @@ func (s *Service) runVerificationSequence(ctx context.Context, spec task.Spec, s
 	emitted = append(emitted, budgetEvent)
 	state.LastEventRef = artifact.EventRef(budgetEvent.EventID)
 	return report, emitted, usedAttempts, nil
+}
+
+func (s *Service) runMulticaIssueCreateCommandTask(
+	ctx context.Context,
+	spec task.Spec,
+	state *task.State,
+	report task.VerificationReport,
+	criteria task.CriteriaSnapshot,
+) (task.VerificationReport, task.CriteriaSnapshot, []task.Event, error) {
+	if !multicaIssueCreateRequested(spec) || s.multicaIssueCreateCommandAttempted(spec) {
+		return report, criteria, nil, nil
+	}
+	plan, ok := s.multicaIssueCreateWorkspaceEditPlan(spec)
+	if !ok {
+		return report, criteria, nil, nil
+	}
+	editID := task.NewID("EDIT")
+	startEvent := newEvent(spec.TaskID, *state, "workspace_edit_started", "Workspace edit started for explicit Multica issue create command task.", nil)
+	if err := s.Store.AppendEvent(startEvent); err != nil {
+		return task.VerificationReport{}, task.CriteriaSnapshot{}, nil, err
+	}
+	emitted := []task.Event{startEvent}
+	state.LastEventRef = artifact.EventRef(startEvent.EventID)
+
+	record, applyErr := s.applyWorkspaceEditPlan(spec, editID, plan)
+	eventType := "workspace_edit_applied"
+	switch {
+	case applyErr != nil:
+		record.Status = "failed"
+		record.Summary = fmt.Sprintf("%s Apply failed: %v", record.Summary, applyErr)
+		eventType = "workspace_edit_failed"
+	case len(record.FileChanges) == 0:
+		record.Status = "noop"
+		eventType = "workspace_edit_noop"
+	default:
+		record.Status = "applied"
+	}
+	editEvent, persistErr := s.persistWorkspaceEditRecord(*state, record, eventType)
+	if persistErr != nil {
+		return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, persistErr
+	}
+	emitted = append(emitted, editEvent)
+	state.LastEventRef = artifact.EventRef(editEvent.EventID)
+	if applyErr != nil {
+		return report, criteria, emitted, nil
+	}
+
+	commandEvents, _, err := s.runWorkspaceExecutionCommands(ctx, spec, state, plan.Commands, "post")
+	if err != nil {
+		return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+	}
+	emitted = append(emitted, commandEvents...)
+	if len(commandEvents) > 0 {
+		state.LastEventRef = artifact.EventRef(commandEvents[len(commandEvents)-1].EventID)
+	}
+	refreshedReport := s.verify.Run(ctx, spec)
+	verifyEvent, refreshedReport, err := s.persistVerificationReport(state, refreshedReport)
+	if err != nil {
+		return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
+	}
+	emitted = append(emitted, verifyEvent)
+	refreshedCriteria := s.criteriaFromEvidence(spec, refreshedReport)
+	return refreshedReport, refreshedCriteria, emitted, nil
 }
 
 func (s *Service) runCriteriaRepairSequence(
@@ -1919,6 +1994,169 @@ func multicaIssueIDFromSpec(spec task.Spec) string {
 		return issueID
 	}
 	return ""
+}
+
+func multicaIssueCreateRequested(spec task.Spec) bool {
+	values := []string{spec.Objective, spec.Title}
+	values = append(values, spec.Constraints...)
+	for _, criterion := range spec.SuccessCriteria {
+		values = append(values, criterion.Statement)
+	}
+	text := strings.ToLower(strings.Join(values, "\n"))
+	if !strings.Contains(text, "multica issue create") {
+		return false
+	}
+	return strings.Contains(text, "--output json") ||
+		strings.Contains(text, "--output=json") ||
+		(strings.Contains(text, "--output") && strings.Contains(text, "json"))
+}
+
+func multicaIssueCreateField(pattern *regexp.Regexp, text string) string {
+	if match := pattern.FindStringSubmatch(text); len(match) >= 2 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+func (s *Service) multicaIssueCreateCommandAttempted(spec task.Spec) bool {
+	records, err := s.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		return false
+	}
+	for _, record := range records {
+		if record.Kind == "repair_command" && multicaCommandMatches(record.Argv, []string{"multica", "issue", "create"}) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) multicaIssueCreateWorkspaceEditPlan(spec task.Spec) (provider.WorkspaceEditPlan, bool) {
+	if !multicaIssueCreateRequested(spec) {
+		return provider.WorkspaceEditPlan{}, false
+	}
+	assigneeID := multicaIssueCreateField(multicaIssueCreateAssigneePattern, spec.Objective)
+	projectID := multicaIssueCreateField(multicaIssueCreateProjectPattern, spec.Objective)
+	title := multicaIssueCreateTitle(spec)
+	content := multicaIssueCreateDescription(spec)
+	argv := []string{"multica", "issue", "create", "--title", title, "--description-file", multicaIssueCreateDescriptionPath}
+	if assigneeID != "" {
+		argv = append(argv, "--assignee-id", assigneeID)
+	}
+	if projectID != "" {
+		argv = append(argv, "--project", projectID)
+	}
+	argv = append(argv, "--output", "json")
+	return provider.WorkspaceEditPlan{
+		Summary: "Create a Multica issue description artifact and run the explicit issue create command.",
+		Writes: []provider.WorkspaceWrite{
+			{Path: multicaIssueCreateDescriptionPath, Content: content},
+		},
+		Commands: []provider.WorkspaceCommand{{
+			Phase:  "post",
+			Argv:   argv,
+			Reason: "Run the user-requested single Multica issue create command through the command policy lane.",
+		}},
+	}, true
+}
+
+func multicaIssueCreateTitle(spec task.Spec) string {
+	for _, candidate := range []string{
+		firstQuotedLineAfterLabel(spec.Objective, "Title:"),
+		firstUserInputLine(spec.Objective),
+		spec.Title,
+	} {
+		title := strings.TrimSpace(strings.Trim(candidate, "`\"' "))
+		if title == "" {
+			continue
+		}
+		title = strings.TrimPrefix(title, ">")
+		title = strings.TrimSpace(title)
+		runes := []rune(title)
+		if len(runes) > 120 {
+			title = string(runes[:120])
+		}
+		if title != "" {
+			return title
+		}
+	}
+	return "Multica quick-create issue"
+}
+
+func firstQuotedLineAfterLabel(text, label string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	lowerLabel := strings.ToLower(label)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToLower(trimmed), lowerLabel) {
+			continue
+		}
+		return strings.TrimSpace(trimmed[len(label):])
+	}
+	return ""
+}
+
+func firstUserInputLine(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	inUserInput := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if !inUserInput {
+			if strings.HasPrefix(lower, "user input:") {
+				inUserInput = true
+				after := strings.TrimSpace(trimmed[len("User input:"):])
+				if after != "" {
+					return strings.TrimPrefix(after, ">")
+				}
+			}
+			continue
+		}
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, ">") {
+			break
+		}
+		return strings.TrimPrefix(trimmed, ">")
+	}
+	return ""
+}
+
+func multicaIssueCreateDescription(spec task.Spec) string {
+	text := strings.TrimSpace(userInputSection(spec.Objective))
+	if text == "" {
+		text = strings.TrimSpace(spec.Objective)
+	}
+	var b strings.Builder
+	b.WriteString("# Request\n\n")
+	b.WriteString(strings.TrimSpace(text))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func userInputSection(text string) string {
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	inUserInput := false
+	var out []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inUserInput {
+			if strings.HasPrefix(strings.ToLower(trimmed), "user input:") {
+				inUserInput = true
+				after := strings.TrimSpace(trimmed[len("User input:"):])
+				if after != "" {
+					out = append(out, strings.TrimSpace(strings.TrimPrefix(after, ">")))
+				}
+			}
+			continue
+		}
+		if trimmed != "" && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, ">") {
+			break
+		}
+		out = append(out, strings.TrimSpace(strings.TrimPrefix(line, ">")))
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func ensureTrailingNewline(value string) string {
@@ -4671,15 +4909,14 @@ func (s *Service) reviewScopeDriftPaths(spec task.Spec, changedPaths []string) [
 }
 
 func multicaIssueArtifactPathAllowed(spec task.Spec, path string) bool {
+	normalized := filepath.ToSlash(strings.TrimSpace(path))
+	if multicaIssueCreateRequested(spec) && normalized == multicaIssueCreateDescriptionPath {
+		return true
+	}
 	if multicaIssueIDFromSpec(spec) == "" {
 		return false
 	}
-	switch filepath.ToSlash(strings.TrimSpace(path)) {
-	case multicaIssueResultPath, multicaIssueProgressPath:
-		return true
-	default:
-		return false
-	}
+	return normalized == multicaIssueResultPath || normalized == multicaIssueProgressPath
 }
 
 func reviewPathAllowedByScope(path string, scopes []string) bool {
@@ -5720,11 +5957,16 @@ func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessC
 	}
 	records, _ := s.Store.ReadCommandRuns(spec.TaskID)
 	issueID := multicaIssueIDFromSpec(spec)
-	if issueID == "" {
+	if issueID == "" && mode != "issue_create_command" {
 		return status
 	}
 	marker := multicaMarkerPattern.FindString(statement)
 	switch mode {
+	case "issue_create_command":
+		if refs := s.multicaIssueCreateCommandRefs(spec.TaskID, records); len(refs) > 0 {
+			status.Status = "met"
+			status.EvidenceRefs = refs
+		}
 	case "issue_comment_command":
 		if refs := s.multicaCommentCommandRefs(spec.TaskID, records, issueID, marker); len(refs) > 0 {
 			status.Status = "met"
@@ -5761,6 +6003,8 @@ func (s *Service) multicaCriterionStatus(spec task.Spec, criterion task.SuccessC
 func multicaIssueCriterionMode(statement string) string {
 	lower := strings.ToLower(strings.TrimSpace(statement))
 	switch {
+	case strings.Contains(lower, "completed repair command record") && strings.Contains(lower, "multica issue create"):
+		return "issue_create_command"
 	case strings.Contains(lower, "completed repair command record") && strings.Contains(lower, "multica issue comment add"):
 		return "issue_comment_command"
 	case strings.Contains(lower, "exact multica issue marker") || (strings.Contains(lower, "command-backed issue comment evidence") && multicaMarkerPattern.MatchString(statement)):
@@ -5822,6 +6066,32 @@ func (s *Service) applyMulticaCompletionGate(spec task.Spec, report task.Complet
 	report.Summary = "Done gate rejected: Multica leader final marker requires completed worker/validator runs and command-backed role marker evidence; missing " + strings.Join(missing, ", ") + "."
 	report.BlockingRefs = uniqueRefs(append(report.BlockingRefs, "criteria/latest.json", "command_runs.jsonl"))
 	return report
+}
+
+func (s *Service) multicaIssueCreateCommandRefs(taskID string, records []task.CommandRunRecord) []string {
+	var refs []string
+	for _, record := range records {
+		if record.Kind != "repair_command" || record.Status != "completed" || !multicaCommandMatches(record.Argv, []string{"multica", "issue", "create"}) {
+			continue
+		}
+		if !argvHasFlagValue(record.Argv, "--output", "json") {
+			continue
+		}
+		refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
+	}
+	return uniqueRefs(refs)
+}
+
+func argvHasFlagValue(argv []string, flag, want string) bool {
+	for i, arg := range argv {
+		if arg == flag && i+1 < len(argv) && argv[i+1] == want {
+			return true
+		}
+		if strings.HasPrefix(arg, flag+"=") && strings.TrimPrefix(arg, flag+"=") == want {
+			return true
+		}
+	}
+	return false
 }
 
 func multicaCommentCommandRefs(records []task.CommandRunRecord, issueID, marker string) []string {

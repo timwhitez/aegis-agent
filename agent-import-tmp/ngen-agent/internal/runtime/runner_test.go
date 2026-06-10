@@ -5297,6 +5297,9 @@ func TestMulticaIssueHelpersRequireExplicitIssueExecutionObjective(t *testing.T)
 	if got := multicaIssueIDFromSpec(spec); got != "" {
 		t.Fatalf("ordinary objective must not treat squad/project UUID as issue id, got %q", got)
 	}
+	if !multicaIssueCreateRequested(spec) {
+		t.Fatalf("ordinary objective should still recognize explicit issue-create command requirement")
+	}
 	if commands := multicaIssueObservationCommands(spec, 3); len(commands) != 0 {
 		t.Fatalf("ordinary objective must not synthesize issue observation commands, got %+v", commands)
 	}
@@ -5305,6 +5308,161 @@ func TestMulticaIssueHelpersRequireExplicitIssueExecutionObjective(t *testing.T)
 	}
 	if multicaIssueArtifactPathAllowed(spec, multicaIssueResultPath) {
 		t.Fatalf("ordinary objective must not whitelist Multica issue artifacts")
+	}
+}
+
+func TestMulticaIssueCreateCommandTaskExecutesOnceAndClosesCriteria(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "README.md"), "# quick create\n")
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "multica-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "multica"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\nprintf '{\"id\":\"issue-created\",\"local_id\":\"LOC-1\"}\\n'\n")
+	if err := os.Chmod(filepath.Join(binDir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	svc := New(dir, cfg)
+	squadID := "3b0ca27f-5db0-42ff-98ea-7750fc40500a"
+	projectID := "ae886a17-0ef6-4b02-b154-3ac601df7239"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "quick create",
+		Objective:        quickCreatePrompt(squadID, projectID),
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected done quick-create task, got %+v", snapshot)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	var creates []task.CommandRunRecord
+	for _, record := range records {
+		if multicaCommandMatches(record.Argv, []string{"multica", "issue", "create"}) {
+			creates = append(creates, record)
+		}
+	}
+	if len(creates) != 1 {
+		t.Fatalf("expected exactly one issue-create command record, got %+v", creates)
+	}
+	create := creates[0]
+	if create.Status != "completed" || create.PermissionModeID != task.PermissionModeYolo || create.PolicyDecision != "allow_yolo" {
+		t.Fatalf("unexpected command record: %+v", create)
+	}
+	for _, required := range []string{"--title", "--description-file", multicaIssueCreateDescriptionPath, "--assignee-id", squadID, "--project", projectID, "--output", "json"} {
+		if !containsString(create.Argv, required) {
+			t.Fatalf("expected argv to contain %q, got %+v", required, create.Argv)
+		}
+	}
+	if create.ReplaySafety == nil || create.ReplaySafety.ReplayPolicy != "manual_review_required" || !create.ReplaySafety.OpenWorld {
+		t.Fatalf("expected unsafe external mutation replay safety, got %+v", create.ReplaySafety)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	got := criterionStatusForID(criteria, "SC-001")
+	if got.Status != "met" || !containsString(got.EvidenceRefs, artifactCommandRef(create.CommandRecordID)) {
+		t.Fatalf("expected issue-create criterion to close with command evidence, got %+v", got)
+	}
+	desc := readFile(t, filepath.Join(dir, multicaIssueCreateDescriptionPath))
+	if !strings.Contains(desc, "Web First") {
+		t.Fatalf("expected description artifact to contain user request, got %q", desc)
+	}
+	log := readFile(t, logPath)
+	if strings.Count(log, "issue create") != 1 {
+		t.Fatalf("expected one multica invocation, got %q", log)
+	}
+
+	snapshot, _, err = svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected second run to remain done, got %+v", snapshot)
+	}
+	if log2 := readFile(t, logPath); strings.Count(log2, "issue create") != 1 {
+		t.Fatalf("expected second run not to replay issue create, got %q", log2)
+	}
+}
+
+func TestMulticaIssueCreateCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "README.md"), "# quick create\n")
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "multica-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "multica"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\necho failed >&2\nexit 7\n")
+	if err := os.Chmod(filepath.Join(binDir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	svc := New(dir, cfg)
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "quick create fails",
+		Objective:        quickCreatePrompt("3b0ca27f-5db0-42ff-98ea-7750fc40500a", "ae886a17-0ef6-4b02-b154-3ac601df7239"),
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateBlocked || snapshot.StatusReasonCode != "blocked_review" {
+		t.Fatalf("expected blocked review after failed issue create, got %+v", snapshot)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected issue-create criterion to remain open after failed command, got %+v", got)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	if len(records) != 1 || records[0].Status != "failed" || !multicaCommandMatches(records[0].Argv, []string{"multica", "issue", "create"}) {
+		t.Fatalf("expected one failed issue-create command, got %+v", records)
+	}
+
+	snapshot, _, err = svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if snapshot.State != task.StateBlocked || snapshot.StatusReasonCode != "blocked_review" {
+		t.Fatalf("expected second run to remain blocked, got %+v", snapshot)
+	}
+	if log := readFile(t, logPath); strings.Count(log, "issue create") != 1 {
+		t.Fatalf("expected failed issue create not to auto-retry, got %q", log)
 	}
 }
 
@@ -6764,6 +6922,26 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read file %s: %v", path, err)
 	}
 	return string(data)
+}
+
+func quickCreatePrompt(squadID, projectID string) string {
+	return strings.Join([]string{
+		"You are running as a quick-create assistant for a Multica workspace.",
+		"",
+		"User input:",
+		"> 请分析研究设计并逐步开发一个 Web First 的智能渗透测试系统。",
+		"",
+		"Field rules:",
+		"- pass `--assignee-id \"" + squadID + "\"`.",
+		"- pass `--project \"" + projectID + "\"`.",
+		"",
+		"Output format:",
+		"- Run exactly one `multica issue create --output json` invocation.",
+	}, "\n")
+}
+
+func artifactCommandRef(commandRecordID string) string {
+	return "command_runs.jsonl#command_record_id=" + commandRecordID
 }
 
 func initGitRepo(t *testing.T, dir string) {

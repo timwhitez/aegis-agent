@@ -272,10 +272,27 @@ func titleFromPrompt(prompt string) string {
 func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
 	first := "Produce a verifiable handoff/result for the requested work."
 	lower := strings.ToLower(prompt)
+	if promptRequestsMulticaIssueCreate(prompt) {
+		return []task.SuccessCriterion{{
+			ID:        "SC-001",
+			Statement: "Exactly one completed repair command record shows `multica issue create` ran with `--output json`; result prose alone is not sufficient.",
+		}}
+	}
 	if strings.Contains(lower, "test") || strings.Contains(lower, "build") {
 		first = "Requested verification commands pass or failures are reported with evidence."
 	}
 	return []task.SuccessCriterion{{ID: "SC-001", Statement: first}}
+}
+
+func promptRequestsMulticaIssueCreate(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	if !strings.Contains(lower, "multica issue create") {
+		return false
+	}
+	return strings.Contains(lower, "--output json") ||
+		strings.Contains(lower, "--output=json") ||
+		(strings.Contains(lower, "--output") && strings.Contains(lower, "json") &&
+			(strings.Contains(lower, "run exactly one") || strings.Contains(lower, "single `multica issue create") || strings.Contains(lower, "single multica issue create")))
 }
 
 func NewRunMetadata(spec task.Spec, resolution ConfigResolution) task.MulticaRunMetadata {
