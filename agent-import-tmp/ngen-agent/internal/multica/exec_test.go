@@ -114,6 +114,26 @@ func TestTaskFromEnvelopePassesThroughUserTextOnly(t *testing.T) {
 	}
 }
 
+func TestTaskFromEnvelopeRecognizesQuickCreateDoNotRetryCommand(t *testing.T) {
+	dir := t.TempDir()
+	prompt := strings.Join([]string{
+		"You are running as a quick-create assistant for a Multica workspace.",
+		"",
+		"Output format:",
+		"- Run exactly one `multica issue create --output json` invocation. Do not retry for any reason — even on non-zero exit.",
+	}, "\n")
+
+	tf := taskFromEnvelope(StreamInputMessage{
+		Type:    "user",
+		Role:    "user",
+		Content: []ContentBlock{{Type: "text", Text: prompt}},
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "")
+
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "completed repair command record") {
+		t.Fatalf("expected command-backed criterion despite do-not-retry guard, got %+v", tf.SuccessCriteria)
+	}
+}
+
 func TestTaskFromEnvelopeTreatsChineseActionPromptAsCoding(t *testing.T) {
 	dir := t.TempDir()
 	writeMulticaTestFile(t, filepath.Join(dir, "go.mod"), "module example.com/action\n\ngo 1.24.0\n")

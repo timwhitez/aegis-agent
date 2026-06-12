@@ -374,7 +374,7 @@ func promptRequestsExplicitCommand(prompt string) bool {
 	}
 	for _, line := range strings.Split(strings.ReplaceAll(prompt, "\r\n", "\n"), "\n") {
 		lower := strings.ToLower(strings.TrimSpace(line))
-		if lineNegatesCommand(lower) {
+		if lineNegatesCommandAction(lower) {
 			continue
 		}
 		if strings.Contains(lower, "run exactly one `") ||
@@ -391,8 +391,14 @@ func promptRequestsExplicitCommand(prompt string) bool {
 	return false
 }
 
-func lineNegatesCommand(line string) bool {
-	for _, phrase := range []string{"do not", "don't", "never", "不要", "别", "不得", "禁止"} {
+func lineNegatesCommandAction(line string) bool {
+	for _, phrase := range []string{
+		"do not run", "don't run", "never run",
+		"do not execute", "don't execute", "never execute",
+		"do not invoke", "don't invoke", "never invoke",
+		"do not call", "don't call", "never call",
+		"不要运行", "不要执行", "别运行", "别执行", "不得运行", "不得执行", "禁止运行", "禁止执行",
+	} {
 		if strings.Contains(line, phrase) {
 			return true
 		}

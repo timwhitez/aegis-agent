@@ -3847,6 +3847,69 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	}
 }
 
+func TestExplicitCommandArgvsRequiresRunnableCommandLiteral(t *testing.T) {
+	prompt := strings.Join([]string{
+		"You are running as a quick-create assistant for a Multica workspace.",
+		"",
+		"Field rules:",
+		"- pass `--assignee-id \"3b0ca27f-5db0-42ff-98ea-7750fc40500a\"`.",
+		"- pass `--project \"ae886a17-0ef6-4b02-b154-3ac601df7239\"`.",
+		"",
+		"Output format:",
+		"- Run exactly one `multica issue create --output json` invocation. Do not retry for any reason.",
+	}, "\n")
+
+	commands := explicitCommandArgvs(prompt)
+	if len(commands) != 1 {
+		t.Fatalf("expected only the runnable issue create command, got %+v", commands)
+	}
+	if !equalStringSlices(commands[0], []string{"multica", "issue", "create", "--output", "json"}) {
+		t.Fatalf("unexpected command argv: %+v", commands[0])
+	}
+}
+
+func TestExplicitCommandArgvsIgnoresNegatedCommandLiteral(t *testing.T) {
+	commands := explicitCommandArgvs("Do not run `externalctl create --name Example --output json`.")
+	if len(commands) != 0 {
+		t.Fatalf("expected negated command literal to be ignored, got %+v", commands)
+	}
+}
+
+func TestExplicitCommandArgvsPreservesQuotedArguments(t *testing.T) {
+	commands := explicitCommandArgvs(`Run exactly one ` + "`" + `multica issue create --title "Web First" --description "User request:\n请分析" --assignee-id "3b0ca27f-5db0-42ff-98ea-7750fc40500a" --output json` + "`" + ` invocation.`)
+	if len(commands) != 1 {
+		t.Fatalf("expected one command, got %+v", commands)
+	}
+	want := []string{
+		"multica", "issue", "create",
+		"--title", "Web First",
+		"--description", `User request:\n请分析`,
+		"--assignee-id", "3b0ca27f-5db0-42ff-98ea-7750fc40500a",
+		"--output", "json",
+	}
+	if !equalStringSlices(commands[0], want) {
+		t.Fatalf("unexpected argv:\n got %+v\nwant %+v", commands[0], want)
+	}
+}
+
+func TestExplicitCommandArgvsRejectsUnclosedQuote(t *testing.T) {
+	commands := explicitCommandArgvs("Run `externalctl create --name \"Example --output json`.")
+	if len(commands) != 0 {
+		t.Fatalf("expected malformed quoted command to be ignored, got %+v", commands)
+	}
+}
+
+func TestExplicitCommandArgvsAllowsShellMetacharactersInsideQuotes(t *testing.T) {
+	commands := explicitCommandArgvs(`Run ` + "`" + `externalctl create --description "A & B < C" --output json` + "`" + `.`)
+	if len(commands) != 1 {
+		t.Fatalf("expected quoted metacharacters to be data, got %+v", commands)
+	}
+	want := []string{"externalctl", "create", "--description", "A & B < C", "--output", "json"}
+	if !equalStringSlices(commands[0], want) {
+		t.Fatalf("unexpected argv:\n got %+v\nwant %+v", commands[0], want)
+	}
+}
+
 func TestValidateExecutionCommandBenchmarkIntegrityMode(t *testing.T) {
 	cfg := task.DefaultConfig()
 	cfg.Permission.DefaultMode = task.PermissionModeYolo

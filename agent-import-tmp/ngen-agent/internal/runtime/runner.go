@@ -1774,14 +1774,14 @@ func (s *Service) completedOrAttemptedObservationCommands(taskID string) (map[st
 
 func explicitCommandArgvs(text string) [][]string {
 	var commands [][]string
-	for _, match := range backtickCommandPattern.FindAllStringSubmatch(text, -1) {
-		if len(match) < 2 || !explicitCommandContext(text, match[0]) {
+	for _, match := range backtickCommandPattern.FindAllStringSubmatchIndex(text, -1) {
+		if len(match) < 4 || !explicitCommandContext(text, match[0]) {
 			continue
 		}
 		if commandLiteralNegated(text, match[0]) {
 			continue
 		}
-		if argv := splitSimpleCommand(match[1]); len(argv) > 0 {
+		if argv := splitSimpleCommand(text[match[2]:match[3]]); runnableCommandArgv(argv) {
 			commands = append(commands, argv)
 		}
 	}
@@ -1789,24 +1789,26 @@ func explicitCommandArgvs(text string) [][]string {
 		if len(match) < 2 {
 			continue
 		}
-		if argv := splitSimpleCommand(match[1]); len(argv) > 0 {
+		if argv := splitSimpleCommand(match[1]); runnableCommandArgv(argv) {
 			commands = append(commands, argv)
 		}
 	}
 	return commands
 }
 
-func commandLiteralNegated(text, literal string) bool {
-	idx := strings.Index(text, literal)
-	if idx < 0 {
+func commandLiteralNegated(text string, literalStart int) bool {
+	if literalStart < 0 || literalStart > len(text) {
 		return false
 	}
-	start := idx - 80
-	if start < 0 {
-		start = 0
-	}
-	context := strings.ToLower(text[start:idx])
-	for _, phrase := range []string{"do not", "don't", "never", "不要", "别", "不得", "禁止"} {
+	lineStart := strings.LastIndex(text[:literalStart], "\n") + 1
+	context := strings.ToLower(text[lineStart:literalStart])
+	for _, phrase := range []string{
+		"do not run", "don't run", "never run",
+		"do not execute", "don't execute", "never execute",
+		"do not invoke", "don't invoke", "never invoke",
+		"do not call", "don't call", "never call",
+		"不要运行", "不要执行", "别运行", "别执行", "不得运行", "不得执行", "禁止运行", "禁止执行",
+	} {
 		if strings.Contains(context, phrase) {
 			return true
 		}
@@ -1814,17 +1816,13 @@ func commandLiteralNegated(text, literal string) bool {
 	return false
 }
 
-func explicitCommandContext(text, literal string) bool {
-	idx := strings.Index(text, literal)
-	if idx < 0 {
+func explicitCommandContext(text string, literalStart int) bool {
+	if literalStart < 0 || literalStart > len(text) {
 		return false
 	}
-	start := idx - 120
-	if start < 0 {
-		start = 0
-	}
-	context := strings.ToLower(text[start:idx])
-	for _, word := range []string{"run", "running", "execute", "invoke", "call", "command", "运行", "执行", "调用", "命令"} {
+	lineStart := strings.LastIndex(text[:literalStart], "\n") + 1
+	context := strings.ToLower(text[lineStart:literalStart])
+	for _, word := range []string{"run", "running", "execute", "invoke", "call", "运行", "执行", "调用"} {
 		if strings.Contains(context, word) {
 			return true
 		}
@@ -1834,19 +1832,85 @@ func explicitCommandContext(text, literal string) bool {
 
 func splitSimpleCommand(command string) []string {
 	command = strings.TrimSpace(command)
-	if command == "" || strings.ContainsAny(command, "\n\r|;&<>") {
+	if command == "" || strings.ContainsAny(command, "\n\r") {
 		return nil
 	}
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
+
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	inField := false
+	flush := func() {
+		if !inField {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+		inField = false
+	}
+	for _, r := range command {
+		if escaped {
+			if quote == '"' && r != '"' && r != '\\' && r != '$' && r != '`' {
+				current.WriteRune('\\')
+			}
+			current.WriteRune(r)
+			inField = true
+			escaped = false
+			continue
+		}
+		if quote != 0 {
+			switch r {
+			case '\\':
+				if quote == '"' {
+					escaped = true
+					continue
+				}
+			case quote:
+				quote = 0
+				inField = true
+				continue
+			}
+			current.WriteRune(r)
+			inField = true
+			continue
+		}
+		switch {
+		case unicode.IsSpace(r):
+			flush()
+		case strings.ContainsRune("|;&<>", r):
+			return nil
+		case r == '\'' || r == '"':
+			quote = r
+			inField = true
+		case r == '\\':
+			escaped = true
+		default:
+			current.WriteRune(r)
+			inField = true
+		}
+	}
+	if escaped || quote != 0 {
 		return nil
 	}
+	flush()
 	for _, field := range fields {
 		if strings.Contains(field, "$(") || strings.Contains(field, "`") {
 			return nil
 		}
 	}
 	return fields
+}
+
+func runnableCommandArgv(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	executable := strings.TrimSpace(argv[0])
+	if executable == "" || strings.HasPrefix(executable, "-") || strings.Contains(executable, "=") {
+		return false
+	}
+	return true
 }
 
 func duplicateObservationCommand(commands []provider.ObservationCommand, argv []string) bool {
