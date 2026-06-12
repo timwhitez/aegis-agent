@@ -49,6 +49,8 @@ const (
 	defaultAPIKeyEnv                   = "OPENAI_API_KEY"
 	defaultDecisionMaxTokens           = 2048
 	responsesDecisionRetryMinTokens    = 8192
+	responsesWorkspaceEditRetryTokens  = 8000
+	responsesStructuredRetryMinTokens  = 4000
 	maxProviderResponseBytes           = 4 * 1024 * 1024
 )
 
@@ -754,7 +756,11 @@ func (d *OpenAIResponsesDriver) Decide(ctx context.Context, input Input) (Decisi
 		return Decision{}, fmt.Errorf("%w; retry returned empty output text response_id=%s", err, strings.TrimSpace(retried.ID))
 	}
 	retrySource := fmt.Sprintf("%s retry", responsePayloadSource("responses provider", retried.ID))
-	return decodeDecisionPayload(retrySource, []byte(retryText))
+	decision, retryErr = decodeDecisionPayload(retrySource, []byte(retryText))
+	if retryErr != nil {
+		return Decision{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
+	}
+	return decision, nil
 }
 
 func (d *OpenAIResponsesDriver) requestBody(input Input) ([]byte, error) {
@@ -1148,7 +1154,7 @@ func generateWorkspaceEditWithResponses(ctx context.Context, cfg task.ProviderCo
 	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		retryBody, retryErr := responsesRetryWithoutReasoning(body, 8000)
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, responsesWorkspaceEditRetryTokens)
 		if retryErr != nil {
 			return WorkspaceEditPlan{}, fmt.Errorf("responses workspace edit could not prepare empty-output retry: %w", retryErr)
 		}
@@ -1162,7 +1168,11 @@ func generateWorkspaceEditWithResponses(ctx context.Context, cfg task.ProviderCo
 		}
 		parsed = retried
 	}
-	return decodeWorkspaceEditPayload(responsePayloadSource("responses workspace edit", parsed.ID), []byte(text))
+	plan, err := decodeWorkspaceEditPayload(responsePayloadSource("responses workspace edit", parsed.ID), []byte(text))
+	if err == nil || !isJSONSyntaxError(err) {
+		return plan, err
+	}
+	return retryResponsesStructuredPayload(ctx, client, cfg, apiKey, "responses workspace edit", body, responsesWorkspaceEditRetryTokens, err, decodeWorkspaceEditPayload)
 }
 
 func generateWorkspaceObservationsWithResponses(ctx context.Context, cfg task.ProviderConfig, input WorkspaceObservationInput) (WorkspaceObservationPlan, error) {
@@ -1184,7 +1194,7 @@ func generateWorkspaceObservationsWithResponses(ctx context.Context, cfg task.Pr
 	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		retryBody, retryErr := responsesRetryWithoutReasoning(body, 4000)
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, responsesStructuredRetryMinTokens)
 		if retryErr != nil {
 			return WorkspaceObservationPlan{}, fmt.Errorf("responses workspace observation could not prepare empty-output retry: %w", retryErr)
 		}
@@ -1198,7 +1208,11 @@ func generateWorkspaceObservationsWithResponses(ctx context.Context, cfg task.Pr
 		}
 		parsed = retried
 	}
-	return decodeWorkspaceObservationPayload(responsePayloadSource("responses workspace observation", parsed.ID), []byte(text))
+	plan, err := decodeWorkspaceObservationPayload(responsePayloadSource("responses workspace observation", parsed.ID), []byte(text))
+	if err == nil || !isJSONSyntaxError(err) {
+		return plan, err
+	}
+	return retryResponsesStructuredPayload(ctx, client, cfg, apiKey, "responses workspace observation", body, responsesStructuredRetryMinTokens, err, decodeWorkspaceObservationPayload)
 }
 
 func generateMissionValidationWithResponses(ctx context.Context, cfg task.ProviderConfig, input MissionValidationInput) (MissionValidationResult, error) {
@@ -1220,7 +1234,7 @@ func generateMissionValidationWithResponses(ctx context.Context, cfg task.Provid
 	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		retryBody, retryErr := responsesRetryWithoutReasoning(body, 4000)
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, responsesStructuredRetryMinTokens)
 		if retryErr != nil {
 			return MissionValidationResult{}, fmt.Errorf("responses mission validation could not prepare empty-output retry: %w", retryErr)
 		}
@@ -1234,7 +1248,11 @@ func generateMissionValidationWithResponses(ctx context.Context, cfg task.Provid
 		}
 		parsed = retried
 	}
-	return decodeMissionValidationPayload(responsePayloadSource("responses mission validation", parsed.ID), []byte(text))
+	result, err := decodeMissionValidationPayload(responsePayloadSource("responses mission validation", parsed.ID), []byte(text))
+	if err == nil || !isJSONSyntaxError(err) {
+		return result, err
+	}
+	return retryResponsesStructuredPayload(ctx, client, cfg, apiKey, "responses mission validation", body, responsesStructuredRetryMinTokens, err, decodeMissionValidationPayload)
 }
 
 func doResponsesRequest(ctx context.Context, client *http.Client, cfg task.ProviderConfig, apiKey, operation string, body []byte) (responsesResponse, error) {
@@ -1272,6 +1290,38 @@ func responsesRetryWithoutReasoning(body []byte, minMaxOutputTokens int) ([]byte
 	}
 	payload.Reasoning = nil
 	return json.Marshal(payload)
+}
+
+func retryResponsesStructuredPayload[T any](
+	ctx context.Context,
+	client *http.Client,
+	cfg task.ProviderConfig,
+	apiKey string,
+	operation string,
+	body []byte,
+	minRetryTokens int,
+	firstErr error,
+	decode func(string, []byte) (T, error),
+) (T, error) {
+	var zero T
+	retryBody, retryErr := responsesRetryWithoutReasoning(body, minRetryTokens)
+	if retryErr != nil {
+		return zero, firstErr
+	}
+	retried, retryErr := doResponsesRequest(ctx, client, cfg, apiKey, operation+" retry", retryBody)
+	if retryErr != nil {
+		return zero, fmt.Errorf("%w; retry failed: %v", firstErr, retryErr)
+	}
+	retryText := strings.TrimSpace(retried.outputText())
+	if retryText == "" {
+		return zero, fmt.Errorf("%w; retry returned empty output text response_id=%s", firstErr, strings.TrimSpace(retried.ID))
+	}
+	retrySource := fmt.Sprintf("%s retry", responsePayloadSource(operation, retried.ID))
+	decoded, retryErr := decode(retrySource, []byte(retryText))
+	if retryErr != nil {
+		return zero, fmt.Errorf("%w; retry failed: %v", firstErr, retryErr)
+	}
+	return decoded, nil
 }
 
 func responsesEmptyOutputError(operation string, first, second responsesResponse) error {
@@ -2717,6 +2767,9 @@ func decodeDecisionPayload(source string, raw []byte) (Decision, error) {
 }
 
 func isJSONSyntaxError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
 	var syntaxErr *json.SyntaxError
 	if errors.As(err, &syntaxErr) {
 		return true

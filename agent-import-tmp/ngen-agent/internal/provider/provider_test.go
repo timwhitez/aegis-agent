@@ -1522,6 +1522,108 @@ func TestGenerateWorkspaceEditRetriesResponsesEmptyOutputWithoutReasoning(t *tes
 	}
 }
 
+func TestGenerateWorkspaceEditRetriesTruncatedResponsesJSON(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	var seenBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seenBodies = append(seenBodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		switch len(seenBodies) {
+		case 1:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-edit-truncated",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"summary\":\"Write report\",\"patch\":\"\",\"writes\":[{\"path\":\"reports/mission-plan.md\""
+					}]
+				}]
+			}`))
+		case 2:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-edit-retry",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"summary\":\"Retry wrote report\",\"patch\":\"\",\"writes\":[{\"path\":\"reports/mission-plan.md\",\"content\":\"# Mission Plan\\n\"}],\"deletes\":[],\"commands\":[]}"
+					}]
+				}]
+			}`))
+		default:
+			t.Fatalf("unexpected extra responses request %d", len(seenBodies))
+		}
+	}))
+	defer server.Close()
+
+	plan, err := GenerateWorkspaceEdit(context.Background(), task.ProviderConfig{
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
+	}, WorkspaceEditInput{
+		Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindCoding, Objective: "write report"},
+		Files: []WorkspaceFile{{Path: "README.md", Content: "context\n"}},
+	})
+	if err != nil {
+		t.Fatalf("generate workspace edit: %v", err)
+	}
+	if len(plan.Writes) != 1 || plan.Writes[0].Path != "reports/mission-plan.md" {
+		t.Fatalf("unexpected retry plan: %+v", plan)
+	}
+	assertResponsesJSONSyntaxRetryRequest(t, seenBodies, responsesWorkspaceEditRetryTokens)
+}
+
+func TestGenerateWorkspaceEditDoesNotRetryValidationError(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp-edit-invalid-plan",
+			"status":"completed",
+			"output":[{
+				"type":"message",
+				"role":"assistant",
+				"content":[{
+					"type":"output_text",
+					"text":"{\"summary\":\"Invalid plan\",\"patch\":\"diff --git a/a b/a\\n\",\"writes\":[{\"path\":\"a.txt\",\"content\":\"a\\n\"}],\"deletes\":[],\"commands\":[]}"
+				}]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	_, err := GenerateWorkspaceEdit(context.Background(), task.ProviderConfig{
+		Mode:      "responses",
+		BaseURL:   server.URL + "/v1",
+		Model:     "gpt-5.4",
+		APIKeyEnv: "OPENAI_API_KEY",
+	}, WorkspaceEditInput{
+		Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindCoding, Objective: "write report"},
+		Files: []WorkspaceFile{{Path: "README.md", Content: "context\n"}},
+	})
+	if err == nil {
+		t.Fatal("expected workspace edit validation error")
+	}
+	if requests != 1 {
+		t.Fatalf("expected validation error to avoid retry, got %d requests", requests)
+	}
+}
+
 func TestBuildWorkspaceEditPromptIncludesPreviousFailures(t *testing.T) {
 	prompt, err := buildWorkspaceEditPrompt(WorkspaceEditInput{
 		Task: task.Spec{
@@ -2310,6 +2412,135 @@ func TestGenerateWorkspaceObservationUsesResponsesEndpointAndSchema(t *testing.T
 	if format["name"] != "ngen_workspace_observation" {
 		t.Fatalf("expected workspace observation schema name, got %#v", format["name"])
 	}
+}
+
+func TestGenerateWorkspaceObservationRetriesTruncatedResponsesJSON(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	var seenBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seenBodies = append(seenBodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		switch len(seenBodies) {
+		case 1:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-observation-truncated",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"summary\":\"Need context\",\"commands\":[{\"argv\":[\"rg\",\"-n\",\"Add\""
+					}]
+				}]
+			}`))
+		case 2:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-observation-retry",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"summary\":\"Retry observation\",\"commands\":[{\"argv\":[\"rg\",\"-n\",\"Add\",\".\"],\"reason\":\"Locate Add implementation\"}]}"
+					}]
+				}]
+			}`))
+		default:
+			t.Fatalf("unexpected extra responses request %d", len(seenBodies))
+		}
+	}))
+	defer server.Close()
+
+	plan, err := GenerateWorkspaceObservations(context.Background(), task.ProviderConfig{
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
+	}, WorkspaceObservationInput{
+		Task:          task.Spec{TaskID: "TASK-001", Kind: task.KindCoding, Objective: "inspect Add"},
+		CommandBudget: 2,
+		Files:         []WorkspaceFile{{Path: "README.md", Content: "context\n"}},
+	})
+	if err != nil {
+		t.Fatalf("generate workspace observations: %v", err)
+	}
+	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "rg -n Add ." {
+		t.Fatalf("unexpected retry observation plan: %+v", plan)
+	}
+	assertResponsesJSONSyntaxRetryRequest(t, seenBodies, responsesStructuredRetryMinTokens)
+}
+
+func TestGenerateMissionValidationRetriesTruncatedResponsesJSON(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	var seenBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seenBodies = append(seenBodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		switch len(seenBodies) {
+		case 1:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-validation-truncated",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"status\":\"blocking\",\"summary\":\"Need evidence\",\"findings\":[{\"finding_id\":\"MFIND-001\""
+					}]
+				}]
+			}`))
+		case 2:
+			_, _ = w.Write([]byte(`{
+				"id":"resp-validation-retry",
+				"status":"completed",
+				"output":[{
+					"type":"message",
+					"role":"assistant",
+					"content":[{
+						"type":"output_text",
+						"text":"{\"status\":\"passed\",\"summary\":\"Validation recovered\",\"findings\":[]}"
+					}]
+				}]
+			}`))
+		default:
+			t.Fatalf("unexpected extra responses request %d", len(seenBodies))
+		}
+	}))
+	defer server.Close()
+
+	result, err := GenerateMissionValidation(context.Background(), task.ProviderConfig{
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
+	}, MissionValidationInput{
+		Mission:    task.Mission{MissionID: "MIS-001", RootTaskID: "TASK-001"},
+		Contract:   task.MissionValidationContract{MissionID: "MIS-001", ContractID: "MCON-001"},
+		Features:   task.MissionFeatureSet{MissionID: "MIS-001"},
+		Milestones: task.MissionMilestoneSet{MissionID: "MIS-001"},
+	})
+	if err != nil {
+		t.Fatalf("generate mission validation: %v", err)
+	}
+	if result.Status != "passed" || result.Summary != "Validation recovered" {
+		t.Fatalf("unexpected retry mission validation result: %+v", result)
+	}
+	assertResponsesJSONSyntaxRetryRequest(t, seenBodies, responsesStructuredRetryMinTokens)
 }
 
 func TestBuildWorkspaceObservationPromptIncludesSessionTranscriptContext(t *testing.T) {
@@ -3104,5 +3335,22 @@ func TestBuiltinDriverSynthesizesExecutionPlanForMultiCriterionTask(t *testing.T
 	}
 	if decision.PlanSteps[0].ID == "" || decision.PlanSteps[0].Priority != task.StepPriorityHigh {
 		t.Fatalf("expected synthesized plan steps to carry stable ids and priority, got %+v", decision.PlanSteps)
+	}
+}
+
+func assertResponsesJSONSyntaxRetryRequest(t *testing.T, seenBodies []map[string]any, minRetryTokens int) {
+	t.Helper()
+	if len(seenBodies) != 2 {
+		t.Fatalf("expected one retry after truncated JSON, got %d requests", len(seenBodies))
+	}
+	if _, ok := seenBodies[0]["reasoning"]; !ok {
+		t.Fatalf("expected initial request to include reasoning, got %#v", seenBodies[0])
+	}
+	if _, ok := seenBodies[1]["reasoning"]; ok {
+		t.Fatalf("expected retry request to omit reasoning, got %#v", seenBodies[1]["reasoning"])
+	}
+	maxTokens, ok := seenBodies[1]["max_output_tokens"].(float64)
+	if !ok || maxTokens < float64(minRetryTokens) {
+		t.Fatalf("expected retry max_output_tokens >= %d, got %#v", minRetryTokens, seenBodies[1]["max_output_tokens"])
 	}
 }

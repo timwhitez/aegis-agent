@@ -93,7 +93,7 @@
 - `tui.alternate_screen` 支持 `auto|always|never`
 - `tui.poll_interval_ms` 默认 `200`，最小钳制到 `50`
 - `tui.event_limit` 控制 UI transcript 保留的 event tail 数量，不影响 durable `events.jsonl`
-- `provider.decision_max_output_tokens` 只控制 provider decision 输出预算，默认 `2048`；workspace edit / observation 仍使用各自的 bounded request budget。该值需要足够容纳 `task_update`、`project_update`、worker、approval 与 task-create 等结构化 action，不应退回到过小的 256-token decision ceiling。Responses decision payload 若因 JSON 语法/截断失败，会执行一次去掉 reasoning 且至少 `8192` 输出 token 的重试；schema/业务校验错误不重试。
+- `provider.decision_max_output_tokens` 只控制 provider decision 输出预算，默认 `2048`；workspace edit / observation 仍使用各自的 bounded request budget。该值需要足够容纳 `task_update`、`project_update`、worker、approval 与 task-create 等结构化 action，不应退回到过小的 256-token decision ceiling。Responses structured payload 若因 JSON 语法/截断失败，会执行一次去掉 reasoning 且提高输出 token 的重试：decision 至少 `8192`，workspace edit 至少 `8000`，workspace observation / mission validation 至少 `4000`；schema/业务校验错误不重试。
 - `mission.role_models` 是可选的 mission-scope model override map，合法 key 只有 `orchestrator`、`workers`、`validators`；未知 key 必须在 config load 阶段报错。非空值覆盖该 mission role 的 `provider.model`，空值或缺失值只继承 `provider.model`。
 - `mission.role_models.validators` 只有在原始配置中显式设置为非空字符串时，才会让新建或重设 objective 的 mission role plan 记录 `validators.explicit=true`。继承到的非空 `provider.model` 只用于 role plan 展示，不会自动启用 model-backed validator。
 - role-specific routing 当前只覆盖 model，不引入 role-specific `base_url`、`api_key_env`、provider mode、权限、预算或 sandbox policy。有效选择会冻结到 `mission.json.role_plan`；既有 mission 不会因为 `ngen.json` 后续变化而静默改写。
@@ -242,8 +242,8 @@ const (
 - auth: `Bearer $APIKeyEnv`
 - output contract: `text.format.type=json_schema`
 - 语义边界：当前 Responses path 是 structured JSON text decision，不是实际 tool-call envelope；durable diagnostics 会记录 provider response id 与 invalid JSON raw excerpt，但不会产生 `tool_call_id`
-- auto loop 会对返回 decision / workspace edit / workspace observation payload 做 schema-level 校验
-- invalid JSON、截断或 schema 校验失败必须把 exact provider error surface 返回到 runtime；Responses 解析失败至少包含 `response_id=...`（若 provider 返回）与 `raw_excerpt=...`，方便复盘截断和格式漂移。Responses decision 的 JSON 语法/截断失败会先重试一次更大、无 reasoning 的 request；重试仍失败时返回包含原始解析失败与重试失败的 provider error，普通 schema/业务校验失败不重试。
+- auto loop 会对返回 decision / workspace edit / workspace observation / mission validation payload 做 schema-level 校验
+- invalid JSON、截断或 schema 校验失败必须把 exact provider error surface 返回到 runtime；Responses 解析失败至少包含 `response_id=...`（若 provider 返回）与 `raw_excerpt=...`，方便复盘截断和格式漂移。Responses structured payload 的 JSON 语法/截断失败会先重试一次更大、无 reasoning 的 request；重试仍失败时返回包含原始解析失败与重试失败的 provider error，普通 schema/业务校验失败不重试。
 
 `anthropic` 走 Anthropic Messages API：
 
