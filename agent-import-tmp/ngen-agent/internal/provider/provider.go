@@ -737,7 +737,19 @@ func (d *OpenAIResponsesDriver) Decide(ctx context.Context, input Input) (Decisi
 	}
 	text := strings.TrimSpace(parsed.outputText())
 	if text == "" {
-		return Decision{}, errors.New("responses provider returned empty output text")
+		retryBody, retryErr := responsesRetryWithoutReasoning(body, responsesDecisionRetryMinTokens)
+		if retryErr != nil {
+			return Decision{}, fmt.Errorf("%s returned empty output text", responsePayloadSource("responses provider", parsed.ID))
+		}
+		retried, retryErr := d.doRequest(ctx, apiKey, retryBody)
+		if retryErr != nil {
+			return Decision{}, fmt.Errorf("%s returned empty output text; retry failed: %v", responsePayloadSource("responses provider", parsed.ID), retryErr)
+		}
+		text = strings.TrimSpace(retried.outputText())
+		if text == "" {
+			return Decision{}, responsesEmptyOutputError("responses provider", parsed, retried)
+		}
+		parsed = retried
 	}
 	decision, err := decodeDecisionPayload(responsePayloadSource("responses provider", parsed.ID), []byte(text))
 	if err == nil || !isJSONSyntaxError(err) {
