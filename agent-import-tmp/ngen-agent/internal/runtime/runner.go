@@ -625,12 +625,21 @@ func shouldRunCriteriaRepairSequence(spec task.Spec, criteria task.CriteriaSnaps
 	if spec.Kind == task.KindCoding {
 		return true
 	}
-	return spec.Kind == task.KindGeneral && specHasGenericActionCriterion(spec) && providerModeCanPlanExternalActions(cfg)
+	return spec.Kind == task.KindGeneral && (specHasGenericActionCriterion(spec) || specHasWorkspaceEvidenceCriterion(spec)) && providerModeCanPlanExternalActions(cfg)
 }
 
 func specHasGenericActionCriterion(spec task.Spec) bool {
 	for _, criterion := range spec.SuccessCriteria {
 		if genericActionCriterionMode(criterion.Statement) {
+			return true
+		}
+	}
+	return false
+}
+
+func specHasWorkspaceEvidenceCriterion(spec task.Spec) bool {
+	for _, criterion := range spec.SuccessCriteria {
+		if criterionRequiresWorkspaceEvidence(analyzeCriterionWorkspace(criterion.Statement)) {
 			return true
 		}
 	}
@@ -5491,6 +5500,11 @@ func criterionCandidatePriority(rel string, analysis criterionWorkspaceAnalysis)
 }
 
 func criterionAnalysisMatchesContent(analysis criterionWorkspaceAnalysis, statement, rel, content string) bool {
+	if workspaceArtifactExistenceCriterion(statement) {
+		if _, ok := analysis.Paths[rel]; ok {
+			return true
+		}
+	}
 	if len(analysis.Tokens) == 0 {
 		if _, ok := analysis.Paths[rel]; ok {
 			return true
@@ -5508,6 +5522,14 @@ func criterionAnalysisMatchesContent(analysis criterionWorkspaceAnalysis, statem
 		return false
 	}
 	return criterionStatementMatchesContent(statement, rel, content)
+}
+
+func workspaceArtifactExistenceCriterion(statement string) bool {
+	lower := strings.ToLower(strings.TrimSpace(statement))
+	if strings.HasSuffix(lower, ".") {
+		lower = strings.TrimSpace(strings.TrimSuffix(lower, "."))
+	}
+	return strings.HasPrefix(lower, "workspace artifact ") && strings.HasSuffix(lower, " exists")
 }
 
 func criterionSatisfiedByVerification(workspaceRoot, statement string, report task.VerificationReport) bool {

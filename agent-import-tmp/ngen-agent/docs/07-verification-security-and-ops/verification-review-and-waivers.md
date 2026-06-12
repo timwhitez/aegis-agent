@@ -12,10 +12,12 @@
   - 若仍处于默认 verifier 配置，而 task success criteria 明确声明了 verifier 命令，例如 ``./build.sh test`` passes 与 ``./build.sh build`` passes，则 runtime 会按 criteria 中出现顺序执行该 repo-owned verifier sequence
   - Multica/headless `exec` 不提供读取 metadata / system_prompt 的 quick-create verifier 例外；stdin adapter 只把 user text blocks 拼成 prompt。若 user text 本身明确要求运行某个 direct argv command，adapter 只生成必须由 completed repair command record 关闭的通用 criterion；runtime 通过 repair command policy 执行完全匹配该用户文本的显式命令，不合成命令参数、description 文件、issue comment、delegation 或 fallback artifact，也不维护 Multica-specific mutation 白名单，失败或 unsafe side-effect attempt 不自动重放。显式 command-backed task 的 verifier/review 不能只因空 workspace 缺少 Markdown 就提前失败；命令执行后 verifier truth 必须记录 acceptance 由 explicit command evidence 收口。若 prompt/runtime 后续产生其他 observation 或 repair command，verifier/review 只能消费这些命令留下的 `command_runs.jsonl`、stdout/stderr artifact、policy decision、replay-safety 与 read-only observation evidence。
   - Multica/headless assignment prompt 若要求先读 assigned issue 再完成工作，adapter 会生成 generic concrete-progress criterion，而不是把 `.agent_context/issue_context.md` 或普通 docs-lite Markdown 当作交付。该 criterion 不能由 `multica issue get`、`multica issue comment list` 或 `multica issue metadata list` 这类只读观察命令关闭；必须看到 durable workspace edit 或 completed repair command 记录的实际外部动作，且仍由 review/done gate 收口。
+  - Multica/headless prompt 若明确要求发布 `reports/`、`progress/`、`validation/` 或 `handoffs/` 下的公共 artifact 文件，adapter 会把这些路径生成为 workspace artifact criteria；即使 docs-lite structural verifier 看到 `.agent_context/issue_context.md`，这些 criteria 仍必须由目标 workspace 文件或对应 edit evidence 关闭。
   - 当前默认带 `verification.coding_timeout_seconds=60` 的 timeout guard；阻塞型测试必须收敛成结构化 verifier failure，而不是无限挂住 runtime
 - `general_execution/docs_lite`
   - baseline
   - docs structural review
+  - 带显式 workspace artifact path 的 criteria 可以进入 bounded workspace repair/edit pass；否则 docs-lite 只能说明结构性上下文存在，不能替代 path-specific delivery。
 - `security_review`
   - baseline
   - security inventory
@@ -92,7 +94,7 @@ review lane 负责检查：
 - parent manager task 的显式 worker-runtime criterion 也不得只靠 generic `verification passed` 自动闭合；它必须能回链到 child 的 `workers/*.json` 与匹配的 `worker_runtime/*.result|settlement|reconcile|workspace.json`，必要时再带 child review / verification / approval refs
 - mission root closure 不得只靠 generic verifier passed；`mission validate` 必须先通过 deterministic artifact validator，看到 root task `Done`、closed criteria、accepted completion，以及每个 assertion 对应的 root/worker/verifier/review/completion/validation evidence ref。若 `mission.json.role_plan.validators.explicit=true`，还必须通过 dedicated read-only model validator；latest validation run passed 后才能把 mission 收敛为 `done`。
 - model validator 的输出只能是 evidence-backed findings、blocking bit 与 recommended action；不能直接修改 workspace、发起 repair command、provider decision action、`task_create` 或 worker creation。blocking finding 会让 mission 进入 `blocked_validation`，并可转成 fix-feature candidate 供 orchestrator 后续处理。
-- 外部状态相关任务的 done gate 仍必须看到 baseline、`verification/latest.json`、`reviews/latest.json`、`handoff.md` 与 closed criteria；若 completion claim 依赖外部 mutation 或 observation，criteria evidence 必须回链到 completed command records 或 read-only observation evidence，而不是 result prose、injected AGENTS.md、skills 或 `.agent_context`。显式 command-backed criteria 只有在 completed repair command record 显示对应 argv 已执行后才能关闭；assignment-style concrete-progress criteria 还必须排除 issue get/comment list/metadata list 这类只读 assignment observations，避免读取任务本身被误当作推进工作。
+- 外部状态相关任务的 done gate 仍必须看到 baseline、`verification/latest.json`、`reviews/latest.json`、`handoff.md` 与 closed criteria；若 completion claim 依赖外部 mutation、observation 或 public artifact delivery，criteria evidence 必须回链到 completed command records、read-only observation evidence、目标 workspace artifact ref 或 workspace edit evidence，而不是 result prose、injected AGENTS.md、skills 或 `.agent_context`。显式 command-backed criteria 只有在 completed repair command record 显示对应 argv 已执行后才能关闭；assignment-style concrete-progress criteria 还必须排除 issue get/comment list/metadata list 这类只读 assignment observations，避免读取任务本身被误当作推进工作。
 - 更抽象、无稳定 workspace signal 的 criterion 仍可沿用 verification 作为最低证据。
 - bounded repair loop 中的 failed/noop workspace edit 仍必须留下 durable truth；只要 repair budget 未耗尽，runtime 可以在同一 pass 内继续下一次 attempt，但不得隐去前一次 failure summary。
 

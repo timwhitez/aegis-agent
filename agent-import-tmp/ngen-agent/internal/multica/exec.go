@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -15,6 +16,8 @@ import (
 	ngenrt "ngen/internal/runtime"
 	"ngen/internal/task"
 )
+
+var publicArtifactPathPattern = regexp.MustCompile(`\b(?:reports|progress|validation|handoffs)/[A-Za-z0-9_./-]+\.[A-Za-z0-9][A-Za-z0-9._-]*\b`)
 
 type ExecOptions struct {
 	Workdir        string
@@ -368,10 +371,53 @@ func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
 			Statement: "Concrete execution progress is recorded with durable workspace edit or completed repair command evidence; result prose alone is not sufficient.",
 		}}
 	}
+	if criteria := publicArtifactCriteriaFromPrompt(prompt); len(criteria) > 0 {
+		return criteria
+	}
 	if strings.Contains(lower, "test") || strings.Contains(lower, "build") {
 		first = "Requested verification commands pass or failures are reported with evidence."
 	}
 	return []task.SuccessCriterion{{ID: "SC-001", Statement: first}}
+}
+
+func publicArtifactCriteriaFromPrompt(prompt string) []task.SuccessCriterion {
+	paths := publicArtifactPathsFromPrompt(prompt)
+	if len(paths) == 0 {
+		return nil
+	}
+	criteria := make([]task.SuccessCriterion, 0, len(paths))
+	for i, rel := range paths {
+		criteria = append(criteria, task.SuccessCriterion{
+			ID:        fmt.Sprintf("SC-%03d", i+1),
+			Statement: fmt.Sprintf("Workspace artifact %s exists.", rel),
+		})
+	}
+	return criteria
+}
+
+func publicArtifactPathsFromPrompt(prompt string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, match := range publicArtifactPathPattern.FindAllString(prompt, -1) {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(strings.TrimSpace(match))))
+		if clean == "." || clean == "" || strings.HasPrefix(clean, "../") || strings.ContainsAny(clean, "*?[") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(clean, "reports/"),
+			strings.HasPrefix(clean, "progress/"),
+			strings.HasPrefix(clean, "validation/"),
+			strings.HasPrefix(clean, "handoffs/"):
+		default:
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 func promptRequestsExplicitCommand(prompt string) bool {

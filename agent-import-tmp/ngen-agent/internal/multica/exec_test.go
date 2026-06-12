@@ -2,6 +2,7 @@ package multica
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,6 +174,41 @@ func TestTaskFromEnvelopeAssignmentRequiresConcreteProgressEvidence(t *testing.T
 	}
 	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "Concrete execution progress is recorded") || !strings.Contains(tf.SuccessCriteria[0].Statement, "result prose alone is not sufficient") {
 		t.Fatalf("expected concrete-progress criterion for assignment prompt, got %+v", tf.SuccessCriteria)
+	}
+}
+
+func TestTaskFromEnvelopePublishArtifactsBecomesPathCriteria(t *testing.T) {
+	dir := t.TempDir()
+	prompt := strings.Join([]string{
+		"You are running as a local coding agent for a Multica workspace.",
+		"",
+		"[NEW COMMENT] A user just left a new comment. Focus on THIS comment:",
+		"> Instructions: Initial worker slice: create the durable mission brief and first implementation-slice plan, not a final completion claim.",
+		"Inspect issue/project resources and comments; if no target repo/worktree exists, record that blocker.",
+		"Decompose the next SPEC -> failing test -> minimal implementation -> real E2E verification -> regression -> docs -> commit sequence, and publish reports/mission-plan.md plus progress/mission-status.md and handoffs/cybersec-long-horizon.v1.json with evidence and next-owner fields.",
+	}, "\n")
+
+	tf := taskFromEnvelope(StreamInputMessage{
+		Type:    "user",
+		Role:    "user",
+		Content: []ContentBlock{{Type: "text", Text: prompt}},
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "worker")
+
+	if tf.Kind != task.KindGeneral || tf.PresetID != task.PresetDocsLite {
+		t.Fatalf("expected artifact worker outside code repo to stay general docs_lite, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+	}
+	want := []string{
+		"Workspace artifact reports/mission-plan.md exists.",
+		"Workspace artifact progress/mission-status.md exists.",
+		"Workspace artifact handoffs/cybersec-long-horizon.v1.json exists.",
+	}
+	if len(tf.SuccessCriteria) != len(want) {
+		t.Fatalf("expected %d artifact criteria, got %+v", len(want), tf.SuccessCriteria)
+	}
+	for i := range want {
+		if tf.SuccessCriteria[i].ID != fmt.Sprintf("SC-%03d", i+1) || tf.SuccessCriteria[i].Statement != want[i] {
+			t.Fatalf("criterion %d mismatch: got %+v want id=%s statement=%q", i, tf.SuccessCriteria[i], fmt.Sprintf("SC-%03d", i+1), want[i])
+		}
 	}
 }
 

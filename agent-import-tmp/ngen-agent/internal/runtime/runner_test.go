@@ -34,6 +34,10 @@ func TestRuntimeCommandProviderHelperProcess(t *testing.T) {
 		fmt.Fprint(os.Stdout, `{"summary":"no extra observation needed","commands":[]}`)
 	case "workspace_edit":
 		body := string(raw)
+		if strings.Contains(body, "reports/mission-plan.md") {
+			fmt.Fprint(os.Stdout, `{"summary":"publish required Multica public artifacts","patch":"","writes":[{"path":"reports/mission-plan.md","content":"# Mission Plan\n\nFirst implementation slice is planned.\n"},{"path":"progress/mission-status.md","content":"# Mission Status\n\nInitial slice planned.\n"},{"path":"handoffs/cybersec-long-horizon.v1.json","content":"{\"next_owner\":\"worker\",\"status\":\"planned\"}\n"}],"deletes":[],"commands":[]}`)
+			os.Exit(0)
+		}
 		if !strings.Contains(body, `"workspace_guidance"`) || !strings.Contains(body, "ALWAYS call `multica squad activity`") {
 			fmt.Fprint(os.Stderr, "missing workspace guidance")
 			os.Exit(3)
@@ -4459,6 +4463,63 @@ func TestAssignmentTaskCanCompleteFromConcreteExternalActionEvidence(t *testing.
 	}
 }
 
+func TestGeneralArtifactCriteriaTriggersRepairBeforeDone(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Assignment\n\nIssue context exists.\n")
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	cfg.Provider.Mode = "command"
+	cfg.Provider.Command = []string{os.Args[0], "-test.run=TestRuntimeCommandProviderHelperProcess", "--", "runtime-command-provider-helper"}
+	svc := New(dir, cfg)
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "mission artifacts",
+		Objective:        "publish reports/mission-plan.md plus progress/mission-status.md and handoffs/cybersec-long-horizon.v1.json",
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Workspace artifact reports/mission-plan.md exists."},
+			{ID: "SC-002", Statement: "Workspace artifact progress/mission-status.md exists."},
+			{ID: "SC-003", Statement: "Workspace artifact handoffs/cybersec-long-horizon.v1.json exists."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected general artifact task to complete after workspace repair writes artifacts, got %+v", snapshot)
+	}
+	for _, rel := range []string{"reports/mission-plan.md", "progress/mission-status.md", "handoffs/cybersec-long-horizon.v1.json"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("expected artifact %s to exist: %v", rel, err)
+		}
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	for _, criterion := range spec.SuccessCriteria {
+		got := criterionStatusForID(criteria, criterion.ID)
+		if got.Status != "met" {
+			t.Fatalf("expected %s to be met, got %+v", criterion.ID, got)
+		}
+	}
+	edits, err := svc.Store.ReadWorkspaceEdits(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read workspace edits: %v", err)
+	}
+	if len(edits) == 0 || edits[0].Status != "applied" || len(edits[0].FileChanges) != 3 {
+		t.Fatalf("expected applied workspace edit with three artifact writes, got %+v", edits)
+	}
+}
+
 func TestExplicitCommandTaskFailedAttemptDoesNotAutoRetry(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "README.md"), "# quick create\n")
@@ -5216,6 +5277,51 @@ func TestCriteriaFromEvidenceRequiresExplicitPathEvidence(t *testing.T) {
 	}
 	if !containsString(got.EvidenceRefs, "workspace:README.md") {
 		t.Fatalf("expected README workspace ref in evidence, got %+v", got.EvidenceRefs)
+	}
+}
+
+func TestCriteriaFromEvidenceRequiresGeneralArtifactPathEvidence(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Assignment\n\nIssue context exists.\n")
+
+	svc := New(dir, task.DefaultConfig())
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:      task.KindGeneral,
+		PresetID:  task.PresetDocsLite,
+		Title:     "mission artifact",
+		Objective: "publish reports/mission-plan.md",
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Workspace artifact reports/mission-plan.md exists."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	report := task.VerificationReport{
+		SchemaVersion: task.SchemaVersion,
+		TaskID:        spec.TaskID,
+		Status:        "passed",
+		Checks: []task.VerificationCheck{{
+			Name:    "docs_structure",
+			Status:  "passed",
+			Summary: "docs_lite structural review found workspace:.agent_context/issue_context.md",
+		}},
+	}
+	criteria := svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected artifact path criterion to stay open despite docs-lite structural pass, got %+v", got)
+	}
+
+	writeFile(t, filepath.Join(dir, "reports", "mission-plan.md"), "# Mission Plan\n")
+	criteria = svc.criteriaFromEvidence(spec, report)
+	got := criterionStatusForID(criteria, "SC-001")
+	if got.Status != "met" {
+		t.Fatalf("expected artifact path criterion to become met from workspace evidence, got %+v", got)
+	}
+	if !containsString(got.EvidenceRefs, "workspace:reports/mission-plan.md") {
+		t.Fatalf("expected mission-plan workspace ref in evidence, got %+v", got.EvidenceRefs)
 	}
 }
 
