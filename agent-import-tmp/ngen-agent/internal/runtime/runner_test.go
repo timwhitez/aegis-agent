@@ -3704,6 +3704,7 @@ func TestGenericActionCriterionIgnoresReadOnlyMulticaAssignmentObservation(t *te
 		{"multica", "issue", "get", issueID, "--output", "json"},
 		{"multica", "issue", "comment", "list", issueID, "--output", "json"},
 		{"multica", "issue", "metadata", "list", issueID, "--output", "json"},
+		{"multica", "squad", "activity", issueID, "no_action", "--reason", "waiting for prior worker", "--output", "json"},
 	} {
 		if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
 			SchemaVersion:   task.SchemaVersion,

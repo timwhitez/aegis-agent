@@ -5020,7 +5020,8 @@ func (s *Service) genericActionEvidenceRefs(taskID string) []string {
 func commandRunOnlyObservedAssignment(record task.CommandRunRecord) bool {
 	return multicaCommandMatches(record.Argv, []string{"multica", "issue", "get"}) ||
 		multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "list"}) ||
-		multicaCommandMatches(record.Argv, []string{"multica", "issue", "metadata", "list"})
+		multicaCommandMatches(record.Argv, []string{"multica", "issue", "metadata", "list"}) ||
+		multicaSquadActivityOutcome(record.Argv) == "no_action"
 }
 
 func genericActionCriterionMode(statement string) bool {
@@ -5040,6 +5041,13 @@ func multicaCommandMatches(argv, prefix []string) bool {
 		}
 	}
 	return true
+}
+
+func multicaSquadActivityOutcome(argv []string) string {
+	if len(argv) < 5 || !multicaCommandMatches(argv, []string{"multica", "squad", "activity"}) {
+		return ""
+	}
+	return strings.TrimSpace(argv[4])
 }
 
 func analyzeCriterionWorker(statement string) criterionWorkerAnalysis {
