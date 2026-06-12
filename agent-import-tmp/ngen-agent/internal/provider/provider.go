@@ -48,6 +48,7 @@ const (
 	anthropicCacheControlTypeEphemeral = "ephemeral"
 	defaultAPIKeyEnv                   = "OPENAI_API_KEY"
 	defaultDecisionMaxTokens           = 2048
+	responsesDecisionRetryMinTokens    = 8192
 	maxProviderResponseBytes           = 4 * 1024 * 1024
 )
 
@@ -736,7 +737,24 @@ func (d *OpenAIResponsesDriver) Decide(ctx context.Context, input Input) (Decisi
 	if text == "" {
 		return Decision{}, errors.New("responses provider returned empty output text")
 	}
-	return decodeDecisionPayload(responsePayloadSource("responses provider", parsed.ID), []byte(text))
+	decision, err := decodeDecisionPayload(responsePayloadSource("responses provider", parsed.ID), []byte(text))
+	if err == nil || !isJSONSyntaxError(err) {
+		return decision, err
+	}
+	retryBody, retryErr := responsesRetryWithoutReasoning(body, responsesDecisionRetryMinTokens)
+	if retryErr != nil {
+		return Decision{}, err
+	}
+	retried, retryErr := d.doRequest(ctx, apiKey, retryBody)
+	if retryErr != nil {
+		return Decision{}, fmt.Errorf("%w; retry failed: %v", err, retryErr)
+	}
+	retryText := strings.TrimSpace(retried.outputText())
+	if retryText == "" {
+		return Decision{}, fmt.Errorf("%w; retry returned empty output text response_id=%s", err, strings.TrimSpace(retried.ID))
+	}
+	retrySource := fmt.Sprintf("%s retry", responsePayloadSource("responses provider", retried.ID))
+	return decodeDecisionPayload(retrySource, []byte(retryText))
 }
 
 func (d *OpenAIResponsesDriver) requestBody(input Input) ([]byte, error) {
@@ -771,6 +789,31 @@ func (d *OpenAIResponsesDriver) requestBody(input Input) ([]byte, error) {
 		},
 	}
 	return json.Marshal(payload)
+}
+
+func (d *OpenAIResponsesDriver) doRequest(ctx context.Context, apiKey string, body []byte) (responsesResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, responsesEndpoint(d.BaseURL), bytes.NewReader(body))
+	if err != nil {
+		return responsesResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := d.Client.Do(req)
+	if err != nil {
+		return responsesResponse{}, fmt.Errorf("responses provider request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var parsed responsesResponse
+	if err := decodeLimitedJSON("responses provider", resp.Body, &parsed); err != nil {
+		return responsesResponse{}, fmt.Errorf("responses provider returned invalid JSON: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		if parsed.Error != nil && parsed.Error.Message != "" {
+			return responsesResponse{}, fmt.Errorf("responses provider returned %s: %s", resp.Status, parsed.Error.Message)
+		}
+		return responsesResponse{}, fmt.Errorf("responses provider returned %s", resp.Status)
+	}
+	return parsed, nil
 }
 
 func defaultSystemPrompt(custom string) string {
@@ -2671,6 +2714,18 @@ func decodeDecisionPayload(source string, raw []byte) (Decision, error) {
 		lastErr = errors.New("empty decision payload")
 	}
 	return Decision{}, fmt.Errorf("%s returned invalid decision JSON: %w; raw_excerpt=%q", source, lastErr, rawPayloadExcerpt(raw, 500))
+}
+
+func isJSONSyntaxError(err error) bool {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return true
+	}
+	var unmarshalTypeErr *json.UnmarshalTypeError
+	if errors.As(err, &unmarshalTypeErr) {
+		return false
+	}
+	return false
 }
 
 func decodeWorkspaceEditPayload(source string, raw []byte) (WorkspaceEditPlan, error) {

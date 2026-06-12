@@ -1055,6 +1055,118 @@ func TestOpenAIResponsesDriverUsesConfiguredDecisionTokenBudget(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesDriverRetriesTruncatedDecisionJSON(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	var seenBodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var seenBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&seenBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seenBodies = append(seenBodies, seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		if len(seenBodies) == 1 {
+			_, _ = w.Write([]byte(`{
+				"id": "resp_truncated_decision",
+				"output": [{
+					"type": "message",
+					"role": "assistant",
+					"content": [{
+						"type": "output_text",
+						"text": "{\"action\":\"task_update\",\"summary\":\"Plan work\",\"plan_steps\":[{\"id\":\"STEP-001\""
+					}]
+				}]
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id": "resp_retry_decision",
+			"output": [{
+				"type": "message",
+				"role": "assistant",
+				"content": [{
+					"type": "output_text",
+					"text": "{\"action\":\"respond\",\"summary\":\"Recovered\",\"response_text\":\"retry ok\",\"watch_interval\":\"\",\"watch_reason\":\"\",\"approval_scope\":\"\",\"approval_reason\":\"\"}"
+				}]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	driver := New(task.ProviderConfig{
+		Mode:          "responses",
+		BaseURL:       server.URL + "/v1",
+		Model:         "gpt-5.4",
+		APIKeyEnv:     "OPENAI_API_KEY",
+		ThinkingLevel: "xhigh",
+	})
+	decision, err := driver.Decide(context.Background(), Input{
+		Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindGeneral, Objective: "review docs"},
+		State: task.State{TaskID: "TASK-001", State: task.StateActive},
+	})
+	if err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if decision.Action != "respond" || decision.ResponseText != "retry ok" {
+		t.Fatalf("unexpected retry decision: %+v", decision)
+	}
+	if len(seenBodies) != 2 {
+		t.Fatalf("expected one retry after truncated JSON, got %d requests", len(seenBodies))
+	}
+	if got := seenBodies[0]["max_output_tokens"]; got != float64(defaultDecisionMaxTokens) {
+		t.Fatalf("expected initial default token budget, got %#v", got)
+	}
+	if _, ok := seenBodies[0]["reasoning"]; !ok {
+		t.Fatalf("expected initial request to include reasoning, got %#v", seenBodies[0])
+	}
+	if got := seenBodies[1]["max_output_tokens"]; got != float64(responsesDecisionRetryMinTokens) {
+		t.Fatalf("expected retry token budget %d, got %#v", responsesDecisionRetryMinTokens, got)
+	}
+	if _, ok := seenBodies[1]["reasoning"]; ok {
+		t.Fatalf("expected retry to omit reasoning, got %#v", seenBodies[1]["reasoning"])
+	}
+}
+
+func TestOpenAIResponsesDriverDoesNotRetryDecisionValidationError(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "resp_bad_watch",
+			"output": [{
+				"type": "message",
+				"role": "assistant",
+				"content": [{
+					"type": "output_text",
+					"text": "{\"action\":\"wait\",\"summary\":\"Bad watch\",\"watch_interval\":\"soon\"}"
+				}]
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	driver := New(task.ProviderConfig{
+		Mode:      "responses",
+		BaseURL:   server.URL + "/v1",
+		Model:     "gpt-5.4",
+		APIKeyEnv: "OPENAI_API_KEY",
+	})
+	_, err := driver.Decide(context.Background(), Input{
+		Task:  task.Spec{TaskID: "TASK-001", Kind: task.KindGeneral, Objective: "review docs"},
+		State: task.State{TaskID: "TASK-001", State: task.StateActive},
+	})
+	if err == nil {
+		t.Fatal("expected invalid watch interval error")
+	}
+	if requests != 1 {
+		t.Fatalf("expected no retry for decision validation error, got %d requests", requests)
+	}
+}
+
 func TestOpenAIResponsesDriverRejectsInvalidDecision(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 
