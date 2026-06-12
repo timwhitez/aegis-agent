@@ -3132,6 +3132,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	policy := newWebFileBrowserReadPolicy(root, browseRoot)
 	target := root
 	requestedPath := strings.TrimSpace(r.URL.Query().Get("path"))
 	if requestedPath != "" && requestedPath != "." {
@@ -3141,7 +3142,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if webFileBrowserTargetDenied(root, browseRoot, target) {
+	if policy.targetDenied(target) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -3154,7 +3155,7 @@ func (s *Service) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
 		return
 	}
-	tree, err := s.listDirectory(root, browseRoot, target)
+	tree, err := s.listDirectory(root, browseRoot, target, policy)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -3183,12 +3184,13 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	policy := newWebFileBrowserReadPolicy(root, browseRoot)
 	fullPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
 	if err != nil {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
-	if webFileBrowserTargetDenied(root, browseRoot, fullPath) {
+	if policy.targetDenied(fullPath) {
 		writeError(w, http.StatusForbidden, errors.New("access denied"))
 		return
 	}
@@ -5169,7 +5171,7 @@ func (tx *skillRemoveTransaction) Rollback() error {
 	return nil
 }
 
-func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error) {
+func (s *Service) listDirectory(root, browseRoot, current string, policy *webFileBrowserReadPolicy) ([]any, error) {
 	entries, err := os.ReadDir(current)
 	if err != nil {
 		return nil, err
@@ -5203,7 +5205,7 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 		if err != nil {
 			continue
 		}
-		if webFileBrowserTargetDenied(root, browseRoot, resolvedPath) {
+		if policy.targetDenied(resolvedPath) {
 			continue
 		}
 		relPath, _ := filepath.Rel(root, fullPath)
@@ -5222,6 +5224,138 @@ func (s *Service) listDirectory(root, browseRoot, current string) ([]any, error)
 		tree = append(tree, node)
 	}
 	return tree, nil
+}
+
+type webFileBrowserReadPolicy struct {
+	workspaceRoot string
+	browseRoot    string
+
+	workspaceAliasOnce    sync.Once
+	workspaceAliasTargets []string
+}
+
+func newWebFileBrowserReadPolicy(workspaceRoot, browseRoot string) *webFileBrowserReadPolicy {
+	return &webFileBrowserReadPolicy{
+		workspaceRoot: filepath.Clean(workspaceRoot),
+		browseRoot:    filepath.Clean(browseRoot),
+	}
+}
+
+func (p *webFileBrowserReadPolicy) targetDenied(target string) bool {
+	if p == nil {
+		return true
+	}
+	target = filepath.Clean(target)
+	if webFileBrowserPathDenied(p.browseRoot, target) {
+		return true
+	}
+	if pathWithinRoot(p.workspaceRoot, target) {
+		if webFileBrowserPathDenied(p.workspaceRoot, target) {
+			return true
+		}
+		if p.workspaceAliasTargetDenied(target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *webFileBrowserReadPolicy) workspaceAliasTargetDenied(target string) bool {
+	p.workspaceAliasOnce.Do(p.loadWorkspaceAliasTargets)
+	for _, aliasTarget := range p.workspaceAliasTargets {
+		if pathWithinRoot(aliasTarget, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *webFileBrowserReadPolicy) loadWorkspaceAliasTargets() {
+	seen := map[string]struct{}{}
+	_ = filepath.WalkDir(p.workspaceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry == nil || filepath.Clean(path) == p.workspaceRoot {
+			return nil
+		}
+		if entry.Type()&fs.ModeSymlink == 0 {
+			return nil
+		}
+		rel, err := filepath.Rel(p.workspaceRoot, path)
+		if err != nil {
+			return nil
+		}
+		candidates := webFileBrowserSensitiveAliasCandidates(p.workspaceRoot, rel)
+		for _, candidate := range candidates {
+			resolved, err := tools.ResolveWorkspacePath(p.workspaceRoot, candidate)
+			if err != nil || !pathWithinRoot(p.workspaceRoot, resolved) {
+				continue
+			}
+			resolved = filepath.Clean(resolved)
+			if _, ok := seen[resolved]; ok {
+				continue
+			}
+			seen[resolved] = struct{}{}
+			p.workspaceAliasTargets = append(p.workspaceAliasTargets, resolved)
+		}
+		return nil
+	})
+}
+
+func webFileBrowserSensitiveAliasCandidates(root, rel string) []string {
+	cleanRel := filepath.Clean(rel)
+	if cleanRel == "." || cleanRel == "" {
+		return nil
+	}
+	var candidates []string
+	if webFileBrowserPathDenied(root, filepath.Join(root, cleanRel)) {
+		candidates = append(candidates, cleanRel)
+	}
+	candidates = append(candidates, webFileBrowserSensitiveAliasChildCandidates(cleanRel)...)
+	return candidates
+}
+
+var webFileBrowserSensitiveChildPathPatterns = [][]string{
+	{".m2", "settings.xml"},
+	{".m2", "settings-security.xml"},
+	{".gradle", "gradle.properties"},
+	{".nuget", "NuGet.Config"},
+	{".pip", "pip.conf"},
+	{".config", "gcloud"},
+	{".config", "pip", "pip.conf"},
+}
+
+func webFileBrowserSensitiveAliasChildCandidates(rel string) []string {
+	displayRel := filepath.ToSlash(filepath.Clean(rel))
+	if displayRel == "." || displayRel == "" {
+		return nil
+	}
+	relParts := strings.Split(displayRel, "/")
+	var candidates []string
+	for _, pattern := range webFileBrowserSensitiveChildPathPatterns {
+		for prefixLen := 1; prefixLen < len(pattern); prefixLen++ {
+			if len(relParts) < prefixLen {
+				continue
+			}
+			if !webFileBrowserPathPartsEqualFold(relParts[len(relParts)-prefixLen:], pattern[:prefixLen]) {
+				continue
+			}
+			parts := append([]string{}, relParts...)
+			parts = append(parts, pattern[prefixLen:]...)
+			candidates = append(candidates, filepath.FromSlash(strings.Join(parts, "/")))
+		}
+	}
+	return candidates
+}
+
+func webFileBrowserPathPartsEqualFold(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if !strings.EqualFold(strings.TrimSpace(left[i]), strings.TrimSpace(right[i])) {
+			return false
+		}
+	}
+	return true
 }
 
 func webFileBrowserPathDenied(root, target string) bool {
@@ -5243,19 +5377,6 @@ func webFileBrowserPathDenied(root, target string) bool {
 		return true
 	}
 	if webFileBrowserPackageCredentialPathDenied(parts) {
-		return true
-	}
-	if err := tools.CheckWorkspaceWriteAllowed(root, target); err != nil {
-		return true
-	}
-	return false
-}
-
-func webFileBrowserTargetDenied(workspaceRoot, browseRoot, target string) bool {
-	if webFileBrowserPathDenied(browseRoot, target) {
-		return true
-	}
-	if pathWithinRoot(workspaceRoot, target) && webFileBrowserPathDenied(workspaceRoot, target) {
 		return true
 	}
 	return false
