@@ -8811,6 +8811,243 @@ func TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner(t *testing.T)
 	}
 }
 
+func TestServiceStopSessionReconcilesStaleRunningOwner(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	previousAlive := webconsoleProcessAlive
+	webconsoleProcessAlive = func(pid int) bool {
+		return pid != 31337
+	}
+	defer func() {
+		webconsoleProcessAlive = previousAlive
+	}()
+
+	meta := testSessionMetadata(t, "stale_owner_stop")
+	if err := svc.store.Create(meta, session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		Turn:      24,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create running session: %v", err)
+	}
+	if err := svc.store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "31337:2026-06-12T06:09:05Z",
+		"pid":              31337,
+		"started_at":       "2026-06-12T06:09:05Z",
+	})); err != nil {
+		t.Fatalf("append owner event: %v", err)
+	}
+	stopSteer := session.NewSteerRequest(stopFallbackSteerMessage, true)
+	if err := svc.store.AppendSteerRequest(meta.ID, stopSteer); err != nil {
+		t.Fatalf("append stop steer: %v", err)
+	}
+	nextSteer := session.NewSteerRequest("Keep this queued instruction for continue.", false)
+	if err := svc.store.AppendSteerRequest(meta.ID, nextSteer); err != nil {
+		t.Fatalf("append regular steer: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected stale owner stop to be accepted, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode stop response: %v", err)
+	}
+	if response["reconciled"] != true {
+		t.Fatalf("expected reconciled stop response, got %#v", response)
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load reconciled state: %v", err)
+	}
+	if state.Status != session.StatusPaused || state.Phase != "interrupt" || state.PauseReason != "manual_stop" || state.Turn != 24 {
+		t.Fatalf("expected paused manual_stop state, got %#v", state)
+	}
+	if state.PendingSteerCount != 1 {
+		t.Fatalf("expected only the non-interrupt steer to remain pending, got %d", state.PendingSteerCount)
+	}
+	requests, err := svc.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 2 || requests[0].Status != session.SteerStatusRejected || requests[1].Status != session.SteerStatusPending {
+		t.Fatalf("expected interrupt stop steer rejected and regular steer pending, got %#v", requests)
+	}
+	eventsList, err := svc.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if countWebEventType(eventsList, "webconsole.handle.released") != 1 ||
+		countWebEventType(eventsList, "session.paused") != 1 ||
+		countWebEventType(eventsList, "session.steer.rejected") != 1 {
+		t.Fatalf("expected release, paused, and steer rejected events, got %#v", eventsList)
+	}
+	var detail SessionDetailResponse
+	recorder = httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sessions/"+meta.ID, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("detail status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.ActiveHandleOwner.State != "settled" || detail.ActiveHandleOwner.ReleasedAt == "" {
+		t.Fatalf("expected reconciled owner to be settled in detail, got %#v", detail.ActiveHandleOwner)
+	}
+}
+
+func TestServiceStopSessionClearsPendingFallbackSteersAfterRecoveredStop(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "stale_owner_stop_cleanup")
+	if err := svc.store.Create(meta, session.State{
+		Status:      session.StatusPaused,
+		Phase:       "interrupt",
+		PauseReason: "manual_stop",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create paused session: %v", err)
+	}
+	if err := svc.store.AppendSteerRequest(meta.ID, session.NewSteerRequest(stopFallbackSteerMessage, true)); err != nil {
+		t.Fatalf("append stop fallback steer: %v", err)
+	}
+	if _, err := svc.store.RefreshPendingSteerCount(meta.ID); err != nil {
+		t.Fatalf("refresh pending steer count: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected paused stop cleanup to be accepted, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.PendingSteerCount != 0 {
+		t.Fatalf("expected pending stop fallback steer to be cleared, got %d", state.PendingSteerCount)
+	}
+	requests, err := svc.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusRejected {
+		t.Fatalf("expected stop fallback steer to be rejected, got %#v", requests)
+	}
+}
+
+func TestServiceDeleteSessionReconcilesStaleRunningOwner(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	previousAlive := webconsoleProcessAlive
+	webconsoleProcessAlive = func(pid int) bool {
+		return pid != 424242
+	}
+	defer func() {
+		webconsoleProcessAlive = previousAlive
+	}()
+
+	meta := testSessionMetadata(t, "stale_owner_delete")
+	if err := svc.store.Create(meta, session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create running session: %v", err)
+	}
+	if err := svc.store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "424242:2026-06-12T06:09:05Z",
+		"pid":              424242,
+		"started_at":       "2026-06-12T06:09:05Z",
+	})); err != nil {
+		t.Fatalf("append owner event: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected stale owner delete to succeed, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(meta.ID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected reconciled stale session to be deleted, got err=%v", err)
+	}
+}
+
+func TestServiceDeleteSessionKeepsPossiblyLiveRunningOwnerBlocked(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	previousAlive := webconsoleProcessAlive
+	webconsoleProcessAlive = func(pid int) bool {
+		return true
+	}
+	defer func() {
+		webconsoleProcessAlive = previousAlive
+	}()
+
+	meta := testSessionMetadata(t, "live_external_owner_delete")
+	if err := svc.store.Create(meta, session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create running session: %v", err)
+	}
+	if err := svc.store.AppendEvent(meta.ID, events.New(meta.ID, "webconsole.handle.acquired", "webconsole", map[string]any{
+		"source":           "webconsole",
+		"process_start_id": "525252:2026-06-12T06:09:05Z",
+		"pid":              525252,
+		"started_at":       "2026-06-12T06:09:05Z",
+	})); err != nil {
+		t.Fatalf("append owner event: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected conflict deleting possibly live running session, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	state, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Status != session.StatusRunning {
+		t.Fatalf("possibly live owner should remain running, got %#v", state)
+	}
+}
+
 func TestServiceDeleteSessionRejectsActiveDeepDescendantHandle(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -4958,7 +4958,7 @@ test('stop completion ignores refreshed same-session state', async () => {
   assert.deepEqual(sameRealm(toasts), []);
 });
 
-test('top-level stop and interrupt controls hide for running sessions not owned by this web process', () => {
+test('top-level stop stays available but interrupt hides for running sessions not owned by this web process', () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`
     const stopButton = {
@@ -5008,9 +5008,9 @@ test('top-level stop and interrupt controls hide for running sessions not owned 
     stopDisabled: nodes.stopSessionBtn.disabled,
     interruptDisabled: nodes.interruptSessionBtn.disabled
   })`, appContext)), {
-    stopVisible: false,
+    stopVisible: true,
     interruptVisible: false,
-    stopDisabled: true,
+    stopDisabled: false,
     interruptDisabled: true
   });
 });

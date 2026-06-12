@@ -47,7 +47,10 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-var webconsoleProcessOwner = newProcessOwner()
+var (
+	webconsoleProcessOwner = newProcessOwner()
+	webconsoleProcessAlive = hostProcessAlive
+)
 
 const (
 	maskedAPIKey                    = "••••••••••••••••"
@@ -66,6 +69,7 @@ const (
 	workspaceFilePreviewDefaultSize = 256 << 10
 	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
+	stopFallbackSteerMessage        = "Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue."
 )
 
 var (
@@ -851,6 +855,10 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
+	if _, err := s.store.LoadMetadata(sessionID); err != nil {
+		writeError(w, sessionStoreStatus(err), err)
+		return
+	}
 	hasActiveHandle, err := s.hasActiveDescendantHandle(sessionID)
 	if err != nil {
 		writeError(w, sessionStoreStatus(err), err)
@@ -858,6 +866,10 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 	}
 	if hasActiveHandle {
 		writeError(w, http.StatusConflict, errors.New("cannot delete an active session tree"))
+		return
+	}
+	if err := s.reconcileStaleRunningSessionTree(sessionID, "delete_session"); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := s.ensureSessionTreeNotLive(sessionID); err != nil {
@@ -2785,6 +2797,24 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
+		reconciled, err := s.reconcileStaleRunningSession(sessionID, "manual_stop")
+		if err != nil {
+			writeError(w, sessionStoreStatus(err), err)
+			return
+		}
+		if reconciled {
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true})
+			return
+		}
+		cleaned, err := s.rejectStopFallbackSteersForPausedStop(sessionID, "manual_stop")
+		if err != nil {
+			writeError(w, sessionStoreStatus(err), err)
+			return
+		}
+		if cleaned {
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true, "cleared_pending_stop_steers": true})
+			return
+		}
 		writeError(w, http.StatusConflict, newWebError(
 			errorCodeActiveHandleNotOwned,
 			"session is not actively owned by this web console; it may already be settled",
@@ -5512,7 +5542,11 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 		}
 		owner.State = "running_not_owned"
 		owner.OwnedByCurrentProcess = false
-		owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
+		if ownerProcessKnownDead(owner) {
+			owner.Action = "the recorded web console owner process is no longer running; stop or delete can reconcile this orphaned run"
+		} else {
+			owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
+		}
 		return owner
 	}
 	owner.State = "settled"
@@ -5610,6 +5644,204 @@ func (s *Service) pruneInactiveHandles() {
 
 func currentProcessHandleCanBePruned(status string) bool {
 	return status == session.StatusCompleted || status == session.StatusFailed
+}
+
+func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string) error {
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return err
+	}
+	targets := sessionTreeTargetIDs(sessionID, items)
+	ids := make([]string, 0, len(targets))
+	for id := range targets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if _, err := s.reconcileStaleRunningSession(id, pauseReason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (bool, error) {
+	if s.hasActiveHandle(sessionID) {
+		return false, nil
+	}
+	state, err := s.store.LoadState(sessionID)
+	if err != nil {
+		return false, err
+	}
+	if state.Status != session.StatusRunning {
+		return false, nil
+	}
+	eventsList, err := s.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	owner := latestActiveOwnerFromEvents(eventsList)
+	if !staleRunningOwnerCanBeReconciled(owner) {
+		return false, nil
+	}
+	requests, err := s.store.LoadSteerRequests(sessionID)
+	if err != nil {
+		return false, err
+	}
+
+	previousState := state
+	previousEvents := append([]events.Event(nil), eventsList...)
+	previousRequests := append([]session.SteerRequest(nil), requests...)
+	state.Status = session.StatusPaused
+	state.Phase = "interrupt"
+	state.PauseReason = pauseReason
+	state.LastError = ""
+	if err := s.store.SaveState(sessionID, state); err != nil {
+		return false, err
+	}
+
+	released := events.New(sessionID, "webconsole.handle.released", "webconsole", map[string]any{
+		"source":            "webconsole",
+		"process_start_id":  owner.ProcessStartID,
+		"pid":               owner.PID,
+		"started_at":        owner.StartedAt,
+		"released_at":       nowString(),
+		"reason":            "stale_owner_reconciled",
+		"previous_event_at": owner.LastEventAt,
+	})
+	if err := s.store.AppendEvent(sessionID, released); err != nil {
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+	}
+	paused := events.New(sessionID, "session.paused", "interrupt", map[string]any{
+		"reason":             pauseReason,
+		"source":             "webconsole",
+		"reconciled":         true,
+		"reconciled_from":    "stale_webconsole_owner",
+		"owner_process_id":   owner.PID,
+		"owner_process_dead": ownerProcessKnownDead(owner),
+		"process_start_id":   owner.ProcessStartID,
+	})
+	if err := s.store.AppendEvent(sessionID, paused); err != nil {
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+	}
+	if _, err := s.rejectPendingStopFallbackSteers(sessionID, requests, pauseReason); err != nil {
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+	}
+	return true, nil
+}
+
+func (s *Service) rejectStopFallbackSteersForPausedStop(sessionID, pauseReason string) (bool, error) {
+	state, err := s.store.LoadState(sessionID)
+	if err != nil {
+		return false, err
+	}
+	if state.Status != session.StatusPaused || state.PauseReason != pauseReason {
+		return false, nil
+	}
+	eventsList, err := s.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	requests, err := s.store.LoadSteerRequests(sessionID)
+	if err != nil {
+		return false, err
+	}
+	previousState := state
+	previousEvents := append([]events.Event(nil), eventsList...)
+	previousRequests := append([]session.SteerRequest(nil), requests...)
+	changed, err := s.rejectPendingStopFallbackSteers(sessionID, requests, pauseReason)
+	if err != nil {
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+	}
+	return changed, nil
+}
+
+func (s *Service) rejectPendingStopFallbackSteers(sessionID string, requests []session.SteerRequest, pauseReason string) (bool, error) {
+	rejectedEvents := make([]events.Event, 0)
+	changed := false
+	for i := range requests {
+		if requests[i].Status != session.SteerStatusPending && requests[i].Status != session.SteerStatusDeferred {
+			continue
+		}
+		if !isStopFallbackSteerRequest(requests[i]) {
+			continue
+		}
+		requests[i].Status = session.SteerStatusRejected
+		changed = true
+		rejectedEvents = append(rejectedEvents, events.New(sessionID, "session.steer.rejected", "control", map[string]any{
+			"id":                 requests[i].ID,
+			"interrupt":          requests[i].Interrupt,
+			"reason":             "stale_owner_stop_reconciled",
+			"pause_reason":       pauseReason,
+			"reconciled_session": true,
+		}))
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.store.UpdateSteerRequests(sessionID, requests); err != nil {
+		return false, err
+	}
+	if _, err := s.store.RefreshPendingSteerCount(sessionID); err != nil {
+		return false, err
+	}
+	if err := s.store.AppendEvents(sessionID, rejectedEvents); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func isStopFallbackSteerRequest(request session.SteerRequest) bool {
+	return request.Interrupt && strings.TrimSpace(request.Text) == stopFallbackSteerMessage
+}
+
+func (s *Service) restoreStaleRunningSessionReconcile(sessionID string, previousState session.State, previousEvents []events.Event, previousRequests []session.SteerRequest, cause error) error {
+	if err := s.store.RestoreEvents(sessionID, previousEvents); err != nil {
+		return fmt.Errorf("restore events after stale session reconcile error %v: %w", cause, err)
+	}
+	if err := s.store.UpdateSteerRequests(sessionID, previousRequests); err != nil {
+		return fmt.Errorf("restore steer requests after stale session reconcile error %v: %w", cause, err)
+	}
+	if err := s.store.SaveState(sessionID, previousState); err != nil {
+		return fmt.Errorf("restore state after stale session reconcile error %v: %w", cause, err)
+	}
+	return cause
+}
+
+func staleRunningOwnerCanBeReconciled(owner ActiveHandleOwner) bool {
+	if owner.EventType == "webconsole.handle.released" {
+		return true
+	}
+	if owner.EventType != "webconsole.handle.acquired" {
+		return false
+	}
+	if owner.ProcessStartID == webconsoleProcessOwner.processStartID {
+		return true
+	}
+	return ownerProcessKnownDead(owner)
+}
+
+func ownerProcessKnownDead(owner ActiveHandleOwner) bool {
+	pid := owner.PID
+	if pid <= 0 {
+		pid = pidFromProcessStartID(owner.ProcessStartID)
+	}
+	if pid <= 0 {
+		return false
+	}
+	return !webconsoleProcessAlive(pid)
+}
+
+func pidFromProcessStartID(processStartID string) int {
+	pidText, _, ok := strings.Cut(strings.TrimSpace(processStartID), ":")
+	if !ok {
+		return 0
+	}
+	pid, err := strconv.Atoi(pidText)
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 func (s *Service) ensureSessionTreeNotLive(sessionID string) error {

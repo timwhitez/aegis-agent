@@ -1564,19 +1564,29 @@ async function requestStopSession(sessionID, options = {}) {
     const result = await requestStopViaBestAvailablePath(sessionID, {
       shouldFallback: stopFallbackStillCurrent
     });
+    const stopRequestedViaSteer = result.via === 'steer';
+    const stopRecoveredStaleRun = result.via === 'recovered';
+    const stopCopy = stopRequestedViaSteer
+      ? 'This run is being stopped through an interrupt steer request because no local handle is owned by this page.'
+      : stopRecoveredStaleRun
+        ? 'The stale running state was recovered after the previous web console process exited.'
+        : 'The current run is being stopped. Partial output and tool results will remain visible.';
+    const stopToast = stopRequestedViaSteer
+      ? 'Stop requested through interrupt steer.'
+      : stopRecoveredStaleRun
+        ? 'Stale run recovered and paused.'
+        : 'Stop requested.';
     if (selectedStoppedSessionStillCurrent()) {
       setLiveActivity({
         title: 'Stopping run',
-        copy: result.via === 'steer'
-          ? 'This run is being stopped through an interrupt steer request because no local handle is owned by this page.'
-          : 'The current run is being stopped. Partial output and tool results will remain visible.',
+        copy: stopCopy,
         tone: 'danger'
       });
-      showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
+      showToast(stopToast, 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
     } else if (refreshSelectedSession && selectedContextStillCurrent()) {
-      showToast(result.via === 'steer' ? 'Stop requested through interrupt steer.' : 'Stop requested.', 'success');
+      showToast(stopToast, 'success');
       queueSessionRefresh(120);
       queueOverviewRefresh(180);
     }
@@ -1605,8 +1615,8 @@ async function requestStopSession(sessionID, options = {}) {
 
 async function requestStopViaBestAvailablePath(sessionID, options = {}) {
   try {
-    await stopSession(sessionID);
-    return { via: 'handle' };
+    const response = await stopSession(sessionID);
+    return { via: response?.reconciled ? 'recovered' : 'handle' };
   } catch (err) {
     if (err?.code !== 'ACTIVE_HANDLE_NOT_OWNED') {
       throw err;
@@ -1765,13 +1775,14 @@ function updateUI() {
   nodes.inputContainer.classList.toggle('is-offline', !isLiveRelayConnected());
   nodes.newSessionBtn?.classList.toggle('is-busy', isGenerating());
   const directSessionControlAvailable = canUseDirectSessionControl();
-  nodes.stopSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
+  const stopSessionControlAvailable = canUseStopSessionControl();
+  nodes.stopSessionBtn?.classList.toggle('is-visible', stopSessionControlAvailable);
   nodes.interruptSessionBtn?.classList.toggle('is-visible', directSessionControlAvailable);
   nodes.interruptToggleBtn?.classList.toggle('is-visible', isGenerating() && hasDurableSession());
   nodes.interruptToggleBtn?.classList.toggle('is-armed', isNextSendInterruptArmed() && isGenerating() && hasDurableSession());
   nodes.interruptToggleBtn?.setAttribute('aria-pressed', isNextSendInterruptArmed() ? 'true' : 'false');
   if (nodes.stopSessionBtn) {
-    nodes.stopSessionBtn.disabled = !directSessionControlAvailable;
+    nodes.stopSessionBtn.disabled = !stopSessionControlAvailable;
   }
   if (nodes.interruptSessionBtn) {
     nodes.interruptSessionBtn.disabled = !directSessionControlAvailable;
@@ -2591,6 +2602,12 @@ function canUseDirectSessionControl() {
     hasDurableSession() &&
     state.sessionDetail?.active_handle === true &&
     state.sessionDetail?.active_handle_owner?.owned_by_current_process === true;
+}
+
+function canUseStopSessionControl() {
+  return isGenerating() &&
+    hasDurableSession() &&
+    isStoppableSessionStatus(state.sessionDetail?.state?.status);
 }
 
 function queueJobItems(data = state.sessionDetail?.children?.jobs) {

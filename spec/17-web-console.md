@@ -324,6 +324,7 @@ Web console 通过一个新的 `WebConsoleService` 运行。
 - Web server 需要知道哪些 session 是自己托管的 active run
 - handle 本身不能伪持久化；只能把 `webconsole.handle.acquired/released` 这类 owner/process 线索写入 `events.jsonl`，供恢复诊断、`session.md` 与 long-run checkpoint 使用
 - Web 读取当前进程 handle 前必须先按 durable terminal state 清理 stale handle；`failed` / `completed` 的遗留 handle 不能阻断 stop / interrupt 所有权判断、Plan Mode recovery continue、删除/清理或其他可恢复控制路径
+- 当 durable state 仍为 `running`、当前 Web 进程没有 active handle、最近 `webconsole.handle.acquired` 所属 owner 进程可由本机事实证明已经不存在时，Web 控制面可以把该 session 作为 orphaned running 收敛为 `paused`，并追加 `webconsole.handle.released` 与 `session.paused` 恢复事件；这只用于 stop / delete / recovery path，不能把 in-memory cancel handle 伪持久化，也不能覆盖当前进程仍持有的 active handle。
 
 ### 6.3 Worker 并发池
 
@@ -484,6 +485,8 @@ Settings API：
 行为：
 
 - 若 session 由当前 Web server 托管并仍在运行，则调用其 active runner interrupt，并把 pause reason 写为 `manual_stop`
+- 若 session durable state 仍为 `running`，但 active handle 属于已退出的旧 Web 进程，则写入可审计恢复事件并将 session 收敛为 `paused` / `manual_stop`，使用户可以继续或删除该 session
+- orphan stop 恢复完成后，之前由 Web stop fallback 产生且尚未被 runner 接纳的 pending interrupt stop steer 必须标记为 `rejected`，避免后续 `continue` 再次消费旧的 stop 请求
 - 否则返回可理解的错误，提示该 session 可能已结算
 
 ### 7.10 `GET /api/sessions/{id}/children`
