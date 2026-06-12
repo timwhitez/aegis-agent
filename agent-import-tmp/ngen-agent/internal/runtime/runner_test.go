@@ -3892,6 +3892,34 @@ func TestExplicitCommandArgvsPreservesQuotedArguments(t *testing.T) {
 	}
 }
 
+func TestExplicitCommandArgvsPrioritizesExactSingleInvocationDirective(t *testing.T) {
+	prompt := strings.Join([]string{
+		"You are running as a quick-create assistant for a Multica workspace.",
+		"",
+		"User input:",
+		"> 每个完成切片一个原子 commit。commit 前运行测试和 `git diff --check`。",
+		"",
+		"Output format:",
+		"- Run exactly one `multica issue create --title \"Web First\" --description-file .multica/quick-create-description.md --assignee-id 3b0ca27f-5db0-42ff-98ea-7750fc40500a --project ae886a17-0ef6-4b02-b154-3ac601df7239 --output json` invocation. Do not retry for any reason.",
+	}, "\n")
+
+	commands := explicitCommandArgvs(prompt)
+	if len(commands) != 1 {
+		t.Fatalf("expected only the exact invocation directive command, got %+v", commands)
+	}
+	want := []string{
+		"multica", "issue", "create",
+		"--title", "Web First",
+		"--description-file", ".multica/quick-create-description.md",
+		"--assignee-id", "3b0ca27f-5db0-42ff-98ea-7750fc40500a",
+		"--project", "ae886a17-0ef6-4b02-b154-3ac601df7239",
+		"--output", "json",
+	}
+	if !equalStringSlices(commands[0], want) {
+		t.Fatalf("unexpected argv:\n got %+v\nwant %+v", commands[0], want)
+	}
+}
+
 func TestExplicitCommandArgvsRejectsUnclosedQuote(t *testing.T) {
 	commands := explicitCommandArgvs("Run `externalctl create --name \"Example --output json`.")
 	if len(commands) != 0 {

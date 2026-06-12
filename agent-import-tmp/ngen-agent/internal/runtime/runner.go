@@ -39,6 +39,7 @@ var criterionLiteralPattern = regexp.MustCompile("[`\"]([^`\"]+)[`\"]")
 var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-z_][A-Za-z0-9_-]{2,})`)
 var backtickCommandPattern = regexp.MustCompile("`([^`\\n]+)`")
 var shellLikeCommandPattern = regexp.MustCompile("(?im)^\\s*(?:[-*]\\s*)?(?:run|execute|invoke|call)\\s+([A-Za-z0-9_./-]+(?:\\s+[^\\n`]+)?)\\s*$")
+var priorityBacktickCommandPattern = regexp.MustCompile("(?is)(?:run|execute|invoke|call)\\s+exactly\\s+one\\s+`([^`\\n]+)`\\s+invocation")
 
 const commandOutputMaxBytes = 1024 * 1024
 
@@ -1774,6 +1775,20 @@ func (s *Service) completedOrAttemptedObservationCommands(taskID string) (map[st
 
 func explicitCommandArgvs(text string) [][]string {
 	var commands [][]string
+	for _, match := range priorityBacktickCommandPattern.FindAllStringSubmatchIndex(text, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		if commandLiteralNegated(text, match[2]-1) {
+			continue
+		}
+		if argv := splitSimpleCommand(text[match[2]:match[3]]); runnableCommandArgv(argv) {
+			commands = append(commands, argv)
+		}
+	}
+	if len(commands) > 0 {
+		return commands
+	}
 	for _, match := range backtickCommandPattern.FindAllStringSubmatchIndex(text, -1) {
 		if len(match) < 4 || !explicitCommandContext(text, match[0]) {
 			continue
