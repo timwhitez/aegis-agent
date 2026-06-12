@@ -1688,6 +1688,7 @@ function adoptSession(sessionID, backed) {
     setSelectedQueueJob('');
     clearPlanInputSelections();
     resetMessagePagingWindowState();
+    resetWorkspaceSessionSync();
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1712,6 +1713,7 @@ function resetChatSession() {
   clearPlanInputSelections();
   setComposerMode(null);
   resetMessagePagingWindowState();
+  resetWorkspaceSessionSync();
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
   }
@@ -1773,7 +1775,6 @@ function updateUI() {
   nodes.sendBtn.classList.toggle('is-interrupt', isNextSendInterruptArmed() && isGenerating() && hasDurableSession());
   nodes.inputContainer.classList.toggle('is-busy', isGenerating() || launchPending);
   nodes.inputContainer.classList.toggle('is-offline', !isLiveRelayConnected());
-  nodes.newSessionBtn?.classList.toggle('is-busy', isGenerating());
   const directSessionControlAvailable = canUseDirectSessionControl();
   const stopSessionControlAvailable = canUseStopSessionControl();
   nodes.stopSessionBtn?.classList.toggle('is-visible', stopSessionControlAvailable);
@@ -2796,6 +2797,7 @@ async function refreshCurrentSession(options = {}) {
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
+    syncWorkspaceToCurrentSession();
     await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs), {
       isCurrent: () => state.sessionId === sessionID && !sessionViewState.needsRefresh
     });

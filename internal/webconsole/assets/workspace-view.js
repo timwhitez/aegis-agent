@@ -5,7 +5,8 @@ const workspaceViewState = {
   path: '',
   tree: [],
   selectedTreePath: '',
-  filePreview: null
+  filePreview: null,
+  syncedSessionWorkdir: ''
 };
 
 async function fetchWorkspace() {
@@ -13,6 +14,13 @@ async function fetchWorkspace() {
     if (!state.meta) {
       await refreshMeta().catch(() => {});
     }
+    const sessionPath = currentSessionWorkspacePath();
+    if (sessionPath !== null && sessionPath !== currentWorkspacePath()) {
+      setCurrentWorkspacePath(sessionPath);
+      setSelectedWorkspaceTreePath('');
+      setWorkspaceFilePreview(null);
+    }
+    workspaceViewState.syncedSessionWorkdir = currentSessionWorkdir();
     updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
     nodes.editorFilename.innerText = workspaceDisplayName();
@@ -26,6 +34,57 @@ async function fetchWorkspace() {
     nodes.editorContent.innerText = message;
     showToast(message, 'error');
   }
+}
+
+function syncWorkspaceToCurrentSession(options = {}) {
+  const sessionWorkdir = currentSessionWorkdir();
+  if (workspaceViewState.syncedSessionWorkdir === sessionWorkdir && !options.force) {
+    return;
+  }
+  const sessionPath = currentSessionWorkspacePath();
+  if (sessionPath === null) {
+    return;
+  }
+  workspaceViewState.syncedSessionWorkdir = sessionWorkdir;
+  if (sessionPath === currentWorkspacePath()) {
+    updateWorkspaceMeta();
+    return;
+  }
+  setCurrentWorkspacePath(sessionPath);
+  setSelectedWorkspaceTreePath('');
+  setWorkspaceFilePreview(null);
+  updateWorkspaceMeta();
+  if (currentViewName() === 'workspace') {
+    fetchWorkspace();
+  }
+}
+
+function currentSessionWorkdir() {
+  return String(state.sessionDetail?.metadata?.workdir || '').trim();
+}
+
+function currentSessionWorkspacePath() {
+  const root = String(state.meta?.workspace_root || '').trim();
+  const workdir = currentSessionWorkdir();
+  if (!root || !workdir) {
+    return '';
+  }
+  const rootPath = normalizeAbsoluteWorkspacePath(root);
+  const workdirPath = normalizeAbsoluteWorkspacePath(workdir);
+  if (workdirPath === rootPath) {
+    return '';
+  }
+  const prefix = rootPath.endsWith('/') ? rootPath : `${rootPath}/`;
+  if (!workdirPath.startsWith(prefix)) {
+    return null;
+  }
+  return normalizeWorkspacePath(workdirPath.slice(prefix.length));
+}
+
+function normalizeAbsoluteWorkspacePath(value) {
+  return String(value || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/g, '');
 }
 
 function workspaceErrorMessage(err, fallback = 'Failed to load workspace.') {
@@ -109,6 +168,10 @@ function workspaceFilePreview() {
 
 function setWorkspaceFilePreview(preview) {
   workspaceViewState.filePreview = preview || null;
+}
+
+function resetWorkspaceSessionSync() {
+  workspaceViewState.syncedSessionWorkdir = '';
 }
 
 function normalizeWorkspacePath(path = '') {

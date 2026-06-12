@@ -1687,6 +1687,18 @@ function renderTasksPanel(detail) {
 function collectFileChanges() {
   const detail = state.sessionDetail;
   if (!detail) return [];
+  const durableChanges = maybeArray(detail.file_changes);
+  if (durableChanges.length) {
+    return durableChanges
+      .filter((item) => item && item.path)
+      .map((item) => ({
+        path: String(item.path),
+        writes: Number(item.writes || 0),
+        edits: Number(item.edits || 0),
+        linesAdded: Number(item.lines_added || item.linesAdded || 0),
+        linesRemoved: Number(item.lines_removed || item.linesRemoved || 0)
+      }));
+  }
   const messages = maybeArray(detail.messages);
   const fileMap = {};
   messages.forEach((msg) => {

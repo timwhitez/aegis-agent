@@ -908,6 +908,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("load planmode.json: %w", err))
 		}
 	}
+	if _, err := r.appendDanglingToolCallRecoveryResults(meta.ID, "continue"); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
 	checkpointHint, checkpointWarnings, checkpointMessageID, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
 	if checkpointErr != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", checkpointErr)
@@ -1588,6 +1591,130 @@ func (r *Runner) hasToolResult(sessionID, toolCallID, name string) (bool, error)
 		}
 	}
 	return false, nil
+}
+
+func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string) (int, error) {
+	messages, err := r.store.LoadMessages(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	pending := unresolvedToolCalls(messages)
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	pending, err = r.filterRecoverableDanglingToolCalls(sessionID, pending)
+	if err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	output := "Error: previous run stopped before this tool call completed; the tool was not executed during recovery. Continue from the durable workspace state."
+	results := make([]session.ToolResult, 0, len(pending))
+	ids := make([]string, 0, len(pending))
+	for _, call := range pending {
+		callID := strings.TrimSpace(call.ID)
+		if callID == "" {
+			continue
+		}
+		ids = append(ids, callID)
+		results = append(results, session.ToolResult{
+			ToolCallID:    callID,
+			Name:          strings.TrimSpace(call.Name),
+			LLMOutput:     output,
+			DisplayOutput: output,
+			IsError:       true,
+			Metadata: map[string]any{
+				"recovered_dangling_tool_call": true,
+				"reason":                       reason,
+			},
+		})
+	}
+	if len(results) == 0 {
+		return 0, nil
+	}
+	msg := session.NewToolMessage(results)
+	if err := r.store.AppendMessage(sessionID, msg); err != nil {
+		return 0, err
+	}
+	if err := r.appendEvent(sessionID, "tool.results.recovered", "prepare", map[string]any{
+		"reason":        reason,
+		"tool_call_ids": ids,
+		"count":         len(results),
+	}); err != nil {
+		if rollbackErr := r.store.RemoveLastMessageIfID(sessionID, msg.ID); rollbackErr != nil {
+			return 0, fmt.Errorf("record dangling tool recovery event after rolling back message failed with %v: %w", rollbackErr, err)
+		}
+		return 0, fmt.Errorf("record dangling tool recovery event: %w", err)
+	}
+	return len(results), nil
+}
+
+func (r *Runner) filterRecoverableDanglingToolCalls(sessionID string, calls []session.ToolCall) ([]session.ToolCall, error) {
+	if len(calls) == 0 {
+		return nil, nil
+	}
+	planMode, err := r.store.LoadPlanMode(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return calls, nil
+		}
+		return nil, err
+	}
+	if planMode.PendingRequest == nil {
+		return calls, nil
+	}
+	pendingInputToolCallID := strings.TrimSpace(planMode.PendingRequest.ToolCallID)
+	if pendingInputToolCallID == "" {
+		return calls, nil
+	}
+	out := make([]session.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if strings.TrimSpace(call.ID) == pendingInputToolCallID && strings.TrimSpace(call.Name) == "request_user_input" {
+			continue
+		}
+		out = append(out, call)
+	}
+	return out, nil
+}
+
+func unresolvedToolCalls(messages []session.Message) []session.ToolCall {
+	pending := map[string]session.ToolCall{}
+	var order []string
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls {
+			callID := strings.TrimSpace(call.ID)
+			if callID == "" {
+				continue
+			}
+			if _, exists := pending[callID]; !exists {
+				order = append(order, callID)
+			}
+			pending[callID] = call
+		}
+		for _, result := range msg.ToolResults {
+			callID := strings.TrimSpace(result.ToolCallID)
+			if callID == "" {
+				continue
+			}
+			delete(pending, callID)
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	out := make([]session.ToolCall, 0, len(pending))
+	for _, callID := range order {
+		call, ok := pending[callID]
+		if !ok {
+			continue
+		}
+		out = append(out, call)
+	}
+	return out
 }
 
 func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {

@@ -6508,6 +6508,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "currentWorkspacePath()") || !strings.Contains(workspaceBody, "setCurrentWorkspacePath(normalized)") || !strings.Contains(workspaceBody, "currentWorkspaceTree()") || strings.Contains(workspaceBody, "state.workspacePath") || strings.Contains(workspaceBody, "state.fileTree") {
 		t.Fatalf("expected Workspace directory display state to stay out of durable app state, got workspace-view.js body: %s", workspaceBody)
 	}
+	if !strings.Contains(workspaceBody, "currentSessionWorkspacePath()") || !strings.Contains(workspaceBody, "function syncWorkspaceToCurrentSession") || !strings.Contains(workspaceBody, "syncedSessionWorkdir") {
+		t.Fatalf("expected Workspace view to sync to the selected session workdir, got workspace-view.js body: %s", workspaceBody)
+	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
@@ -6606,6 +6609,12 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "runViewState") || !strings.Contains(jsBody, "isGenerating()") || !strings.Contains(jsBody, "setGeneratingViewState") || strings.Contains(jsBody, "state.isGenerating") {
 		t.Fatalf("expected current-run generating view state to stay out of durable app state, got app.js body: %s", jsBody)
+	}
+	if strings.Contains(jsBody, "newSessionBtn?.classList.toggle('is-busy'") {
+		t.Fatalf("expected New Session to remain clickable while a run is active, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "syncWorkspaceToCurrentSession()") || !strings.Contains(jsBody, "resetWorkspaceSessionSync()") {
+		t.Fatalf("expected app.js to sync Workspace display state with the selected session lifecycle, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(jsBody, "messagePagingViewState") || !strings.Contains(jsBody, "isLoadingEarlierMessages()") || !strings.Contains(jsBody, "preserveScrollAfterRenderHeight()") || strings.Contains(jsBody, "state.loadingEarlier") || strings.Contains(jsBody, "state.preserveScrollAfterRender") {
 		t.Fatalf("expected message paging in-flight view state to stay out of durable app state, got app.js body: %s", jsBody)
@@ -10166,6 +10175,69 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?before_id="+url.QueryEscape(written[3].ID)+"&limit=-1", &page)
 	if len(page.Messages) != 3 {
 		t.Fatalf("negative limit should fall back safely, got %#v", page)
+	}
+}
+
+func TestServiceSessionDetailFileChangesUseFullMessageHistory(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_file_changes_full_history")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	early := session.NewAssistantMessage("", "", []session.ToolCall{
+		{
+			ID:        "call_write_report",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"reports/spec.md","content":"one\ntwo"}`),
+		},
+		{
+			ID:        "call_shell_inventory",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"git status --short > reports/git_status_before_docs.txt && find docs spec reports -maxdepth 3 -type f 2>/dev/null | sort > reports/file_inventory_before_docs.txt && printf 'ok\\n' 2>&1"}`),
+		},
+	})
+	if err := svc.store.AppendMessage(meta.ID, early); err != nil {
+		t.Fatalf("append early message: %v", err)
+	}
+	for i := 0; i < 45; i++ {
+		msg := session.NewMessage("user", "tail message "+strconv.Itoa(i))
+		if err := svc.store.AppendMessage(meta.ID, msg); err != nil {
+			t.Fatalf("append tail message %d: %v", i, err)
+		}
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=2", &detail)
+	if !detail.HasMoreMessages || len(detail.Messages) != 2 {
+		t.Fatalf("expected tailed detail messages with more flag, got has_more=%v len=%d", detail.HasMoreMessages, len(detail.Messages))
+	}
+	byPath := map[string]FileChangeSummary{}
+	for _, item := range detail.FileChanges {
+		byPath[item.Path] = item
+	}
+	if got := byPath["reports/spec.md"]; got.Writes != 1 || got.LinesAdded != 2 {
+		t.Fatalf("expected early write_file summary from full history, got %#v in %#v", got, detail.FileChanges)
+	}
+	if got := byPath["reports/git_status_before_docs.txt"]; got.Writes != 1 {
+		t.Fatalf("expected early shell redirect summary from full history, got %#v in %#v", got, detail.FileChanges)
+	}
+	if got := byPath["reports/file_inventory_before_docs.txt"]; got.Writes != 1 {
+		t.Fatalf("expected shell redirect after fd redirect to be counted, got %#v in %#v", got, detail.FileChanges)
+	}
+	if _, ok := byPath["/dev/null"]; ok {
+		t.Fatalf("fd redirect target must not be surfaced as a file change: %#v", detail.FileChanges)
+	}
+	if _, ok := byPath["1"]; ok {
+		t.Fatalf("fd duplication target must not be surfaced as a file change: %#v", detail.FileChanges)
 	}
 }
 

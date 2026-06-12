@@ -95,6 +95,23 @@ func openAIRequestToolNames(value any) []string {
 	return names
 }
 
+func openAIInputHasFunctionCallOutput(body map[string]any, callID string) bool {
+	input, ok := body["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range input {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "function_call_output" && item["call_id"] == callID {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRunnerSupportsOpenAICompatibleResponses(t *testing.T) {
 	cfg := config.Default()
 	cfg.DefaultProvider = "openai-compatible"
@@ -2334,6 +2351,122 @@ func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t 
 	}
 	if sidecar.Turn != 42 {
 		t.Fatalf("expected raw sidecar turn 42, got %#v", sidecar)
+	}
+}
+
+func TestRunnerContinueRecoversDanglingToolCallsBeforeProviderReplay(t *testing.T) {
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read provider request: %v", err)
+		}
+		if err := json.Unmarshal(data, &seenBody); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_recovered_continue",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued after recovery\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{
+		Status:    session.StatusFailed,
+		Phase:     "provider_call",
+		Turn:      7,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		LastError: "provider rejected missing tool output",
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "inspect files")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewAssistantMessage("", "", []session.ToolCall{
+		{
+			ID:        "call_dangling_shell",
+			Name:      "shell",
+			Arguments: json.RawMessage(`{"command":"echo should-not-run > reports/out.txt"}`),
+		},
+		{
+			ID:        "call_dangling_glob",
+			Name:      "glob",
+			Arguments: json.RawMessage(`{"pattern":"**/*.go"}`),
+		},
+	})); err != nil {
+		t.Fatalf("append dangling assistant calls: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "continue after restart",
+	})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	messages, err := runner.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var recovered []session.ToolResult
+	for _, msg := range messages {
+		for _, toolResult := range msg.ToolResults {
+			if toolResult.Metadata["recovered_dangling_tool_call"] == true {
+				recovered = append(recovered, toolResult)
+			}
+		}
+	}
+	if len(recovered) != 2 {
+		t.Fatalf("expected two recovered dangling tool results, got %#v", recovered)
+	}
+	for _, toolResult := range recovered {
+		if !toolResult.IsError || !strings.Contains(toolResult.DisplayOutput, "not executed during recovery") {
+			t.Fatalf("expected recovery result to be an error without re-execution, got %#v", toolResult)
+		}
+	}
+	if !openAIInputHasFunctionCallOutput(seenBody, "call_dangling_shell") || !openAIInputHasFunctionCallOutput(seenBody, "call_dangling_glob") {
+		t.Fatalf("expected provider replay to include recovered function_call_output items, got %#v", seenBody)
+	}
+	events, err := loadEvents(runner.store, meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if !hasEventType(events, "tool.results.recovered") {
+		t.Fatalf("expected recovery event, got %#v", events)
 	}
 }
 
