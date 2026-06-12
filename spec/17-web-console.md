@@ -15,6 +15,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 可以创建新 session
 - 可以在创建 session 时通过一个 optional Goal 开关附带 prompt-derived goal
 - 可以在创建或继续 session 时通过 Plan 开关进入 Plan Mode，并在 inspector 中审批、修订、取消或回答规划问题
+- 默认启动表单不要求也不展示 agent name / agent role；role hints 仍由 agent 内部 mission plan、child/queue 高级 API 或 CLI/API advanced payload 显式传递
 - 可以对运行中的 session 追加 steer
 - 可以对暂停或等待输入的 session 执行 continue
 - 可以查看 background queue / children / task board / timeline / errors
@@ -112,6 +113,7 @@ Session 工作区是新用户的默认落点，展示：
 - 空状态说明：从输入框开始一个 durable session
 - 输入区提供一个简单 Goal 开关；普通 prompt 不受影响，选中后用户仍只写 prompt，后端用 prompt 作为 objective，agent 在运行中自行拆分 criteria、validation、features / milestones
 - 输入区提供一个简单 Plan 开关；选中后后端创建 `planmode.json`，规划阶段只允许 read/search、`request_user_input` 和 `submit_plan`，不把普通 prompt 文案自动解释为硬 Plan Mode
+- 输入区不展示 agent name 或 agent role 选择器；默认 session 由 agent 自行决定是否需要后续 role hints / child / queue 委派
 - 最近 session rail：只显示可直接打开的 session 摘要
 - 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
 - 当前 session 的执行流：消息、工具调用、运行态、错误和 timeline 摘要在同一主视图中出现
@@ -688,6 +690,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 - 用户输入错误
   - 例如空 prompt、空 steer message
+- 本地 session 选择失效
+  - 例如浏览器恢复的 `selectedSessionId` 对应目录已被删除或缺少 `session.json`；前端必须清除持久化选择、回到新 session composer，并停止对缺失 session 反复轮询
 - 运行时错误
   - 例如 provider 缺 API key、session 不可恢复、job 失败
 - 基础设施错误

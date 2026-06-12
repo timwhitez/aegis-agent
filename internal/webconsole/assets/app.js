@@ -519,8 +519,6 @@ const nodes = {
   goalToggleBtn: document.getElementById('goal-toggle-btn'),
   planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
-  agentNameInput: document.getElementById('agent-name-input'),
-  agentRoleSelect: document.getElementById('agent-role-select'),
   inputStatusText: document.getElementById('input-status-text'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
@@ -1426,7 +1424,6 @@ async function sendMessage() {
       renderCurrentSession();
       return;
     }
-    const agentDraft = collectAgentDraft();
     const launchClientSessionID = state.sessionId;
     try {
       setLaunchInFlight(true);
@@ -1438,8 +1435,6 @@ async function sendMessage() {
       queueOverviewRefresh(220);
       const resp = await startSession({
         prompt: text,
-        agentName: agentDraft.agentName || undefined,
-        agentRole: agentDraft.agentRole || undefined,
         workdir: selectedWorkspaceWorkdir(),
         goal: goalDraft || undefined,
         planMode: planDraft || undefined
@@ -1924,13 +1919,6 @@ function collectPlanModeDraft(promptText) {
   return {
     enabled: true,
     objective
-  };
-}
-
-function collectAgentDraft() {
-  return {
-    agentName: String(nodes.agentNameInput?.value || '').trim(),
-    agentRole: String(nodes.agentRoleSelect?.value || '').trim()
   };
 }
 
@@ -2825,6 +2813,10 @@ async function refreshCurrentSession(options = {}) {
     if (state.sessionId !== sessionID || sessionViewState.needsRefresh) {
       return;
     }
+    if (isMissingSessionError(err)) {
+      handleMissingSelectedSession(sessionID, err);
+      return;
+    }
     console.error('session detail error', err);
     if (options.surfaceError) {
       if (state.sessionId === sessionID) {
@@ -2838,6 +2830,32 @@ async function refreshCurrentSession(options = {}) {
       queueSessionRefresh(80);
     }
   }
+}
+
+function isMissingSessionError(err) {
+  return err?.status === 404 &&
+    (
+      String(err?.code || '').toUpperCase() === 'NOT_FOUND' ||
+      String(err?.message || '').includes('session.json') ||
+      String(err?.detail || '').includes('session.json')
+    );
+}
+
+function handleMissingSelectedSession(sessionID, err) {
+  if (state.sessionId !== sessionID) {
+    return;
+  }
+  resetChatSession();
+  setLiveActivity({
+    title: 'Session no longer available',
+    copy: 'The previously selected session was removed locally. Start a new session or choose another entry from Sessions.',
+    tone: 'queued'
+  });
+  showToast('Previously selected session is no longer available.', 'info');
+  renderCurrentSession();
+  updateUI();
+  queueOverviewRefresh(120);
+  syncPollingForState();
 }
 
 function showSessionLoadError(err, options = {}) {

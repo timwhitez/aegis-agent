@@ -684,26 +684,6 @@ textarea {
   height: 15px;
 }
 
-.agent-name-input,
-.agent-role-select {
-  min-height: 32px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text-main);
-  font-size: 12px;
-}
-
-.agent-name-input {
-  width: 132px;
-  padding: 0 10px;
-}
-
-.agent-role-select {
-  width: 116px;
-  padding: 0 8px;
-}
-
 .input-status-text {
   margin-right: auto;
   font-size: 12px;

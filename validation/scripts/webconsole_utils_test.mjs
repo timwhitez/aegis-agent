@@ -3835,7 +3835,7 @@ test('start completion does not replace a session selected while launch is pendi
   });
 });
 
-test('new session start includes role-aware composer fields', async () => {
+test('new session start omits default agent identity fields', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
 
@@ -3847,18 +3847,82 @@ test('new session start includes role-aware composer fields', async () => {
     setLaunchInFlight(false);
     setLiveActivity({ title: 'Ready', copy: '', tone: 'neutral' });
     state.sessionDetail = null;
-    nodes.chatInput.value = 'start an evaluator session';
-    nodes.agentNameInput.value = 'reviewer';
-    nodes.agentRoleSelect.value = 'evaluator';
+    nodes.chatInput.value = 'start a default session';
     sendMessage();
   `, appContext);
 
   assert.equal(appContext.pendingRequests.length, 1);
   assert.equal(appContext.pendingRequests[0].url, '/api/sessions/start');
-  assert.equal(appContext.pendingRequests[0].payload.payload.agentName, 'reviewer');
-  assert.equal(appContext.pendingRequests[0].payload.payload.agentRole, 'evaluator');
-  appContext.pendingRequests[0].resolve({ session_id: 'session_role_start', status: 'accepted' });
+  assert.equal(Object.prototype.hasOwnProperty.call(appContext.pendingRequests[0].payload.payload, 'agentName'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(appContext.pendingRequests[0].payload.payload, 'agentRole'), false);
+  appContext.pendingRequests[0].resolve({ session_id: 'session_default_start', status: 'accepted' });
   await send;
+});
+
+test('missing selected session resets to new composer and clears persisted selection', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const toasts = [];
+  vm.runInContext(`
+    window.localStorage = {
+      stored: '',
+      setItem(key, value) {
+        this.stored = value;
+      },
+      getItem() {
+        return this.stored || null;
+      },
+      removeItem() {
+        this.stored = '';
+      }
+    };
+    showToast = function(message, tone) {
+      toasts.push({ message, tone });
+    };
+  `, appContext);
+  appContext.toasts = toasts;
+
+  vm.runInContext(`
+    state.sessionId = 'missing_session_123';
+    state.sessionBacked = true;
+    state.sessionDetail = null;
+    setGeneratingViewState(false);
+    setLaunchInFlight(false);
+    setComposerMode('goal');
+    persistUIState();
+    requestJSON = async function(url) {
+      const err = new Error('open /tmp/sessions/missing_session_123/session.json: file does not exist');
+      err.name = 'APIError';
+      err.status = 404;
+      err.code = 'NOT_FOUND';
+      throw err;
+    };
+  `, appContext);
+
+  await vm.runInContext(`refreshCurrentSession({ surfaceError: true })`, appContext);
+
+  const result = vm.runInContext(`({
+    selected: state.sessionId,
+    backed: state.sessionBacked,
+    detail: state.sessionDetail,
+    generating: isGenerating(),
+    launchInFlight: isLaunchInFlight(),
+    composerMode: composerMode(),
+    stored: JSON.parse(window.localStorage.stored),
+    activityTitle: currentLiveActivity().title
+  })`, appContext);
+
+  assert.match(result.selected, /^0x/i);
+  assert.equal(result.backed, false);
+  assert.equal(result.detail, null);
+  assert.equal(result.generating, false);
+  assert.equal(result.launchInFlight, false);
+  assert.equal(result.composerMode, '');
+  assert.equal(result.stored.selectedSessionId, '');
+  assert.equal(result.activityTitle, 'Session no longer available');
+  assert.deepEqual(sameRealm(toasts), [
+    { message: 'Previously selected session is no longer available.', tone: 'info' }
+  ]);
 });
 
 test('start completion does not clear a newer pending launch', async () => {
