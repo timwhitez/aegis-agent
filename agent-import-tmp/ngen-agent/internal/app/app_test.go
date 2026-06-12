@@ -246,6 +246,43 @@ exit 9
 	}
 }
 
+func TestMulticaExecExplicitCommandRunsThroughGenericCommandLane(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "externalctl.log")
+	writeFile(t, filepath.Join(binDir, "externalctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\nprintf '{\"status\":\"created\"}\\n'\n")
+	if err := os.Chmod(filepath.Join(binDir, "externalctl"), 0o755); err != nil {
+		t.Fatalf("chmod externalctl stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	envelope := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run exactly one ` + "`externalctl create --name Smoke --output json`" + ` invocation."}]}}`
+	result := runExecForTest(t, t.TempDir(), []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--config-scope", "daemon",
+		"--workdir", dir,
+	}, envelope)
+	if result.exitCode != 0 {
+		t.Fatalf("expected explicit command exec completion, got %d stderr=%s stdout=%s", result.exitCode, result.stderr, result.stdout)
+	}
+	lines := decodeStreamOutput(t, result.stdout)
+	final := lines[len(lines)-1]
+	if final.Type != "result" || final.Status != "completed" {
+		t.Fatalf("expected completed explicit command result, got %+v", final)
+	}
+	if log := readFile(t, logPath); strings.Count(log, "create --name Smoke --output json") != 1 {
+		t.Fatalf("expected one generic external command invocation, got %q", log)
+	}
+	records, err := artifact.NewStore(dir, ".ngen").ReadCommandRuns(final.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	if len(records) != 1 || records[0].PolicyDecision != "allow_yolo" || records[0].ReplaySafety == nil || !records[0].ReplaySafety.OpenWorld {
+		t.Fatalf("expected generic external command policy evidence, got %+v", records)
+	}
+}
+
 func TestMulticaExecResumeBlocksOnMissingMetadataAndConfigDrift(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/drift\n\ngo 1.24.0\n")

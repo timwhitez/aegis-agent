@@ -257,9 +257,10 @@ type WorkspaceWrite struct {
 }
 
 type WorkspaceCommand struct {
-	Phase  string   `json:"phase,omitempty"`
-	Argv   []string `json:"argv"`
-	Reason string   `json:"reason"`
+	Phase                 string   `json:"phase,omitempty"`
+	Argv                  []string `json:"argv"`
+	Reason                string   `json:"reason"`
+	ExplicitUserRequested bool     `json:"-"`
 }
 
 type WorkspaceEditPlan struct {

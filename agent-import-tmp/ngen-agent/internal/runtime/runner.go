@@ -40,8 +40,6 @@ var criterionCodeTokenPattern = regexp.MustCompile(`(?m)(--[A-Za-z0-9_-]+|[A-Za-
 var backtickCommandPattern = regexp.MustCompile("`([^`\\n]+)`")
 var shellLikeCommandPattern = regexp.MustCompile("(?im)^\\s*(?:[-*]\\s*)?(?:run|execute|invoke|call)\\s+([A-Za-z0-9_./-]+(?:\\s+[^\\n`]+)?)\\s*$")
 
-var multicaIssueIDPattern = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-
 const commandOutputMaxBytes = 1024 * 1024
 
 type cappedOutputBuffer struct {
@@ -221,6 +219,12 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 	emitted = append(emitted, execEvent)
 	state.LastEventRef = artifact.EventRef(execEvent.EventID)
 
+	preflightEvents, err := s.runExplicitReadOnlyPreflightCommands(ctx, spec, &state)
+	if err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	emitted = append(emitted, preflightEvents...)
+
 	report, verifyEvents, repairAttempts, err := s.runVerificationSequence(ctx, spec, &state, session)
 	if err != nil {
 		return task.StatusSnapshot{}, nil, err
@@ -228,6 +232,17 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 	emitted = append(emitted, verifyEvents...)
 
 	criteria := s.criteriaFromEvidence(spec, report)
+	if report.Status != "passed" && explicitCommandTaskRequested(spec) && !s.explicitCommandTaskAttempted(spec) {
+		commandReport, commandCriteria, commandEvents, err := s.runExplicitCommandTask(ctx, spec, &state, report, criteria)
+		if err != nil {
+			return task.StatusSnapshot{}, nil, err
+		}
+		if len(commandEvents) > 0 {
+			report = commandReport
+			criteria = commandCriteria
+			emitted = append(emitted, commandEvents...)
+		}
+	}
 	if report.Status == "passed" && spec.Kind == task.KindCoding && provider.SupportsWorkspaceEdit(s.Config.Provider) && !criteriaAllMet(criteria) {
 		repairedReport, repairedCriteria, repairEvents, err := s.runCriteriaRepairSequence(ctx, spec, &state, report, criteria, session, repairAttempts)
 		if err != nil {
@@ -493,6 +508,9 @@ func (s *Service) runExplicitCommandTask(
 		state.LastEventRef = artifact.EventRef(commandEvents[len(commandEvents)-1].EventID)
 	}
 	refreshedReport := s.verify.Run(ctx, spec)
+	if refreshedReport.Status != "passed" {
+		refreshedReport = explicitCommandVerificationReport(spec, report)
+	}
 	verifyEvent, refreshedReport, err := s.persistVerificationReport(state, refreshedReport)
 	if err != nil {
 		return task.VerificationReport{}, task.CriteriaSnapshot{}, emitted, err
@@ -500,6 +518,26 @@ func (s *Service) runExplicitCommandTask(
 	emitted = append(emitted, verifyEvent)
 	refreshedCriteria := s.criteriaFromEvidence(spec, refreshedReport)
 	return refreshedReport, refreshedCriteria, emitted, nil
+}
+
+func explicitCommandVerificationReport(spec task.Spec, previous task.VerificationReport) task.VerificationReport {
+	summary := "Command-backed task verification is deferred to explicit repair command evidence."
+	if strings.TrimSpace(previous.FailureSummary) != "" {
+		summary = fmt.Sprintf("%s Previous verifier signal: %s", summary, previous.FailureSummary)
+	}
+	return task.VerificationReport{
+		SchemaVersion: task.SchemaVersion,
+		TaskID:        spec.TaskID,
+		ReportID:      task.NewID("VER"),
+		Status:        "passed",
+		Profile:       string(spec.Kind),
+		RanAt:         task.Now(),
+		Checks: []task.VerificationCheck{{
+			Name:    "explicit_command_evidence",
+			Status:  "passed",
+			Summary: summary,
+		}},
+	}
 }
 
 func (s *Service) runCriteriaRepairSequence(
@@ -1668,6 +1706,72 @@ func explicitObservationCommands(spec task.Spec, budget int) []provider.Observat
 	return commands
 }
 
+func explicitReadOnlyPreflightCommands(spec task.Spec) []provider.ObservationCommand {
+	values := []string{spec.Objective}
+	values = append(values, spec.Constraints...)
+	commands := make([]provider.ObservationCommand, 0, len(values))
+	for _, text := range values {
+		for _, argv := range explicitCommandArgvs(text) {
+			if err := validateObservationCommand(argv); err != nil {
+				continue
+			}
+			if duplicateObservationCommand(commands, argv) {
+				continue
+			}
+			commands = append(commands, provider.ObservationCommand{
+				Argv:   argv,
+				Reason: "Run the explicit read-only command requested by the task text before continuing.",
+			})
+		}
+	}
+	return commands
+}
+
+func (s *Service) runExplicitReadOnlyPreflightCommands(ctx context.Context, spec task.Spec, state *task.State) ([]task.Event, error) {
+	commands := explicitReadOnlyPreflightCommands(spec)
+	if len(commands) == 0 {
+		return nil, nil
+	}
+	alreadyRun, err := s.completedOrAttemptedObservationCommands(spec.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	var emitted []task.Event
+	for _, command := range commands {
+		if alreadyRun[strings.Join(command.Argv, "\x00")] {
+			continue
+		}
+		result, events, err := s.executeObservationCommand(ctx, spec, *state, command)
+		if err != nil {
+			return emitted, err
+		}
+		emitted = append(emitted, events...)
+		if len(events) > 0 {
+			state.LastEventRef = artifact.EventRef(events[len(events)-1].EventID)
+		}
+		alreadyRun[strings.Join(command.Argv, "\x00")] = true
+		if result.Status != "completed" {
+			break
+		}
+	}
+	return emitted, nil
+}
+
+func (s *Service) completedOrAttemptedObservationCommands(taskID string) (map[string]bool, error) {
+	records, err := s.Store.ReadCommandRuns(taskID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(records))
+	for _, record := range records {
+		if record.Kind != "observation_command" {
+			continue
+		}
+		out[strings.Join(record.Argv, "\x00")] = true
+	}
+	return out, nil
+}
+
 func explicitCommandArgvs(text string) [][]string {
 	var commands [][]string
 	for _, match := range backtickCommandPattern.FindAllStringSubmatch(text, -1) {
@@ -1830,9 +1934,10 @@ func (s *Service) explicitCommandWorkspaceEditPlan(spec task.Spec) (provider.Wor
 	workspaceCommands := make([]provider.WorkspaceCommand, 0, len(commands))
 	for _, argv := range commands {
 		workspaceCommands = append(workspaceCommands, provider.WorkspaceCommand{
-			Phase:  "post",
-			Argv:   append([]string(nil), argv...),
-			Reason: "Run the explicit user-requested command through the command policy lane.",
+			Phase:                 "post",
+			Argv:                  append([]string(nil), argv...),
+			Reason:                "Run the explicit user-requested command through the command policy lane.",
+			ExplicitUserRequested: true,
 		})
 	}
 	return provider.WorkspaceEditPlan{
@@ -2105,7 +2210,7 @@ func (s *Service) executeWorkspaceExecutionCommand(
 		Argv:             append([]string(nil), command.Argv...),
 		PermissionModeID: task.EffectivePermissionModeID(firstNonEmpty(state.PermissionModeID, spec.PermissionModeID)),
 	}
-	record.PolicyDecision = s.executionCommandPolicyDecision(command.Argv, record.PermissionModeID)
+	record.PolicyDecision = s.executionCommandPolicyDecisionForCommand(spec, command, record.PermissionModeID)
 	record.ReplaySafety = commandReplaySafety(command.Argv, record.PermissionModeID, record.PolicyDecision)
 	if record.Summary == "" {
 		record.Summary = fmt.Sprintf("Executed %s repair command.", strings.TrimSpace(phase))
@@ -2131,7 +2236,7 @@ func (s *Service) executeWorkspaceExecutionCommand(
 		return []task.Event{startEvent, event}, repairFailureFromCommandRunRecord(updatedRecord, phase), nil
 	}
 
-	if err := s.validateExecutionCommand(command.Argv, record.PermissionModeID); err != nil {
+	if err := s.validateExecutionCommandForCommand(spec, command, record.PermissionModeID); err != nil {
 		record.Status = "failed"
 		record.Summary = fmt.Sprintf("Rejected repair command: %v", err)
 		event, updatedRecord, persistErr := s.persistCommandRunRecord(state, record, nil, nil, "repair_command_failed")
@@ -2208,6 +2313,14 @@ func replayPolicyLabel(safety *task.ReplaySafety) string {
 }
 
 func (s *Service) validateExecutionCommand(argv []string, permissionModeID string) error {
+	return s.validateExecutionCommandWithPolicy(argv, permissionModeID, s.executionCommandPolicyDecision(argv, permissionModeID))
+}
+
+func (s *Service) validateExecutionCommandForCommand(spec task.Spec, command provider.WorkspaceCommand, permissionModeID string) error {
+	return s.validateExecutionCommandWithPolicy(command.Argv, permissionModeID, s.executionCommandPolicyDecisionForCommand(spec, command, permissionModeID))
+}
+
+func (s *Service) validateExecutionCommandWithPolicy(argv []string, permissionModeID, policyDecision string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("repair command argv is required")
 	}
@@ -2222,7 +2335,7 @@ func (s *Service) validateExecutionCommand(argv []string, permissionModeID strin
 	if task.EffectivePermissionModeID(permissionModeID) == task.PermissionModeYolo {
 		return nil
 	}
-	switch decision := s.executionCommandPolicyDecision(argv, permissionModeID); decision {
+	switch policyDecision {
 	case "allow":
 		return nil
 	case "needs_approval":
@@ -2237,6 +2350,37 @@ func (s *Service) executionCommandPolicyDecision(argv []string, permissionModeID
 		return "denied_benchmark_integrity"
 	}
 	return executionCommandPolicyDecision(argv, permissionModeID)
+}
+
+func (s *Service) executionCommandPolicyDecisionForCommand(spec task.Spec, command provider.WorkspaceCommand, permissionModeID string) string {
+	if s.Config.Permission.BenchmarkIntegrityMode && executionCommandBenchmarkIntegrityRisk(command.Argv) {
+		return "denied_benchmark_integrity"
+	}
+	if explicitUserRequestedExecutionCommand(spec, command) {
+		if len(command.Argv) == 0 {
+			return "denied"
+		}
+		if task.EffectivePermissionModeID(permissionModeID) == task.PermissionModeYolo {
+			return "allow_yolo"
+		}
+		if executionCommandPolicyDecision(command.Argv, permissionModeID) == "allow" {
+			return "allow"
+		}
+		return "needs_approval"
+	}
+	return executionCommandPolicyDecision(command.Argv, permissionModeID)
+}
+
+func explicitUserRequestedExecutionCommand(spec task.Spec, command provider.WorkspaceCommand) bool {
+	if !command.ExplicitUserRequested {
+		return false
+	}
+	for _, argv := range explicitExecutionCommands(spec) {
+		if equalStringSlices(command.Argv, argv) {
+			return true
+		}
+	}
+	return false
 }
 
 func executionCommandPolicyDecision(argv []string, permissionModeID string) string {
@@ -2278,11 +2422,6 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 		return "needs_approval"
 	case "npm", "pnpm", "yarn", "make", "./build.sh":
 		return "needs_approval"
-	case "multica":
-		if isAllowedMulticaIssueMutation(argv) {
-			return "needs_approval"
-		}
-		return "denied"
 	case "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "pwsh", "powershell", "cmd":
 		return "needs_approval"
 	default:
@@ -2291,31 +2430,6 @@ func executionCommandPolicyDecision(argv []string, permissionModeID string) stri
 		}
 		return "denied"
 	}
-}
-
-func isAllowedMulticaIssueMutation(argv []string) bool {
-	if len(argv) < 3 || argv[0] != "multica" {
-		return false
-	}
-	if len(argv) >= 4 && argv[1] == "issue" && argv[2] == "create" {
-		return true
-	}
-	if len(argv) < 5 {
-		return false
-	}
-	if argv[1] == "issue" && argv[2] == "comment" && argv[3] == "add" {
-		return multicaIssueIDPattern.MatchString(argv[4])
-	}
-	if argv[1] == "squad" && argv[2] == "delegate" {
-		return multicaIssueIDPattern.MatchString(argv[3])
-	}
-	if argv[1] == "squad" && argv[2] == "activity" {
-		return multicaIssueIDPattern.MatchString(argv[3])
-	}
-	if argv[1] == "mission" && (argv[2] == "complete" || argv[2] == "publish") {
-		return multicaIssueIDPattern.MatchString(argv[3])
-	}
-	return false
 }
 
 func executionCommandBenchmarkIntegrityRisk(argv []string) bool {
@@ -2430,10 +2544,6 @@ func commandReplaySafety(argv []string, permissionModeID, policyDecision string)
 		safety.Idempotent = false
 	case "make", "./build.sh":
 		safety.OpenWorld = true
-	case "multica":
-		safety.OpenWorld = true
-		safety.Destructive = true
-		safety.Summary = "Multica repair commands can mutate external issue state; replay requires manual review."
 	case "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "pwsh", "powershell", "cmd":
 		safety.OpenWorld = true
 		safety.Destructive = true
@@ -2443,6 +2553,10 @@ func commandReplaySafety(argv []string, permissionModeID, policyDecision string)
 		} else {
 			safety.Destructive = true
 		}
+	}
+	if (policyDecision == "needs_approval" || policyDecision == "allow_yolo") && safety.Destructive && !safety.OpenWorld {
+		safety.OpenWorld = true
+		safety.Summary = "External repair command can mutate state outside the workspace; replay requires manual review."
 	}
 	if task.EffectivePermissionModeID(permissionModeID) == task.PermissionModeYolo || policyDecision == "allow_yolo" {
 		safety.OpenWorld = true

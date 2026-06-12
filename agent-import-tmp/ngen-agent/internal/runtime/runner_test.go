@@ -3799,51 +3799,48 @@ func TestValidateExecutionCommandPolicyByPermissionMode(t *testing.T) {
 	if got := svc.executionCommandPolicyDecision([]string{"bash", "-lc", "printf ok"}, task.PermissionModeStandard); got != "needs_approval" {
 		t.Fatalf("expected bash to be classified needs_approval, got %s", got)
 	}
-	issueID := "0496acb9-ff48-4507-bb79-d122a68c3a98"
-	multicaComment := []string{"multica", "issue", "comment", "add", issueID, "--content", "done", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaComment, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica issue mutation to be classified needs_approval, got %s", got)
+	external := []string{"externalctl", "create", "--output", "json"}
+	if got := svc.executionCommandPolicyDecision(external, task.PermissionModeStandard); got != "denied" {
+		t.Fatalf("expected provider-generated unknown external command to stay denied, got %s", got)
 	}
-	if err := svc.validateExecutionCommand(multicaComment, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica issue mutation to be allowed in yolo mode, got %v", err)
+	spec := task.Spec{
+		Objective: "Run exactly one `externalctl create --output json` invocation.",
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
+		},
 	}
-	multicaCreate := []string{"multica", "issue", "create", "--title", "new issue", "--description-file", "multica-description.md", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaCreate, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica issue create to be classified needs_approval, got %s", got)
+	command := provider.WorkspaceCommand{
+		Phase:                 "post",
+		Argv:                  external,
+		Reason:                "Run explicit external command",
+		ExplicitUserRequested: true,
 	}
-	if err := svc.validateExecutionCommand(multicaCreate, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica issue create to be allowed in yolo mode, got %v", err)
+	if got := svc.executionCommandPolicyDecisionForCommand(spec, command, task.PermissionModeStandard); got != "needs_approval" {
+		t.Fatalf("expected explicit external command to require approval in standard mode, got %s", got)
 	}
-	multicaDelegate := []string{"multica", "squad", "delegate", issueID, "--role", "worker", "--instructions", "do bounded work", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaDelegate, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica squad delegation to be classified needs_approval, got %s", got)
+	if err := svc.validateExecutionCommandForCommand(spec, command, task.PermissionModeStandard); err == nil {
+		t.Fatal("expected explicit external command to be rejected without approval in standard mode")
 	}
-	if err := svc.validateExecutionCommand(multicaDelegate, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica squad delegation to be allowed in yolo mode, got %v", err)
+	if got := svc.executionCommandPolicyDecisionForCommand(spec, command, task.PermissionModeYolo); got != "allow_yolo" {
+		t.Fatalf("expected explicit external command to be allowed in yolo mode, got %s", got)
 	}
-	multicaActivity := []string{"multica", "squad", "activity", issueID, "action", "--reason", "delegated", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaActivity, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica squad activity to be classified needs_approval, got %s", got)
+	if err := svc.validateExecutionCommandForCommand(spec, command, task.PermissionModeYolo); err != nil {
+		t.Fatalf("expected explicit external command to be allowed in yolo mode, got %v", err)
 	}
-	if err := svc.validateExecutionCommand(multicaActivity, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica squad activity to be allowed in yolo mode, got %v", err)
+	forged := command
+	forged.Argv = []string{"externalctl", "delete", "--all"}
+	if got := svc.executionCommandPolicyDecisionForCommand(spec, forged, task.PermissionModeYolo); got != "allow_yolo" {
+		t.Fatalf("expected yolo fallback decision for non-matching command, got %s", got)
 	}
-	multicaMissionComplete := []string{"multica", "mission", "complete", issueID, "--work-key", "worker:run-id", "--artifact", "handoffs/worker-auto-e2e.json", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaMissionComplete, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica mission complete to be classified needs_approval, got %s", got)
+	if got := svc.executionCommandPolicyDecisionForCommand(spec, forged, task.PermissionModeStandard); got != "denied" {
+		t.Fatalf("expected non-matching external command to stay denied in standard mode, got %s", got)
 	}
-	if err := svc.validateExecutionCommand(multicaMissionComplete, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica mission complete to be allowed in yolo mode, got %v", err)
-	}
-	multicaMissionPublish := []string{"multica", "mission", "publish", issueID, "--published-doc-url", "multica://issues/" + issueID, "--publish-receipt", "receipt", "--output", "json"}
-	if got := svc.executionCommandPolicyDecision(multicaMissionPublish, task.PermissionModeStandard); got != "needs_approval" {
-		t.Fatalf("expected multica mission publish to be classified needs_approval, got %s", got)
-	}
-	if err := svc.validateExecutionCommand(multicaMissionPublish, task.PermissionModeYolo); err != nil {
-		t.Fatalf("expected multica mission publish to be allowed in yolo mode, got %v", err)
-	}
-	if got := svc.executionCommandPolicyDecision([]string{"multica", "agent", "list", "--output", "json"}, task.PermissionModeStandard); got != "denied" {
-		t.Fatalf("expected unrelated multica command to stay denied in standard mode, got %s", got)
+	if got := svc.executionCommandPolicyDecisionForCommand(spec, provider.WorkspaceCommand{
+		Phase:  "post",
+		Argv:   external,
+		Reason: "Provider requested external command",
+	}, task.PermissionModeStandard); got != "denied" {
+		t.Fatalf("expected provider-generated external command to stay denied in standard mode, got %s", got)
 	}
 	if err := svc.validateExecutionCommand([]string{}, task.PermissionModeStandard); err == nil {
 		t.Fatal("expected empty repair command argv to be rejected")
@@ -4010,6 +4007,128 @@ func TestExplicitCommandTaskExecutesOnceAndClosesCriteria(t *testing.T) {
 	}
 	if log2 := readFile(t, logPath); strings.Count(log2, "issue create") != 1 {
 		t.Fatalf("expected second run not to replay issue create, got %q", log2)
+	}
+}
+
+func TestExplicitCommandTaskRunsGenericExternalCommand(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "README.md"), "# external command\n")
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "externalctl-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "externalctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\nprintf '{\"status\":\"created\"}\\n'\n")
+	if err := os.Chmod(filepath.Join(binDir, "externalctl"), 0o755); err != nil {
+		t.Fatalf("chmod externalctl stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	svc := New(dir, cfg)
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "generic external command",
+		Objective:        "Run exactly one `externalctl create --name Example --output json` invocation.",
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected done explicit command task, got %+v", snapshot)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	var runs []task.CommandRunRecord
+	for _, record := range records {
+		if equalStringSlices(record.Argv, []string{"externalctl", "create", "--name", "Example", "--output", "json"}) {
+			runs = append(runs, record)
+		}
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected exactly one generic external command record, got %+v", records)
+	}
+	run := runs[0]
+	if run.Status != "completed" || run.PolicyDecision != "allow_yolo" {
+		t.Fatalf("unexpected generic external command record: %+v", run)
+	}
+	if run.ReplaySafety == nil || run.ReplaySafety.ReplayPolicy != "manual_review_required" || !run.ReplaySafety.OpenWorld {
+		t.Fatalf("expected generic external mutation replay safety, got %+v", run.ReplaySafety)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, artifactCommandRef(run.CommandRecordID)) {
+		t.Fatalf("expected explicit command criterion to close with command evidence, got %+v", got)
+	}
+	if log := readFile(t, logPath); strings.Count(log, "create --name Example --output json") != 1 {
+		t.Fatalf("expected one externalctl invocation, got %q", log)
+	}
+}
+
+func TestExplicitCommandTaskRunsAfterDocsLiteVerificationFailure(t *testing.T) {
+	dir := t.TempDir()
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "externalctl-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "externalctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\nprintf '{\"status\":\"created\"}\\n'\n")
+	if err := os.Chmod(filepath.Join(binDir, "externalctl"), 0o755); err != nil {
+		t.Fatalf("chmod externalctl stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	svc := New(dir, cfg)
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "generic external command empty workspace",
+		Objective:        "Run exactly one `externalctl create --name Empty --output json` invocation.",
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected explicit command task to finish despite empty docs-lite workspace, got %+v", snapshot)
+	}
+	if log := readFile(t, logPath); strings.Count(log, "create --name Empty --output json") != 1 {
+		t.Fatalf("expected one externalctl invocation, got %q", log)
+	}
+	report, err := svc.Store.LoadVerification(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load verification: %v", err)
+	}
+	if report.Status != "passed" || len(report.Checks) != 1 || report.Checks[0].Name != "explicit_command_evidence" {
+		t.Fatalf("expected command-evidence verification pass, got %+v", report)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || len(got.EvidenceRefs) == 0 || !strings.Contains(strings.Join(got.EvidenceRefs, "\n"), "command_runs.jsonl") {
+		t.Fatalf("expected command-backed criterion evidence, got %+v", got)
 	}
 }
 
