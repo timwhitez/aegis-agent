@@ -25,6 +25,9 @@ var beforeRemoveFileNoSymlinkRemove func(path string) error
 var beforeRenamePathNoSymlinkRename func(oldPath, newPath string) error
 var beforeChmodAfterAtomicRenameOpen func(path string) error
 var beforeReadRegularFileOpen func(path string) error
+var renameat2NoReplace = func(oldParentFD int, oldBase string, newParentFD int, newBase string) error {
+	return unix.Renameat2(oldParentFD, oldBase, newParentFD, newBase, unix.RENAME_NOREPLACE)
+}
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -229,14 +232,45 @@ func renameAtNoSymlink(oldPath, newPath string, opts renameAtNoSymlinkOptions) (
 			return zero, err
 		}
 	} else {
-		if err := unix.Renameat2(oldParentFD, oldBase, newParentFD, newBase, unix.RENAME_NOREPLACE); err != nil {
+		if err := renameat2NoReplace(oldParentFD, oldBase, newParentFD, newBase); err != nil {
 			if errors.Is(err, unix.EEXIST) {
 				return zero, fmt.Errorf(opts.targetExistingFormat, newPath)
+			}
+			if renameNoReplaceUnsupported(err) {
+				if err := renameAtNoSymlinkNoReplaceFallback(oldParentFD, oldBase, oldParent, oldPath, newParentFD, newBase, newParent, newPath, opts); err != nil {
+					return zero, err
+				}
+				return sourceStat, nil
 			}
 			return zero, err
 		}
 	}
 	return sourceStat, nil
+}
+
+func renameNoReplaceUnsupported(err error) bool {
+	return errors.Is(err, unix.EINVAL) ||
+		errors.Is(err, unix.ENOSYS) ||
+		errors.Is(err, unix.EOPNOTSUPP)
+}
+
+func renameAtNoSymlinkNoReplaceFallback(oldParentFD int, oldBase, oldParent, oldPath string, newParentFD int, newBase, newParent, newPath string, opts renameAtNoSymlinkOptions) error {
+	if err := ensureDirFDStillAtPath(oldParentFD, oldParent); err != nil {
+		return err
+	}
+	if err := ensureDirFDStillAtPath(newParentFD, newParent); err != nil {
+		return err
+	}
+	if _, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts); err != nil {
+		return err
+	}
+	if err := validateRenameTargetAtNoSymlink(newParentFD, newBase, newPath, opts); err != nil {
+		return err
+	}
+	if err := unix.Renameat(oldParentFD, oldBase, newParentFD, newBase); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateRenameSourceAtNoSymlink(parentFD int, name, path string, opts renameAtNoSymlinkOptions) (unix.Stat_t, error) {

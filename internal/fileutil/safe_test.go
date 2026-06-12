@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestAtomicWriteFileNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
@@ -799,6 +801,36 @@ func TestRenameDirNoSymlinkRenamesDirectory(t *testing.T) {
 	}
 }
 
+func TestRenameDirNoSymlinkFallsBackWhenNoReplaceUnsupported(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "session.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	restore := renameat2NoReplace
+	renameat2NoReplace = func(oldParentFD int, oldBase string, newParentFD int, newBase string) error {
+		return unix.EINVAL
+	}
+	defer func() {
+		renameat2NoReplace = restore
+	}()
+
+	if err := RenameDirNoSymlink(source, target); err != nil {
+		t.Fatalf("rename directory with fallback: %v", err)
+	}
+	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
+		t.Fatalf("source should be moved, stat err=%v", statErr)
+	}
+	if _, err := os.Stat(filepath.Join(target, "session.json")); err != nil {
+		t.Fatalf("target should contain moved file: %v", err)
+	}
+}
+
 func TestRenamePathNoSymlinkRejectsSymlinkSourceAncestor(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -839,6 +871,40 @@ func TestRenamePathNoSymlinkRenamesRegularFile(t *testing.T) {
 
 	if err := RenamePathNoSymlink(source, target); err != nil {
 		t.Fatalf("rename regular file: %v", err)
+	}
+	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
+		t.Fatalf("source should be moved, stat err=%v", statErr)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != `{"id":"job"}` {
+		t.Fatalf("unexpected target content: %q", data)
+	}
+}
+
+func TestRenamePathNoSymlinkFallsBackWhenNoReplaceUnsupported(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "job.json")
+	target := filepath.Join(root, "backup", "job.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("mkdir backup: %v", err)
+	}
+	if err := os.WriteFile(source, []byte(`{"id":"job"}`), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	restore := renameat2NoReplace
+	renameat2NoReplace = func(oldParentFD int, oldBase string, newParentFD int, newBase string) error {
+		return unix.EINVAL
+	}
+	defer func() {
+		renameat2NoReplace = restore
+	}()
+
+	if err := RenamePathNoSymlink(source, target); err != nil {
+		t.Fatalf("rename regular file with fallback: %v", err)
 	}
 	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
 		t.Fatalf("source should be moved, stat err=%v", statErr)
