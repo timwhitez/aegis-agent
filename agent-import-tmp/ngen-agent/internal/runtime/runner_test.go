@@ -2729,8 +2729,18 @@ func TestPromptSessionPersistsRuntimeMessageOnFailure(t *testing.T) {
 	if snapshot.TaskID != spec.TaskID {
 		t.Fatalf("expected fallback snapshot for failed prompt session, got %+v", snapshot)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected provider failure before task events are appended, got %+v", events)
+	if len(events) != 1 || events[0].Type != "failed" {
+		t.Fatalf("expected durable runtime failure event, got %+v", events)
+	}
+	if snapshot.State != task.StateFailed || snapshot.StatusReasonCode != "failed_runtime" {
+		t.Fatalf("expected failed_runtime snapshot on provider failure, got %+v", snapshot)
+	}
+	state, err := svc.Store.LoadState(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.State != task.StateFailed || state.StatusReasonCode != "failed_runtime" || state.StatusDetailRef == "" {
+		t.Fatalf("expected provider failure to persist failed_runtime state, got %+v", state)
 	}
 
 	_, messages, err := svc.ReadSession(context.Background(), session.SessionID)

@@ -764,6 +764,9 @@ func commandOutputSummary(record task.CommandRunRecord) string {
 
 func resultMessage(snapshot task.StatusSnapshot, runRole string, metadata task.MulticaRunMetadata, resolution ConfigResolution, status string, runErr error, svc *ngenrt.Service) StreamOutputMessage {
 	handoff := buildStructuredHandoff(snapshot, metadata, svc)
+	if runErr != nil && handoff != nil {
+		handoff.Summary = runErr.Error()
+	}
 	msg := StreamOutputMessage{
 		Type:          "result",
 		TaskID:        snapshot.TaskID,
@@ -787,9 +790,7 @@ func resultMessage(snapshot task.StatusSnapshot, runRole string, metadata task.M
 	if runErr != nil {
 		msg.IsError = true
 		msg.Metadata["error"] = runErr.Error()
-		if msg.Result == "" {
-			msg.Result = runErr.Error()
-		}
+		msg.Result = runErr.Error()
 	}
 	return msg
 }

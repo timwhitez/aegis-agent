@@ -41,7 +41,17 @@ func (s *Service) runWithHooks(ctx context.Context, taskID, action string, fn fu
 	}
 	snapshot, events, err := fn(ctx)
 	if err != nil {
-		return task.StatusSnapshot{}, nil, err
+		persisted, persistEvents, persistErr := s.failActiveTaskForRuntimeError(context.Background(), taskID, action, err)
+		if len(preEvents) > 0 {
+			events = append(append([]task.Event{}, preEvents...), events...)
+		}
+		if len(persistEvents) > 0 {
+			events = append(events, persistEvents...)
+		}
+		if persistErr == nil && persisted.TaskID != "" {
+			return persisted, events, err
+		}
+		return task.StatusSnapshot{}, events, err
 	}
 	if len(preEvents) > 0 {
 		events = append(append([]task.Event{}, preEvents...), events...)
@@ -182,6 +192,13 @@ func (s *Service) autoWithOptions(ctx context.Context, taskID string, session *t
 	}
 	defer func() {
 		if err != nil {
+			var persisted task.StatusSnapshot
+			var persistEvents []task.Event
+			persisted, persistEvents, _ = s.failActiveTaskForRuntimeError(context.Background(), taskID, runtimeAction, err)
+			all = append(all, persistEvents...)
+			if persisted.TaskID != "" {
+				snapshot = persisted
+			}
 			return
 		}
 		if snapshot.TaskID == "" {

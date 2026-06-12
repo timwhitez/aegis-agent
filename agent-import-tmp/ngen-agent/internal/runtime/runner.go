@@ -4677,6 +4677,122 @@ func (s *Service) loadStateOrRecover(taskID string) (task.State, error) {
 	return state, nil
 }
 
+func (s *Service) failActiveTaskForRuntimeError(ctx context.Context, taskID, runtimeAction string, cause error) (task.StatusSnapshot, []task.Event, error) {
+	_ = ctx
+	if cause == nil || strings.TrimSpace(taskID) == "" {
+		return task.StatusSnapshot{}, nil, nil
+	}
+	spec, err := s.Store.LoadTask(taskID)
+	if err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	state, err := s.loadStateOrRecover(taskID)
+	if err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	switch state.State {
+	case task.StateDone, task.StateBlocked, task.StateWaiting, task.StateFailed, task.StateAborted:
+		snapshot, snapErr := s.Status(context.Background(), taskID)
+		return snapshot, nil, snapErr
+	}
+
+	summary := runtimeFailureSummary(runtimeAction, cause)
+	diag := task.Diagnostic{
+		SchemaVersion: task.SchemaVersion,
+		DiagnosticID:  task.NewID("DIAG"),
+		TaskID:        taskID,
+		ReasonCode:    "failed_runtime",
+		Summary:       summary,
+		BrokenRefs:    []string{"runtime:" + firstNonEmpty(strings.TrimSpace(runtimeAction), "run")},
+		EvidenceRefs:  uniqueRefs([]string{"task.json", "state.json", state.LastEventRef}),
+		CreatedAt:     task.Now(),
+		UpdatedAt:     task.Now(),
+	}
+	if err := s.Store.SaveDiagnostic(diag); err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+
+	state.State = task.StateFailed
+	state.StatusReasonCode = "failed_runtime"
+	state.StatusDetailRef = filepath.ToSlash(filepath.Join("diagnostics", diag.DiagnosticID+".json"))
+	state.UpdatedAt = task.Now()
+	event := newEvent(taskID, state, "failed", summary, []string{state.StatusDetailRef})
+	if err := s.Store.AppendEvent(event); err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	state.LastEventRef = artifact.EventRef(event.EventID)
+	state.UpdatedAt = task.Now()
+	if err := s.Store.SaveState(state); err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	if err := s.Store.SaveHandoff(spec.TaskID, []byte(s.renderRuntimeFailureHandoff(spec, state, summary))); err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	if err := s.syncTaskNarrative(spec, state, summary); err != nil {
+		return task.StatusSnapshot{}, nil, err
+	}
+	if _, err := s.captureHarnessEvaluation(context.Background(), taskID, runtimeAction); err != nil {
+		return task.StatusSnapshot{}, []task.Event{event}, err
+	}
+	snapshot, err := s.Status(context.Background(), taskID)
+	if err != nil {
+		return task.StatusSnapshot{}, []task.Event{event}, err
+	}
+	return snapshot, []task.Event{event}, nil
+}
+
+func runtimeFailureSummary(runtimeAction string, cause error) string {
+	action := strings.TrimSpace(runtimeAction)
+	if action == "" {
+		action = "run"
+	}
+	return fmt.Sprintf("Runtime action %s failed before completion: %v", action, cause)
+}
+
+func (s *Service) renderRuntimeFailureHandoff(spec task.Spec, state task.State, summary string) string {
+	criteria, err := s.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		criteria = task.NewInitialCriteria(spec)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Handoff\n\n")
+	fmt.Fprintf(&b, "## Task Summary\n")
+	fmt.Fprintf(&b, "- Task ID: %s\n", spec.TaskID)
+	if strings.TrimSpace(spec.Title) != "" {
+		fmt.Fprintf(&b, "- Title: %s\n", spec.Title)
+	}
+	fmt.Fprintf(&b, "- Profile: %s\n", spec.Kind)
+	fmt.Fprintf(&b, "\n## Status\n")
+	fmt.Fprintf(&b, "- Phase: %s\n", state.Phase)
+	fmt.Fprintf(&b, "- State: %s\n", state.State)
+	fmt.Fprintf(&b, "- Status Reason: %s\n", state.StatusReasonCode)
+	if state.StatusDetailRef != "" {
+		fmt.Fprintf(&b, "- Status Detail Ref: %s\n", state.StatusDetailRef)
+	}
+	fmt.Fprintf(&b, "- Summary: %s\n", strings.TrimSpace(summary))
+	fmt.Fprintf(&b, "\n## Evidence\n")
+	fmt.Fprintf(&b, "- state.json\n")
+	if state.StatusDetailRef != "" {
+		fmt.Fprintf(&b, "- %s\n", state.StatusDetailRef)
+	}
+	if state.LastEventRef != "" {
+		fmt.Fprintf(&b, "- %s\n", state.LastEventRef)
+	}
+	fmt.Fprintf(&b, "- criteria/latest.json\n")
+	for _, criterion := range criteria.Criteria {
+		status := strings.TrimSpace(criterion.Status)
+		if status == "" {
+			status = "open"
+		}
+		fmt.Fprintf(&b, "  - %s: %s (%s)\n", criterion.CriterionID, criterion.Statement, status)
+	}
+	fmt.Fprintf(&b, "\n## Open Risks\n")
+	fmt.Fprintf(&b, "- Runtime failed before verifier/review/completion could close the task.\n")
+	fmt.Fprintf(&b, "\n## Resume Instructions\n")
+	fmt.Fprintf(&b, "%s\n", s.deriveNextStep(spec, state))
+	return b.String()
+}
+
 func (s *Service) criteriaFromEvidence(spec task.Spec, report task.VerificationReport) task.CriteriaSnapshot {
 	snapshot := task.NewInitialCriteria(spec)
 	editRefsByPath := s.workspaceEditRefsByPath(spec.TaskID)

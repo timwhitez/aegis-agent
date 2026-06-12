@@ -342,6 +342,65 @@ func TestMulticaExecResumeBlocksOnMissingMetadataAndConfigDrift(t *testing.T) {
 	}
 }
 
+func TestMulticaExecProviderFailurePersistsFailedRuntimeState(t *testing.T) {
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected provider path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"simulated provider outage"}}`))
+	}))
+	defer server.Close()
+	writeFile(t, filepath.Join(dir, "ngen.json"), fmt.Sprintf(`{
+  "permission": {"default_mode": "yolo"},
+  "provider": {
+    "mode": "openai-response",
+    "base_url": %q,
+    "model": "gpt-fail",
+    "api_key_env": "OPENAI_API_KEY",
+    "decision_timeout_seconds": 5
+  }
+}`, server.URL+"/v1"))
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	envelope := `{"protocol":"ngen-stream-json","protocol_version":1,"type":"user","role":"user","content":[{"type":"text","text":"Publish reports/mission-plan.md and progress/mission-status.md for this handoff."}]}`
+	result := runExecForTest(t, t.TempDir(), []string{
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--workdir", dir,
+		"--role", "leader",
+	}, envelope)
+	if result.exitCode != 11 {
+		t.Fatalf("expected provider failure exit 11, got %d stderr=%s stdout=%s", result.exitCode, result.stderr, result.stdout)
+	}
+	lines := decodeStreamOutput(t, result.stdout)
+	final := lines[len(lines)-1]
+	if final.Type != "result" || final.Status != "failed" || !final.IsError {
+		t.Fatalf("expected failed final result, got %+v", final)
+	}
+	if strings.Contains(final.Result, "NGEN task finished with state Active") || !strings.Contains(final.Result, "simulated provider outage") {
+		t.Fatalf("expected provider error result without Active handoff summary, got %q", final.Result)
+	}
+	if final.Handoff == nil || final.Handoff.State != string(task.StateFailed) || final.Handoff.StatusReasonCode != "failed_runtime" {
+		t.Fatalf("expected failed_runtime handoff, got %+v", final.Handoff)
+	}
+
+	var state task.State
+	if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, ".ngen", "tasks", final.TaskID, "state.json"))), &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if state.State != task.StateFailed || state.StatusReasonCode != "failed_runtime" || !strings.HasPrefix(state.StatusDetailRef, "diagnostics/DIAG-") {
+		t.Fatalf("expected persisted failed runtime state, got %+v", state)
+	}
+	handoff := readFile(t, filepath.Join(dir, ".ngen", "tasks", final.TaskID, "handoff.md"))
+	if !strings.Contains(handoff, "simulated provider outage") || strings.Contains(handoff, "State: Active") {
+		t.Fatalf("expected failure handoff to record provider outage without active state, got:\n%s", handoff)
+	}
+	assertFileExists(t, filepath.Join(dir, ".ngen", "tasks", final.TaskID, "harness", "latest.json"))
+}
+
 func TestCodingTaskCreateRunAndStatus(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/demo\n\ngo 1.24.0\n")
