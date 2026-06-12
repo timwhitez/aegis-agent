@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,32 @@ import (
 	"ngen/internal/provider"
 	"ngen/internal/task"
 )
+
+func TestRuntimeCommandProviderHelperProcess(t *testing.T) {
+	if len(os.Args) == 0 || os.Args[len(os.Args)-1] != "runtime-command-provider-helper" {
+		return
+	}
+	raw, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read stdin: %v", err)
+		os.Exit(2)
+	}
+	switch os.Getenv("NGEN_PROVIDER_OPERATION") {
+	case "workspace_observation":
+		fmt.Fprint(os.Stdout, `{"summary":"no extra observation needed","commands":[]}`)
+	case "workspace_edit":
+		body := string(raw)
+		if !strings.Contains(body, `"workspace_guidance"`) || !strings.Contains(body, "ALWAYS call `multica squad activity`") {
+			fmt.Fprint(os.Stderr, "missing workspace guidance")
+			os.Exit(3)
+		}
+		fmt.Fprint(os.Stdout, `{"summary":"record Multica leader dispatch activity","patch":"","writes":[],"deletes":[],"commands":[{"argv":["multica","squad","activity","95ab526f-ba4a-42a6-a644-7bfd96facb70","action","--reason","delegated first slice"],"reason":"Record required Multica squad leader activity after dispatch."}]}`)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected provider operation: %s", os.Getenv("NGEN_PROVIDER_OPERATION"))
+		os.Exit(4)
+	}
+	os.Exit(0)
+}
 
 func TestStatusRecoveryPreservesTaskPermissionMode(t *testing.T) {
 	dir := t.TempDir()
@@ -3646,6 +3673,71 @@ func TestHeuristicObservationCommandsRunsExplicitReadOnlyCommands(t *testing.T) 
 	}
 }
 
+func TestGenericActionCriterionIgnoresReadOnlyMulticaAssignmentObservation(t *testing.T) {
+	dir := t.TempDir()
+	svc := New(dir, task.DefaultConfig())
+	issueID := "95ab526f-ba4a-42a6-a644-7bfd96facb70"
+	spec := task.Spec{
+		TaskID:        "TASK-multica-assignment-observation",
+		Kind:          task.KindGeneral,
+		PresetID:      task.PresetDocsLite,
+		WorkspaceRoot: dir,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Concrete execution progress is recorded with durable workspace edit or completed repair command evidence; result prose alone is not sufficient."},
+		},
+	}
+	if err := svc.Store.EnsureTaskLayout(spec.TaskID); err != nil {
+		t.Fatalf("ensure task layout: %v", err)
+	}
+	report := task.VerificationReport{
+		SchemaVersion: task.SchemaVersion,
+		TaskID:        spec.TaskID,
+		Status:        "passed",
+		RanAt:         task.Now(),
+		Checks:        []task.VerificationCheck{{Name: "docs_structure", Status: "passed"}},
+	}
+	for _, argv := range [][]string{
+		{"multica", "issue", "get", issueID, "--output", "json"},
+		{"multica", "issue", "comment", "list", issueID, "--output", "json"},
+		{"multica", "issue", "metadata", "list", issueID, "--output", "json"},
+	} {
+		if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+			SchemaVersion:   task.SchemaVersion,
+			CommandRecordID: task.NewID("CMDREC"),
+			CommandID:       task.NewID("CMD"),
+			TaskID:          spec.TaskID,
+			TS:              task.Now(),
+			Kind:            "repair_command",
+			Status:          "completed",
+			Argv:            argv,
+		}); err != nil {
+			t.Fatalf("append command run: %v", err)
+		}
+	}
+
+	criteria := svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected read-only assignment observations not to close generic action criterion, got %+v", got)
+	}
+
+	if err := svc.Store.AppendCommandRun(task.CommandRunRecord{
+		SchemaVersion:   task.SchemaVersion,
+		CommandRecordID: "CMDREC-action",
+		CommandID:       "CMD-action",
+		TaskID:          spec.TaskID,
+		TS:              task.Now(),
+		Kind:            "repair_command",
+		Status:          "completed",
+		Argv:            []string{"multica", "squad", "activity", issueID, "action", "--reason", "delegated first slice"},
+	}); err != nil {
+		t.Fatalf("append command run: %v", err)
+	}
+	criteria = svc.criteriaFromEvidence(spec, report)
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, "command_runs.jsonl#command_record_id=CMDREC-action") {
+		t.Fatalf("expected concrete Multica action command to close generic action criterion, got %+v", got)
+	}
+}
+
 func TestExplicitCommandExtractionSkipsNegatedCommands(t *testing.T) {
 	argvs := explicitCommandArgvs(strings.Join([]string{
 		"Run `git status --short` before editing.",
@@ -4220,6 +4312,150 @@ func TestExplicitCommandTaskRunsAfterDocsLiteVerificationFailure(t *testing.T) {
 	}
 	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || len(got.EvidenceRefs) == 0 || !strings.Contains(strings.Join(got.EvidenceRefs, "\n"), "command_runs.jsonl") {
 		t.Fatalf("expected command-backed criterion evidence, got %+v", got)
+	}
+}
+
+func TestAssignmentTaskDoesNotCompleteFromDocsLiteAndReadOnlyPreflight(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Task Assignment\n\nExisting assignment context.\n")
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "multica-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "multica"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\ncase \"$*\" in\n  issue\\ get*) printf '{\"id\":\"issue\"}\\n' ;;\n  issue\\ comment\\ list*) printf '[]\\n' ;;\n  *) printf '{\"ok\":true}\\n' ;;\nesac\n")
+	if err := os.Chmod(filepath.Join(binDir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	svc := New(dir, cfg)
+	issueID := "95ab526f-ba4a-42a6-a644-7bfd96facb70"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "Multica assignment",
+		Objective:        assignmentPrompt(issueID),
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Concrete execution progress is recorded with durable workspace edit or completed repair command evidence; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State == task.StateDone {
+		t.Fatalf("expected assignment task not to complete from docs-lite/read-only preflight alone, got %+v", snapshot)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected only issue get/comment list preflight commands, got %+v", records)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "open" {
+		t.Fatalf("expected concrete-progress criterion to remain open, got %+v", got)
+	}
+	completion, err := svc.Store.LoadCompletion(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load completion: %v", err)
+	}
+	if completion.Status != "rejected" {
+		t.Fatalf("expected completion rejected, got %+v", completion)
+	}
+}
+
+func TestAssignmentTaskCanCompleteFromConcreteExternalActionEvidence(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "AGENTS.md"), strings.Join([]string{
+		"# Multica Agent Runtime",
+		"",
+		"ALWAYS call `multica squad activity` before ending your turn.",
+	}, "\n"))
+	writeFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Task Assignment\n\nExisting assignment context.\n")
+	binDir := t.TempDir()
+	logPath := filepath.Join(dir, "multica-invocations.jsonl")
+	writeFile(t, filepath.Join(binDir, "multica"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+logPath+"\"\ncase \"$*\" in\n  issue\\ get*) printf '{\"id\":\"issue\"}\\n' ;;\n  issue\\ comment\\ list*) printf '[]\\n' ;;\n  squad\\ activity*) printf '{\"outcome\":\"action\"}\\n' ;;\n  *) printf '{\"ok\":true}\\n' ;;\nesac\n")
+	if err := os.Chmod(filepath.Join(binDir, "multica"), 0o755); err != nil {
+		t.Fatalf("chmod multica stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	cfg.Provider.Mode = "command"
+	cfg.Provider.Command = []string{os.Args[0], "-test.run=TestRuntimeCommandProviderHelperProcess", "--", "runtime-command-provider-helper"}
+	svc := New(dir, cfg)
+	issueID := "95ab526f-ba4a-42a6-a644-7bfd96facb70"
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "Multica assignment",
+		Objective:        assignmentPrompt(issueID),
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Concrete execution progress is recorded with durable workspace edit or completed repair command evidence; result prose alone is not sufficient."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := svc.Store.SaveWorkspaceGuidance(task.WorkspaceGuidanceArtifact{
+		ObjectKind:    "workspace_guidance",
+		SchemaVersion: task.SchemaVersion,
+		TaskID:        spec.TaskID,
+		GeneratedAt:   task.Now(),
+		Refs:          []string{"workspace:AGENTS.md"},
+		Documents: []task.WorkspaceGuidanceDocument{{
+			Ref:     "workspace:AGENTS.md",
+			Path:    "AGENTS.md",
+			Content: readFile(t, filepath.Join(dir, "AGENTS.md")),
+		}},
+	}); err != nil {
+		t.Fatalf("save workspace guidance: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected assignment task to complete after concrete external action evidence, got %+v", snapshot)
+	}
+	records, err := svc.Store.ReadCommandRuns(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read command runs: %v", err)
+	}
+	var activity task.CommandRunRecord
+	for _, record := range records {
+		if multicaCommandMatches(record.Argv, []string{"multica", "squad", "activity"}) {
+			activity = record
+			break
+		}
+	}
+	if activity.CommandRecordID == "" || activity.Status != "completed" || activity.PolicyDecision != "allow_yolo" {
+		t.Fatalf("expected completed squad activity repair command, got %+v", activity)
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" || !containsString(got.EvidenceRefs, artifactCommandRef(activity.CommandRecordID)) {
+		t.Fatalf("expected criteria to close from squad activity command evidence, got %+v", got)
+	}
+	if log := readFile(t, logPath); !strings.Contains(log, "squad activity "+issueID+" action") {
+		t.Fatalf("expected multica squad activity invocation in log, got %q", log)
 	}
 }
 
@@ -5757,6 +5993,17 @@ func quickCreatePromptWithDescription(squadID, projectID, descriptionPath string
 		"",
 		"Output format:",
 		"- Run exactly one `multica issue create --title WebFirst --description-file " + descriptionPath + " --assignee-id " + squadID + " --project " + projectID + " --output json` invocation.",
+	}, "\n")
+}
+
+func assignmentPrompt(issueID string) string {
+	return strings.Join([]string{
+		"You are running as a local coding agent for a Multica workspace.",
+		"",
+		"Your assigned issue ID is: " + issueID,
+		"",
+		"Start by running `multica issue get " + issueID + " --output json` to understand your task, then complete it.",
+		"For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). `multica issue comment list " + issueID + " --output json` returns all comments for the issue.",
 	}, "\n")
 }
 

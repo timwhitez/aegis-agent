@@ -153,23 +153,24 @@ type WorkspaceFile struct {
 }
 
 type WorkspaceEditInput struct {
-	Task                  task.Spec                `json:"task"`
-	Baseline              *task.Baseline           `json:"baseline,omitempty"`
-	Continuity            *task.ContinuitySnapshot `json:"continuity,omitempty"`
-	Sprint                *task.SprintSnapshot     `json:"sprint,omitempty"`
-	RecentVerification    *task.VerificationReport `json:"recent_verification,omitempty"`
-	Criteria              *task.CriteriaSnapshot   `json:"criteria,omitempty"`
-	OpenCriteria          []task.SuccessCriterion  `json:"open_criteria,omitempty"`
-	ContextPack           *task.ContextSummary     `json:"context_pack,omitempty"`
-	SessionMessagesRef    string                   `json:"session_messages_ref,omitempty"`
-	SessionRecentMessages []task.SessionMessage    `json:"session_recent_messages,omitempty"`
-	PreviousFailures      []RepairFailure          `json:"previous_failures,omitempty"`
-	RepairAttempt         int                      `json:"repair_attempt,omitempty"`
-	RepairBudget          int                      `json:"repair_budget,omitempty"`
-	ExecutionBudget       int                      `json:"execution_budget,omitempty"`
-	Collection            WorkspaceCollection      `json:"collection"`
-	Observations          []ObservationResult      `json:"observations,omitempty"`
-	Files                 []WorkspaceFile          `json:"files"`
+	Task                  task.Spec                       `json:"task"`
+	Baseline              *task.Baseline                  `json:"baseline,omitempty"`
+	Continuity            *task.ContinuitySnapshot        `json:"continuity,omitempty"`
+	Sprint                *task.SprintSnapshot            `json:"sprint,omitempty"`
+	RecentVerification    *task.VerificationReport        `json:"recent_verification,omitempty"`
+	Criteria              *task.CriteriaSnapshot          `json:"criteria,omitempty"`
+	OpenCriteria          []task.SuccessCriterion         `json:"open_criteria,omitempty"`
+	ContextPack           *task.ContextSummary            `json:"context_pack,omitempty"`
+	WorkspaceGuidance     *task.WorkspaceGuidanceArtifact `json:"workspace_guidance,omitempty"`
+	SessionMessagesRef    string                          `json:"session_messages_ref,omitempty"`
+	SessionRecentMessages []task.SessionMessage           `json:"session_recent_messages,omitempty"`
+	PreviousFailures      []RepairFailure                 `json:"previous_failures,omitempty"`
+	RepairAttempt         int                             `json:"repair_attempt,omitempty"`
+	RepairBudget          int                             `json:"repair_budget,omitempty"`
+	ExecutionBudget       int                             `json:"execution_budget,omitempty"`
+	Collection            WorkspaceCollection             `json:"collection"`
+	Observations          []ObservationResult             `json:"observations,omitempty"`
+	Files                 []WorkspaceFile                 `json:"files"`
 }
 
 type WorkspaceCollection struct {
@@ -206,22 +207,23 @@ type RepairFailure struct {
 }
 
 type WorkspaceObservationInput struct {
-	Task                  task.Spec                `json:"task"`
-	Baseline              *task.Baseline           `json:"baseline,omitempty"`
-	Continuity            *task.ContinuitySnapshot `json:"continuity,omitempty"`
-	Sprint                *task.SprintSnapshot     `json:"sprint,omitempty"`
-	RecentVerification    *task.VerificationReport `json:"recent_verification,omitempty"`
-	Criteria              *task.CriteriaSnapshot   `json:"criteria,omitempty"`
-	OpenCriteria          []task.SuccessCriterion  `json:"open_criteria,omitempty"`
-	ContextPack           *task.ContextSummary     `json:"context_pack,omitempty"`
-	SessionMessagesRef    string                   `json:"session_messages_ref,omitempty"`
-	SessionRecentMessages []task.SessionMessage    `json:"session_recent_messages,omitempty"`
-	PreviousFailures      []RepairFailure          `json:"previous_failures,omitempty"`
-	RepairAttempt         int                      `json:"repair_attempt,omitempty"`
-	RepairBudget          int                      `json:"repair_budget,omitempty"`
-	CommandBudget         int                      `json:"command_budget,omitempty"`
-	Collection            WorkspaceCollection      `json:"collection"`
-	Files                 []WorkspaceFile          `json:"files"`
+	Task                  task.Spec                       `json:"task"`
+	Baseline              *task.Baseline                  `json:"baseline,omitempty"`
+	Continuity            *task.ContinuitySnapshot        `json:"continuity,omitempty"`
+	Sprint                *task.SprintSnapshot            `json:"sprint,omitempty"`
+	RecentVerification    *task.VerificationReport        `json:"recent_verification,omitempty"`
+	Criteria              *task.CriteriaSnapshot          `json:"criteria,omitempty"`
+	OpenCriteria          []task.SuccessCriterion         `json:"open_criteria,omitempty"`
+	ContextPack           *task.ContextSummary            `json:"context_pack,omitempty"`
+	WorkspaceGuidance     *task.WorkspaceGuidanceArtifact `json:"workspace_guidance,omitempty"`
+	SessionMessagesRef    string                          `json:"session_messages_ref,omitempty"`
+	SessionRecentMessages []task.SessionMessage           `json:"session_recent_messages,omitempty"`
+	PreviousFailures      []RepairFailure                 `json:"previous_failures,omitempty"`
+	RepairAttempt         int                             `json:"repair_attempt,omitempty"`
+	RepairBudget          int                             `json:"repair_budget,omitempty"`
+	CommandBudget         int                             `json:"command_budget,omitempty"`
+	Collection            WorkspaceCollection             `json:"collection"`
+	Files                 []WorkspaceFile                 `json:"files"`
 }
 
 type WorkspaceObservationPlan struct {
@@ -1538,7 +1540,9 @@ Rules:
 - Treat sprint as the durable current-scope contract for this repair pass. Keep edits bounded to sprint.primary_criterion_id and sprint.completion_signals when they are present. If sprint.project_focus is present, keep edits inside sprint.project_focus.primary_step_id and avoid widening into sibling project branches.
 - Treat criteria as the durable acceptance ledger. Keep the repair bounded to criteria.current_criterion_id when it is present unless the execution plan explicitly says otherwise.
 - Treat session_recent_messages plus session_messages_ref as the durable short-horizon steering transcript for the current repair loop.
+- Use workspace_guidance when present as bounded operator/workspace instructions. If those instructions require external CLI actions, represent them as direct argv commands in this plan rather than claiming completion from prose.
 - You may request bounded workspace commands when the task needs generators, formatters, dependency sync, package install, migrations, or shell-backed repair steps.
+- You may request bounded external CLI commands when the current criterion explicitly requires concrete external progress and the workspace guidance/task text identifies the command workflow. Keep argv direct, avoid shell wrappers, and let runtime permission policy decide whether the command can run.
 - When the task explicitly asks to rerender or regenerate an artifact, prefer command-backed repair from canonical source inputs instead of directly rewriting the derived file.
 - Commands run from workspace root. Prefer direct argv exec. Standard permission mode rejects shell wrappers and repo scripts as needs_approval; use them only when task permission is yolo or the operator explicitly approved that path.
 - Use the latest repair signal as the source of truth. It may be a verifier failure or an unmet criterion summary.
@@ -1571,6 +1575,7 @@ Rules:
 - Use continuity.current_focus and continuity.startup_checklist when they are present so the next inspection stays inside the active sprint instead of rediscovering the whole repo. If continuity.current_focus.project_focus is present, use it as the task-scoped project binding and dependency view.
 - Use sprint as the durable current-scope contract. Keep inspection centered on sprint.primary_criterion_id and sprint.completion_signals before reading into deferred criteria. If sprint.project_focus is present, do not inspect sibling branches or downstream steps unless the sprint explicitly widened scope.
 - Use session_recent_messages plus session_messages_ref to preserve short-horizon operator steering and runtime notes during repair observation.
+- Use workspace_guidance when present as bounded operator/workspace instructions, but request only read-only commands in observation. Mutating external actions belong in the workspace edit command plan.
 - Use previous_failures to avoid repeating a bad repair path. If a prior patch could not be applied, request the exact code context that would let the next repair succeed.
 - If the current verification signal and workspace snapshot are already sufficient, return an empty commands array.
 

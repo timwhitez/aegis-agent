@@ -244,7 +244,7 @@ func (s *Service) execute(ctx context.Context, taskID string, session *task.Sess
 			emitted = append(emitted, commandEvents...)
 		}
 	}
-	if report.Status == "passed" && spec.Kind == task.KindCoding && provider.SupportsWorkspaceEdit(s.Config.Provider) && !criteriaAllMet(criteria) {
+	if report.Status == "passed" && shouldRunCriteriaRepairSequence(spec, criteria, s.Config.Provider) {
 		repairedReport, repairedCriteria, repairEvents, err := s.runCriteriaRepairSequence(ctx, spec, &state, report, criteria, session, repairAttempts)
 		if err != nil {
 			return task.StatusSnapshot{}, nil, err
@@ -618,6 +618,30 @@ func (s *Service) runCriteriaRepairSequence(
 	return report, criteria, emitted, nil
 }
 
+func shouldRunCriteriaRepairSequence(spec task.Spec, criteria task.CriteriaSnapshot, cfg task.ProviderConfig) bool {
+	if criteriaAllMet(criteria) || !provider.SupportsWorkspaceEdit(cfg) {
+		return false
+	}
+	if spec.Kind == task.KindCoding {
+		return true
+	}
+	return spec.Kind == task.KindGeneral && specHasGenericActionCriterion(spec) && providerModeCanPlanExternalActions(cfg)
+}
+
+func specHasGenericActionCriterion(spec task.Spec) bool {
+	for _, criterion := range spec.SuccessCriteria {
+		if genericActionCriterionMode(criterion.Statement) {
+			return true
+		}
+	}
+	return false
+}
+
+func providerModeCanPlanExternalActions(cfg task.ProviderConfig) bool {
+	mode := provider.CanonicalMode(cfg.Mode)
+	return mode == "command" || mode == "openai-comp" || mode == "openai-response" || mode == "anthropic" || (mode == "builtin" && len(cfg.Command) > 0)
+}
+
 func (s *Service) persistVerificationReport(state *task.State, report task.VerificationReport) (task.Event, task.VerificationReport, error) {
 	state.Phase = task.PhaseVerify
 	verifyType := "verification_passed"
@@ -718,6 +742,7 @@ func (s *Service) repairCodingTask(
 		Criteria:              criteria,
 		OpenCriteria:          openCriteria(spec, criteria),
 		ContextPack:           contextPack,
+		WorkspaceGuidance:     s.loadWorkspaceGuidance(spec.TaskID),
 		SessionMessagesRef:    sessionMessagesRef,
 		SessionRecentMessages: sessionRecentMessages,
 		PreviousFailures:      previousFailures,
@@ -1596,6 +1621,7 @@ func (s *Service) runWorkspaceObservationCommands(
 			Criteria:              criteria,
 			OpenCriteria:          openCriteria(spec, criteria),
 			ContextPack:           contextPack,
+			WorkspaceGuidance:     s.loadWorkspaceGuidance(spec.TaskID),
 			SessionMessagesRef:    sessionMessagesRef,
 			SessionRecentMessages: sessionRecentMessages,
 			PreviousFailures:      previousFailures,
@@ -4651,6 +4677,14 @@ func (s *Service) criteriaFromEvidence(spec task.Spec, report task.VerificationR
 	return s.finalizeCriteriaSnapshot(spec, snapshot, report.RanAt, criteriaEvaluationSummary(report))
 }
 
+func (s *Service) loadWorkspaceGuidance(taskID string) *task.WorkspaceGuidanceArtifact {
+	guidance, err := s.Store.LoadWorkspaceGuidance(taskID)
+	if err != nil {
+		return nil
+	}
+	return &guidance
+}
+
 func (s *Service) criteriaWithReviewEvidence(spec task.Spec, snapshot task.CriteriaSnapshot, reviewSummary string) task.CriteriaSnapshot {
 	for i := range snapshot.Criteria {
 		if snapshot.Criteria[i].Status != "met" {
@@ -4965,13 +4999,19 @@ func (s *Service) genericActionEvidenceRefs(taskID string) []string {
 	}
 	if records, err := s.Store.ReadCommandRuns(taskID); err == nil {
 		for _, record := range records {
-			if record.Kind != "repair_command" || record.Status != "completed" {
+			if record.Kind != "repair_command" || record.Status != "completed" || commandRunOnlyObservedAssignment(record) {
 				continue
 			}
 			refs = append(refs, artifact.CommandRunRecordRef(record.CommandRecordID))
 		}
 	}
 	return uniqueRefs(refs)
+}
+
+func commandRunOnlyObservedAssignment(record task.CommandRunRecord) bool {
+	return multicaCommandMatches(record.Argv, []string{"multica", "issue", "get"}) ||
+		multicaCommandMatches(record.Argv, []string{"multica", "issue", "comment", "list"}) ||
+		multicaCommandMatches(record.Argv, []string{"multica", "issue", "metadata", "list"})
 }
 
 func genericActionCriterionMode(statement string) bool {

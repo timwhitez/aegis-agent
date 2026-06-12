@@ -150,6 +150,32 @@ func TestTaskFromEnvelopeTreatsChineseActionPromptAsCoding(t *testing.T) {
 	}
 }
 
+func TestTaskFromEnvelopeAssignmentRequiresConcreteProgressEvidence(t *testing.T) {
+	dir := t.TempDir()
+	issueID := "95ab526f-ba4a-42a6-a644-7bfd96facb70"
+	prompt := strings.Join([]string{
+		"You are running as a local coding agent for a Multica workspace.",
+		"",
+		"Your assigned issue ID is: " + issueID,
+		"",
+		"Start by running `multica issue get " + issueID + " --output json` to understand your task, then complete it.",
+		"For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). `multica issue comment list " + issueID + " --output json` returns all comments for the issue.",
+	}, "\n")
+
+	tf := taskFromEnvelope(StreamInputMessage{
+		Type:    "user",
+		Role:    "user",
+		Content: []ContentBlock{{Type: "text", Text: prompt}},
+	}, prompt, ConfigResolution{Workdir: dir, Config: task.DefaultConfig()}, "leader")
+
+	if tf.Kind != task.KindGeneral || tf.PresetID != task.PresetDocsLite {
+		t.Fatalf("expected assignment outside code repo to stay general docs_lite, got kind=%s preset=%s", tf.Kind, tf.PresetID)
+	}
+	if len(tf.SuccessCriteria) != 1 || !strings.Contains(tf.SuccessCriteria[0].Statement, "Concrete execution progress is recorded") || !strings.Contains(tf.SuccessCriteria[0].Statement, "result prose alone is not sufficient") {
+		t.Fatalf("expected concrete-progress criterion for assignment prompt, got %+v", tf.SuccessCriteria)
+	}
+}
+
 func TestTaskFromEnvelopeKeepsActionPromptGeneralOutsideCodeRepo(t *testing.T) {
 	dir := t.TempDir()
 	tf := taskFromEnvelope(StreamInputMessage{

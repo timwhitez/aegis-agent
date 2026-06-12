@@ -362,6 +362,12 @@ func criteriaFromPrompt(prompt string) []task.SuccessCriterion {
 			Statement: "Exactly one completed repair command record shows the explicit user-requested command ran; result prose alone is not sufficient.",
 		}}
 	}
+	if promptRequestsAssignmentExecution(prompt) {
+		return []task.SuccessCriterion{{
+			ID:        "SC-001",
+			Statement: "Concrete execution progress is recorded with durable workspace edit or completed repair command evidence; result prose alone is not sufficient.",
+		}}
+	}
 	if strings.Contains(lower, "test") || strings.Contains(lower, "build") {
 		first = "Requested verification commands pass or failures are reported with evidence."
 	}
@@ -404,6 +410,16 @@ func lineNegatesCommandAction(line string) bool {
 		}
 	}
 	return false
+}
+
+func promptRequestsAssignmentExecution(prompt string) bool {
+	lower := strings.ToLower(strings.TrimSpace(prompt))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "your assigned issue id is:") &&
+		strings.Contains(lower, "multica issue get ") &&
+		strings.Contains(lower, "then complete it")
 }
 
 func NewRunMetadata(spec task.Spec, resolution ConfigResolution) task.MulticaRunMetadata {
