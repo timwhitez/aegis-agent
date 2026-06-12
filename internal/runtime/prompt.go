@@ -61,7 +61,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
 	builder.WriteString("- Prefer dedicated tools for their purpose: `grep_files` or `grep` for discovery, `read_file` for known files, `write_file` or `edit_file` for file changes, and `shell` for build, test, package, git, or runtime commands.\n")
 	builder.WriteString("- Use the `shell` tool's `workdir` argument instead of embedding `cd` in commands whenever possible.\n")
-	builder.WriteString("- For unfamiliar code, start with scoped discovery and targeted reads of owning files, contracts, and tests; avoid repeated overlapping reads or broad generated-output scans.\n")
+	builder.WriteString("- For unfamiliar code, use scoped discovery and read the owning files, contracts, and tests needed for the task; multi-file analysis often requires multiple targeted reads.\n")
 	builder.WriteString("- When several tool calls are independent in the same turn, issue them together; keep dependent operations sequential.\n")
 	builder.WriteString("- Do not guess required tool arguments, paths, or skill names. Inspect first, or ask if the value cannot be discovered safely.\n")
 	builder.WriteString("- Create new files only for requested deliverables, tests, configs, or artifacts that are necessary to complete the task.\n")
@@ -146,9 +146,6 @@ func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []st
 	if note := exactArtifactLiteralNote(workdir, messages); note != "" {
 		notes = append(notes, note)
 	}
-	if note := retrievalBudgetNote(messages); note != "" {
-		notes = append(notes, note)
-	}
 	return notes
 }
 
@@ -167,14 +164,14 @@ func deliveryNote(workdir, mode string, messages []session.Message) string {
 		path := displayPromptPath(workdir, stats.DeliverableWritePath)
 		if stats.CompletedTodoWrite {
 			if mode == session.ModeExec {
-				return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval. Call finish now unless one required side effect is still missing.", path)
+				return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Call finish when required side effects are complete.", path)
 			}
-			return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval unless one required side effect is still missing.", path)
+			return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Continue only for required side effects or corrections.", path)
 		}
 		if mode == session.ModeExec {
-			return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it. If bookkeeping is done, call finish now.", path)
+			return fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
 		}
-		return fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it; only do the minimum remaining side effects.", path)
+		return fmt.Sprintf("A requested artifact was already written to %s. Continue only for required side effects or corrections.", path)
 	}
 
 	if isAudit {
@@ -1020,29 +1017,6 @@ func countCompactionSummaries(messages []session.Message) int {
 	return total
 }
 
-func retrievalBudgetNote(messages []session.Message) string {
-	start := latestExternalInstructionIndex(messages)
-	if start >= 0 {
-		start++
-	} else {
-		start = 0
-	}
-	stats := collectRecentToolStats(messages[start:])
-	if stats.RetrievalCount < 6 {
-		return ""
-	}
-	if stats.ActionCount > 0 && stats.RepeatedReadCount == 0 && stats.DiscoveryCount < 4 {
-		return ""
-	}
-	if stats.UniqueReadPaths > 0 && stats.RepeatedReadCount > 0 {
-		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths, including %d reread(s). Do not reread files just to reconfirm earlier evidence. Keep runtime-reserved final proof rereads for the smallest exact line window that still matters. Use current evidence unless one missing exact line would materially change the answer.", stats.RetrievalCount, stats.UniqueReadPaths, stats.RepeatedReadCount)
-	}
-	if stats.UniqueReadPaths > 0 {
-		return fmt.Sprintf("Recent work already used %d read-only tool calls across %d tracked file paths. Use current evidence unless one missing exact line would materially change the answer, and prefer acting now over more exploration.", stats.RetrievalCount, stats.UniqueReadPaths)
-	}
-	return fmt.Sprintf("Recent work already used %d read-only tool calls. Use current evidence and prefer acting now over more exploration.", stats.RetrievalCount)
-}
-
 func exactRequestedArtifactPathNote(workdir string, messages []session.Message) string {
 	paths := requestedArtifactPaths(workdir, messages)
 	if len(paths) == 0 {
@@ -1208,9 +1182,6 @@ func nextHarnessReminder(workdir, mode string, messages []session.Message) harne
 	if reminder := largeProjectCoordinationReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
-	if reminder := retrievalTailReminder(messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
-		return reminder
-	}
 	if reminder := projectMemoryRefreshReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
@@ -1240,15 +1211,15 @@ func artifactCompletionReminder(workdir, mode string, messages []session.Message
 	var note string
 	if stats.CompletedTodoWrite {
 		if mode == session.ModeExec {
-			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval. Call finish now unless one required side effect is still missing.", path)
+			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Call finish when required side effects are complete.", path)
 		} else {
-			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Do not do more retrieval unless one required side effect is still missing.", path)
+			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Continue only for required side effects or corrections.", path)
 		}
 	} else {
 		if mode == session.ModeExec {
-			note = fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it. If bookkeeping is done, call finish now.", path)
+			note = fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
 		} else {
-			note = fmt.Sprintf("A requested artifact was already written to %s. Do not reopen evidence just to restate it; only do the minimum remaining side effects.", path)
+			note = fmt.Sprintf("A requested artifact was already written to %s. Continue only for required side effects or corrections.", path)
 		}
 	}
 	return harnessReminder{
@@ -1268,12 +1239,12 @@ func largeProjectCoordinationReminder(workdir string, messages []session.Message
 		return harnessReminder{}
 	}
 	stats := collectRecentToolStats(messages)
-	if stats.RetrievalCount < 4 && stats.UniqueReadPaths < 2 && stats.DiscoveryCount < 2 {
+	if stats.RetrievalCount < 8 && stats.UniqueReadPaths < 4 && stats.DiscoveryCount < 4 {
 		return harnessReminder{}
 	}
 	return harnessReminder{
 		Kind: "large_project_coordination",
-		Text: "Harness reminder: this looks like a large project task. Before more repo-scale retrieval or implementation, externalize a durable project-memory stack at reports/spec.md, reports/plan.md, reports/progress.md, and reports/validation.md, then keep a durable task board aligned with the written plan via todo_write plus task_create/task_update.",
+		Text: "Harness reminder: this looks like a large project task. Consider externalizing durable project memory at reports/spec.md, reports/plan.md, reports/progress.md, and reports/validation.md, and keeping a task board aligned with the written plan when that helps recovery or collaboration.",
 	}
 }
 
@@ -1284,7 +1255,7 @@ func projectMemoryRefreshReminder(workdir string, messages []session.Message) ha
 	}
 	return harnessReminder{
 		Kind: "project_memory_refresh",
-		Text: "Harness reminder: recent implementation or validation work outpaced the durable project-memory stack. For durable handoff or finalization, " + projectMemoryRefreshInstruction(need) + " so the next session inherits current progress and QA state. If you delegate before refreshing it, include the current progress and validation context directly in the child prompt.",
+		Text: "Harness reminder: recent implementation or validation work outpaced the durable project-memory stack. For durable handoff, " + projectMemoryRefreshInstruction(need) + " so the next session inherits current progress and QA state. If you delegate before refreshing it, include the current progress and validation context directly in the child prompt.",
 	}
 }
 
@@ -1307,17 +1278,6 @@ func steerCompletionReminder(workdir, mode string, messages []session.Message) h
 	return harnessReminder{
 		Kind: "steer_completion",
 		Text: "Harness reminder: the latest interrupt steer explicitly redirected this run to " + goal + ". Do not do more retrieval, todo/task bookkeeping, or skill loading before delivery. Use current evidence and act now.",
-	}
-}
-
-func retrievalTailReminder(messages []session.Message) harnessReminder {
-	note := retrievalBudgetNote(messages)
-	if note == "" {
-		return harnessReminder{}
-	}
-	return harnessReminder{
-		Kind: "retrieval_tail",
-		Text: "Harness reminder: " + note + " If one missing exact line still matters, use at most two narrowly targeted read_file calls. Broad discovery is no longer allowed. If the task is complete after acting, call finish.",
 	}
 }
 
@@ -1355,23 +1315,7 @@ func toolGuard(workdir string, messages []session.Message, toolName string, rawA
 	if yolo {
 		return "", ""
 	}
-	reminderIndex, reminderKind := latestHarnessReminderSinceLatestExternal(messages)
-	if reminderIndex < 0 {
-		return "", ""
-	}
-	switch reminderKind {
-	case "artifact_written":
-		if !isReadOnlyRetrievalCall(toolName, rawArgs) {
-			return "", ""
-		}
-		return reminderKind, "Retrieval guard: a requested artifact was already written. Do not do more read-only exploration. Use current evidence, update bookkeeping if needed, and finish."
-	case "project_memory_refresh":
-		return projectMemoryRefreshGuard(workdir, messages, toolName, rawArgs)
-	case "retrieval_tail":
-		return retrievalTailGuard(workdir, messages, reminderIndex, toolName, rawArgs)
-	default:
-		return "", ""
-	}
+	return "", ""
 }
 
 type explicitInspectionScope struct {
@@ -1442,24 +1386,6 @@ func deferredInterruptFinishGuard(messages []session.Message, toolName string) (
 		return "", ""
 	}
 	return "steer_deferred_finish", "Completion guard: the latest interrupt steer explicitly said to stop without finishing so a later continue can close the task. Do not call finish in this run. Refresh any requested artifacts, then stop and wait for continue."
-}
-
-func projectMemoryRefreshGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
-	need := projectMemoryRefreshNeed(workdir, messages)
-	if !need.Active {
-		return "", ""
-	}
-	if isProjectMemoryWriteRequested(workdir, toolName, rawArgs) {
-		return "", ""
-	}
-	switch {
-	case isReadOnlyRetrievalCall(toolName, rawArgs):
-		return "project_memory_refresh", "Project-memory guard: recent implementation or validation work outpaced the durable handoff files. " + projectMemoryRefreshInstruction(need) + " before more read-only retrieval."
-	case toolName == "finish":
-		return "project_memory_refresh", "Project-memory guard: before finishing this large task, " + projectMemoryRefreshInstruction(need) + " so progress and validation handoff state matches the latest work."
-	default:
-		return "", ""
-	}
 }
 
 func exactArtifactPathGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage) (string, string) {
@@ -1607,137 +1533,6 @@ func steerCompletionGuard(messages []session.Message, toolName string, rawArgs j
 		return reminderKind, "Completion guard: the latest interrupt steer already redirected this run to immediate delivery. Do not spend another turn on todo/task bookkeeping or skill loading before writing the artifact or finishing."
 	}
 	return "", ""
-}
-
-func retrievalTailGuard(workdir string, messages []session.Message, reminderIndex int, toolName string, rawArgs json.RawMessage) (string, string) {
-	if !isReadOnlyRetrievalCall(toolName, rawArgs) {
-		return "", ""
-	}
-	switch toolName {
-	case "glob", "grep", "grep_files":
-		if allowReviewArtifactRepairSearch(workdir, messages, reminderIndex, toolName, rawArgs) {
-			return "", ""
-		}
-		return "retrieval_tail", "Retrieval guard: broad discovery is blocked after the recent harness reminder. Use current evidence or at most two narrowly targeted read_file calls on new or non-overlapping slices before acting."
-	case "shell":
-		return "retrieval_tail", "Retrieval guard: read-only shell inspection is blocked after the recent harness reminder. Use current evidence or at most two narrowly targeted native read_file calls on new or non-overlapping slices before acting."
-	case "read_file":
-		requestedWindow, ok := requestedReadWindow(workdir, rawArgs)
-		if !ok {
-			return "retrieval_tail", "Retrieval guard: post-reminder read_file must target one concrete path. If you cannot name the exact file, act with current evidence."
-		}
-		priorReads := collectReadWindows(messages[:reminderIndex])
-		postReminderReads := collectReadWindows(messages[reminderIndex+1:])
-		priorReadSeq := collectReadWindowSequence(messages[:reminderIndex])
-		postReminderReadSeq := collectReadWindowSequence(messages[reminderIndex+1:])
-		if allowReviewArtifactRepairRead(messages, reminderIndex, requestedWindow, priorReadSeq, postReminderReadSeq) {
-			return "", ""
-		}
-		if allowReservedFinalProofRead(requestedWindow, priorReadSeq, postReminderReadSeq) {
-			return "", ""
-		}
-		if overlapsAnyWindow(postReminderReads[requestedWindow.Path], requestedWindow) {
-			return "retrieval_tail", "Retrieval guard: after the recent harness reminder, rereading the same file slice is blocked. Use current evidence and act now."
-		}
-		if overlapsAnyWindow(priorReads[requestedWindow.Path], requestedWindow) {
-			return "retrieval_tail", "Retrieval guard: after the recent harness reminder, rereading an already inspected file slice is blocked. Use current evidence and act now."
-		}
-		postReminderCount := countExploratoryReadWindows(postReminderReadSeq, priorReadSeq)
-		if postReminderCount >= 3 {
-			return "retrieval_tail", "Retrieval guard: after the recent harness reminder, you already used the maximum targeted read_file budget. Stop exploring and act with current evidence."
-		}
-		if postReminderCount >= 2 && !(isDurableGuidancePath(requestedWindow.Path) && countGuidanceReadWindows(postReminderReadSeq, priorReadSeq) == 0) {
-			return "retrieval_tail", "Retrieval guard: after the recent harness reminder, you already used the two allowed targeted read_file calls. Stop exploring and act with current evidence."
-		}
-		return "", ""
-	default:
-		return "", ""
-	}
-}
-
-func allowReviewArtifactRepairRead(messages []session.Message, reminderIndex int, requestedWindow readWindow, priorReadSeq, postReminderReadSeq []readWindow) bool {
-	if !isReservedFinalProofWindow(requestedWindow) {
-		return false
-	}
-	if !hasPreviouslyInspectedWindow(requestedWindow, priorReadSeq, postReminderReadSeq) {
-		return false
-	}
-	reviewArtifactIndex := latestReviewArtifactRepairIndex(messages)
-	if reviewArtifactIndex <= reminderIndex {
-		return false
-	}
-	if len(postReminderReadSeq) >= reservedFinalProofReadBudget() {
-		return false
-	}
-	return true
-}
-
-func allowReviewArtifactRepairSearch(workdir string, messages []session.Message, reminderIndex int, toolName string, rawArgs json.RawMessage) bool {
-	if toolName != "grep" {
-		return false
-	}
-	reviewArtifactIndex := latestReviewArtifactRepairIndex(messages)
-	if reviewArtifactIndex <= reminderIndex {
-		return false
-	}
-	path, ok := requestedGrepPath(workdir, rawArgs)
-	if !ok {
-		return false
-	}
-	priorReadSeq := collectReadWindowSequence(messages[:reminderIndex])
-	postReminderReadSeq := collectReadWindowSequence(messages[reminderIndex+1:])
-	return hasPreviouslyInspectedPath(path, priorReadSeq, postReminderReadSeq)
-}
-
-func isProjectMemoryWriteRequested(workdir, toolName string, rawArgs json.RawMessage) bool {
-	path, hasPath, err := requestedArtifactPath(workdir, toolName, rawArgs)
-	if !hasPath || err != nil {
-		return false
-	}
-	return isProjectMemoryPath(path)
-}
-
-func latestReviewArtifactRepairIndex(messages []session.Message) int {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "tool" {
-			continue
-		}
-		for _, result := range messages[i].ToolResults {
-			if !result.IsError {
-				continue
-			}
-			guard, _ := result.Metadata["guard"].(string)
-			if guard != "review_artifact" {
-				continue
-			}
-			if result.Name == "write_file" || result.Name == "edit_file" {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-func allowReservedFinalProofRead(requestedWindow readWindow, priorReadSeq, postReminderReadSeq []readWindow) bool {
-	if !isReservedFinalProofWindow(requestedWindow) {
-		return false
-	}
-	if !hasPreviouslyInspectedWindow(requestedWindow, priorReadSeq, postReminderReadSeq) {
-		return false
-	}
-	if overlapsReservedFinalProofRead(postReminderReadSeq, priorReadSeq, requestedWindow) {
-		return false
-	}
-	return countReservedFinalProofReads(postReminderReadSeq, priorReadSeq) < reservedFinalProofReadBudget()
-}
-
-func isReservedFinalProofWindow(window readWindow) bool {
-	span := window.End - window.Offset
-	return span > 0 && span <= 40
-}
-
-func reservedFinalProofReadBudget() int {
-	return 2
 }
 
 func hasHarnessReminderKindSinceLatestExternal(messages []session.Message, kind string) bool {
@@ -2780,302 +2575,6 @@ func mentionsConditionalDelivery(lowered string) bool {
 		}
 	}
 	return false
-}
-
-func requestedReadPath(workdir string, rawArgs json.RawMessage) string {
-	window, ok := requestedReadWindow(workdir, rawArgs)
-	if !ok {
-		return ""
-	}
-	return window.Path
-}
-
-func requestedGrepPath(workdir string, rawArgs json.RawMessage) (string, bool) {
-	var input struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(rawArgs, &input); err != nil {
-		return "", false
-	}
-	path := strings.TrimSpace(input.Path)
-	if path == "" {
-		return "", false
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(workdir, path)
-	}
-	return filepath.Clean(path), true
-}
-
-type readWindow struct {
-	Path   string
-	Offset int
-	End    int
-}
-
-func requestedReadWindow(workdir string, rawArgs json.RawMessage) (readWindow, bool) {
-	var input struct {
-		Path   string `json:"path"`
-		Offset int    `json:"offset"`
-		Limit  int    `json:"limit"`
-	}
-	if err := json.Unmarshal(rawArgs, &input); err != nil {
-		return readWindow{}, false
-	}
-	path := strings.TrimSpace(input.Path)
-	if path == "" {
-		return readWindow{}, false
-	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(workdir, path)
-	}
-	limit := input.Limit
-	if limit <= 0 {
-		limit = 120
-	}
-	if limit > 120 {
-		limit = 120
-	}
-	offset := input.Offset
-	if offset < 0 {
-		offset = 0
-	}
-	return readWindow{
-		Path:   filepath.Clean(path),
-		Offset: offset,
-		End:    offset + limit,
-	}, true
-}
-
-func collectReadPaths(messages []session.Message) map[string]int {
-	paths := map[string]int{}
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			path = strings.TrimSpace(path)
-			if path == "" {
-				continue
-			}
-			paths[filepath.Clean(path)]++
-		}
-	}
-	return paths
-}
-
-func collectReadWindows(messages []session.Message) map[string][]readWindow {
-	windows := map[string][]readWindow{}
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			path = strings.TrimSpace(path)
-			if path == "" {
-				continue
-			}
-			offset := metadataInt(result.Metadata, "offset")
-			end := metadataInt(result.Metadata, "end")
-			window := readWindow{
-				Path:   filepath.Clean(path),
-				Offset: offset,
-				End:    end,
-			}
-			windows[window.Path] = append(windows[window.Path], window)
-		}
-	}
-	return windows
-}
-
-func collectReadWindowSequence(messages []session.Message) []readWindow {
-	var windows []readWindow
-	for _, msg := range messages {
-		if msg.Role != "tool" {
-			continue
-		}
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			path = strings.TrimSpace(path)
-			if path == "" {
-				continue
-			}
-			windows = append(windows, readWindow{
-				Path:   filepath.Clean(path),
-				Offset: metadataInt(result.Metadata, "offset"),
-				End:    metadataInt(result.Metadata, "end"),
-			})
-		}
-	}
-	return windows
-}
-
-func metadataInt(meta map[string]any, key string) int {
-	if meta == nil {
-		return 0
-	}
-	switch value := meta[key].(type) {
-	case int:
-		return value
-	case int32:
-		return int(value)
-	case int64:
-		return int(value)
-	case float32:
-		return int(value)
-	case float64:
-		return int(value)
-	case json.Number:
-		if v, err := value.Int64(); err == nil {
-			return int(v)
-		}
-	}
-	return 0
-}
-
-func overlapsAnyWindow(existing []readWindow, candidate readWindow) bool {
-	for _, item := range existing {
-		if item.Path != candidate.Path {
-			continue
-		}
-		if item.End == 0 || candidate.End == 0 {
-			return true
-		}
-		if candidate.Offset < item.End && item.Offset < candidate.End {
-			return true
-		}
-	}
-	return false
-}
-
-func countReadWindows(windows map[string][]readWindow) int {
-	total := 0
-	for _, items := range windows {
-		total += len(items)
-	}
-	return total
-}
-
-func countExploratoryReadWindows(windows, priorReads []readWindow) int {
-	total := 0
-	seen := seenReadWindows(priorReads)
-	for _, item := range windows {
-		if isReservedFinalProofReadCandidate(item, seen[item.Path]) {
-			seen[item.Path] = append(seen[item.Path], item)
-			continue
-		}
-		total++
-		seen[item.Path] = append(seen[item.Path], item)
-	}
-	return total
-}
-
-func countReservedFinalProofReads(windows, priorReads []readWindow) int {
-	total := 0
-	seen := seenReadWindows(priorReads)
-	for _, item := range windows {
-		if isReservedFinalProofReadCandidate(item, seen[item.Path]) {
-			total++
-		}
-		seen[item.Path] = append(seen[item.Path], item)
-	}
-	return total
-}
-
-func isReservedFinalProofReadCandidate(window readWindow, inspected []readWindow) bool {
-	if !isReservedFinalProofWindow(window) {
-		return false
-	}
-	return overlapsAnyWindow(inspected, window)
-}
-
-func overlapsReservedFinalProofRead(existing, prior []readWindow, candidate readWindow) bool {
-	seen := seenReadWindows(prior)
-	for _, item := range existing {
-		if !isReservedFinalProofReadCandidate(item, seen[item.Path]) {
-			seen[item.Path] = append(seen[item.Path], item)
-			continue
-		}
-		if candidate.Offset < item.End && item.Offset < candidate.End {
-			return true
-		}
-		seen[item.Path] = append(seen[item.Path], item)
-	}
-	return false
-}
-
-func countGuidanceReadWindows(windows, priorReads []readWindow) int {
-	total := 0
-	seen := seenReadWindows(priorReads)
-	for _, item := range windows {
-		if !isDurableGuidancePath(item.Path) {
-			seen[item.Path] = append(seen[item.Path], item)
-			continue
-		}
-		if !isReservedFinalProofReadCandidate(item, seen[item.Path]) {
-			total++
-		}
-		seen[item.Path] = append(seen[item.Path], item)
-	}
-	return total
-}
-
-func hasPreviouslyInspectedWindow(window readWindow, priorReads, recentReads []readWindow) bool {
-	for _, item := range priorReads {
-		if item.Path == window.Path && window.Offset < item.End && item.Offset < window.End {
-			return true
-		}
-	}
-	for _, item := range recentReads {
-		if item.Path == window.Path && window.Offset < item.End && item.Offset < window.End {
-			return true
-		}
-	}
-	return false
-}
-
-func hasPreviouslyInspectedPath(path string, priorReads, recentReads []readWindow) bool {
-	for _, item := range priorReads {
-		if item.Path == path {
-			return true
-		}
-	}
-	for _, item := range recentReads {
-		if item.Path == path {
-			return true
-		}
-	}
-	return false
-}
-
-func seenReadWindows(windows []readWindow) map[string][]readWindow {
-	seen := map[string][]readWindow{}
-	for _, item := range windows {
-		seen[item.Path] = append(seen[item.Path], item)
-	}
-	return seen
-}
-
-func isDurableGuidancePath(path string) bool {
-	clean := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
-	if clean == "" {
-		return false
-	}
-	if isProjectMemoryPath(clean) {
-		return true
-	}
-	return strings.HasSuffix(clean, ".md") && strings.Contains(clean, "/spec/")
 }
 
 type agentsDoc struct {

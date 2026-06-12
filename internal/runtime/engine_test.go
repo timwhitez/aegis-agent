@@ -2707,7 +2707,7 @@ func TestEngineAppendHarnessReminderReportsEventAppendErrorAndRollsBackMessage(t
 	}
 }
 
-func TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall(t *testing.T) {
+func TestEngineDoesNotAppendRetrievalTailHarnessReminderBeforeProviderCall(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Inspect README.md and AGENTS.md and summarize the runtime surface.")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -2726,11 +2726,11 @@ func TestEngineAppendsRetrievalTailHarnessReminderBeforeProviderCall(t *testing.
 		last := req.Messages[len(req.Messages)-1]
 		source, _ := last.Meta["source"].(string)
 		kind, _ := last.Meta["kind"].(string)
-		if last.Role != "user" || source != "harness_reminder" || kind != "retrieval_tail" {
-			t.Fatalf("expected retrieval-tail harness reminder, got %#v", last)
+		if last.Role == "user" && source == "harness_reminder" && kind == "retrieval_tail" {
+			t.Fatalf("did not expect retrieval-tail harness reminder, got %#v", last)
 		}
-		if !strings.Contains(last.Text, "Recent work already used 6 read-only tool calls") {
-			t.Fatalf("expected retrieval-tail text, got %q", last.Text)
+		if last.Role != "tool" {
+			t.Fatalf("expected provider request to end with existing tool evidence, got %#v", last)
 		}
 		return provider.TurnResult{
 			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
@@ -2778,7 +2778,7 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 		if last.Role != "user" || source != "harness_reminder" || kind != "artifact_written" {
 			t.Fatalf("expected artifact-written harness reminder, got %#v", last)
 		}
-		if !strings.Contains(last.Text, "reports/final-audit.md") || !strings.Contains(last.Text, "Call finish now") {
+		if !strings.Contains(last.Text, "reports/final-audit.md") || !strings.Contains(last.Text, "Call finish when required side effects are complete") {
 			t.Fatalf("expected artifact completion text, got %q", last.Text)
 		}
 		return provider.TurnResult{

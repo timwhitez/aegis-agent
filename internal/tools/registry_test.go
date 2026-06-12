@@ -4840,7 +4840,7 @@ func TestLoadSkillReportsLoadedSkillStateSaveError(t *testing.T) {
 	}
 }
 
-func TestReadFileRepeatObservation(t *testing.T) {
+func TestReadFileAllowsRepeatedWindowsWithoutWarning(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("a\nb\nc\n"), 0o644); err != nil {
@@ -4877,8 +4877,8 @@ func TestReadFileRepeatObservation(t *testing.T) {
 	if err != nil || second.IsError {
 		t.Fatalf("second read_file err=%v result=%#v", err, second)
 	}
-	if second.Metadata["repeat_count"] != 2 || !strings.Contains(second.LLMOutput, "repeat_count=2") {
-		t.Fatalf("expected repeat observation, got metadata=%#v output=%q", second.Metadata, second.LLMOutput)
+	if _, ok := second.Metadata["repeat_count"]; ok || strings.Contains(second.LLMOutput, "repeat_count=") || strings.Contains(second.LLMOutput, "read_file warning") {
+		t.Fatalf("expected repeated read_file to stay unannotated, got metadata=%#v output=%q", second.Metadata, second.LLMOutput)
 	}
 }
 

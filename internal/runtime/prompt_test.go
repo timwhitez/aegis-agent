@@ -400,7 +400,7 @@ func TestBuildSystemPromptKeepsLatestSteerPriorityPastOldWindow(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptWarnsOnRetrievalHeavyTail(t *testing.T) {
+func TestBuildSystemPromptDoesNotWarnOnRetrievalHeavyTail(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
 		session.ModeExec,
@@ -420,14 +420,14 @@ func TestBuildSystemPromptWarnsOnRetrievalHeavyTail(t *testing.T) {
 			}),
 		},
 	)
-	if !strings.Contains(prompt, "Recent work already used 6 read-only tool calls") {
-		t.Fatalf("expected retrieval pressure note, got:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "Do not reread files just to reconfirm") {
-		t.Fatalf("expected reread warning, got:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "runtime-reserved final proof rereads") {
-		t.Fatalf("expected reserved proof-read guidance, got:\n%s", prompt)
+	for _, forbidden := range []string{
+		"Recent work already used 6 read-only tool calls",
+		"Do not reread files just to reconfirm",
+		"runtime-reserved final proof rereads",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("expected retrieval-heavy prompt not to include %q, got:\n%s", forbidden, prompt)
+		}
 	}
 }
 
@@ -660,7 +660,7 @@ func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testi
 	}
 }
 
-func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T) {
+func TestBuildSystemPromptDoesNotAddRetrievalPressureForReadOnlyShellInspection(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
 		session.ModeExec,
@@ -680,8 +680,8 @@ func TestBuildSystemPromptCountsReadOnlyShellInspectionAsRetrieval(t *testing.T)
 			}),
 		},
 	)
-	if !strings.Contains(prompt, "Recent work already used 6 read-only tool calls") {
-		t.Fatalf("expected shell inspection to count toward retrieval pressure, got:\n%s", prompt)
+	if strings.Contains(prompt, "Recent work already used") {
+		t.Fatalf("expected shell inspection not to produce retrieval pressure, got:\n%s", prompt)
 	}
 }
 
@@ -741,8 +741,8 @@ func TestBuildSystemPromptHighlightsCompletedArtifactWrite(t *testing.T) {
 	if !strings.Contains(prompt, "A requested artifact was already written to reports/final-audit.md") {
 		t.Fatalf("expected artifact write note, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Call finish now") {
-		t.Fatalf("expected finish pressure note, got:\n%s", prompt)
+	if !strings.Contains(prompt, "Call finish when required side effects are complete") {
+		t.Fatalf("expected soft finish note, got:\n%s", prompt)
 	}
 }
 
@@ -911,269 +911,7 @@ func TestNextHarnessReminderRepeatsEscalatedSteerReminderUntilDelivery(t *testin
 	}
 }
 
-func TestToolGuardAllowsOneNewReadAfterRetrievalTailReminder(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-		session.NewToolMessage([]session.ToolResult{
-			{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "README.md")}},
-		}),
-		reminder,
-	}
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"docs/guide.md"}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected one new post-reminder read to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardAllowsSecondNonOverlappingSlicePastReminder(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "docs", "guide.md"), "offset": 0, "end": 120}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"docs/guide.md","offset":240,"limit":80}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected non-overlapping second slice to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardAllowsSecondNonOverlappingSlicePastReminderWithJSONMetadataNumbers(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "docs", "guide.md"), "offset": float64(0), "end": float64(120)}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"docs/guide.md","offset":240,"limit":80}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected non-overlapping second slice to be allowed after JSON roundtrip, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardBlocksRepeatedReadsPastReminder(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "docs", "guide.md"), "offset": 0, "end": 120}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"docs/guide.md","offset":40,"limit":80}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard, got %q", kind)
-	}
-	if !strings.Contains(text, "rereading the same file slice is blocked") {
-		t.Fatalf("expected retrieval guard text, got %q", text)
-	}
-}
-
-func TestToolGuardAllowsNarrowRereadAfterReviewArtifactGuard(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "provider", "openai.go"), "offset": 0, "end": 120}},
-	}))
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{
-			Name:    "write_file",
-			IsError: true,
-			Metadata: map[string]any{
-				"guard": "review_artifact",
-			},
-		},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/provider/openai.go","offset":80,"limit":20}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected narrow review-artifact repair reread to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardAllowsReservedFinalProofReadAfterTwoExplorationReads(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "compaction.go"), "offset": 0, "end": 120}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "prompt.go"), "offset": 240, "end": 320}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/runtime/compaction.go","offset":20,"limit":20}`))
-	if kind != "" || text != "" {
-		t.Fatalf("expected reserved final proof read to be allowed, got kind=%q text=%q", kind, text)
-	}
-}
-
-func TestToolGuardBlocksThirdReservedFinalProofRead(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "compaction.go"), "offset": 0, "end": 120}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "compaction.go"), "offset": 10, "end": 30}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "prompt.go"), "offset": 240, "end": 320}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "prompt.go"), "offset": 260, "end": 280}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/runtime/compaction.go","offset":40,"limit":20}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard after reserved proof budget is spent, got %q", kind)
-	}
-	if !strings.Contains(text, "rereading an already inspected file slice is blocked") && !strings.Contains(text, "rereading the same file slice is blocked") {
-		t.Fatalf("expected reserved proof reread guard text, got %q", text)
-	}
-}
-
-func TestToolGuardBlocksWideRereadAfterReviewArtifactGuard(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "provider", "openai.go"), "offset": 0, "end": 120}},
-	}))
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{
-			Name:    "write_file",
-			IsError: true,
-			Metadata: map[string]any{
-				"guard": "review_artifact",
-			},
-		},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/provider/openai.go","offset":40,"limit":80}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard for wide reread, got %q", kind)
-	}
-	if !strings.Contains(text, "rereading an already inspected file slice is blocked") && !strings.Contains(text, "rereading the same file slice is blocked") {
-		t.Fatalf("expected reread guard text, got %q", text)
-	}
-}
-
-func TestToolGuardBlocksThirdNarrowRereadAfterReviewArtifactGuard(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "provider", "openai.go"), "offset": 0, "end": 120}},
-	}))
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{
-			Name:    "write_file",
-			IsError: true,
-			Metadata: map[string]any{
-				"guard": "review_artifact",
-			},
-		},
-	}))
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "provider", "openai.go"), "offset": 80, "end": 100}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "provider", "openai.go"), "offset": 100, "end": 120}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"internal/provider/openai.go","offset":60,"limit":20}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard after two repair rereads, got %q", kind)
-	}
-	if !strings.Contains(text, "rereading the same file slice is blocked") && !strings.Contains(text, "rereading an already inspected file slice is blocked") && !strings.Contains(text, "maximum targeted read_file budget") && !strings.Contains(text, "two allowed targeted read_file calls") {
-		t.Fatalf("expected repair reread budget guard text, got %q", text)
-	}
-}
-
-func TestToolGuardBlocksThirdTargetedReadPastReminder(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "docs", "guide.md"), "offset": 0, "end": 120}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "docs", "guide.md"), "offset": 240, "end": 320}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"docs/guide.md","offset":360,"limit":40}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard, got %q", kind)
-	}
-	if !strings.Contains(text, "two allowed targeted read_file calls") {
-		t.Fatalf("expected targeted read budget text, got %q", text)
-	}
-}
-
-func TestToolGuardAllowsOneDurableGuidanceReadPastReminderBudget(t *testing.T) {
-	messages := []session.Message{
-		session.NewMessage("user", "Audit the repo and write a report."),
-	}
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	messages = append(messages, reminder)
-	messages = append(messages, session.NewToolMessage([]session.ToolResult{
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "app", "app.go"), "offset": 0, "end": 120}},
-		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "prompt.go"), "offset": 240, "end": 320}},
-	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"spec/09-phase-plan.md","offset":0,"limit":80}`))
-	if kind == "" && text == "" {
-		return
-	}
-	t.Fatalf("expected one durable guidance read past the normal budget to be allowed, got kind=%q text=%q", kind, text)
-}
-
-func TestToolGuardBlocksSecondDurableGuidanceReadPastReminderBudget(t *testing.T) {
+func TestToolGuardDoesNotBlockReadsAfterRetrievalTailReminder(t *testing.T) {
 	messages := []session.Message{
 		session.NewMessage("user", "Audit the repo and write a report."),
 	}
@@ -1188,48 +926,41 @@ func TestToolGuardBlocksSecondDurableGuidanceReadPastReminderBudget(t *testing.T
 		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "internal", "runtime", "prompt.go"), "offset": 240, "end": 320}},
 		{Name: "read_file", Metadata: map[string]any{"path": filepath.Join("/tmp/work", "spec", "09-phase-plan.md"), "offset": 0, "end": 80}},
 	}))
-	kind, text := toolGuard("/tmp/work", messages, "read_file", json.RawMessage(`{"path":"spec/11-spec-audit-and-traceability.md","offset":0,"limit":80}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard, got %q", kind)
-	}
-	if !strings.Contains(text, "maximum targeted read_file budget") {
-		t.Fatalf("expected expanded-budget guard text, got %q", text)
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"path":"spec/11-spec-audit-and-traceability.md","offset":0,"limit":80}`),
+		json.RawMessage(`{"path":"internal/runtime/prompt.go","offset":240,"limit":80}`),
+		json.RawMessage(`{"path":"internal/app/app.go","offset":40,"limit":40}`),
+	} {
+		kind, text := toolGuard("/tmp/work", messages, "read_file", raw)
+		if kind != "" || text != "" {
+			t.Fatalf("expected retrieval_tail reminder not to block read_file %s, got kind=%q text=%q", string(raw), kind, text)
+		}
 	}
 }
 
-func TestToolGuardBlocksBroadDiscoveryAfterRetrievalReminder(t *testing.T) {
+func TestToolGuardDoesNotBlockReadOnlyDiscoveryAfterRetrievalReminder(t *testing.T) {
 	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
 	reminder.Meta = map[string]any{
 		"source": "harness_reminder",
 		"kind":   "retrieval_tail",
 	}
-	kind, text := toolGuard("/tmp/work", []session.Message{
+	messages := []session.Message{
 		session.NewMessage("user", "Write reports/final-audit.md and finish."),
 		reminder,
-	}, "grep_files", nil)
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard, got %q", kind)
 	}
-	if !strings.Contains(text, "Broad discovery is blocked") && !strings.Contains(text, "broad discovery is blocked") {
-		t.Fatalf("expected discovery guard text, got %q", text)
-	}
-}
-
-func TestToolGuardBlocksReadOnlyShellAfterRetrievalReminder(t *testing.T) {
-	reminder := session.NewMessage("user", "Harness reminder: stop exploring.")
-	reminder.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   "retrieval_tail",
-	}
-	kind, text := toolGuard("/tmp/work", []session.Message{
-		session.NewMessage("user", "Write reports/final-audit.md and finish."),
-		reminder,
-	}, "shell", json.RawMessage(`{"command":"grep -n TODO README.md"}`))
-	if kind != "retrieval_tail" {
-		t.Fatalf("expected retrieval_tail guard, got %q", kind)
-	}
-	if !strings.Contains(text, "read-only shell inspection is blocked") {
-		t.Fatalf("expected shell retrieval guard text, got %q", text)
+	for _, tc := range []struct {
+		name string
+		args json.RawMessage
+	}{
+		{name: "grep_files", args: nil},
+		{name: "grep", args: json.RawMessage(`{"path":"README.md","pattern":"TODO"}`)},
+		{name: "glob", args: json.RawMessage(`{"pattern":"**/*.go"}`)},
+		{name: "shell", args: json.RawMessage(`{"command":"grep -n TODO README.md"}`)},
+	} {
+		kind, text := toolGuard("/tmp/work", messages, tc.name, tc.args)
+		if kind != "" || text != "" {
+			t.Fatalf("expected retrieval_tail reminder not to block %s, got kind=%q text=%q", tc.name, kind, text)
+		}
 	}
 }
 
@@ -1248,7 +979,7 @@ func TestToolGuardAllowsActionShellAfterRetrievalReminder(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksReadsAfterArtifactReminder(t *testing.T) {
+func TestToolGuardAllowsReadsAfterArtifactReminder(t *testing.T) {
 	reminder := session.NewMessage("user", "Harness reminder: artifact already written.")
 	reminder.Meta = map[string]any{
 		"source": "harness_reminder",
@@ -1258,11 +989,8 @@ func TestToolGuardBlocksReadsAfterArtifactReminder(t *testing.T) {
 		session.NewMessage("user", "Write reports/final-audit.md and finish."),
 		reminder,
 	}, "grep", nil)
-	if kind != "artifact_written" {
-		t.Fatalf("expected artifact_written guard, got %q", kind)
-	}
-	if !strings.Contains(text, "artifact was already written") {
-		t.Fatalf("expected artifact guard text, got %q", text)
+	if kind != "" || text != "" {
+		t.Fatalf("expected artifact_written reminder not to block retrieval, got kind=%q text=%q", kind, text)
 	}
 }
 
@@ -1693,7 +1421,7 @@ func TestBuildSystemPromptAddsDurableProjectMemoryNote(t *testing.T) {
 	}
 }
 
-func TestNextHarnessReminderAddsLargeProjectCoordinationReminder(t *testing.T) {
+func TestNextHarnessReminderSkipsLargeProjectCoordinationForNormalMultiFileRead(t *testing.T) {
 	workdir := t.TempDir()
 	reminder := nextHarnessReminder(workdir, session.ModeExec, []session.Message{
 		session.NewMessage("user", "Handle this large complex repository refactor and keep the work traceable."),
@@ -1704,11 +1432,8 @@ func TestNextHarnessReminderAddsLargeProjectCoordinationReminder(t *testing.T) {
 			{Name: "glob"},
 		}),
 	})
-	if reminder.Kind != "large_project_coordination" {
-		t.Fatalf("expected large_project_coordination reminder, got %#v", reminder)
-	}
-	if !strings.Contains(reminder.Text, "reports/spec.md") || !strings.Contains(reminder.Text, "todo_write plus task_create/task_update") {
-		t.Fatalf("expected project-memory and task-board guidance, got %q", reminder.Text)
+	if reminder.Kind == "large_project_coordination" {
+		t.Fatalf("expected normal multi-file read not to trigger coordination reminder, got %#v", reminder)
 	}
 }
 
@@ -2061,7 +1786,7 @@ func TestToolGuardAllowsProjectMemoryWriteDuringRefreshReminder(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksFinishUntilProjectMemoryRefresh(t *testing.T) {
+func TestToolGuardAllowsFinishDuringProjectMemoryRefreshReminder(t *testing.T) {
 	workdir := t.TempDir()
 	reminder := session.NewMessage("user", "Harness reminder: refresh the durable project-memory stack.")
 	reminder.Meta = map[string]any{
@@ -2079,11 +1804,8 @@ func TestToolGuardBlocksFinishUntilProjectMemoryRefresh(t *testing.T) {
 		reminder,
 	}
 	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`))
-	if kind != "project_memory_refresh" {
-		t.Fatalf("expected project_memory_refresh guard, got %q", kind)
-	}
-	if !strings.Contains(text, "before finishing this large task") || !strings.Contains(text, "reports/validation.md") {
-		t.Fatalf("expected finish guard text, got %q", text)
+	if kind != "" || text != "" {
+		t.Fatalf("expected project-memory reminder not to block finish, got kind=%q text=%q", kind, text)
 	}
 }
 

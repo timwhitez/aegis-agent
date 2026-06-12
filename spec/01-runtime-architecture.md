@@ -350,11 +350,11 @@ while true:
 - 必要时插入 harness reminder message
  - 典型场景：
     - `exec` done-candidate 但还未显式 `finish`
-    - 最近只读检索已经明显过量，需要停止继续探索
-    - 请求的 artifact 已经写出，需要优先收尾
+    - 请求的 artifact 已经写出，可以提示优先收尾，但不阻断必要的继续核对
     - 最新 interrupt steer 已明确要求“use current evidence / write artifact / finish”，需要把执行直接拉回交付
-    - 大型多步骤工程/评审任务已经开始 repo-scale 检索，但还没有把 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 durable task state 外置出来，需要先补齐协调面再继续扩张检索
-    - 同一 session 内 `load_skill`、同一路径/range `read_file` 或语义 no-op `todo_write` 出现重复短模式；此时 reminder 只提示复用现有证据、推进 artifact 或声明 blocker，不指定固定读取顺序、审计路线或委派策略
+    - 大型多步骤工程/评审任务已经展开时，可以提示外置 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 durable task state，作为恢复与协作建议
+    - 同一 session 内 `load_skill` 或语义 no-op `todo_write` 出现高频重复短模式；此时 reminder 只提示复用现有证据、推进 artifact 或声明 blocker，不指定固定读取顺序、审计路线或委派策略
+    - `read_file` 是多文件分析的正常基础能力，不因总次数、同一路径或同一 range 重复而触发 runtime reminder 或 hard guard；是否复读由模型基于任务需要判断
 - 构造 system prompt
 - 拼接 skills 摘要和 AGENTS 指令链
 - 生成本轮 provider 输入视图
@@ -384,20 +384,15 @@ while true:
 
 1. 触发 `tool.before`
 2. 通过 `CompletionController` 应用 runtime 级 guard
-   - 若 `runtime.guardrails_mode = yolo`，则跳过 retrieval / project-memory / review-artifact 这类 runtime reminder 与 guard，由模型在工具边界内自主管理
-   - `yolo` 不跳过显式用户 contract、workspace path safety、shell timeout/output limit 或 required-artifact gate
-   - 当最近 harness reminder 已明确要求“停止只读探索、直接基于当前证据行动”时
-   - runtime 可以拒绝继续的 read-only tool call，并写入一条普通可重放错误结果
-   - retrieval-tail guard 允许至多两次新的、精确命名的 `read_file`
-   - 另外为已经检查过的文件保留两次窄窗 reread 预算，专门用于最终 snippet-backed 证据复核
-   - 继续阻断 broad discovery 与无意义重复读
-   - 当最新 interrupt steer 已明确要求立即交付时，guard 还可以阻断继续的 todo/task bookkeeping 或 skill-loading detour，把执行拉回 `write_file` / `edit_file` / `finish`
-   - 目的是阻止 repo-scale overread、artifact 已写出后的尾部重读、interrupt steer 之后的 completion detour，以及 compaction 后的无意义重试
+   - runtime hard guard 仅用于必要边界：显式用户 contract、workspace path safety、shell timeout/output limit、required-artifact gate、provider/tool 协议完整性、恢复一致性，以及最新 interrupt steer 的明确约束
+   - 不因 `read_file`、`grep`、`glob`、read-only shell 等只读检索调用次数而阻断工具；多文件分析可以按需继续读取
+   - 当最新 interrupt steer 已明确要求立即交付时，guard 可以阻断继续的只读探索、todo/task bookkeeping 或 skill-loading detour，把执行拉回 `write_file` / `edit_file` / `finish`
+   - artifact / project-memory / large-project coordination 默认通过 prompt note 或 harness reminder 提示，不作为普通读取、验证或 finish 的 hard guard，除非用户当轮明确指定为必须交付 contract
 3. 执行工具
 4. 触发 `tool.after`
 5. 成功的 `write_file` / `edit_file` 会更新 `artifact-tracker.json`，使 required-artifact gate 能区分“文件本来存在”和“本 session 确实写过或改过”
 6. `load_skill` 默认基于 session state 做幂等：同一 skill 已加载时返回 compact `already_loaded`，只有显式 `force_reload` 才再次注入完整 skill 正文
-7. `read_file` 对同一路径与同一 line window 的重复读取写入 repeat metadata / warning，但默认不阻断
+7. `read_file` 可以重复读取同一路径或 line window；runtime 不写入重复读取 warning，也不阻断
 8. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
 9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
 10. 落盘最终 tool result
@@ -434,7 +429,6 @@ while true:
 - 默认要求显式 `finish`
 - 一次“无工具调用且无 finish”只算 `done_candidate`
 - runtime 会插入一次 harness reminder
-- 若 retrieval tail 已被 harness reminder 明确拉回，runtime 可对继续的只读工具调用加 guard；默认只放行一次新的精确 `read_file`，并继续阻断 broad discovery、重复读和尾部重试
 - 若最新 interrupt steer 已明确要求立即交付，runtime 可插入专门的 completion reminder，并对继续的只读探索或 bookkeeping detour 加 guard，直到出现交付动作或新的外部指令
 - 二次仍无 `finish` 时记为 `failed`，并在 state 中写入 `incomplete_no_finish`
 

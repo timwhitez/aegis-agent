@@ -881,8 +881,8 @@ func collectKeyPaths(messages []session.Message, workdir string) []string {
 func nextStepGuidance() []string {
 	return []string{
 		"Use key_paths, artifact_memory, project_memory_stack, and high_value_proofs before rereading previously inspected files unless you need exact lines.",
-		"Prefer targeted read_file offsets or focused grep/glob over broad workspace scans.",
-		"Keep the runtime-enforced reserved final proof-read budget for decisive snippet-backed verification instead of spending it on broad rediscovery.",
+		"Prefer targeted read_file offsets or focused grep/glob when they are the clearest way to inspect evidence.",
+		"Use additional read_file calls when exact lines or broader multi-file analysis materially help the task.",
 		"If you already have enough evidence to answer or act, stop gathering more context and proceed.",
 	}
 }
@@ -1011,8 +1011,8 @@ func proofPriority(excerpt string) int {
 }
 
 func proofLineWindow(meta map[string]any) (string, string) {
-	start := metadataInt(meta, "offset") + 1
-	end := metadataInt(meta, "end")
+	start := metadataIntValue(meta, "offset") + 1
+	end := metadataIntValue(meta, "end")
 	if start <= 0 {
 		start = 1
 	}
@@ -1023,6 +1023,29 @@ func proofLineWindow(meta map[string]any) (string, string) {
 		end = start
 	}
 	return strconv.Itoa(start), strconv.Itoa(end)
+}
+
+func metadataIntValue(meta map[string]any, key string) int {
+	if meta == nil {
+		return 0
+	}
+	switch value := meta[key].(type) {
+	case int:
+		return value
+	case int32:
+		return int(value)
+	case int64:
+		return int(value)
+	case float32:
+		return int(value)
+	case float64:
+		return int(value)
+	case json.Number:
+		if v, err := value.Int64(); err == nil {
+			return int(v)
+		}
+	}
+	return 0
 }
 
 func proofKind(path string) string {
@@ -1038,8 +1061,8 @@ func proofKind(path string) string {
 
 func proofReadBudget() map[string]any {
 	return map[string]any{
-		"reserved_final_targeted_reads": 2,
-		"guidance":                      "Runtime reserves two narrow rereads on already inspected files for final proof checks after compaction or before the last review artifact write.",
+		"reserved_final_targeted_reads": 0,
+		"guidance":                      "Runtime does not reserve or enforce a read_file reread budget; read the exact lines needed for correctness.",
 	}
 }
 

@@ -107,7 +107,7 @@ async function renderSettings() {
               <option value="standard" ${guardrailsMode === 'standard' ? 'selected' : ''}>Standard</option>
             </select>
             <p class="view-subtitle settings-help">
-              YOLO disables runtime retrieval, project-memory, and review-artifact guardrails for new or resumed turns.
+              YOLO disables non-essential runtime reminders and checks for new or resumed turns; tool safety boundaries still apply.
             </p>
           </div>
           <div class="field">

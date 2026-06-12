@@ -115,8 +115,8 @@ skills:
 
 runtime:
   exec_finish_required: true
-  # standard: keep runtime retrieval/report/project-memory guardrails
-  # yolo: disable those runtime guardrails and let the model self-manage within tool-enforced boundaries
+  # standard: keep conservative delivery-consistency checks and collaboration reminders
+  # yolo: disable non-essential runtime reminders/checks and let the model self-manage within tool-enforced boundaries
   guardrails_mode: yolo
   max_turns_soft: 24
   max_turns_hard: 40

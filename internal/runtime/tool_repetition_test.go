@@ -9,7 +9,7 @@ import (
 
 func TestDoomLoopReminderUsesToolSignaturePatternWithoutWorkflowGuard(t *testing.T) {
 	var messages []session.Message
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		messages = append(messages, session.NewToolMessage([]session.ToolResult{{
 			Name:          "load_skill",
 			LLMOutput:     "loaded",
@@ -17,13 +17,30 @@ func TestDoomLoopReminderUsesToolSignaturePatternWithoutWorkflowGuard(t *testing
 		}}))
 	}
 	text := toolLoopReminderText(messages)
-	if !strings.Contains(text, "load_skill repeated 3 times") {
+	if !strings.Contains(text, "load_skill repeated 4 times") {
 		t.Fatalf("expected repeated load_skill reminder, got %q", text)
 	}
 	for _, forbidden := range []string{"must spawn", "agent_spawn", "delegate", "read these files in order"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("reminder should not encode a fixed workflow, got %q", text)
 		}
+	}
+}
+
+func TestToolLoopReminderIgnoresReadFileRepetition(t *testing.T) {
+	var messages []session.Message
+	for i := 0; i < 5; i++ {
+		messages = append(messages, session.NewToolMessage([]session.ToolResult{{
+			Name: "read_file",
+			Metadata: map[string]any{
+				"path":   "/tmp/a.txt",
+				"offset": 0,
+				"end":    10,
+			},
+		}}))
+	}
+	if text := toolLoopReminderText(messages); text != "" {
+		t.Fatalf("expected repeated read_file to avoid tool-loop reminder, got %q", text)
 	}
 }
 

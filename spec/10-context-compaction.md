@@ -109,7 +109,7 @@ compaction 只影响：
   - `reports/validation.md`
   的 present / missing 状态与简短摘录
 - `proof_read_budget`
-  - runtime 强制保留的 targeted reread 预算，专门留给最终 snippet-backed 证据复核，避免 compaction 后把最后几次关键 read 浪费在重新发现上下文上
+  - 兼容字段；当前值不表示 runtime 会保留或强制执行 `read_file` 复读预算，模型可按正确性需要读取精确行或更多文件
 
 ### 5.2 压缩是可追踪的
 
@@ -128,7 +128,7 @@ compaction 只影响：
 - 是否复用了上一次 compaction 水位
 - 当前 project-memory present / missing 状态
 - 当前 todo / ready-task / blocked-task / completed-task 计数
-- 当前 `proof_read_budget` 摘要，以及 artifact/proof 摘要数量等足以支持 proof-at-boundary 复核的上下文指标
+- 当前 `proof_read_budget` 兼容摘要，以及 artifact/proof 摘要数量等足以支持 proof-at-boundary 复核的上下文指标
 
 ## 6. 触发条件
 

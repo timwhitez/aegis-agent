@@ -151,7 +151,7 @@ Events:
 - `artifact.gate.passed`
 - `artifact.gate.blocked`
 
-`yolo` mode still disables retrieval, project-memory, and review-artifact guardrails, but it does not bypass explicit user contracts, workspace path safety, shell timeout, or required artifact gates.
+`yolo` mode still disables non-essential runtime reminders and checks, but it does not bypass explicit user contracts, workspace path safety, shell timeout, or required artifact gates. `read_file` / grep / glob / read-only shell inspection do not have a runtime call-count or reread budget in either mode.
 
 ## 5. Provider Attempt Ledger
 

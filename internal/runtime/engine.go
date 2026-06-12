@@ -132,11 +132,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
-		messages, err = e.maybeAppendToolLoopReminder(meta, messages)
-		if err != nil {
-			return RunResult{}, err
-		}
 		if !e.guardrailsYolo() {
+			messages, err = e.maybeAppendToolLoopReminder(meta, messages)
+			if err != nil {
+				return RunResult{}, err
+			}
 			messages, err = e.maybeAppendHarnessReminder(meta, messages)
 			if err != nil {
 				return RunResult{}, err
@@ -231,7 +231,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 		}
 		if e.guardrailsYolo() {
-			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Runtime retrieval, project-memory, and review-artifact guardrails are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
+			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Non-essential runtime reminders and checks are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
 		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
 		view, compactionInputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, compactionProfile, state.LastCompactionInputChars, func(evt events.Event) error {

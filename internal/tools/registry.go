@@ -833,13 +833,6 @@ func defReadFile() Definition {
 				"end":         end,
 				"path_source": source,
 			}
-			if repeat := readFileRepeatObservation(execCtx, path, offset, end); repeat.Count > 1 {
-				metadata["repeat_count"] = repeat.Count
-				metadata["first_seen_at"] = repeat.FirstSeenAt
-				metadata["last_seen_at"] = repeat.LastSeenAt
-				metadata["warning"] = "repeated read_file call for the same path and line window; use existing evidence unless you need a precise recheck"
-				selected += fmt.Sprintf("\n[read_file warning repeat_count=%d same path/range was already read in this session]", repeat.Count)
-			}
 			if skillName != "" {
 				metadata["skill"] = skillName
 			}

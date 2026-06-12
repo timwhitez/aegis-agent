@@ -398,8 +398,8 @@ hooks:
 说明：
 
 - `runtime.guardrails_mode` 支持 `yolo | standard`
-- 默认 `yolo`，即关闭 retrieval / project-memory / review-artifact 这类 runtime guard，由模型在工具边界内自主管理
-- `standard` 会重新开启这些 runtime reminder / guard，适合更保守、更可控的 operator profile
+- 默认 `yolo`，即关闭 retrieval / project-memory / review-artifact 这类非必要 runtime reminder / guard，由模型在工具边界内自主管理
+- `standard` 可以开启更保守的交付一致性、project-memory 协作提示和 review-artifact 检查；但 `read_file` / grep / glob / read-only shell 不按次数或重复窗口设置 runtime 预算，也不因多文件读取被 hard guard 阻断
 - `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限，不再触发 `max_turns_hard_exceeded`
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`

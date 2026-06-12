@@ -54,17 +54,11 @@ func toolLoopReminderText(messages []session.Message) string {
 	summary := summarizeToolRepetition(messages)
 	var triggers []string
 	for _, item := range summary.TopTools {
-		if item.Count >= 3 && (item.Key == "load_skill" || item.Key == "read_file" || item.Key == "todo_write") {
+		if item.Count >= 4 && (item.Key == "load_skill" || item.Key == "todo_write") {
 			triggers = append(triggers, fmt.Sprintf("%s repeated %d times", item.Key, item.Count))
 		}
 	}
-	for _, item := range summary.TopReadPaths {
-		if item.Count >= 3 {
-			triggers = append(triggers, fmt.Sprintf("read_file on %s repeated %d times", item.Key, item.Count))
-			break
-		}
-	}
-	if summary.TodoNoopCount >= 2 {
+	if summary.TodoNoopCount >= 4 {
 		triggers = append(triggers, fmt.Sprintf("todo_write no-op repeated %d times", summary.TodoNoopCount))
 	}
 	if len(triggers) == 0 {

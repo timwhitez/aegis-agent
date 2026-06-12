@@ -179,8 +179,8 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 		t.Fatalf("expected at least one pinned proof, got %#v", summary["high_value_proofs"])
 	}
 	budget, _ := summary["proof_read_budget"].(map[string]any)
-	if budget["reserved_final_targeted_reads"] != float64(2) {
-		t.Fatalf("expected reserved proof-read budget, got %#v", summary["proof_read_budget"])
+	if budget["reserved_final_targeted_reads"] != float64(0) {
+		t.Fatalf("expected no reserved proof-read budget, got %#v", summary["proof_read_budget"])
 	}
 	unresolved, _ := summary["unresolved_issues"].([]any)
 	if len(unresolved) == 0 {
