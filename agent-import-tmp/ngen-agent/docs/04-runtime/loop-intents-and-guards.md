@@ -180,7 +180,7 @@ verification 失败后，系统不会立刻宣布任务失败。
 - 每个 step 默认最多 3 次 repair cycles，
 - 每次 repair 都必须引用失败的 verifier report，
 - 当前 active coding slice 每次 `run` / `resume` 默认最多做 3 次 bounded repair；每次 repair 允许少量 read-only observation commands，之后再做 patch-first workspace edit、少量 bounded workspace repair commands，以及 re-verify；repair target 既可以是 verifier failure，也可以是 workspace-backed criteria gap；如果某次 workspace edit 以 `failed` / `noop` 结束，或某次 repair command 以 `failed` 结束，runtime 仍会在同一预算内继续下一次 attempt，并把 prior failure summaries 带入后续 provider prompt；更宽的 long-horizon decomposition 与 dedicated browser plane 仍是 future hardening，
-- 如果同一 verifier 输出连续两次完全相同，且 plan 没有实质变化，则必须升级而不是盲目重试，
+- 如果同一 verifier 输出连续两次完全相同，且 plan 没有实质变化，则必须升级而不是盲目重试；对 workspace-backed criteria gap，若本轮产生了 applied workspace edit 或 completed repair command 这类 durable workspace progress，runtime 可以在剩余预算内继续下一次 attempt，因为准备性 evidence 可能还未直接关闭目标 artifact criterion，
 - runtime 必须把违反 task constraints 的 edit plan 记成 failed workspace edit，而不是让模型偷偷改测试或 task artifacts，
 - repeated failure 会计入 loop guards。
 

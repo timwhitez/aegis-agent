@@ -34,6 +34,19 @@ func TestRuntimeCommandProviderHelperProcess(t *testing.T) {
 		fmt.Fprint(os.Stdout, `{"summary":"no extra observation needed","commands":[]}`)
 	case "workspace_edit":
 		body := string(raw)
+		if os.Getenv("NGEN_HELPER_STAGED_CRITERIA_REPAIR") == "1" && strings.Contains(body, "reports/reference-architecture-comparison.md") {
+			var input provider.WorkspaceEditInput
+			if err := json.Unmarshal(raw, &input); err != nil {
+				fmt.Fprintf(os.Stderr, "decode workspace edit input: %v", err)
+				os.Exit(5)
+			}
+			if input.RepairAttempt <= 1 {
+				fmt.Fprint(os.Stdout, `{"summary":"gather reference repository evidence before writing the comparison report","patch":"","writes":[{"path":"reference-repos/evidence.md","content":"# Reference Evidence\n\nCollected architecture notes from reference projects.\n"}],"deletes":[],"commands":[]}`)
+				os.Exit(0)
+			}
+			fmt.Fprint(os.Stdout, `{"summary":"publish the required reference architecture comparison report","patch":"","writes":[{"path":"reports/reference-architecture-comparison.md","content":"# Reference Architecture Comparison\n\nThe reference evidence has been synthesized into the required comparison report.\n"}],"deletes":[],"commands":[]}`)
+			os.Exit(0)
+		}
 		if strings.Contains(body, "reports/mission-plan.md") {
 			fmt.Fprint(os.Stdout, `{"summary":"publish required Multica public artifacts","patch":"","writes":[{"path":"reports/mission-plan.md","content":"# Mission Plan\n\nFirst implementation slice is planned.\n"},{"path":"progress/mission-status.md","content":"# Mission Status\n\nInitial slice planned.\n"},{"path":"handoffs/cybersec-long-horizon.v1.json","content":"{\"next_owner\":\"worker\",\"status\":\"planned\"}\n"}],"deletes":[],"commands":[]}`)
 			os.Exit(0)
@@ -4528,6 +4541,66 @@ func TestGeneralArtifactCriteriaTriggersRepairBeforeDone(t *testing.T) {
 	}
 	if len(edits) == 0 || edits[0].Status != "applied" || len(edits[0].FileChanges) != 3 {
 		t.Fatalf("expected applied workspace edit with three artifact writes, got %+v", edits)
+	}
+}
+
+func TestGeneralArtifactCriteriaContinuesAfterPreparatoryWorkspaceEdit(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".agent_context", "issue_context.md"), "# Assignment\n\nIssue context exists.\n")
+	t.Setenv("NGEN_HELPER_STAGED_CRITERIA_REPAIR", "1")
+
+	cfg := task.DefaultConfig()
+	cfg.Permission.DefaultMode = task.PermissionModeYolo
+	cfg.Provider.Mode = "command"
+	cfg.Provider.Command = []string{os.Args[0], "-test.run=TestRuntimeCommandProviderHelperProcess", "--", "runtime-command-provider-helper"}
+	svc := New(dir, cfg)
+	spec, err := svc.Create(context.Background(), task.TaskFile{
+		Kind:             task.KindGeneral,
+		PresetID:         task.PresetDocsLite,
+		Title:            "reference architecture comparison",
+		Objective:        "analyze reference repos first, then publish reports/reference-architecture-comparison.md",
+		PermissionModeID: task.PermissionModeYolo,
+		SuccessCriteria: []task.SuccessCriterion{
+			{ID: "SC-001", Statement: "Workspace artifact reports/reference-architecture-comparison.md exists."},
+		},
+		WorkspaceRoot: dir,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	snapshot, _, err := svc.Run(context.Background(), spec.TaskID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if snapshot.State != task.StateDone {
+		t.Fatalf("expected staged artifact task to continue after preparatory edit and complete, got %+v", snapshot)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "reference-repos", "evidence.md")); err != nil {
+		t.Fatalf("expected preparatory reference evidence to exist: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "reports", "reference-architecture-comparison.md")); err != nil {
+		t.Fatalf("expected required comparison report to exist: %v", err)
+	}
+	edits, err := svc.Store.ReadWorkspaceEdits(spec.TaskID)
+	if err != nil {
+		t.Fatalf("read workspace edits: %v", err)
+	}
+	if len(edits) != 2 {
+		t.Fatalf("expected two workspace edits across staged repair, got %+v", edits)
+	}
+	if got := edits[0].FileChanges; len(got) != 1 || got[0].Path != "reference-repos/evidence.md" {
+		t.Fatalf("expected first edit to capture reference evidence, got %+v", edits[0])
+	}
+	if got := edits[1].FileChanges; len(got) != 1 || got[0].Path != "reports/reference-architecture-comparison.md" {
+		t.Fatalf("expected second edit to write required report, got %+v", edits[1])
+	}
+	criteria, err := svc.Store.LoadCriteria(spec.TaskID)
+	if err != nil {
+		t.Fatalf("load criteria: %v", err)
+	}
+	if got := criterionStatusForID(criteria, "SC-001"); got.Status != "met" {
+		t.Fatalf("expected required report criterion to be met, got %+v", got)
 	}
 }
 

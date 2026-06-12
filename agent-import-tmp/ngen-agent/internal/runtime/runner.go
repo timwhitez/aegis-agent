@@ -582,6 +582,10 @@ func (s *Service) runCriteriaRepairSequence(
 			nextFingerprint = criteriaFingerprint(spec, criteria)
 		}
 		if nextFingerprint == lastFingerprint {
+			if attempt < repairBudget && repairEventsContainWorkspaceProgress(repairEvents) {
+				lastFingerprint = nextFingerprint
+				continue
+			}
 			summary := fmt.Sprintf("Repair target repeated after bounded workspace edit attempt %d/%d.", attempt, repairBudget)
 			if report.Status == "passed" {
 				summary = fmt.Sprintf("Criteria gap repeated after bounded workspace edit attempt %d/%d.", attempt, repairBudget)
@@ -616,6 +620,16 @@ func (s *Service) runCriteriaRepairSequence(
 	emitted = append(emitted, budgetEvent)
 	state.LastEventRef = artifact.EventRef(budgetEvent.EventID)
 	return report, criteria, emitted, nil
+}
+
+func repairEventsContainWorkspaceProgress(events []task.Event) bool {
+	for _, event := range events {
+		switch event.Type {
+		case "workspace_edit_applied", "repair_command_completed":
+			return true
+		}
+	}
+	return false
 }
 
 func shouldRunCriteriaRepairSequence(spec task.Spec, criteria task.CriteriaSnapshot, cfg task.ProviderConfig) bool {
