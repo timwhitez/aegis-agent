@@ -1288,6 +1288,171 @@ test('live activity is isolated from durable app state', () => {
   assert.equal(result.pendingHasCopy, true);
 });
 
+test('session activity card surfaces durable Goal runtime status', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    state.sessionId = 'session_goal_runtime';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_goal_runtime', mode: 'run' },
+      state: { status: 'running', phase: 'tool_execute' },
+      goal: {
+        goal_id: 'goal_runtime_status',
+        mode: 'goal',
+        status: 'active',
+        objective: 'Keep the Goal visible while the run is executing.',
+        source: 'web',
+        tokens_used: 42,
+        time_used_seconds: 9,
+        updated_at: '2026-06-12T06:14:43Z'
+      },
+      goal_facts: {
+        latest_history: {
+          type: 'goal.accounting.updated',
+          created_at: '2026-06-12T06:14:43Z'
+        },
+        progress: []
+      },
+      messages: []
+    };
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Tool execute', copy: 'The runner is active.', tone: 'live' });
+    const html = renderSessionActivityCard();
+    return {
+      hasGoalStatus: html.includes('Goal Active'),
+      hasGoalChipClass: html.includes('status-badge live'),
+      hasPhase: html.includes('Tool execute') || html.includes('Tool Execute'),
+      hasAccounting: html.includes('tokens 42') && html.includes('time 9s'),
+      hasLatestHistory: html.includes('goal.accounting.updated')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    hasGoalStatus: true,
+    hasGoalChipClass: true,
+    hasPhase: true,
+    hasAccounting: true,
+    hasLatestHistory: true
+  });
+});
+
+test('Goal inspector separates runtime facts from mission facts', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    const detail = {
+      metadata: { id: 'session_goal_panel' },
+      state: { status: 'running', phase: 'provider_call' },
+      goal: {
+        goal_id: 'goal_panel_status',
+        mode: 'mission',
+        status: 'budget_limited',
+        objective: 'Build a safer Web-first pentest workflow.',
+        source: 'web',
+        tokens_used: 1000,
+        token_budget: 1000,
+        time_used_seconds: 60,
+        updated_at: '2026-06-12T06:15:00Z',
+        progress: [
+          {
+            id: 'progress_1',
+            kind: 'budget_wrapup',
+            summary: 'Recorded remaining work.',
+            created_at: '2026-06-12T06:15:00Z'
+          }
+        ],
+        mission: { plan_status: 'needs_approval', features: [], milestones: [], role_plan: [] }
+      },
+      goal_facts: {
+        latest_history: { type: 'goal.budget_limited', created_at: '2026-06-12T06:15:00Z' },
+        progress: [
+          {
+            id: 'progress_1',
+            kind: 'budget_wrapup',
+            summary: 'Recorded remaining work.',
+            created_at: '2026-06-12T06:15:00Z'
+          }
+        ],
+        coverage: {},
+        evaluator_evidence_count: 0
+      }
+    };
+    const html = renderGoalPanel(detail);
+    return {
+      hasMissionStatus: html.includes('Mission Budget limited'),
+      hasRuntimeSection: html.includes('goal-runtime-card'),
+      hasSessionPhase: html.includes('Provider call') || html.includes('Provider Call'),
+      hasGoalFactsTitle: html.includes('Goal facts'),
+      hasRecentProgress: html.includes('Recent progress'),
+      hasProgressSummary: html.includes('Recorded remaining work.')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    hasMissionStatus: true,
+    hasRuntimeSection: true,
+    hasSessionPhase: true,
+    hasGoalFactsTitle: true,
+    hasRecentProgress: true,
+    hasProgressSummary: true
+  });
+});
+
+test('Goal tool lane renders compact status cards instead of full objective JSON', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    const objective = 'Sensitive objective should stay in the Goal panel, not the tool lane body.';
+    const message = {
+      role: 'assistant',
+      tool_calls: [{
+        id: 'call_goal',
+        name: 'create_goal',
+        arguments: {
+          mode: 'goal',
+          objective,
+          token_budget: 100
+        }
+      }],
+      tool_results: [{
+        tool_call_id: 'call_goal',
+        name: 'create_goal',
+        display_output: JSON.stringify({
+          goal_id: 'goal_tool_lane',
+          mode: 'goal',
+          status: 'active',
+          objective,
+          tokens_used: 3,
+          time_used_seconds: 1,
+          updated_at: '2026-06-12T06:16:00Z'
+        }),
+        metadata: { goal_id: 'goal_tool_lane', status: 'active' },
+        is_error: false
+      }]
+    };
+    const html = renderToolLane(message);
+    return {
+      hasGoalStatus: html.includes('Goal Active'),
+      hasStoredObjectiveReference: html.includes('Objective stored in Goal panel'),
+      leaksObjectiveText: html.includes(objective),
+      hasAccounting: html.includes('tokens 3') && html.includes('time 1s'),
+      hasGoalToolCard: html.includes('goal-tool-card')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    hasGoalStatus: true,
+    hasStoredObjectiveReference: true,
+    leaksObjectiveText: false,
+    hasAccounting: true,
+    hasGoalToolCard: true
+  });
+});
+
 test('live event relay buffer is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
 

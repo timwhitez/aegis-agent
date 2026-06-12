@@ -385,6 +385,81 @@ function summarizeLiveCounters(counters) {
   return items.join(' · ');
 }
 
+function goalStatusTone(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'active':
+      return 'live';
+    case 'paused':
+    case 'budget_limited':
+      return 'queued';
+    case 'complete':
+      return 'live';
+    case 'cleared':
+      return 'danger';
+    default:
+      return 'neutral';
+  }
+}
+
+function goalStatusLabel(goal) {
+  if (!goal) {
+    return 'Goal off';
+  }
+  return `${humanizeStatus(goal.mode || 'goal')} ${humanizeStatus(goal.status || 'active')}`;
+}
+
+function goalRuntimeFacts(detail) {
+  const goal = detail?.goal || null;
+  if (!goal) {
+    return null;
+  }
+  const latestHistory = detail?.goal_facts?.latest_history || null;
+  const progress = maybeArray(detail?.goal_facts?.progress || goal.progress);
+  const latestProgress = progress.length ? progress[progress.length - 1] : null;
+  const latestAt = latestHistory?.created_at || latestProgress?.created_at || goal.updated_at || goal.created_at || '';
+  const latestType = latestHistory?.type || latestProgress?.kind || '';
+  const runStatus = detail?.state?.status || '';
+  const runPhase = detail?.state?.phase || '';
+  return {
+    goal,
+    latestHistory,
+    latestProgress,
+    latestAt,
+    latestType,
+    progressCount: progress.length,
+    runStatus,
+    runPhase
+  };
+}
+
+function renderSessionGoalLine(detail) {
+  const facts = goalRuntimeFacts(detail);
+  if (!facts) {
+    return `
+      <div class="session-goal-line">
+        <span class="surface-chip">Goal off</span>
+        <span>No durable Goal is attached to this session.</span>
+      </div>
+    `;
+  }
+  const goal = facts.goal;
+  const pieces = [
+    goal.mode ? `mode ${goal.mode}` : '',
+    facts.runStatus ? `session ${humanizeStatus(facts.runStatus)}` : '',
+    facts.runPhase ? phaseHeadline(facts.runPhase) : '',
+    `tokens ${formatBudget(goal.tokens_used, goal.token_budget)}`,
+    `time ${formatSecondsBudget(goal.time_used_seconds, goal.time_budget_seconds)}`,
+    facts.latestType ? `latest ${facts.latestType}` : '',
+    facts.latestAt ? formatTimestamp(facts.latestAt) : ''
+  ].filter(Boolean);
+  return `
+    <div class="session-goal-line">
+      <span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(goalStatusLabel(goal))}</span>
+      <span>${escapeHTML(pieces.join(' · '))}</span>
+    </div>
+  `;
+}
+
 function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const liveActivity = currentLiveActivity();
@@ -409,12 +484,13 @@ function renderSessionActivityCard() {
         </div>
         <div class="session-flow-meta">
           ${detail?.metadata?.id ? `<span class="tiny-code-chip">${escapeHTML(shortId(detail.metadata.id))}</span>` : `<span class="tiny-code-chip">${escapeHTML(shortId(state.sessionId))}</span>`}
-          ${goal ? `<span class="surface-chip">${escapeHTML(goal.mode || 'goal')} · ${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>` : ''}
+          ${goal ? `<span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(goalStatusLabel(goal))}</span>` : '<span class="surface-chip">Goal off</span>'}
           ${planMode ? `<span class="surface-chip">plan · ${escapeHTML(humanizeStatus(planMode.status || 'planning'))}</span>` : ''}
           ${summary ? `<span class="surface-chip">${escapeHTML(summary)}</span>` : ''}
         </div>
       </div>
       <div class="session-flow-copy">${escapeHTML(copy || 'Waiting for the next update.')}</div>
+      ${detail ? renderSessionGoalLine(detail) : ''}
       ${canContinue ? `<div class="session-flow-actions"><button class="inline-action-btn" type="button" data-continue-session="${escapeAttr(state.sessionId)}">Continue session</button></div>` : ''}
     </section>
   `;
@@ -757,11 +833,18 @@ function renderUniqueCodeChips(...values) {
 }
 
 function renderToolCallBody(call, options = {}) {
+  if (isGoalToolName(call?.name)) {
+    return renderGoalToolCallBody(call);
+  }
   return '<pre class="tl-body">' + escapeHTML(prettyJSON(call.arguments)) + '</pre>';
 }
 
 function isFinalFinishResult(result) {
   return result?.name === 'finish' && result?.final && !result?.is_error;
+}
+
+function isGoalToolName(name) {
+  return ['get_goal', 'create_goal', 'record_goal_progress', 'update_goal'].includes(String(name || ''));
 }
 
 function toolCallIDs(call) {
@@ -778,6 +861,9 @@ function toolCallIDs(call) {
 function summarizeToolCall(call, options = {}) {
   if (options.finalTextRendered && call?.name === 'finish' && maybeArray(options.pairedResults).some(isFinalFinishResult)) {
     return 'Final response captured';
+  }
+  if (isGoalToolName(call?.name)) {
+    return summarizeGoalToolCall(call);
   }
   const parsed = parseMaybeJSON(call.arguments);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -800,12 +886,37 @@ function summarizeToolCall(call, options = {}) {
   return compactText(prettyJSON(call.arguments), 120);
 }
 
+function summarizeGoalToolCall(call) {
+  const parsed = parseMaybeJSON(call?.arguments);
+  const name = String(call?.name || '');
+  if (name === 'get_goal') {
+    return 'Read current durable Goal state';
+  }
+  if (name === 'create_goal') {
+    const mode = parsed?.mode || 'goal';
+    const chars = parsed?.objective ? ` (${String(parsed.objective).length} chars)` : '';
+    return `Create ${mode} objective${chars}`;
+  }
+  if (name === 'record_goal_progress') {
+    const kind = parsed?.kind || 'progress';
+    return `${kind}: ${truncateText(parsed?.summary || '', 110) || 'record progress facts'}`;
+  }
+  if (name === 'update_goal') {
+    const status = parsed?.status || 'complete';
+    return `Mark Goal ${humanizeStatus(status)}`;
+  }
+  return 'Goal tool';
+}
+
 function summarizeToolResult(result, parsed, payloadText) {
   if (result.final) {
     return truncateText(payloadText, 120);
   }
   if (result.is_error) {
     return truncateText(payloadText, 140);
+  }
+  if (isGoalToolName(result?.name)) {
+    return summarizeGoalToolResult(result, parsed, payloadText);
   }
   if (result.name === 'todo_write' && Array.isArray(parsed)) {
     if (result.metadata?.noop) {
@@ -820,6 +931,29 @@ function summarizeToolResult(result, parsed, payloadText) {
     if (typeof parsed.status === 'string') {
       return humanizeStatus(parsed.status);
     }
+  }
+  return compactText(payloadText, 140);
+}
+
+function summarizeGoalToolResult(result, parsed, payloadText) {
+  if (parsed === null) {
+    return 'No durable Goal attached';
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const pieces = [
+      parsed.mode || 'goal',
+      parsed.status ? humanizeStatus(parsed.status) : '',
+      parsed.goal_id ? shortId(parsed.goal_id) : '',
+      Number.isFinite(Number(parsed.tokens_used)) ? `tokens ${Number(parsed.tokens_used)}` : '',
+      Number.isFinite(Number(parsed.time_used_seconds)) ? `time ${Number(parsed.time_used_seconds)}s` : ''
+    ].filter(Boolean);
+    if (result.name === 'record_goal_progress') {
+      const latest = maybeArray(parsed.progress).slice(-1)[0];
+      if (latest?.kind || latest?.summary) {
+        pieces.push(truncateText([latest.kind, latest.summary].filter(Boolean).join(': '), 80));
+      }
+    }
+    return pieces.join(' · ') || 'Goal state updated';
   }
   return compactText(payloadText, 140);
 }
@@ -845,7 +979,7 @@ function renderToolCall(call) {
         </div>
         ${preview ? `<div class="tool-card-summary-copy">${escapeHTML(preview)}</div>` : ''}
       </summary>
-      <pre class="tool-json-block">${escapeHTML(prettyJSON(call.arguments))}</pre>
+      ${renderToolCallBody(call)}
     </details>
   `;
 }
@@ -879,6 +1013,9 @@ function renderToolResult(result) {
 }
 
 function renderSpecialToolResult(result, parsed) {
+  if (isGoalToolName(result?.name)) {
+    return renderGoalToolSpecialResult(result, parsed);
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return '';
   }
@@ -952,6 +1089,97 @@ function renderSpecialToolResult(result, parsed) {
   }
 
   return '';
+}
+
+function renderGoalToolSpecialResult(result, parsed) {
+  if (parsed === null) {
+    return `
+      <div class="tool-special-card goal-tool-card">
+        <div class="goal-tool-head">
+          <span class="status-badge neutral">Goal off</span>
+          <span class="goal-tool-title">No durable Goal is attached to this session.</span>
+        </div>
+      </div>
+    `;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return '';
+  }
+  const status = parsed.status || result?.metadata?.status || 'active';
+  const progress = maybeArray(parsed.progress);
+  const latestProgress = progress.length ? progress[progress.length - 1] : null;
+  const metricParts = [
+    `tokens ${formatBudget(parsed.tokens_used, parsed.token_budget)}`,
+    `time ${formatSecondsBudget(parsed.time_used_seconds, parsed.time_budget_seconds)}`,
+    parsed.updated_at ? `updated ${formatTimestamp(parsed.updated_at)}` : ''
+  ].filter(Boolean);
+  const counts = [
+    maybeArray(parsed.success_criteria).length ? `${maybeArray(parsed.success_criteria).length} criteria` : '',
+    maybeArray(parsed.validation_plan).length ? `${maybeArray(parsed.validation_plan).length} validation` : '',
+    progress.length ? `${progress.length} progress` : ''
+  ].filter(Boolean);
+  return `
+    <div class="tool-special-card goal-tool-card">
+      <div class="goal-tool-head">
+        <span class="status-badge ${goalStatusTone(status)}">${escapeHTML(goalStatusLabel(parsed))}</span>
+        <span class="tiny-code-chip">${escapeHTML(shortId(parsed.goal_id || result?.metadata?.goal_id || 'goal'))}</span>
+      </div>
+      ${parsed.objective ? `<div class="goal-tool-objective">${escapeHTML(goalObjectiveReference(parsed.objective))}</div>` : ''}
+      <div class="meta-chip-row">
+        ${metricParts.map((part) => `<span class="surface-chip">${escapeHTML(part)}</span>`).join('')}
+        ${counts.map((part) => `<span class="surface-chip">${escapeHTML(part)}</span>`).join('')}
+      </div>
+      ${latestProgress ? `
+        <div class="goal-tool-progress">
+          <span class="goal-section-title">Latest progress</span>
+          <div class="goal-meta-line">${escapeHTML([latestProgress.kind, latestProgress.summary].filter(Boolean).join(': ') || latestProgress.id || 'progress')}</div>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderGoalToolCallBody(call) {
+  const parsed = parseMaybeJSON(call?.arguments);
+  const name = String(call?.name || 'goal tool');
+  const action = summarizeGoalToolCall(call);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return `
+      <div class="tool-special-card goal-tool-card">
+        <div class="goal-tool-head">
+          <span class="status-badge neutral">${escapeHTML(name)}</span>
+          <span class="goal-tool-title">${escapeHTML(action)}</span>
+        </div>
+      </div>
+    `;
+  }
+  const chips = [
+    parsed.mode ? `mode ${parsed.mode}` : '',
+    parsed.status ? `status ${parsed.status}` : '',
+    parsed.kind ? `kind ${parsed.kind}` : '',
+    parsed.token_budget ? `token budget ${parsed.token_budget}` : '',
+    parsed.time_budget_minutes ? `time budget ${parsed.time_budget_minutes}m` : '',
+    maybeArray(parsed.success_criteria).length ? `${maybeArray(parsed.success_criteria).length} criteria` : '',
+    maybeArray(parsed.validation_plan).length ? `${maybeArray(parsed.validation_plan).length} validation` : '',
+    maybeArray(parsed.evidence).length ? `${maybeArray(parsed.evidence).length} evidence` : '',
+    maybeArray(parsed.blockers).length ? `${maybeArray(parsed.blockers).length} blockers` : ''
+  ].filter(Boolean);
+  return `
+    <div class="tool-special-card goal-tool-card">
+      <div class="goal-tool-head">
+        <span class="status-badge neutral">${escapeHTML(name)}</span>
+        <span class="goal-tool-title">${escapeHTML(action)}</span>
+      </div>
+      ${parsed.objective ? `<div class="goal-tool-objective">${escapeHTML(goalObjectiveReference(parsed.objective))}</div>` : ''}
+      ${parsed.summary ? `<div class="goal-meta-line">${escapeHTML(truncateText(parsed.summary, 220))}</div>` : ''}
+      ${chips.length ? `<div class="meta-chip-row">${chips.map((chip) => `<span class="surface-chip">${escapeHTML(chip)}</span>`).join('')}</div>` : ''}
+    </div>
+  `;
+}
+
+function goalObjectiveReference(objective) {
+  const chars = String(objective || '').length;
+  return chars ? `Objective stored in Goal panel (${chars} chars).` : '';
 }
 
 function renderVisiblePaths(paths) {
@@ -1947,7 +2175,16 @@ function renderPlanList(label, items) {
 function renderGoalPanel(detail) {
   const goal = detail?.goal;
   if (!goal) {
-    return '<div class="empty-panel">No goal is attached to this session.</div>';
+    const status = detail?.state?.status || 'idle';
+    return `
+      <div class="goal-panel">
+        <div class="empty-panel">No durable Goal is attached to this session.</div>
+        <div class="goal-section">
+          <div class="goal-section-title">Runtime</div>
+          <div class="goal-meta-line">Session ${escapeHTML(humanizeStatus(status))}${detail?.state?.phase ? ` · ${escapeHTML(phaseHeadline(detail.state.phase))}` : ''}</div>
+        </div>
+      </div>
+    `;
   }
   const mission = goal.mission || null;
   const criteria = maybeArray(goal.success_criteria);
@@ -1962,17 +2199,22 @@ function renderGoalPanel(detail) {
   const canComplete = goal.status !== 'complete';
   const planMode = detail?.plan_mode || null;
   const canApprove = mission && mission.plan_status !== 'approved' && (!planMode || planMode.status === 'awaiting_approval');
+  const facts = goalRuntimeFacts(detail);
 
   return `
     <div class="goal-panel">
       <div class="goal-panel-head">
         <div>
           <div class="inspector-eyebrow">Goal</div>
-          <h4>${escapeHTML(humanizeStatus(goal.status || 'active'))}</h4>
+          <h4>${escapeHTML(goalStatusLabel(goal))}</h4>
         </div>
-        <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
+        <div class="goal-panel-head-chips">
+          <span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>
+          <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
+        </div>
       </div>
       <div class="goal-objective">${escapeHTML(goal.objective || '')}</div>
+      ${renderGoalRuntimeStatus(facts)}
       <div class="goal-budget-row">
         ${renderMiniMetric('Tokens', formatBudget(goal.tokens_used, goal.token_budget))}
         ${renderMiniMetric('Time', formatSecondsBudget(goal.time_used_seconds, goal.time_budget_seconds))}
@@ -2001,6 +2243,35 @@ function renderGoalPanel(detail) {
   `;
 }
 
+function renderGoalRuntimeStatus(facts) {
+  if (!facts?.goal) {
+    return '';
+  }
+  const goal = facts.goal;
+  const latestSummary = [
+    facts.latestType ? `latest ${facts.latestType}` : '',
+    facts.latestAt ? formatTimestamp(facts.latestAt) : ''
+  ].filter(Boolean).join(' · ');
+  const chips = [
+    goal.source ? `source ${goal.source}` : '',
+    facts.runStatus ? `session ${humanizeStatus(facts.runStatus)}` : '',
+    facts.runPhase ? phaseHeadline(facts.runPhase) : '',
+    goal.updated_at ? `goal updated ${formatTimestamp(goal.updated_at)}` : '',
+    facts.progressCount ? `${facts.progressCount} progress records` : ''
+  ].filter(Boolean);
+  return `
+    <div class="goal-runtime-card">
+      <div class="goal-runtime-row">
+        <span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(goalStatusLabel(goal))}</span>
+        <span class="goal-runtime-copy">${escapeHTML(latestSummary || 'Goal snapshot is loaded from durable session state.')}</span>
+      </div>
+      <div class="meta-chip-row">
+        ${chips.map((chip) => `<span class="surface-chip">${escapeHTML(chip)}</span>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
 function renderGoalFacts(facts) {
   const coverage = facts?.coverage || {};
   const latest = facts?.latest_history || null;
@@ -2025,12 +2296,13 @@ function renderGoalFacts(facts) {
   }
   return `
     <div class="goal-section">
-      <div class="goal-section-title">Mission facts</div>
-      ${lines.length ? `<div class="goal-meta-line">${escapeHTML(lines.join(' · '))}</div>` : '<div class="goal-meta-line">No coverage or linked evaluator facts recorded.</div>'}
+      <div class="goal-section-title">Goal facts</div>
+      ${lines.length ? `<div class="goal-meta-line">${escapeHTML(lines.join(' · '))}</div>` : '<div class="goal-meta-line">No coverage, evaluator, child, queue, or blocker facts recorded.</div>'}
       ${maybeArray(coverage.uncovered_assertions).length ? `<div class="goal-meta-line">Uncovered ${escapeHTML(maybeArray(coverage.uncovered_assertions).join(', '))}</div>` : ''}
       ${coverage.approval_blocked ? '<div class="goal-meta-line">Approval override requires explicit confirmation for this local session.</div>' : ''}
       ${latest ? `<div class="goal-meta-line">Latest ${escapeHTML(latest.type || 'goal event')} · ${escapeHTML(formatTimestamp(latest.created_at))}</div>` : ''}
       ${progress.length ? `
+        <div class="goal-section-title sub">Recent progress</div>
         <div class="goal-item-list">
           ${progress.map((item) => `
             <div class="goal-item">
