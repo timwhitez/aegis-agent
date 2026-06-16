@@ -10241,6 +10241,51 @@ func TestServiceSessionDetailFileChangesUseFullMessageHistory(t *testing.T) {
 	}
 }
 
+func TestCollectShellRedirectTargetsIgnoresHereDocBodies(t *testing.T) {
+	command := strings.Join([]string{
+		"{",
+		"  cat > reports/glata-staging/evidence/static-file-sample.txt <<'MD'",
+		"- `GET /status` -> `{status}`",
+		"- template target should not become {r.get(status)} or \\]+ or ]+",
+		"MD",
+		"  python3 - <<'PY'",
+		"pat=r'''(?:(?:https?:)?//[^\\s\"'<>\\\\]+|/[A-Za-z0-9_./?&=%#:@+-]{2,})'''",
+		"print(f'`{r.get(\"status\")}` {r.get(\"file\",\"\")} -> {r.get(\"status\")}')",
+		"PY",
+		"} > reports/glata-staging/evidence/file-list-current.txt 2>&1",
+		"printf 'saved file-list-current.txt\\n'",
+	}, "\n")
+
+	targets := collectShellRedirectTargets(command)
+	byPath := map[string]shellRedirectTarget{}
+	for _, target := range targets {
+		byPath[target.path] = target
+	}
+	for _, want := range []string{
+		"reports/glata-staging/evidence/static-file-sample.txt",
+		"reports/glata-staging/evidence/file-list-current.txt",
+	} {
+		if _, ok := byPath[want]; !ok {
+			t.Fatalf("expected redirect target %q in %#v", want, targets)
+		}
+	}
+	for _, bad := range []string{
+		"`{status}`",
+		"`{r.get(status)}`",
+		"{r.get(status)}",
+		"{r.get(file,)}",
+		"\\]+",
+		"]+",
+	} {
+		if _, ok := byPath[bad]; ok {
+			t.Fatalf("heredoc body token %q must not be surfaced as file change: %#v", bad, targets)
+		}
+	}
+	if len(targets) != 2 {
+		t.Fatalf("expected only real redirect targets, got %#v", targets)
+	}
+}
+
 func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	root := t.TempDir()
 	workspaceRoot := filepath.Join(root, "workspace")

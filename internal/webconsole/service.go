@@ -7083,7 +7083,7 @@ type shellRedirectTarget struct {
 }
 
 func collectShellRedirectTargets(command string) []shellRedirectTarget {
-	tokens := tokenizeShellCommand(command)
+	tokens := tokenizeShellCommand(stripShellHereDocBodies(command))
 	var out []shellRedirectTarget
 	for i := 0; i < len(tokens); i++ {
 		token := tokens[i]
@@ -7105,6 +7105,122 @@ func collectShellRedirectTargets(command string) []shellRedirectTarget {
 		i++
 	}
 	return out
+}
+
+type shellHereDocDelimiter struct {
+	value     string
+	stripTabs bool
+}
+
+func stripShellHereDocBodies(command string) string {
+	if !strings.Contains(command, "<<") {
+		return command
+	}
+	lines := strings.SplitAfter(command, "\n")
+	var out strings.Builder
+	var pending []shellHereDocDelimiter
+	for _, line := range lines {
+		lineText := strings.TrimRight(line, "\r\n")
+		if len(pending) > 0 {
+			target := lineText
+			if pending[0].stripTabs {
+				target = strings.TrimLeft(target, "\t")
+			}
+			if target == pending[0].value {
+				pending = pending[1:]
+			}
+			continue
+		}
+		out.WriteString(line)
+		pending = append(pending, collectShellHereDocDelimiters(line)...)
+	}
+	return out.String()
+}
+
+func collectShellHereDocDelimiters(line string) []shellHereDocDelimiter {
+	var out []shellHereDocDelimiter
+	quote := byte(0)
+	escaping := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaping {
+			escaping = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaping = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch != '<' || i+1 >= len(line) || line[i+1] != '<' {
+			continue
+		}
+		if i+2 < len(line) && line[i+2] == '<' {
+			i += 2
+			continue
+		}
+		cursor := i + 2
+		stripTabs := false
+		if cursor < len(line) && line[cursor] == '-' {
+			stripTabs = true
+			cursor++
+		}
+		for cursor < len(line) && (line[cursor] == ' ' || line[cursor] == '\t') {
+			cursor++
+		}
+		value, end := readShellHereDocDelimiter(line, cursor)
+		if value != "" {
+			out = append(out, shellHereDocDelimiter{value: value, stripTabs: stripTabs})
+		}
+		if end > i {
+			i = end - 1
+		}
+	}
+	return out
+}
+
+func readShellHereDocDelimiter(line string, start int) (string, int) {
+	var out strings.Builder
+	quote := byte(0)
+	escaping := false
+	for i := start; i < len(line); i++ {
+		ch := line[i]
+		if escaping {
+			out.WriteByte(ch)
+			escaping = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaping = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			} else {
+				out.WriteByte(ch)
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ';' || ch == '|' || ch == '&' || ch == '<' || ch == '>' {
+			return out.String(), i
+		}
+		out.WriteByte(ch)
+	}
+	return out.String(), len(line)
 }
 
 func tokenizeShellCommand(command string) []string {

@@ -544,7 +544,7 @@ function parseMaybeJSON(value) {
 }
 
 function collectShellRedirectPaths(command) {
-  const tokens = tokenizeShellCommand(command);
+  const tokens = tokenizeShellCommand(stripShellHereDocBodies(command));
   const paths = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i];
@@ -562,6 +562,120 @@ function collectShellRedirectPaths(command) {
     i += 1;
   }
   return paths;
+}
+
+function stripShellHereDocBodies(command) {
+  const source = String(command || '');
+  if (!source.includes('<<')) {
+    return source;
+  }
+  const lines = source.match(/[^\n]*\n|[^\n]+/g) || [];
+  const pending = [];
+  let output = '';
+  lines.forEach((line) => {
+    const lineText = line.replace(/[\r\n]+$/, '');
+    if (pending.length) {
+      const marker = pending[0];
+      const target = marker.stripTabs ? lineText.replace(/^\t+/, '') : lineText;
+      if (target === marker.value) {
+        pending.shift();
+      }
+      return;
+    }
+    output += line;
+    pending.push(...collectShellHereDocDelimiters(line));
+  });
+  return output;
+}
+
+function collectShellHereDocDelimiters(line) {
+  const source = String(line || '');
+  const markers = [];
+  let quote = '';
+  let escaping = false;
+
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\' && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch !== '<' || source[i + 1] !== '<') {
+      continue;
+    }
+    if (source[i + 2] === '<') {
+      i += 2;
+      continue;
+    }
+    let cursor = i + 2;
+    let stripTabs = false;
+    if (source[cursor] === '-') {
+      stripTabs = true;
+      cursor += 1;
+    }
+    while (source[cursor] === ' ' || source[cursor] === '\t') {
+      cursor += 1;
+    }
+    const marker = readShellHereDocDelimiter(source, cursor);
+    if (marker.value) {
+      markers.push({ value: marker.value, stripTabs });
+    }
+    if (marker.end > i) {
+      i = marker.end - 1;
+    }
+  }
+  return markers;
+}
+
+function readShellHereDocDelimiter(line, start) {
+  const source = String(line || '');
+  let value = '';
+  let quote = '';
+  let escaping = false;
+
+  for (let i = start; i < source.length; i += 1) {
+    const ch = source[i];
+    if (escaping) {
+      value += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\' && quote !== "'") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      } else {
+        value += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s|[;|&<>]/.test(ch)) {
+      return { value, end: i };
+    }
+    value += ch;
+  }
+  return { value, end: source.length };
 }
 
 function tokenizeShellCommand(command) {
