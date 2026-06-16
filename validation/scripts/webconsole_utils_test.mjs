@@ -386,6 +386,14 @@ function createAppHarnessContext() {
   };
   vm.createContext(appContext);
   vm.runInContext(utilsSource, appContext, { filename: 'utils.js' });
+  vm.runInContext(workspaceViewSource, appContext, { filename: 'workspace-view.js' });
+  vm.runInContext(`
+    function workdirBase(path) {
+      const text = String(path || '').replaceAll('\\\\', '/');
+      if (!text) return 'workspace';
+      return text.split('/').filter(Boolean).pop() || text;
+    }
+  `, appContext);
   vm.runInContext(appSource, appContext, { filename: 'app.js' });
   appContext.pendingRequests = pendingRequests;
   return appContext;
@@ -2740,9 +2748,8 @@ test('refreshCurrentSession skips stale queue detail when a newer same-session r
 test('refreshCurrentSession skips stale same-session detail when a newer refresh is queued', async () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`
-    window.setTimeout = function(callback) {
-      callback();
-      return 0;
+    queueSessionRefresh = function() {
+      refreshCurrentSession();
     };
   `, appContext);
 
@@ -3948,6 +3955,95 @@ test('continue completion ignores refreshed same-session state', async () => {
     activityTitle: 'Loaded completed session'
   });
   assert.deepEqual(sameRealm(toasts), []);
+});
+
+test('refresh with current active handle keeps continued awaiting-input session live', async () => {
+  const appContext = createAppHarnessContext();
+  const refresh = vm.runInContext(`
+    syncWorkspaceToCurrentSession = function() {};
+    state.sessionId = 'session_continue_bootstrap';
+    state.sessionBacked = true;
+    state.overview = { sessions: [] };
+    setCurrentViewName('chat');
+    setLiveRelayConnected(true);
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Continuing session', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: {
+        id: 'session_continue_bootstrap',
+        provider: 'openai-compatible',
+        model: 'gpt-5.5',
+        workdir: '/workspace'
+      },
+      state: { status: 'awaiting_input', phase: 'awaiting_input' },
+      messages: [],
+      children: { sessions: [], jobs: [] }
+    };
+    appendOptimisticMessage('user', 'authorization_source: confirmed', { source: 'user' });
+    refreshCurrentSession();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_continue_bootstrap/);
+
+  appContext.pendingRequests[0].resolve({
+    metadata: {
+      id: 'session_continue_bootstrap',
+      provider: 'openai-compatible',
+      model: 'gpt-5.5',
+      workdir: '/workspace'
+    },
+    state: { status: 'awaiting_input', phase: 'awaiting_input' },
+    messages: [
+      {
+        id: 'msg_confirmed_scope',
+        role: 'user',
+        text: 'authorization_source: confirmed',
+        created_at: '2026-06-16T04:17:48.17523378Z'
+      }
+    ],
+    has_more_messages: false,
+    children: { sessions: [], jobs: [] },
+    background_notifications: [],
+    steer_requests: [],
+    events: [],
+    timeline: [],
+    active_handle: true,
+    active_handle_owner: {
+      state: 'current_process',
+      owned_by_current_process: true
+    }
+  });
+  await refresh;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const result = vm.runInContext(`({
+    generating: isGenerating(),
+    displayStatus: sessionDetailDisplayStatus(state.sessionDetail),
+    runLoop: shouldRunPollingLoop(),
+    pollSession: shouldPollCurrentSession(),
+    interval: pollingIntervalForState(),
+    optimisticCount: currentOptimisticMessages().length,
+    needsRefresh: sessionViewState.needsRefresh,
+    refreshing: sessionViewState.refreshing,
+    detailMessageCount: maybeArray(state.sessionDetail?.messages).length,
+    sessionTitle: nodes.sessionIdDisplay.innerText,
+    activityTitle: currentLiveActivity().title
+  })`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    generating: true,
+    displayStatus: 'running',
+    runLoop: true,
+    pollSession: true,
+    interval: 1600,
+    optimisticCount: 0,
+    needsRefresh: false,
+    refreshing: false,
+    detailMessageCount: 1,
+    sessionTitle: 'Running · session_continue_bootstrap · openai-compatible/gpt-5.5 · workspace',
+    activityTitle: 'Starting turn'
+  });
 });
 
 test('start completion does not replace a session selected while launch is pending', async () => {

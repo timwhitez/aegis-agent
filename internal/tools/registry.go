@@ -1075,6 +1075,7 @@ func defGrep() Definition {
 			matcher, regexErr := regexp.Compile(input.Pattern)
 			useRegex := regexErr == nil
 			var lines []string
+			truncatedLineCount := 0
 			walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					if sameCleanPath(path, root) {
@@ -1109,8 +1110,12 @@ func defGrep() Definition {
 						matched = strings.Contains(line, input.Pattern)
 					}
 					if matched {
-						lines = append(lines, fmt.Sprintf("%s:%d:%s", relativeOrAbsolute(execCtx.Workdir, path), lineNo+1, strings.TrimSpace(line)))
-						if len(lines) >= 200 {
+						formatted, truncated := formatGrepMatchLine(execCtx.Workdir, path, lineNo+1, line)
+						if truncated {
+							truncatedLineCount++
+						}
+						lines = append(lines, formatted)
+						if len(lines) >= maxGrepMatches {
 							return errGrepLimitReached
 						}
 					}
@@ -1124,7 +1129,11 @@ func defGrep() Definition {
 			if output == "" {
 				output = "(no matches)"
 			}
-			return session.ToolResult{Name: "grep", LLMOutput: output, DisplayOutput: output}, nil
+			metadata := map[string]any{
+				"truncated":                truncatedLineCount > 0,
+				"truncated_matching_lines": truncatedLineCount,
+			}
+			return session.ToolResult{Name: "grep", LLMOutput: output, DisplayOutput: output, Metadata: metadata}, nil
 		},
 	}
 }
@@ -1227,9 +1236,47 @@ var grepSkippedPathFragments = []string{
 var errGrepLimitReached = errors.New("grep limit reached")
 
 const (
-	defaultGrepFilesLimit = 100
-	maxGrepFilesLimit     = 200
+	defaultGrepFilesLimit  = 100
+	maxGrepFilesLimit      = 200
+	maxGrepMatches         = 200
+	maxGrepLineOutputBytes = 4096
 )
+
+func formatGrepMatchLine(workdir, path string, lineNo int, line string) (string, bool) {
+	text, truncated := truncateGrepMatchedText(strings.TrimSpace(line), maxGrepLineOutputBytes)
+	return fmt.Sprintf("%s:%d:%s", relativeOrAbsolute(workdir, path), lineNo, text), truncated
+}
+
+func truncateGrepMatchedText(text string, limit int) (string, bool) {
+	rawLength := len(text)
+	if rawLength <= limit {
+		return text, false
+	}
+	if limit <= 0 {
+		return "", true
+	}
+	marker := " ...[truncated]... "
+	headBytes := limit / 2
+	tailBytes := limit - headBytes
+	head := prefixAtRuneBoundary(text, headBytes)
+	tail := suffixAtRuneBoundary(text, tailBytes)
+	for i := 0; i < 3; i++ {
+		omitted := rawLength - len(head) - len(tail)
+		if omitted < 0 {
+			omitted = 0
+		}
+		marker = fmt.Sprintf(" ...[truncated: %d bytes omitted]... ", omitted)
+		remaining := limit - len(marker)
+		if remaining < 2 {
+			return prefixAtRuneBoundary(text, limit), true
+		}
+		headBytes = remaining / 2
+		tailBytes = remaining - headBytes
+		head = prefixAtRuneBoundary(text, headBytes)
+		tail = suffixAtRuneBoundary(text, tailBytes)
+	}
+	return head + marker + tail, true
+}
 
 func shouldSkipGrepDir(path string) bool {
 	if _, ok := grepSkippedDirNames[filepath.Base(path)]; ok {

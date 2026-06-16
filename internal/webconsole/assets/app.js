@@ -1759,7 +1759,7 @@ function updateConnectionStatus() {
 function updateSessionId() {
   const detail = state.sessionDetail;
   if (detail?.metadata) {
-    nodes.sessionIdDisplay.innerText = `${humanizeStatus(detail.state?.status || 'loaded')} · ${detail.metadata.id} · ${detail.metadata.provider || 'provider'}/${detail.metadata.model || 'model'} · ${workdirBase(detail.metadata.workdir)}`;
+    nodes.sessionIdDisplay.innerText = `${humanizeStatus(sessionDetailDisplayStatus(detail) || 'loaded')} · ${detail.metadata.id} · ${detail.metadata.provider || 'provider'}/${detail.metadata.model || 'model'} · ${workdirBase(detail.metadata.workdir)}`;
   } else {
     nodes.sessionIdDisplay.innerText = `ID: ${state.sessionId}`;
   }
@@ -2501,14 +2501,22 @@ function shouldRunPollingLoop() {
   if (isGenerating()) {
     return true;
   }
-  return hasDurableSession() && (!state.sessionDetail || sessionDetailHasActiveDescendants(state.sessionDetail));
+  return hasDurableSession() && (
+    !state.sessionDetail ||
+    sessionDetailHasCurrentProcessHandle(state.sessionDetail) ||
+    sessionDetailHasActiveDescendants(state.sessionDetail)
+  );
 }
 
 function pollingIntervalForState() {
   if (currentViewName() === 'history') {
     return POLL_INTERVAL_MS;
   }
-  if (!isLiveRelayConnected() || isGenerating() || sessionDetailHasActiveDescendants(state.sessionDetail)) {
+  if (!isLiveRelayConnected() ||
+    isGenerating() ||
+    sessionDetailHasCurrentProcessHandle(state.sessionDetail) ||
+    sessionDetailHasActiveDescendants(state.sessionDetail)
+  ) {
     return POLL_INTERVAL_ACTIVE_MS;
   }
   return POLL_INTERVAL_MS;
@@ -2555,14 +2563,20 @@ function shouldPollChatOverview() {
   if (!state.overview) {
     return true;
   }
-  return isGenerating() || !hasDurableSession() || sessionDetailHasActiveDescendants(state.sessionDetail);
+  return isGenerating() ||
+    !hasDurableSession() ||
+    sessionDetailHasCurrentProcessHandle(state.sessionDetail) ||
+    sessionDetailHasActiveDescendants(state.sessionDetail);
 }
 
 function shouldPollCurrentSession() {
   if (currentViewName() !== 'chat' || !hasDurableSession()) {
     return false;
   }
-  return isGenerating() || !state.sessionDetail || sessionDetailHasActiveDescendants(state.sessionDetail);
+  return isGenerating() ||
+    !state.sessionDetail ||
+    sessionDetailHasCurrentProcessHandle(state.sessionDetail) ||
+    sessionDetailHasActiveDescendants(state.sessionDetail);
 }
 
 function sessionDetailHasActiveDescendants(detail) {
@@ -2592,6 +2606,19 @@ function selectedQueueJobIsActiveForSession(detail) {
 
 function isActiveRuntimeStatus(status) {
   return ['queued', 'pending', 'running'].includes(String(status || '').toLowerCase());
+}
+
+function sessionDetailHasCurrentProcessHandle(detail) {
+  return detail?.active_handle === true ||
+    detail?.active_handle_owner?.owned_by_current_process === true;
+}
+
+function sessionDetailDisplayStatus(detail) {
+  const status = detail?.state?.status || '';
+  if (sessionDetailHasCurrentProcessHandle(detail) && status !== 'completed') {
+    return 'running';
+  }
+  return status;
 }
 
 function isStoppableSessionStatus(status) {
@@ -2809,11 +2836,11 @@ async function refreshCurrentSession(options = {}) {
     setHasMoreMessagesToLoad(loadedAllEarlierMessages() ? false : detail?.has_more_messages === true);
     const msgs = maybeArray(detail?.messages);
     setOldestLoadedMessageId(msgs.length > 0 ? msgs[0].id : '');
-    if (detail?.state?.status === 'running') {
+    if (detail?.state?.status === 'running' || sessionDetailHasCurrentProcessHandle(detail)) {
       setGeneratingViewState(true);
       if (!hasLiveEvents()) {
         setLiveActivity({
-          title: phaseHeadline(detail.state.phase),
+          title: detail?.state?.status === 'running' ? phaseHeadline(detail.state?.phase) : 'Starting turn',
           copy: 'The runner is active. Tool calls and child-agent transitions will stream into this panel as durable events.',
           tone: 'live'
         });

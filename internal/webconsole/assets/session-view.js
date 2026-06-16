@@ -464,7 +464,9 @@ function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const liveActivity = currentLiveActivity();
   const counters = summarizeCurrentSession();
-  const status = detail?.state?.status || (isGenerating() ? 'running' : 'idle');
+  const status = typeof sessionDetailDisplayStatus === 'function'
+    ? sessionDetailDisplayStatus(detail) || (isGenerating() ? 'running' : 'idle')
+    : detail?.state?.status || (isGenerating() ? 'running' : 'idle');
   const goal = detail?.goal || null;
   const planMode = detail?.plan_mode || null;
   const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : liveActivity.title;

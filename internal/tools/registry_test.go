@@ -3660,6 +3660,60 @@ func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	}
 }
 
+func TestGrepTruncatesLongMatchingLines(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	longLine := "needle-" + strings.Repeat("x", maxGrepLineOutputBytes*4) + "-needle-tail"
+	if err := os.WriteFile(filepath.Join(workdir, "bundle.html"), []byte(longLine), 0o644); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":"bundle.html"
+	}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if result.Metadata["truncated"] != true || result.Metadata["truncated_matching_lines"] != 1 {
+		t.Fatalf("expected grep truncation metadata, got %#v", result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, "bundle.html:1:needle-") {
+		t.Fatalf("expected grep output to include path, line, and prefix, got %q", result.DisplayOutput)
+	}
+	if !strings.Contains(result.DisplayOutput, "[truncated:") || !strings.Contains(result.DisplayOutput, "needle-tail") {
+		t.Fatalf("expected grep output to preserve truncation marker and tail, got %q", result.DisplayOutput)
+	}
+	if len(result.DisplayOutput) > maxGrepLineOutputBytes+len("bundle.html:1:")+256 {
+		t.Fatalf("expected grep output to stay bounded, got %d bytes", len(result.DisplayOutput))
+	}
+}
+
 func TestReadFileCapsLargeRequestsAndAnnotatesWindow(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
