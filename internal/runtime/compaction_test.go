@@ -356,6 +356,41 @@ func TestCompactorReportsEventEmitErrors(t *testing.T) {
 	})
 }
 
+func TestFallbackCompactionDeferredViewDoesNotRetainFullHistory(t *testing.T) {
+	messages := []session.Message{
+		session.NewMessage("user", "old external instruction "+strings.Repeat("A", 1200)),
+		session.NewAssistantMessage("old assistant narration "+strings.Repeat("B", 1200), "", nil),
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID:    "call_old",
+			Name:          "shell",
+			LLMOutput:     "old massive output " + strings.Repeat("C", 3000),
+			DisplayOutput: "old massive output " + strings.Repeat("C", 3000),
+		}}),
+		session.NewAssistantMessage("middle assistant", "", nil),
+		session.NewMessage("user", "middle user"),
+		session.NewAssistantMessage("recent assistant one", "", nil),
+		session.NewMessage("user", "recent user two"),
+		session.NewAssistantMessage("recent assistant three", "", nil),
+		session.NewMessage("user", "recent user four"),
+		session.NewMessage("user", "latest user instruction"),
+	}
+	view, _ := fallbackCompactionDeferredView(messages, compactionProfileForPolicy(32, 1, 0), errors.New("write summary failed"))
+	if len(view) == 0 || view[0].Meta["source"] != "compaction_deferred" {
+		t.Fatalf("expected leading deferred message, got %#v", view)
+	}
+	serialized, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("marshal view: %v", err)
+	}
+	text := string(serialized)
+	if strings.Contains(text, strings.Repeat("A", 1000)) || strings.Contains(text, strings.Repeat("B", 1000)) || strings.Contains(text, strings.Repeat("C", 1000)) {
+		t.Fatalf("fallback view should not retain full old history: %s", text)
+	}
+	if !strings.Contains(text, "latest user instruction") {
+		t.Fatalf("fallback view should retain latest user instruction: %s", text)
+	}
+}
+
 func TestCompactorReportsCorruptFeatureList(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()

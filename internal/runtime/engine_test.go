@@ -598,6 +598,82 @@ func TestEngineFailReportsFailedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineDefersCompactionFailureAndContinuesProviderCall(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Compact.InputCharThreshold = 32
+	cfg.Runtime.Compact.KeepRecentToolResults = 1
+	cfg.Runtime.MaxTurnsHard = 2
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
+	oldPrompt := "old prompt " + strings.Repeat("A", 1200)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", oldPrompt)); err != nil {
+		t.Fatalf("append old prompt: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{{
+		ToolCallID:    "call_old",
+		Name:          "shell",
+		LLMOutput:     "old output " + strings.Repeat("B", 3000),
+		DisplayOutput: "old output " + strings.Repeat("B", 3000),
+	}})); err != nil {
+		t.Fatalf("append tool result: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := engine.store.AppendMessage(meta.ID, session.NewAssistantMessage(fmt.Sprintf("recent assistant %d", i), "", nil)); err != nil {
+			t.Fatalf("append recent assistant %d: %v", i, err)
+		}
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "latest instruction")); err != nil {
+		t.Fatalf("append latest instruction: %v", err)
+	}
+	compactionsPath := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "compactions")
+	if err := os.MkdirAll(compactionsPath, 0o700); err != nil {
+		t.Fatalf("mkdir compactions: %v", err)
+	}
+	if err := os.RemoveAll(compactionsPath); err != nil {
+		t.Fatalf("remove compactions: %v", err)
+	}
+	if err := os.WriteFile(compactionsPath, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block compactions path: %v", err)
+	}
+
+	providerCalled := false
+	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		providerCalled = true
+		if len(req.Messages) == 0 || req.Messages[0].Meta["source"] != "compaction_deferred" {
+			t.Fatalf("expected deferred compaction lead message, got %#v", req.Messages)
+		}
+		serialized, err := json.Marshal(req.Messages)
+		if err != nil {
+			t.Fatalf("marshal request messages: %v", err)
+		}
+		text := string(serialized)
+		if strings.Contains(text, strings.Repeat("A", 1000)) || strings.Contains(text, strings.Repeat("B", 1000)) {
+			t.Fatalf("provider view should not include full old history after deferred compaction: %s", text)
+		}
+		if !strings.Contains(text, "latest instruction") {
+			t.Fatalf("provider view should include latest instruction: %s", text)
+		}
+		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run should continue after compaction failure: %v", err)
+	}
+	if !providerCalled {
+		t.Fatal("expected provider call after deferred compaction")
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input after provider done candidate, got %#v", result)
+	}
+	eventsList, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if !hasEventType(eventsList, "compact.deferred") {
+		t.Fatalf("expected compact.deferred event, got %#v", eventsList)
+	}
+}
+
 func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.ProviderAutoResume.Enabled = true

@@ -21,6 +21,7 @@ type compactor struct {
 }
 
 const compactionReferencePrefix = "[Conversation compacted]\nThis compacted summary is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth.\n"
+const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Continue from the latest user instruction and durable task state.\n"
 
 func newCompactor(store *session.Store) *compactor {
 	return &compactor{store: store}
@@ -183,6 +184,22 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 		return nil
 	}
 	return emit(evt)
+}
+
+func fallbackCompactionDeferredView(messages []session.Message, profile compactionContextProfile, compactErr error) ([]session.Message, int) {
+	profile = normalizeCompactionProfile(profile)
+	cloned := cloneMessages(messages)
+	cloned = deduplicateToolResults(cloned)
+	compactOldToolContext(cloned, 0)
+	inputChars := estimateChars(cloned)
+	recent := recentMessagesForCompaction(cloned, 6)
+	deferred := session.NewMessage("user", compactionDeferredPrefix+"Deferred reason: "+compactErr.Error())
+	deferred.Meta = map[string]any{
+		"source": "compaction_deferred",
+	}
+	out := []session.Message{deferred}
+	out = append(out, recent...)
+	return out, inputChars
 }
 
 func (c *compactor) reusableCompactionSummary(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) (map[string]any, string, error) {

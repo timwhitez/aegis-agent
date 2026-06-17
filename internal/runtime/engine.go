@@ -53,6 +53,33 @@ func (e *Engine) SetRunner(runner RunnerInterface) {
 	e.runner = runner
 }
 
+func (e *Engine) buildProviderView(meta session.SessionMetadata, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile) ([]session.Message, int, bool, error) {
+	view, inputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, profile, state.LastCompactionInputChars, func(evt events.Event) error {
+		if err := e.store.AppendEvent(meta.ID, evt); err != nil {
+			return err
+		}
+		e.bus.Publish(evt)
+		return nil
+	})
+	if err == nil {
+		return view, inputChars, didCompact, nil
+	}
+
+	deferredView, deferredInputChars := fallbackCompactionDeferredView(messages, profile, err)
+	data := map[string]any{
+		"error":           err.Error(),
+		"input_chars":     deferredInputChars,
+		"reason":          "compaction_deferred",
+		"context_profile": profile,
+	}
+	evt := events.New(meta.ID, "compact.deferred", "compact", data)
+	if appendErr := e.store.AppendEvent(meta.ID, evt); appendErr != nil {
+		return nil, deferredInputChars, false, fmt.Errorf("record compact.deferred event after compaction error %v: %w", err, appendErr)
+	}
+	e.bus.Publish(evt)
+	return deferredView, deferredInputChars, false, nil
+}
+
 type runDeps struct {
 	adapter  provider.Adapter
 	catalog  *skills.Catalog
@@ -234,15 +261,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Non-essential runtime reminders and checks are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
 		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
-		view, compactionInputChars, didCompact, err := e.compactor.BuildWithProfile(meta.ID, meta.Workdir, state, messages, todo, tasks, compactionProfile, state.LastCompactionInputChars, func(evt events.Event) error {
-			if err := e.store.AppendEvent(meta.ID, evt); err != nil {
-				return err
-			}
-			e.bus.Publish(evt)
-			return nil
-		})
+		view, compactionInputChars, didCompact, err := e.buildProviderView(meta, state, messages, todo, tasks, compactionProfile)
 		if err != nil {
-			return e.fail(ctx, meta, state, err, hookManager)
+			return RunResult{}, err
 		}
 		if didCompact {
 			state.LastCompactionInputChars = compactionInputChars
