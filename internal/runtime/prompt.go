@@ -1156,7 +1156,7 @@ func quoteForPrompt(text string, limit int) string {
 		return `""`
 	}
 	if limit > 0 && len(cleaned) > limit {
-		cleaned = cleaned[:limit-3] + "..."
+		cleaned = prefixAtRuneBoundary(cleaned, limit-3) + "..."
 	}
 	return fmt.Sprintf("%q", cleaned)
 }

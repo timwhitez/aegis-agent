@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/procutil"
@@ -262,10 +263,23 @@ func truncateHookOutput(output string, limit int) (string, int, bool) {
 		return output, rawLength, false
 	}
 	if limit < len("\n[... truncated ...]") {
-		return output[:limit], rawLength, true
+		return prefixAtRuneBoundary(output, limit), rawLength, true
 	}
 	suffix := "\n[... truncated ...]"
-	return output[:limit-len(suffix)] + suffix, rawLength, true
+	return prefixAtRuneBoundary(output, limit-len(suffix)) + suffix, rawLength, true
+}
+
+func prefixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
 }
 
 type hookCommandPreflight struct {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
@@ -589,9 +590,40 @@ func compactTextForContext(text, reason string) string {
 	if len(text) <= headLimit+tailLimit+200 {
 		return text
 	}
-	head := text[:headLimit]
-	tail := text[len(text)-tailLimit:]
-	return fmt.Sprintf("[Compacted %s; original_chars=%d]\nHEAD:\n%s\n[...omitted %d chars...]\nTAIL:\n%s", reason, len(text), head, len(text)-headLimit-tailLimit, tail)
+	head := prefixAtRuneBoundary(text, headLimit)
+	tail := suffixAtRuneBoundary(text, tailLimit)
+	omitted := len(text) - len(head) - len(tail)
+	if omitted < 0 {
+		omitted = 0
+	}
+	return fmt.Sprintf("[Compacted %s; original_chars=%d]\nHEAD:\n%s\n[...omitted %d chars...]\nTAIL:\n%s", reason, len(text), head, omitted, tail)
+}
+
+func prefixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
+}
+
+func suffixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	start := len(text) - limit
+	for start < len(text) && !utf8.RuneStart(text[start]) {
+		start++
+	}
+	return text[start:]
 }
 
 func shouldCompressToolResult(toolResult session.ToolResult) bool {
@@ -1150,5 +1182,8 @@ func truncateText(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
-	return text[:limit] + "..."
+	if limit <= 0 {
+		return "..."
+	}
+	return prefixAtRuneBoundary(text, limit) + "..."
 }

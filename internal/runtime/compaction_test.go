@@ -8,11 +8,40 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 )
+
+func TestTruncateTextKeepsUTF8Boundaries(t *testing.T) {
+	input := strings.Repeat("已完成全部测试并生成最终报告。", 20)
+	output := truncateText(input, 500)
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 output, got %q", output)
+	}
+	if strings.ContainsRune(output, utf8.RuneError) {
+		t.Fatalf("expected no replacement rune from mid-rune truncation, got %q", output)
+	}
+	if !strings.HasSuffix(output, "...") {
+		t.Fatalf("expected truncation marker, got %q", output)
+	}
+}
+
+func TestCompactTextForContextKeepsUTF8Boundaries(t *testing.T) {
+	input := strings.Repeat("前缀", 500) + "middle" + strings.Repeat("后缀", 500)
+	output := compactTextForContext(input, "utf8_test")
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 compacted output, got %q", output)
+	}
+	if strings.ContainsRune(output, utf8.RuneError) {
+		t.Fatalf("expected no replacement rune from mid-rune compaction, got %q", output)
+	}
+	if !strings.Contains(output, "HEAD:") || !strings.Contains(output, "TAIL:") {
+		t.Fatalf("expected head/tail compaction marker, got %q", output)
+	}
+}
 
 func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	store := session.NewStore(t.TempDir())

@@ -7,9 +7,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/config"
 )
+
+func TestTruncateHookOutputKeepsUTF8Boundaries(t *testing.T) {
+	input := strings.Repeat("钩子输出", 200)
+	output, _, truncated := truncateHookOutput(input, 257)
+	if !truncated {
+		t.Fatal("expected output to be truncated")
+	}
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 output, got %q", output)
+	}
+	if strings.ContainsRune(output, utf8.RuneError) {
+		t.Fatalf("expected no replacement rune from mid-rune truncation, got %q", output)
+	}
+}
 
 func TestManagerInject(t *testing.T) {
 	manager := New(config.HooksConfig{

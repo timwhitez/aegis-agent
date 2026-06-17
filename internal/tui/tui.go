@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -382,7 +383,20 @@ func truncate(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
-	return value[:limit-3] + "..."
+	return prefixAtRuneBoundary(value, limit-3) + "..."
+}
+
+func prefixAtRuneBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if limit >= len(text) {
+		return text
+	}
+	for limit > 0 && !utf8.RuneStart(text[limit]) {
+		limit--
+	}
+	return text[:limit]
 }
 
 func tailMessages(messages []session.Message, limit int) []session.Message {

@@ -9,9 +9,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/session"
 )
+
+func TestTruncateKeepsUTF8Boundaries(t *testing.T) {
+	input := strings.Repeat("终端摘要", 50)
+	output := truncate(input, 121)
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 output, got %q", output)
+	}
+	if strings.ContainsRune(output, utf8.RuneError) {
+		t.Fatalf("expected no replacement rune from mid-rune truncation, got %q", output)
+	}
+	if !strings.HasSuffix(output, "...") {
+		t.Fatalf("expected truncation marker, got %q", output)
+	}
+}
 
 func TestRunRejectsNonTTY(t *testing.T) {
 	store := session.NewStore(t.TempDir())
