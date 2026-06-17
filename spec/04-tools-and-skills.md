@@ -84,7 +84,7 @@ v1 内置工具固定为：
 - 对已注册 skill，`workdir` 也可使用 `load_skill` 返回的 skill 根目录提示；这只表示 skill bundle 的受控执行目录，不改变 workspace 写入边界
 - 必须接受 timeout
 - stdout/stderr 合并后按字节限额截断；超长输出应保留头部与尾部并标注中间省略字节数，避免丢失末尾错误摘要
-- 返回码与摘要写入 metadata
+- 返回码、timeout、workdir、sandbox、原始输出长度和截断状态必须写入 metadata，并以简短执行摘要进入 `llm_output`，避免模型只能在 UI/event metadata 中看到关键执行事实
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
 - 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
 - exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI

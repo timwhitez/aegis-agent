@@ -710,16 +710,18 @@ func defShell() Definition {
 			if text == "" {
 				text = "(no output)"
 			}
+			llmText := commandLLMOutput(text, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
 			if err != nil {
 				interruptErr := ctx.Err()
 				if interruptErr == nil {
 					interruptErr = callCtx.Err()
 				}
 				if interruptErr != nil {
+					interruptedText := commandLLMOutput("[Tool execution was interrupted]", commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						ToolCallID:    "",
 						Name:          "shell",
-						LLMOutput:     "[Tool execution was interrupted]",
+						LLMOutput:     interruptedText,
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
 						Metadata:      metadata(exitCode, rawLength, truncated),
@@ -727,7 +729,7 @@ func defShell() Definition {
 				}
 				return session.ToolResult{
 					Name:          "shell",
-					LLMOutput:     text,
+					LLMOutput:     llmText,
 					DisplayOutput: text,
 					IsError:       true,
 					Metadata:      metadata(exitCode, rawLength, truncated),
@@ -735,7 +737,7 @@ func defShell() Definition {
 			}
 			return session.ToolResult{
 				Name:          "shell",
-				LLMOutput:     text,
+				LLMOutput:     llmText,
 				DisplayOutput: text,
 				Metadata:      metadata(exitCode, rawLength, truncated),
 			}, nil
@@ -3337,15 +3339,17 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			if text == "" {
 				text = "(no output)"
 			}
+			llmText := commandLLMOutput(text, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
 			if err != nil {
 				interruptErr := ctx.Err()
 				if interruptErr == nil {
 					interruptErr = callCtx.Err()
 				}
 				if interruptErr != nil {
+					interruptedText := commandLLMOutput("[Tool execution was interrupted]", commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						Name:          tool.Name,
-						LLMOutput:     "[Tool execution was interrupted]",
+						LLMOutput:     interruptedText,
 						DisplayOutput: "[Tool execution was interrupted]",
 						IsError:       true,
 						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
@@ -3353,7 +3357,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 				}
 				return session.ToolResult{
 					Name:          tool.Name,
-					LLMOutput:     text,
+					LLMOutput:     llmText,
 					DisplayOutput: text,
 					IsError:       true,
 					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
@@ -3361,7 +3365,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			}
 			return session.ToolResult{
 				Name:          tool.Name,
-				LLMOutput:     text,
+				LLMOutput:     llmText,
 				DisplayOutput: text,
 				Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
 			}, nil
@@ -3556,6 +3560,30 @@ func renderCommand(command []string, args map[string]any) ([]string, error) {
 		return nil, errors.New("command rendered to empty argv")
 	}
 	return out, nil
+}
+
+func commandResultSummary(toolName string, exitCode, timeout int, workdirSource, workdir, sandbox string, rawLength int, truncated bool) string {
+	parts := []string{
+		fmt.Sprintf("tool=%s", toolName),
+		fmt.Sprintf("exit_code=%d", exitCode),
+		fmt.Sprintf("timeout_sec=%d", timeout),
+		fmt.Sprintf("workdir_source=%s", workdirSource),
+		fmt.Sprintf("workdir=%s", workdir),
+		fmt.Sprintf("sandbox=%s", sandbox),
+		fmt.Sprintf("raw_output_bytes=%d", rawLength),
+		fmt.Sprintf("truncated=%t", truncated),
+	}
+	return "[command_result " + strings.Join(parts, " ") + "]"
+}
+
+func commandLLMOutput(output, summary string) string {
+	if strings.TrimSpace(summary) == "" {
+		return output
+	}
+	if output == "" {
+		return summary
+	}
+	return summary + "\n" + output
 }
 
 func filteredEnv(allowlist []string) []string {

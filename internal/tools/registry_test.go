@@ -1833,6 +1833,11 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	if shellResult.Metadata["command"] != "yes A | head -n 7000" {
 		t.Fatalf("expected command metadata, got %#v", shellResult.Metadata)
 	}
+	for _, want := range []string{"[command_result tool=shell", "exit_code=0", "raw_output_bytes=", "truncated=true"} {
+		if !strings.Contains(shellResult.LLMOutput, want) {
+			t.Fatalf("expected shell LLM output to include %q, got %q", want, shellResult.LLMOutput)
+		}
+	}
 
 	writeResult, err := registry.Execute(context.Background(), "write_file", execCtx, json.RawMessage(`{
 		"path":"notes.txt",
@@ -4668,6 +4673,11 @@ func TestSkillCommandToolTimeoutIncludesStructuredMetadata(t *testing.T) {
 	}
 	if result.Metadata["timeout"] != 1 || result.Metadata["exit_code"] == nil || result.Metadata["raw_length"] == nil || result.Metadata["truncated"] == nil {
 		t.Fatalf("expected structured timeout metadata, got %#v", result.Metadata)
+	}
+	for _, want := range []string{"[command_result tool=slow_skill", "exit_code=", "timeout_sec=1", "workdir_source=skill", "truncated=false"} {
+		if !strings.Contains(result.LLMOutput, want) {
+			t.Fatalf("expected skill command LLM output to include %q, got %q", want, result.LLMOutput)
+		}
 	}
 }
 
