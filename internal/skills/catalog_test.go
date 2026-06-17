@@ -123,3 +123,44 @@ func TestCatalogAllowsRegularNestedSkillAndTools(t *testing.T) {
 		t.Fatalf("unexpected tools: %#v", tools)
 	}
 }
+
+func TestCatalogAllowsLooseSkillFrontmatterDescription(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(root, "loose")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	content := "---\nname: loose\ndescription: Use when context includes key: value text that common Markdown frontmatter accepts.\n---\nbody\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	catalog, err := Scan([]string{root})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	skill, err := catalog.Load("loose")
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	if !strings.Contains(skill.Description, "key: value") {
+		t.Fatalf("expected loose description to be preserved, got %q", skill.Description)
+	}
+}
+
+func TestCatalogReportsSkillFrontmatterPath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	skillDir := filepath.Join(root, "bad")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\n[bad\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	_, err := Scan([]string{root})
+	if err == nil || !strings.Contains(err.Error(), skillPath) {
+		t.Fatalf("expected skill path in parse error, got %v", err)
+	}
+}

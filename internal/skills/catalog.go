@@ -69,7 +69,7 @@ func Scan(dirs []string) (*Catalog, error) {
 			}
 			skill, loadErr := loadSkill(rootReal, path)
 			if loadErr != nil {
-				return loadErr
+				return fmt.Errorf("load skill %s: %w", path, loadErr)
 			}
 			if _, exists := catalog.skills[skill.Name]; exists {
 				return fmt.Errorf("duplicate skill name: %s", skill.Name)
@@ -136,7 +136,7 @@ func (c *Catalog) LoadBody(name string) (string, error) {
 
 	_, body, err := parseFrontmatter(string(data))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("parse skill frontmatter %s: %w", skill.Path, err)
 	}
 
 	skill.Body = body
@@ -275,7 +275,7 @@ func loadTools(rootReal, skillDirReal, dir, skillName, skillPath string) ([]Comm
 		}
 		var tool CommandTool
 		if err := yaml.Unmarshal(data, &tool); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("parse skill tool %s: %w", filepath.Join(toolDirReal, entry.Name()), err)
 		}
 		tool.SkillName = skillName
 		tool.SkillPath = skillPath
@@ -326,12 +326,51 @@ func parseFrontmatter(text string) (map[string]string, string, error) {
 	meta := map[string]string{}
 	var raw map[string]any
 	if err := yaml.Unmarshal([]byte(match[1]), &raw); err != nil {
+		meta, fallbackOK := parseLooseFrontmatterScalars(match[1])
+		if fallbackOK {
+			return meta, strings.TrimSpace(match[2]), nil
+		}
 		return nil, "", err
 	}
 	for key, value := range raw {
 		meta[key] = fmt.Sprint(value)
 	}
 	return meta, strings.TrimSpace(match[2]), nil
+}
+
+func parseLooseFrontmatterScalars(text string) (map[string]string, bool) {
+	meta := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		key, value, ok := strings.Cut(trimmed, ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		validKey := true
+		for _, r := range key {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+				continue
+			}
+			validKey = false
+			break
+		}
+		if !validKey {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		value = strings.Trim(value, `"'`)
+		meta[key] = value
+	}
+	_, hasName := meta["name"]
+	_, hasDescription := meta["description"]
+	return meta, hasName || hasDescription
 }
 
 func firstParagraph(body string) string {

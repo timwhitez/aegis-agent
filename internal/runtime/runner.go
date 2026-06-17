@@ -413,7 +413,14 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
-	return r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	if err != nil {
+		currentState, loadErr := r.store.LoadState(meta.ID)
+		if loadErr == nil && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {
+			return r.failBeforeRun(meta.ID, currentState, currentState.Phase, err)
+		}
+	}
+	return result, err
 }
 
 func prepareStartGoalAndPlanModeDrafts(sessionID string, req StartRequest) (StartRequest, error) {

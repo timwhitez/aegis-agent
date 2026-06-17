@@ -863,6 +863,59 @@ func TestRunnerStartReportsStartedEventAppendError(t *testing.T) {
 	}
 }
 
+func TestRunnerStartMarksSkillScanFailureFailed(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	skillDir := filepath.Join(t.TempDir(), "skills", "bad")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.MkdirAll(skillDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\n[bad\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	cfg.Skills.Dirs = []string{filepath.Dir(skillDir)}
+	runner := NewRunner(cfg)
+
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt:  "this should fail before provider call",
+		Mode:    session.ModeRun,
+		Workdir: t.TempDir(),
+	})
+	if err == nil {
+		t.Fatalf("expected skill scan failure, got result=%#v", result)
+	}
+	if !strings.Contains(err.Error(), skillPath) {
+		t.Fatalf("expected skill path in start error, got %v", err)
+	}
+	if result.SessionID == "" {
+		t.Fatalf("expected failed session id in result, got %#v", result)
+	}
+	stateAfter, stateErr := runner.store.LoadState(result.SessionID)
+	if stateErr != nil {
+		t.Fatalf("load failed session state: %v", stateErr)
+	}
+	if stateAfter.Status != session.StatusFailed || stateAfter.Phase != "prepare" {
+		t.Fatalf("expected failed prepare state, got %#v", stateAfter)
+	}
+	if !strings.Contains(stateAfter.LastError, skillPath) {
+		t.Fatalf("expected failed state to retain skill path, got %#v", stateAfter)
+	}
+	eventsList, eventsErr := runner.store.LoadEvents(result.SessionID)
+	if eventsErr != nil {
+		t.Fatalf("load events: %v", eventsErr)
+	}
+	foundFailed := false
+	for _, evt := range eventsList {
+		if evt.Type == "session.failed" {
+			foundFailed = true
+			break
+		}
+	}
+	if !foundFailed {
+		t.Fatalf("expected session.failed event, got %#v", eventsList)
+	}
+}
+
 func TestRunnerStartReportsCreatedEventAppendError(t *testing.T) {
 	var providerCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

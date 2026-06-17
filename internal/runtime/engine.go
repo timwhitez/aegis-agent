@@ -407,6 +407,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err := recordProviderSuccess(e.store, meta, state.Turn, result); err != nil {
 			return e.fail(ctx, meta, state, err, hookManager)
 		}
+		if state.LastError != "" {
+			state.LastError = ""
+			if err := e.store.SaveState(meta.ID, state); err != nil {
+				return RunResult{}, err
+			}
+		}
 		accountedGoal, budgetLimited, err := e.updateGoalAccounting(meta.ID, state.Turn, result.Usage, time.Since(providerStart))
 		if err != nil {
 			return e.fail(ctx, meta, state, err, hookManager)

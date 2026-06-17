@@ -180,6 +180,31 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	}
 }
 
+func TestEngineClearsStaleLastErrorAfterProviderSuccess(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	state.LastError = "previous auth failure"
+	if err := engine.store.SaveState(meta.ID, state); err != nil {
+		t.Fatalf("save failed state: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
+	})
+
+	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.LastError != "" {
+		t.Fatalf("expected provider success to clear stale last_error, got %q", loaded.LastError)
+	}
+}
+
 func TestEngineToolEventsIncludeCallID(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	registry.Register(tools.Definition{
