@@ -497,6 +497,108 @@ func TestStoreRemoveLastMessageIfIDOnlyRemovesMatchingTail(t *testing.T) {
 	}
 }
 
+func TestStoreLoadMessagesTailAndBeforeKeepBoundedWindows(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	written := make([]Message, 0, 7)
+	for i := 0; i < 7; i++ {
+		msg := NewMessage("user", fmt.Sprintf("message %d", i))
+		if err := store.AppendMessage(meta.ID, msg); err != nil {
+			t.Fatalf("append message %d: %v", i, err)
+		}
+		written = append(written, msg)
+	}
+
+	tail, hasMore, err := store.LoadMessagesTail(meta.ID, 3)
+	if err != nil {
+		t.Fatalf("load tail: %v", err)
+	}
+	if !hasMore || len(tail) != 3 || tail[0].ID != written[4].ID || tail[2].ID != written[6].ID {
+		t.Fatalf("unexpected tail hasMore=%v messages=%#v", hasMore, tail)
+	}
+
+	page, hasMore, err := store.LoadMessagesBefore(meta.ID, written[5].ID, 2)
+	if err != nil {
+		t.Fatalf("load before: %v", err)
+	}
+	if !hasMore || len(page) != 2 || page[0].ID != written[3].ID || page[1].ID != written[4].ID {
+		t.Fatalf("unexpected previous page hasMore=%v messages=%#v", hasMore, page)
+	}
+
+	page, hasMore, err = store.LoadMessagesBefore(meta.ID, written[1].ID, 3)
+	if err != nil {
+		t.Fatalf("load first page: %v", err)
+	}
+	if hasMore || len(page) != 1 || page[0].ID != written[0].ID {
+		t.Fatalf("unexpected first page hasMore=%v messages=%#v", hasMore, page)
+	}
+
+	page, hasMore, err = store.LoadMessagesBefore(meta.ID, "missing-message", 2)
+	if err != nil {
+		t.Fatalf("load missing before id: %v", err)
+	}
+	if hasMore || len(page) != 0 {
+		t.Fatalf("missing before id should return empty page, got hasMore=%v messages=%#v", hasMore, page)
+	}
+}
+
+func TestStoreLoadMessagesTailStillValidatesFullHistory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	valid := NewMessage("user", "valid")
+	invalid := NewMessage("developer", "bad role")
+	validTail := NewMessage("user", "valid tail")
+	messagesPath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	file, err := os.OpenFile(messagesPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("open messages: %v", err)
+	}
+	encoder := json.NewEncoder(file)
+	for _, msg := range []Message{valid, invalid, validTail} {
+		if err := encoder.Encode(msg); err != nil {
+			t.Fatalf("encode message: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close messages: %v", err)
+	}
+
+	if _, _, err := store.LoadMessagesTail(meta.ID, 1); err == nil || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected tail load to validate historical malformed record, got %v", err)
+	}
+	if _, _, err := store.LoadMessagesBefore(meta.ID, validTail.ID, 1); err == nil || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected before load to validate historical malformed record, got %v", err)
+	}
+}
+
 func TestStoreFeatureListRejectsSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

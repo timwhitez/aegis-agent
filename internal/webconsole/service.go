@@ -1239,15 +1239,15 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
-	messages, err := s.store.LoadMessages(sessionID)
+	messages, hasMoreMessages, err := s.store.LoadMessagesTail(sessionID, limit)
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
-	eventsList, err := s.store.LoadEvents(sessionID)
+	eventsList, _, err := s.store.LoadEventsTail(sessionID, limit)
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
-	background, err := s.store.LoadBackgroundNotifications(sessionID)
+	background, _, err := s.store.LoadBackgroundNotificationsTail(sessionID, limit)
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
@@ -1265,7 +1265,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, fmt.Errorf("load artifact-tracker.json: %w", err)
 	}
-	providerAttempts, err := s.store.LoadProviderAttempts(sessionID)
+	providerAttempts, _, err := s.store.LoadProviderAttemptsTail(sessionID, limit)
 	if err != nil {
 		return SessionDetailResponse{}, fmt.Errorf("load provider-attempts.jsonl: %w", err)
 	}
@@ -1298,14 +1298,16 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return SessionDetailResponse{}, fmt.Errorf("load planmode.json: %w", err)
 	}
-	ownerEvents := eventsList
-	fileChanges := collectSessionFileChanges(messages)
-	hasMoreMessages := limit > 0 && len(messages) > limit
-	messages = tailMessages(messages, limit)
-	eventsList = tailEvents(eventsList, limit)
+	ownerEvents, _, err := s.store.LoadEventsTail(sessionID, 1000)
+	if err != nil {
+		return SessionDetailResponse{}, err
+	}
+	fileChanges, err := collectSessionFileChangesFromStore(s.store, sessionID)
+	if err != nil {
+		return SessionDetailResponse{}, err
+	}
 	background = tailBackground(dedupeBackgroundNotifications(background), limit)
 	steers = tailSteers(steers, limit)
-	providerAttempts = tailProviderAttempts(providerAttempts, limit)
 	if messages == nil {
 		messages = []session.Message{}
 	}
@@ -2214,43 +2216,21 @@ func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Service) handleSessionMessages(w http.ResponseWriter, sessionID string, r *http.Request) {
-	messages, err := s.store.LoadMessages(sessionID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	if messages == nil {
-		messages = []session.Message{}
-	}
-
 	limit := queryBoundedInt(r, "limit", 40, 1, 200)
 	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
 
 	var page []session.Message
 	hasMore := false
+	var err error
 
 	if beforeID == "" {
-		page = tailMessages(messages, limit)
-		hasMore = len(messages) > limit
+		page, hasMore, err = s.store.LoadMessagesTail(sessionID, limit)
 	} else {
-		var beforeIdx int = -1
-		for i := range messages {
-			if messages[i].ID == beforeID {
-				beforeIdx = i
-				break
-			}
-		}
-		if beforeIdx < 0 {
-			page = []session.Message{}
-		} else {
-			start := beforeIdx - limit
-			if start < 0 {
-				start = 0
-			} else {
-				hasMore = start > 0
-			}
-			page = messages[start:beforeIdx]
-		}
+		page, hasMore, err = s.store.LoadMessagesBefore(sessionID, beforeID, limit)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
 	}
 
 	if page == nil {
@@ -6975,93 +6955,118 @@ func tailMessages(items []session.Message, limit int) []session.Message {
 }
 
 func collectSessionFileChanges(messages []session.Message) []FileChangeSummary {
-	if len(messages) == 0 {
+	collector := newFileChangeCollector()
+	for _, msg := range messages {
+		collector.addMessage(msg)
+	}
+	return collector.summaries()
+}
+
+func collectSessionFileChangesFromStore(store *session.Store, sessionID string) ([]FileChangeSummary, error) {
+	collector := newFileChangeCollector()
+	if err := store.VisitMessages(sessionID, func(msg session.Message) error {
+		collector.addMessage(msg)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return collector.summaries(), nil
+}
+
+type fileChangeAccumulator struct {
+	FileChangeSummary
+	firstSeen int
+}
+
+type fileChangeCollector struct {
+	changes map[string]*fileChangeAccumulator
+	order   int
+}
+
+func newFileChangeCollector() *fileChangeCollector {
+	return &fileChangeCollector{changes: map[string]*fileChangeAccumulator{}}
+}
+
+func (collector *fileChangeCollector) ensure(pathValue string) *fileChangeAccumulator {
+	pathValue = strings.TrimSpace(pathValue)
+	if pathValue == "" {
 		return nil
 	}
-	type fileChangeAccumulator struct {
-		FileChangeSummary
-		firstSeen int
-	}
-	changes := map[string]*fileChangeAccumulator{}
-	order := 0
-	ensure := func(pathValue string) *fileChangeAccumulator {
-		pathValue = strings.TrimSpace(pathValue)
-		if pathValue == "" {
-			return nil
-		}
-		current := changes[pathValue]
-		if current != nil {
-			return current
-		}
-		current = &fileChangeAccumulator{
-			FileChangeSummary: FileChangeSummary{Path: pathValue},
-			firstSeen:         order,
-		}
-		order++
-		changes[pathValue] = current
+	current := collector.changes[pathValue]
+	if current != nil {
 		return current
 	}
+	current = &fileChangeAccumulator{
+		FileChangeSummary: FileChangeSummary{Path: pathValue},
+		firstSeen:         collector.order,
+	}
+	collector.order++
+	collector.changes[pathValue] = current
+	return current
+}
 
-	for _, msg := range messages {
-		for _, call := range msg.ToolCalls {
-			var args map[string]any
-			if len(call.Arguments) > 0 {
-				_ = json.Unmarshal(call.Arguments, &args)
+func (collector *fileChangeCollector) addMessage(msg session.Message) {
+	for _, call := range msg.ToolCalls {
+		var args map[string]any
+		if len(call.Arguments) > 0 {
+			_ = json.Unmarshal(call.Arguments, &args)
+		}
+		switch call.Name {
+		case "write_file":
+			pathValue, _ := args["path"].(string)
+			item := collector.ensure(pathValue)
+			if item == nil {
+				continue
 			}
-			switch call.Name {
-			case "write_file":
-				pathValue, _ := args["path"].(string)
-				item := ensure(pathValue)
+			item.Writes++
+			if content, ok := args["content"].(string); ok {
+				item.LinesAdded += countTextLines(content)
+			}
+		case "edit_file":
+			pathValue, _ := args["path"].(string)
+			item := collector.ensure(pathValue)
+			if item == nil {
+				continue
+			}
+			item.Edits++
+			oldText, _ := args["old_text"].(string)
+			newText, _ := args["new_text"].(string)
+			oldLines := countTextLines(oldText)
+			newLines := countTextLines(newText)
+			if newLines > oldLines {
+				item.LinesAdded += newLines - oldLines
+			}
+			if oldLines > newLines {
+				item.LinesRemoved += oldLines - newLines
+			}
+		case "shell":
+			command, _ := args["command"].(string)
+			for _, redirect := range collectShellRedirectTargets(command) {
+				item := collector.ensure(redirect.path)
 				if item == nil {
 					continue
 				}
-				item.Writes++
-				if content, ok := args["content"].(string); ok {
-					item.LinesAdded += countTextLines(content)
-				}
-			case "edit_file":
-				pathValue, _ := args["path"].(string)
-				item := ensure(pathValue)
-				if item == nil {
-					continue
-				}
-				item.Edits++
-				oldText, _ := args["old_text"].(string)
-				newText, _ := args["new_text"].(string)
-				oldLines := countTextLines(oldText)
-				newLines := countTextLines(newText)
-				if newLines > oldLines {
-					item.LinesAdded += newLines - oldLines
-				}
-				if oldLines > newLines {
-					item.LinesRemoved += oldLines - newLines
-				}
-			case "shell":
-				command, _ := args["command"].(string)
-				for _, redirect := range collectShellRedirectTargets(command) {
-					item := ensure(redirect.path)
-					if item == nil {
-						continue
-					}
-					if redirect.append {
-						item.Edits++
-					} else {
-						item.Writes++
-					}
+				if redirect.append {
+					item.Edits++
+				} else {
+					item.Writes++
 				}
 			}
 		}
 	}
-	if len(changes) == 0 {
+}
+
+func (collector *fileChangeCollector) summaries() []FileChangeSummary {
+	if len(collector.changes) == 0 {
 		return nil
 	}
-	out := make([]FileChangeSummary, 0, len(changes))
-	for _, item := range changes {
+	out := make([]FileChangeSummary, 0, len(collector.changes))
+	for _, item := range collector.changes {
 		out = append(out, item.FileChangeSummary)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		left := changes[out[i].Path]
-		right := changes[out[j].Path]
+		left := collector.changes[out[i].Path]
+		right := collector.changes[out[j].Path]
 		if left.firstSeen != right.firstSeen {
 			return left.firstSeen < right.firstSeen
 		}

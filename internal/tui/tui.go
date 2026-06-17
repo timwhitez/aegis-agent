@@ -75,16 +75,16 @@ func BuildSnapshot(store *session.Store, selectedID string, limit int) (Snapshot
 		return Snapshot{}, fmt.Errorf("load selected session state.json: %w", err)
 	}
 	snapshot.State = state
-	messages, err := store.LoadMessages(selected.ID)
+	messages, _, err := store.LoadMessagesTail(selected.ID, 6)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load selected session messages.jsonl: %w", err)
 	}
-	snapshot.Messages = tailMessages(messages, 6)
-	eventsList, err := store.LoadEvents(selected.ID)
+	snapshot.Messages = messages
+	eventsList, _, err := store.LoadEventsTail(selected.ID, 8)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load selected session events.jsonl: %w", err)
 	}
-	snapshot.Events = tailEvents(eventsList, 8)
+	snapshot.Events = eventsList
 	children, err := store.ListChildren(selected.ID, limit)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load selected session children: %w", err)

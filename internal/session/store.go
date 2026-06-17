@@ -346,13 +346,10 @@ func (s *Store) AppendMessage(sessionID string, message Message) error {
 	if err != nil {
 		return err
 	}
-	var current []Message
-	if err := readJSONL(path, &current); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("load messages %s: %w", path, err)
-	}
-	current = append(current, message)
-	if err := validateMessages(current); err != nil {
-		return fmt.Errorf("validate messages.jsonl: %w", err)
+	if err := readJSONLVisit(path, func(existing Message) error {
+		return validateMessage(existing)
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("load messages %s: validate messages.jsonl: %w", path, err)
 	}
 	return s.appendJSONL(path, message)
 }
@@ -393,6 +390,49 @@ func (s *Store) LoadMessages(sessionID string) ([]Message, error) {
 	return out, nil
 }
 
+func (s *Store) LoadMessagesTail(sessionID string, limit int) ([]Message, bool, error) {
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return nil, false, err
+	}
+	out, hasMore, err := readJSONLTail(path, limit, func(message Message) error {
+		return validateMessage(message)
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, hasMore, nil
+}
+
+func (s *Store) LoadMessagesBefore(sessionID, beforeID string, limit int) ([]Message, bool, error) {
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return nil, false, err
+	}
+	out, hasMore, err := readJSONLBefore(path, beforeID, limit, func(message Message) string {
+		return message.ID
+	}, func(message Message) error {
+		return validateMessage(message)
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, hasMore, nil
+}
+
+func (s *Store) VisitMessages(sessionID string, visit func(Message) error) error {
+	path, err := s.sessionPath(sessionID, "messages.jsonl")
+	if err != nil {
+		return err
+	}
+	return readJSONLVisit(path, func(message Message) error {
+		if err := validateMessage(message); err != nil {
+			return err
+		}
+		return visit(message)
+	})
+}
+
 func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 	path, err := s.sessionPath(sessionID, "events.jsonl")
 	if err != nil {
@@ -410,6 +450,31 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 		return nil, fmt.Errorf("validate events.jsonl: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) LoadEventsTail(sessionID string, limit int) ([]events.Event, bool, error) {
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return nil, false, err
+	}
+	seen := map[string]struct{}{}
+	out, hasMore, err := readJSONLTail(path, limit, func(event events.Event) error {
+		if err := validateEvent(sessionID, event); err != nil {
+			return err
+		}
+		if _, exists := seen[event.ID]; exists {
+			return fmt.Errorf("duplicate event id: %s", event.ID)
+		}
+		seen[event.ID] = struct{}{}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []events.Event{}, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) LoadContract(sessionID string) (SessionContract, error) {
@@ -641,13 +706,9 @@ func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt)
 	if err != nil {
 		return err
 	}
-	var current []ProviderAttempt
-	err = readJSONL(path, &current)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	current = append(current, attempt)
-	if err := validateProviderAttempts(current); err != nil {
+	if err := readJSONLVisit(path, func(existing ProviderAttempt) error {
+		return validateProviderAttempt(existing)
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("validate provider-attempts.jsonl: %w", err)
 	}
 	if err := s.appendJSONL(path, attempt); err != nil {
@@ -673,6 +734,23 @@ func (s *Store) LoadProviderAttempts(sessionID string) ([]ProviderAttempt, error
 		return nil, fmt.Errorf("validate provider-attempts.jsonl: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) LoadProviderAttemptsTail(sessionID string, limit int) ([]ProviderAttempt, bool, error) {
+	path, err := s.sessionPath(sessionID, "provider-attempts.jsonl")
+	if err != nil {
+		return nil, false, err
+	}
+	out, hasMore, err := readJSONLTail(path, limit, func(attempt ProviderAttempt) error {
+		return validateProviderAttempt(attempt)
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []ProviderAttempt{}, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) SaveProviderRawSidecar(sessionID string, sidecar ProviderRawSidecar) error {
@@ -869,12 +947,17 @@ func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	if err != nil {
 		return err
 	}
-	var existing []events.Event
-	if err := readJSONL(path, &existing); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	existing = append(existing, event)
-	if err := validateEvents(sessionID, existing); err != nil {
+	seen := map[string]struct{}{event.ID: {}}
+	if err := readJSONLVisit(path, func(existing events.Event) error {
+		if err := validateEvent(sessionID, existing); err != nil {
+			return err
+		}
+		if _, ok := seen[existing.ID]; ok {
+			return fmt.Errorf("duplicate event id: %s", existing.ID)
+		}
+		seen[existing.ID] = struct{}{}
+		return nil
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("validate events.jsonl: %w", err)
 	}
 	if err := s.appendJSONL(path, event); err != nil {
@@ -896,17 +979,25 @@ func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
 	if err != nil {
 		return err
 	}
-	var existing []events.Event
-	if err := readJSONL(path, &existing); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		seen[item.ID] = struct{}{}
+	}
+	if err := readJSONLVisit(path, func(existing events.Event) error {
+		if err := validateEvent(sessionID, existing); err != nil {
 			return err
 		}
+		if _, ok := seen[existing.ID]; ok {
+			return fmt.Errorf("duplicate event id: %s", existing.ID)
+		}
+		seen[existing.ID] = struct{}{}
+		return nil
+	}); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("validate events.jsonl: %w", err)
+		}
 	}
-	existing = append(existing, items...)
-	if err := validateEvents(sessionID, existing); err != nil {
-		return fmt.Errorf("validate events.jsonl: %w", err)
-	}
-	if err := s.writeEventsJSONL(path, existing); err != nil {
+	if err := s.appendEventsJSONL(path, items); err != nil {
 		return fmt.Errorf("append events %s: %w", path, err)
 	}
 	return nil
@@ -1130,13 +1221,17 @@ func (s *Store) AppendBackgroundNotification(sessionID string, notification Back
 		return err
 	}
 	return s.withFileLock(lockPath, func() error {
-		var current []BackgroundNotification
-		err := readJSONL(path, &current)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		current = append(current, notification)
-		if err := validateBackgroundNotifications(current); err != nil {
+		seenQueueJobs := map[string]struct{}{notification.QueueJobID: {}}
+		if err := readJSONLVisit(path, func(existing BackgroundNotification) error {
+			if err := validateBackgroundNotification(existing); err != nil {
+				return err
+			}
+			if _, exists := seenQueueJobs[existing.QueueJobID]; exists {
+				return fmt.Errorf("duplicate background notification queue_job_id: %s", existing.QueueJobID)
+			}
+			seenQueueJobs[existing.QueueJobID] = struct{}{}
+			return nil
+		}); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("validate background.jsonl: %w", err)
 		}
 		return s.appendJSONL(path, notification)
@@ -1285,6 +1380,31 @@ func (s *Store) LoadBackgroundNotifications(sessionID string) ([]BackgroundNotif
 		return nil, fmt.Errorf("validate background.jsonl: %w", err)
 	}
 	return out, nil
+}
+
+func (s *Store) LoadBackgroundNotificationsTail(sessionID string, limit int) ([]BackgroundNotification, bool, error) {
+	path, err := s.sessionPath(sessionID, "control", "background.jsonl")
+	if err != nil {
+		return nil, false, err
+	}
+	seenQueueJobs := map[string]struct{}{}
+	out, hasMore, err := readJSONLTail(path, limit, func(notification BackgroundNotification) error {
+		if err := validateBackgroundNotification(notification); err != nil {
+			return err
+		}
+		if _, exists := seenQueueJobs[notification.QueueJobID]; exists {
+			return fmt.Errorf("duplicate background notification queue_job_id: %s", notification.QueueJobID)
+		}
+		seenQueueJobs[notification.QueueJobID] = struct{}{}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return []BackgroundNotification{}, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return out, hasMore, nil
 }
 
 func (s *Store) UpdateBackgroundNotifications(sessionID string, notifications []BackgroundNotification) error {
@@ -2562,6 +2682,25 @@ func (s *Store) appendJSONL(path string, payload any) error {
 	return enc.Encode(payload)
 }
 
+func (s *Store) appendEventsJSONL(path string, payload []events.Event) error {
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	file, err := openAppendNoSymlink(path, s.fileMode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	chmodBestEffort(path, s.fileMode)
+	enc := json.NewEncoder(file)
+	for _, item := range payload {
+		if err := enc.Encode(item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *Store) writeJSONL(path string, payload any) error {
 	if err := s.ensureDir(filepath.Dir(path)); err != nil {
 		return err
@@ -3340,6 +3479,91 @@ func relativePathWithinRoot(root, target string) (string, bool) {
 }
 
 func readJSONL[T any](path string, out *[]T) error {
+	return readJSONLVisit(path, func(item T) error {
+		*out = append(*out, item)
+		return nil
+	})
+}
+
+func readJSONLTail[T any](path string, limit int, validate func(T) error) ([]T, bool, error) {
+	if limit <= 0 {
+		var out []T
+		err := readJSONLVisit(path, func(item T) error {
+			if validate != nil {
+				if err := validate(item); err != nil {
+					return err
+				}
+			}
+			out = append(out, item)
+			return nil
+		})
+		return out, false, err
+	}
+	out := make([]T, 0, limit)
+	count := 0
+	err := readJSONLVisit(path, func(item T) error {
+		if validate != nil {
+			if err := validate(item); err != nil {
+				return err
+			}
+		}
+		count++
+		if len(out) < limit {
+			out = append(out, item)
+			return nil
+		}
+		copy(out, out[1:])
+		out[len(out)-1] = item
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return out, count > limit, nil
+}
+
+func readJSONLBefore[T any](path, beforeID string, limit int, idOf func(T) string, validate func(T) error) ([]T, bool, error) {
+	if strings.TrimSpace(beforeID) == "" {
+		return readJSONLTail(path, limit, validate)
+	}
+	if limit <= 0 {
+		limit = 1
+	}
+	window := make([]T, 0, limit)
+	seenBefore := false
+	countBefore := 0
+	err := readJSONLVisit(path, func(item T) error {
+		if validate != nil {
+			if err := validate(item); err != nil {
+				return err
+			}
+		}
+		if seenBefore {
+			return nil
+		}
+		if idOf != nil && idOf(item) == beforeID {
+			seenBefore = true
+			return nil
+		}
+		countBefore++
+		if len(window) < limit {
+			window = append(window, item)
+			return nil
+		}
+		copy(window, window[1:])
+		window[len(window)-1] = item
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !seenBefore {
+		return []T{}, false, nil
+	}
+	return window, countBefore > limit, nil
+}
+
+func readJSONLVisit[T any](path string, visit func(T) error) error {
 	if err := rejectSymlinkPathAncestors(path); err != nil {
 		return err
 	}
@@ -3359,7 +3583,11 @@ func readJSONL[T any](path string, out *[]T) error {
 		if err := json.Unmarshal(line, &item); err != nil {
 			return err
 		}
-		*out = append(*out, item)
+		if visit != nil {
+			if err := visit(item); err != nil {
+				return err
+			}
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		if strings.Contains(err.Error(), "token too long") {
