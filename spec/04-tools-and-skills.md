@@ -129,6 +129,7 @@ v1 内置工具固定为：
 - 在工作区内递归搜索文本
 - 例外：已注册 skill bundle 文件和目录属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径搜索；不得把这些路径误解析成 `workspace/skills/...`
 - 返回匹配文件、行号、片段摘要
+- 支持可选 `include` glob 过滤，语义与 `grep_files.include` 一致
 - 默认跳过常见构建产物、缓存目录和二进制文件
 - 命中文件内容读取必须复用 capped regular-file reader；超出 16 MiB 的单文件应跳过或返回受控错误，不得完整读入内存后再截断
 - 更适合“已经知道要找哪类证据，只差精确行号”的场景，而不是大范围初筛

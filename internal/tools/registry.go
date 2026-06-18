@@ -1048,6 +1048,10 @@ func defGrep() Definition {
 					"type":        "string",
 					"description": "Optional workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Omit to search the workspace.",
 				},
+				"include": map[string]any{
+					"type":        "string",
+					"description": "Optional glob filter for searched files, for example **/*.go or spec/*.md.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -1055,6 +1059,7 @@ func defGrep() Definition {
 			var input struct {
 				Pattern string `json:"pattern"`
 				Path    string `json:"path"`
+				Include string `json:"include"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep", err), nil
@@ -1092,6 +1097,9 @@ func defGrep() Definition {
 					return nil
 				}
 				if !info.Mode().IsRegular() {
+					return nil
+				}
+				if input.Include != "" && !pathMatchesInclude(root.displayBase, path, input.Include) {
 					return nil
 				}
 				data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)

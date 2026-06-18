@@ -3873,7 +3873,8 @@ func TestGrepAllowsRegisteredSkillReferencesOutsideWorkspace(t *testing.T) {
 
 	grepResult, err = registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
 		"path":"skills/pentest-toolset/references/01-cli-contract.md",
-		"pattern":"schema"
+		"pattern":"schema",
+		"include":"**/*.md"
 	}`))
 	if err != nil {
 		t.Fatalf("grep skill path: %v", err)
@@ -3883,6 +3884,18 @@ func TestGrepAllowsRegisteredSkillReferencesOutsideWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(grepResult.DisplayOutput, "skills/pentest-toolset/references/01-cli-contract.md:3:Use schema first.") {
 		t.Fatalf("expected skill-relative grep output, got %q", grepResult.DisplayOutput)
+	}
+
+	grepResult, err = registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"path":"skills/pentest-toolset/references",
+		"pattern":"schema",
+		"include":"**/*.txt"
+	}`))
+	if err != nil {
+		t.Fatalf("grep skill path with include filter: %v", err)
+	}
+	if grepResult.IsError || strings.TrimSpace(grepResult.DisplayOutput) != "(no matches)" {
+		t.Fatalf("expected include filter to suppress md match, got %#v", grepResult)
 	}
 
 	grepFilesResult, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
