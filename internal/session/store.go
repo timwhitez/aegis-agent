@@ -1911,6 +1911,97 @@ func (s *Store) DeleteJob(jobID string) error {
 	return s.deleteJobLocked(jobID)
 }
 
+func (s *Store) StopQueuedJob(jobID, parentSessionID, lastError string) (QueueJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, err
+	}
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if parentSessionID != "" {
+		if err := validateStoreID("queue job parent session", parentSessionID); err != nil {
+			return QueueJob{}, err
+		}
+	}
+	queuedPath := s.queueJobPath(QueueStatusQueued, jobID)
+	failedPath := s.queueJobPath(QueueStatusFailed, jobID)
+	var job QueueJob
+	if err := readJSONFile(queuedPath, &job); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
+			if loadErr != nil {
+				return QueueJob{}, loadErr
+			}
+			if len(copies) == 0 {
+				return QueueJob{}, os.ErrNotExist
+			}
+			current := canonicalQueueJobCopy(copies).job
+			if parentSessionID != "" && strings.TrimSpace(current.ParentSessionID) != parentSessionID {
+				return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", current.ID, parentSessionID)
+			}
+			return QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be safely stopped", current.ID, current.Status)
+		}
+		return QueueJob{}, err
+	}
+	if job.ID != jobID {
+		return QueueJob{}, fmt.Errorf("queue job %s id mismatch in queued file: %s", jobID, job.ID)
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if err := validateQueueJobStatusDirectory(job, QueueStatusQueued); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if parentSessionID != "" && strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+		return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
+	}
+	previous := job
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job.Status = QueueStatusFailed
+	job.UpdatedAt = now
+	job.LastError = strings.TrimSpace(lastError)
+	if job.LastError == "" {
+		job.LastError = "stopped before worker claim"
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, err
+	}
+	if err := fileutil.RenamePathNoSymlink(queuedPath, failedPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
+			if loadErr != nil {
+				return QueueJob{}, loadErr
+			}
+			if len(copies) == 0 {
+				return QueueJob{}, os.ErrNotExist
+			}
+			current := canonicalQueueJobCopy(copies).job
+			return QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be safely stopped", current.ID, current.Status)
+		}
+		return QueueJob{}, err
+	}
+	if err := s.writeJSONFile(failedPath, job); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(failedPath, queuedPath); rollbackErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; rollback stopped job: %v", err, rollbackErr)
+		}
+		if restoreErr := s.writeJSONFile(queuedPath, previous); restoreErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; restore queued job: %v", err, restoreErr)
+		}
+		return QueueJob{}, err
+	}
+	for _, status := range queueStatuses() {
+		path := s.queueJobPath(status, job.ID)
+		if path == failedPath {
+			continue
+		}
+		_ = fileutil.RemoveFileNoSymlink(path)
+	}
+	return job, nil
+}
+
 func (s *Store) saveJobLocked(job QueueJob) error {
 	if strings.TrimSpace(job.Status) == "" {
 		job.Status = QueueStatusQueued

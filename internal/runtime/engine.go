@@ -917,8 +917,28 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		switch meta.Mode {
 		case session.ModeRun:
+			if reminder, err := e.unresolvedBackgroundExitReminder(meta.ID); err != nil || reminder != "" {
+				if err != nil {
+					return RunResult{}, err
+				}
+				if _, err := e.appendHarnessReminder(meta, "turn_decide", reminder, "background_work_unresolved"); err != nil {
+					return RunResult{}, err
+				}
+				doneCandidates = 0
+				continue
+			}
 			return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 		case session.ModeExec, session.ModeInit:
+			if reminder, err := e.unresolvedBackgroundExitReminder(meta.ID); err != nil || reminder != "" {
+				if err != nil {
+					return RunResult{}, err
+				}
+				if _, err := e.appendHarnessReminder(meta, "turn_decide", reminder, "background_work_unresolved"); err != nil {
+					return RunResult{}, err
+				}
+				doneCandidates = 0
+				continue
+			}
 			if doneCandidates == 0 {
 				doneCandidates++
 				if _, err := e.appendHarnessReminder(meta, "turn_decide", "Harness reminder: if the task is complete, call the finish tool explicitly.", "finish_required"); err != nil {
@@ -1005,6 +1025,20 @@ func backgroundWaitQueueJobID(result session.ToolResult) string {
 	}
 	jobID, _ := result.Metadata["queue_job_id"].(string)
 	return strings.TrimSpace(jobID)
+}
+
+func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, error) {
+	coordination, err := e.store.LoadParentCoordination(sessionID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("load parent coordination before awaiting input: %w", err)
+	}
+	if coordination.ParentSessionID == "" || (len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0) {
+		return "", nil
+	}
+	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running (children: %s; jobs: %s). Do not stop the parent run while sub-agent work is unresolved. Either call agent_wait with a required queue_job_id to park and auto-resume when that background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting. Running child work cannot be safely stopped without a durable control handle; wait for it or inspect it before concluding.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
 func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager, queueJobID string) (RunResult, error) {

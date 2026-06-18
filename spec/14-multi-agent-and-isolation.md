@@ -107,6 +107,8 @@ child session 使用独立工作目录执行。当前支持：
 新增 built-in tools：
 
 - `agent_spawn`
+- `agent_wait`
+- `agent_stop`
 - `agent_status`
 - `agent_list`
 
@@ -144,6 +146,32 @@ child session 使用独立工作目录执行。当前支持：
 - `resume_parent=true` 只在 `background=true` 下生效，表示 master agent 明确选择本轮暂时停止推进，进入 `awaiting_input` / `background_wait`，等待该 background child 产生 durable notification 后由 harness 自动接纳结果并继续 parent loop
 - `background=false` 时同步执行 child session，直到 child 到达稳定状态
 - `agent_role` 允许显式声明 `planner` / `generator` / `evaluator`；`agent_name` 只作为人类可读标签，不参与 role provider override 匹配；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
+
+#### `agent_wait`
+
+输入：
+
+- `queue_job_id`
+
+行为：
+
+- parent agent 显式选择暂时停车等待一个 background child job
+- runtime 将 parent 进入 `awaiting_input` / `background_wait`，等待该 job 的 background notification 后自动接纳结果并继续 parent loop
+- 该工具不取消、不停止 child work；若 child work 不再需要，parent 必须先通过可用控制面解决该 work，再退出
+
+#### `agent_stop`
+
+输入：
+
+- `queue_job_id`
+
+行为：
+
+- parent agent 显式停止一个尚未被 worker claim 的 queued background child job
+- stopped job 进入 failed terminal queue 状态，并从 parent coordination 的 unresolved job 集合中移除
+- runtime 写入 background notification，使 parent transcript 后续可看到该 job 已被停止
+- 该工具当前不能安全停止 `running` / `blocked` child job；如果 job 已经启动，parent 必须使用 `agent_wait` 等待结果，或通过 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理
+- 不允许把 running child 仅在 parent coordination 中标记为 resolved；停止必须有真实 durable 结果或可验证的控制动作
 
 #### `agent_status`
 

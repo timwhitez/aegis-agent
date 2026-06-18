@@ -4962,6 +4962,76 @@ func TestClaimNextQueuedJobWritesLease(t *testing.T) {
 	}
 }
 
+func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_stop_queued",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+
+	stopped, err := store.StopQueuedJob(job.ID, "", "stopped before claim")
+	if err != nil {
+		t.Fatalf("stop queued job: %v", err)
+	}
+	if stopped.Status != QueueStatusFailed || stopped.LastError != "stopped before claim" {
+		t.Fatalf("expected failed stopped job, got %#v", stopped)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected queued job to be removed, got %v", err)
+	}
+	loaded, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load stopped job: %v", err)
+	}
+	if loaded.Status != QueueStatusFailed || loaded.LastError != stopped.LastError {
+		t.Fatalf("expected stopped failed job to load, got %#v", loaded)
+	}
+}
+
+func TestStopQueuedJobRejectsAlreadyClaimedJobAndPreservesRunning(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_stop_claimed",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err != nil || !ok {
+		t.Fatalf("claim queued job: ok=%v err=%v", ok, err)
+	}
+
+	stopped, err := store.StopQueuedJob(job.ID, "", "stopped too late")
+	if err == nil {
+		t.Fatalf("expected claimed job stop rejection, got %#v", stopped)
+	}
+	if !strings.Contains(err.Error(), "cannot be safely stopped") {
+		t.Fatalf("expected safe stop boundary error, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusFailed, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("claimed job should not get a failed stop copy, got %v", err)
+	}
+	loaded, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load claimed job: %v", err)
+	}
+	if loaded.Status != QueueStatusRunning || loaded.ClaimedAt != claimed.ClaimedAt {
+		t.Fatalf("expected claimed running job to be preserved, got %#v", loaded)
+	}
+}
+
 func TestClaimNextQueuedJobRollsBackWhenLeaseWriteFails(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	job := QueueJob{

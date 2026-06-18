@@ -670,7 +670,7 @@ func TestLongRunCheckpointMirrorsParentCoordinationUnresolvedWork(t *testing.T) 
 	}
 }
 
-func TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork(t *testing.T) {
+func TestLongRunCheckpointKeepsWaitAnyBlockedWithRemainingUnresolvedWork(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := addParentQueueJob(store, meta.ID, "job_unresolved", "wait-any"); err != nil {
 		t.Fatalf("add unresolved parent queue job: %v", err)
@@ -689,14 +689,14 @@ func TestLongRunCheckpointKeepsWaitAnyReadyWithRemainingUnresolvedWork(t *testin
 	if err != nil {
 		t.Fatalf("load checkpoint: %v", err)
 	}
-	if checkpoint.ParentWaitState != "ready" {
-		t.Fatalf("expected wait-any checkpoint to remain ready after one completion, got %#v", checkpoint)
+	if checkpoint.ParentWaitState != "waiting" {
+		t.Fatalf("expected wait-any checkpoint to keep waiting while unresolved work remains, got %#v", checkpoint)
 	}
 	if !containsString(checkpoint.UnresolvedQueueJobs, "job_unresolved") {
 		t.Fatalf("expected unresolved wait-any queue job to stay visible, got %#v", checkpoint.UnresolvedQueueJobs)
 	}
-	if containsString(checkpoint.ResumeHints, "resolve parent child or queue wait state") {
-		t.Fatalf("ready wait-any checkpoint should not add parent wait hint, got %#v", checkpoint.ResumeHints)
+	if !containsString(checkpoint.ResumeHints, "resolve parent child or queue wait state") {
+		t.Fatalf("unresolved wait-any checkpoint should keep parent wait hint, got %#v", checkpoint.ResumeHints)
 	}
 }
 
@@ -1443,7 +1443,7 @@ func TestCheckpointResumeHintReportsCorruptContractSnapshot(t *testing.T) {
 	}
 }
 
-func TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion(t *testing.T) {
+func TestParentCoordinationGateBlocksWhileAnyChildOrQueueWorkIsUnresolved(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	controller := NewCompletionController(store, meta.ID, meta.Workdir, false, nil)
 
@@ -1462,8 +1462,18 @@ func TestParentCoordinationGateBlocksWaitAllAndAllowsWaitAnyAfterOneCompletion(t
 		t.Fatalf("resolve queue job: %v", err)
 	}
 	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
+	if decision.Status != GateBlock || decision.GateID != "parent_coordination" {
+		t.Fatalf("expected wait-any to keep blocking while another child is unresolved, got %#v", decision)
+	}
+	if !strings.Contains(decision.ModelMessage, "agent_wait") || !strings.Contains(decision.ModelMessage, "agent_stop") {
+		t.Fatalf("expected wait-or-stop guidance, got %q", decision.ModelMessage)
+	}
+	if err := resolveParentChildSession(store, meta.ID, "child-1", session.StatusCompleted); err != nil {
+		t.Fatalf("resolve child: %v", err)
+	}
+	decision = controller.EvaluateToolCall(nil, "finish", json.RawMessage(`{}`))
 	if decision.Status != GateAllow {
-		t.Fatalf("expected wait-any to allow finish after one completion, got %#v", decision)
+		t.Fatalf("expected finish to be allowed after all child/queue work resolves, got %#v", decision)
 	}
 }
 

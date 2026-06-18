@@ -96,6 +96,22 @@ type AgentStatusRequest struct {
 	QueueJobID      string `json:"queue_job_id,omitempty"`
 }
 
+type AgentWaitRequest struct {
+	ParentSessionID string `json:"-"`
+	QueueJobID      string `json:"queue_job_id"`
+}
+
+type AgentStopRequest struct {
+	ParentSessionID string `json:"-"`
+	QueueJobID      string `json:"queue_job_id"`
+}
+
+type AgentStopResult struct {
+	QueueJobID string `json:"queue_job_id"`
+	Status     string `json:"status"`
+	LastError  string `json:"last_error,omitempty"`
+}
+
 type AgentStatusResult struct {
 	SessionID     string `json:"session_id,omitempty"`
 	QueueJobID    string `json:"queue_job_id,omitempty"`
@@ -120,6 +136,7 @@ const (
 
 type ControlPlane interface {
 	SpawnAgent(context.Context, AgentSpawnRequest) (AgentSpawnResult, error)
+	StopAgent(context.Context, AgentStopRequest) (AgentStopResult, error)
 	AgentStatus(context.Context, AgentStatusRequest) (AgentStatusResult, error)
 	AgentList(context.Context, string) (AgentListResult, error)
 }
@@ -136,7 +153,7 @@ var beforeShellCommandStart func(workdir string) error
 var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
 	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
-	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_status": {},
+	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_wait": {}, "agent_stop": {}, "agent_status": {},
 	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
 }
@@ -392,6 +409,8 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 	if cfg != nil && cfg.Runtime.MultiAgent.Enabled {
 		defs = append(defs,
 			defAgentSpawn(control),
+			defAgentWait(control),
+			defAgentStop(control),
 			defAgentStatus(control),
 			defAgentList(control),
 		)
@@ -3303,6 +3322,94 @@ func defAgentStatus(control ControlPlane) Definition {
 			}
 			data, _ := json.MarshalIndent(result, "", "  ")
 			return session.ToolResult{Name: "agent_status", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+		},
+	}
+}
+
+func defAgentWait(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_wait",
+		Description: "Park the parent agent until a specific background child job reports a durable result, then automatically resume the parent with that result in context. Use this when unresolved background work is required before the parent can proceed or exit. This does not cancel or stop child work.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"queue_job_id": map[string]any{
+					"type":        "string",
+					"description": "Background queue job id returned by agent_spawn(background=true) or agent_list.",
+				},
+			},
+			"required": []string{"queue_job_id"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input AgentWaitRequest
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("agent_wait", err), nil
+			}
+			if strings.TrimSpace(input.QueueJobID) == "" {
+				return errorResult("agent_wait", errors.New("queue_job_id is required")), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_wait", err), nil
+			}
+			if control != nil {
+				input.ParentSessionID = execCtx.SessionID
+				if _, err := control.AgentStatus(ctx, AgentStatusRequest{ParentSessionID: input.ParentSessionID, QueueJobID: input.QueueJobID}); err != nil {
+					return errorResult("agent_wait", err), nil
+				}
+			}
+			output := map[string]any{
+				"queue_job_id":    strings.TrimSpace(input.QueueJobID),
+				"background_wait": true,
+			}
+			data, _ := json.MarshalIndent(output, "", "  ")
+			return session.ToolResult{
+				Name:          "agent_wait",
+				LLMOutput:     string(data),
+				DisplayOutput: string(data),
+				Metadata: map[string]any{
+					"background_wait": true,
+					"queue_job_id":    strings.TrimSpace(input.QueueJobID),
+				},
+			}, nil
+		},
+	}
+}
+
+func defAgentStop(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_stop",
+		Description: "Stop a queued background child job before any worker claims it, so the parent may exit without leaving unresolved sub-agent work. This cannot safely stop a running child job; if the job is already running or blocked, use agent_wait or inspect it with agent_status/agent_list.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"queue_job_id": map[string]any{
+					"type":        "string",
+					"description": "Queued background job id returned by agent_spawn(background=true) or agent_list.",
+				},
+			},
+			"required": []string{"queue_job_id"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			if control == nil {
+				return errorResult("agent_stop", errors.New("agent control plane is not available")), nil
+			}
+			var input AgentStopRequest
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("agent_stop", err), nil
+			}
+			if strings.TrimSpace(input.QueueJobID) == "" {
+				return errorResult("agent_stop", errors.New("queue_job_id is required")), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_stop", err), nil
+			}
+			input.ParentSessionID = execCtx.SessionID
+			result, err := control.StopAgent(ctx, input)
+			if err != nil {
+				return errorResult("agent_stop", err), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return session.ToolResult{Name: "agent_stop", LLMOutput: string(data), DisplayOutput: string(data)}, nil
 		},
 	}
 }

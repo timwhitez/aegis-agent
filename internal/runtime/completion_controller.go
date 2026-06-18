@@ -308,14 +308,7 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
 		return "", "", nil
 	}
-	if coordination.WaitMode == "wait-any" && (len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
-		_ = c.emitCompletion("parent_coordination.gate.warned", map[string]any{
-			"unresolved_child_sessions": coordination.UnresolvedChildSessions,
-			"unresolved_queue_jobs":     coordination.UnresolvedQueueJobs,
-		})
-		return "", "", nil
-	}
-	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Wait for completion, mark wait_mode=wait-any with one completed result, or explicitly resolve the outstanding work.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Wait for completion with agent_wait, stop queued background work that is no longer needed with agent_stop, or explicitly resolve the outstanding work before finishing.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
 func (c *CompletionController) goalCompletionGate(toolName string) (string, string) {

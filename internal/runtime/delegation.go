@@ -305,6 +305,77 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 	}, nil
 }
 
+func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools.AgentStopResult, error) {
+	parentSessionID := strings.TrimSpace(req.ParentSessionID)
+	if parentSessionID == "" {
+		return tools.AgentStopResult{}, errors.New("parent session id is required")
+	}
+	parentMeta, err := r.store.LoadMetadata(parentSessionID)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	jobID := strings.TrimSpace(req.QueueJobID)
+	if jobID == "" {
+		return tools.AgentStopResult{}, errors.New("queue_job_id is required")
+	}
+	job, err := r.store.LoadJob(jobID)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	if strings.TrimSpace(job.ParentSessionID) != parentMeta.ID {
+		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentMeta.ID)
+	}
+	if job.Status != session.QueueStatusQueued {
+		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is %s and cannot be safely stopped by parent; use agent_wait or inspect it with agent_status", job.ID, job.Status)
+	}
+	previousJob := job
+	coordinationSnapshot, err := r.store.SnapshotParentCoordination(parentMeta.ID)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	notificationSnapshot, err := r.store.SnapshotBackgroundNotification(parentMeta.ID, job.ID)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	job, err = r.store.StopQueuedJob(job.ID, parentMeta.ID, "stopped by parent agent before worker claim")
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	if err := resolveParentQueueJob(r.store, parentMeta.ID, job.ID, job.Status); err != nil {
+		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("resolve parent coordination after stopping job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
+		}
+		return tools.AgentStopResult{}, err
+	}
+	if err := r.store.EnsureBackgroundNotification(parentMeta.ID, session.NewBackgroundNotification(job)); err != nil {
+		if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, coordinationSnapshot); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("append stop notification for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)
+		}
+		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("append stop notification for job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
+		}
+		return tools.AgentStopResult{}, err
+	}
+	if err := r.appendEvent(parentMeta.ID, "queue.job.stopped", "delegate", map[string]any{
+		"job_id":     job.ID,
+		"last_error": job.LastError,
+	}); err != nil {
+		if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, coordinationSnapshot); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)
+		}
+		if restoreErr := r.store.RestoreBackgroundNotification(parentMeta.ID, notificationSnapshot); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore notification: %w", job.ID, err, restoreErr)
+		}
+		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
+			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
+		}
+		return tools.AgentStopResult{}, err
+	}
+	_ = writeSessionSummary(r.store, parentMeta.ID)
+	_ = writeLongRunCheckpoint(r.store, parentMeta.ID)
+	return tools.AgentStopResult{QueueJobID: job.ID, Status: job.Status, LastError: job.LastError}, nil
+}
+
 func (r *Runner) AgentList(_ context.Context, parentSessionID string) (tools.AgentListResult, error) {
 	if _, err := r.store.LoadMetadata(parentSessionID); err != nil {
 		return tools.AgentListResult{}, err

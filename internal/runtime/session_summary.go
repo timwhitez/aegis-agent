@@ -506,10 +506,6 @@ func checkpointParentWaitState(coordination session.ParentCoordination) string {
 		}
 		return ""
 	}
-	if normalizeParentWaitMode(coordination.WaitMode) == parentWaitAny &&
-		(len(coordination.CompletedChildSessions) > 0 || len(coordination.CompletedQueueJobs) > 0) {
-		return "ready"
-	}
 	if coordination.Parked {
 		return "parked"
 	}

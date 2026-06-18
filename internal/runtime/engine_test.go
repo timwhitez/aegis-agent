@@ -142,6 +142,80 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	}
 }
 
+func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate but do not lose child")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, _, err := engine.store.MutateParentCoordination(meta.ID, func(coordination *session.ParentCoordination) error {
+		*coordination = session.ParentCoordination{
+			SchemaVersion:       1,
+			ParentSessionID:     meta.ID,
+			WaitMode:            "wait-all",
+			UnresolvedQueueJobs: []string{"job_unresolved"},
+			Parked:              true,
+			UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	turns := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
+			return provider.TurnResult{Text: "I will stop now", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
+			return provider.TurnResult{
+				ToolCalls: []provider.ToolCall{{
+					ID:        "call_wait",
+					Name:      "agent_wait",
+					Arguments: json.RawMessage(`{"queue_job_id":"job_unresolved"}`),
+				}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		if err := resolveParentQueueJob(engine.store, meta.ID, "job_unresolved", session.QueueStatusCompleted); err != nil {
+			return
+		}
+		job := session.QueueJob{ID: "job_unresolved", Status: session.QueueStatusCompleted, ParentSessionID: meta.ID, SessionID: "child_unresolved", SessionStatus: session.StatusCompleted, FinalText: "child finished", ResumeParent: true}
+		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+	}()
+	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
+	engine.SetRunner(runner)
+
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.FinalText != "continued" || len(runner.requests) != 1 {
+		t.Fatalf("expected background continue after agent_wait, result=%#v requests=%#v", result, runner.requests)
+	}
+	if turns != 2 {
+		t.Fatalf("expected reminder to force a second provider turn, got %d", turns)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var foundReminder bool
+	for _, msg := range messages {
+		if msg.Meta["kind"] == "background_work_unresolved" && strings.Contains(msg.Text, "Do not stop the parent run") && strings.Contains(msg.Text, "agent_wait") {
+			foundReminder = true
+		}
+	}
+	if !foundReminder {
+		t.Fatalf("expected unresolved background reminder, got %#v", messages)
+	}
+}
+
 func TestEnginePreservesLoadedSkillStateAcrossNextTurn(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngineWithSkill(t, session.ModeRun, "helpers", "helper skill", "FULL SKILL BODY")
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "load helper")); err != nil {
@@ -5355,6 +5429,10 @@ type backgroundWaitControl struct{}
 
 func (backgroundWaitControl) SpawnAgent(_ context.Context, req tools.AgentSpawnRequest) (tools.AgentSpawnResult, error) {
 	return tools.AgentSpawnResult{QueueJobID: "job_background_wait", Status: session.QueueStatusQueued}, nil
+}
+
+func (backgroundWaitControl) StopAgent(context.Context, tools.AgentStopRequest) (tools.AgentStopResult, error) {
+	return tools.AgentStopResult{}, errors.New("unexpected agent_stop")
 }
 
 func (backgroundWaitControl) AgentStatus(context.Context, tools.AgentStatusRequest) (tools.AgentStatusResult, error) {

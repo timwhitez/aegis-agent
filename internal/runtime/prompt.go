@@ -1134,7 +1134,7 @@ func isRetrievalResult(result session.ToolResult) bool {
 
 func isActionTool(name string) bool {
 	switch name {
-	case "write_file", "edit_file", "finish", "todo_write", "task_create", "task_update", "agent_spawn":
+	case "write_file", "edit_file", "finish", "todo_write", "task_create", "task_update", "agent_spawn", "agent_wait", "agent_stop":
 		return true
 	default:
 		return false

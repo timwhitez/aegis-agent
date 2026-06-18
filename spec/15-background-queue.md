@@ -198,6 +198,8 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 
 若 job 带有 `resume_parent=true`，这是 parent agent 自己选择停车等待的事实。活跃 parent run 可以在 `agent_spawn(background=true, resume_parent=true)` 的 tool result 落盘后进入 `awaiting_input` / `background_wait`，保持 auto worker 存活；worker 写入该 job 的 background notification 后，parent 在同一 harness 流程中自动接纳 `<background-agent-results>` 并继续下一次 provider turn。该能力不能由 runtime 自动替 parent 决定，只能由模型显式选择。
 
+当 parent coordination 仍存在 unresolved child session 或 queue job 时，parent 的普通 `run` 自然停顿不能直接退出到普通 `awaiting_input`。runtime 应提醒模型先选择 `agent_wait` 停车等待，或通过 `agent_stop` 停止尚未被 worker claim 的 queued job；对于已经 running / blocked 的 child work，模型必须通过 `agent_wait` 等待结果，或用 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理。`finish` 同样由 parent coordination gate 阻断 unresolved work，即使 `wait_mode=wait-any` 已经收到一个完成结果，也不能带着其他未结束 child/job 退出。
+
 ### 5.4 失败定义
 
 以下情况标记 job `failed`：

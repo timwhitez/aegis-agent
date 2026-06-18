@@ -255,6 +255,76 @@ func TestRunnerQueueSubmitPersistsResumeParent(t *testing.T) {
 	}
 }
 
+func TestRunnerStopAgentStopsQueuedJobAndResolvesParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "queued child task",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
+	if err != nil {
+		t.Fatalf("stop agent: %v", err)
+	}
+	if result.Status != session.QueueStatusFailed || !strings.Contains(result.LastError, "stopped") {
+		t.Fatalf("unexpected stop result: %#v", result)
+	}
+	loaded, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load stopped job: %v", err)
+	}
+	if loaded.Status != session.QueueStatusFailed || !strings.Contains(loaded.LastError, "stopped") {
+		t.Fatalf("expected failed stopped job, got %#v", loaded)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.FailedQueueJobs, job.ID) || coordination.Parked {
+		t.Fatalf("expected stopped job to resolve parent coordination, got %#v", coordination)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].QueueJobID != job.ID || notifications[0].Status != session.QueueStatusFailed || !strings.Contains(notifications[0].LastError, "stopped") {
+		t.Fatalf("expected failed stop notification, got %#v", notifications)
+	}
+}
+
+func TestRunnerStopAgentRejectsRunningJob(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "running child task",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	claimed, ok, err := runner.store.ClaimNextQueuedJob()
+	if err != nil || !ok {
+		t.Fatalf("claim queued job: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != job.ID || claimed.Status != session.QueueStatusRunning {
+		t.Fatalf("unexpected claimed job: %#v", claimed)
+	}
+	result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
+	if err == nil {
+		t.Fatalf("expected running job stop rejection, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "cannot be safely stopped") {
+		t.Fatalf("expected safe stop boundary error, got %v", err)
+	}
+}
+
 func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

@@ -227,7 +227,7 @@ The coordination file records:
 - completed and failed children/jobs
 - parked/resumed state
 
-The completion controller blocks parent `finish` while unresolved child/queue work remains under `wait-all`. Under `wait-any`, completion can proceed after one child/job result is complete, while remaining work stays visible in the coordination file and `session.md`.
+The completion controller blocks parent `finish` while any unresolved child/queue work remains. `wait-any` can let the parent continue after one child/job result is available, but it is not a completion exemption: before the parent exits, every remaining child/job must either finish, produce a durable stopped/failed result, or be explicitly resolved through a real control action such as stopping an unclaimed queued job.
 
 ## 9. Workspace Extension Trust
 
