@@ -7,6 +7,7 @@ const POLL_INTERVAL_ACTIVE_MS = 1600;
 const WS_RECONNECT_BASE_MS = 1000;
 const WS_RECONNECT_MAX_MS = 30000;
 const MAX_LIVE_EVENTS = 80;
+const STOP_REQUEST_HOLD_MS = 15000;
 const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
 const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
 const DEFAULT_LIVE_ACTIVITY = {
@@ -108,7 +109,8 @@ const toastViewState = {
 };
 
 const stopActionViewState = {
-  sessionIds: new Set()
+  sessionIds: new Set(),
+  requestedAtBySessionId: new Map()
 };
 
 const floatingPanelViewState = {
@@ -1523,6 +1525,7 @@ async function requestStopSession(sessionID, options = {}) {
     return;
   }
   if (isStoppingSession(sessionID)) {
+    showToast('Stop already requested for this session.', 'info');
     return;
   }
   const selectedSessionID = state.sessionId || '';
@@ -1564,6 +1567,7 @@ async function requestStopSession(sessionID, options = {}) {
     const result = await requestStopViaBestAvailablePath(sessionID, {
       shouldFallback: stopFallbackStillCurrent
     });
+    markStopRequested(sessionID);
     const stopRequestedViaSteer = result.via === 'steer';
     const stopRecoveredStaleRun = result.via === 'recovered';
     const stopCopy = stopRequestedViaSteer
@@ -1783,7 +1787,8 @@ function updateUI() {
   nodes.interruptToggleBtn?.classList.toggle('is-armed', isNextSendInterruptArmed() && isGenerating() && hasDurableSession());
   nodes.interruptToggleBtn?.setAttribute('aria-pressed', isNextSendInterruptArmed() ? 'true' : 'false');
   if (nodes.stopSessionBtn) {
-    nodes.stopSessionBtn.disabled = !stopSessionControlAvailable;
+    nodes.stopSessionBtn.disabled = !stopSessionControlAvailable || isStoppingSession(state.sessionId);
+    nodes.stopSessionBtn.classList.toggle('is-loading', isStoppingSession(state.sessionId));
   }
   if (nodes.interruptSessionBtn) {
     nodes.interruptSessionBtn.disabled = !directSessionControlAvailable;
@@ -2683,7 +2688,60 @@ async function refreshSelectedQueueJobDetail(jobs = queueJobItems(), options = {
 }
 
 function isStoppingSession(sessionID) {
-  return stopActionViewState.sessionIds.has(sessionID);
+  const id = String(sessionID || '');
+  if (!id) {
+    return false;
+  }
+  pruneExpiredStopRequests();
+  return stopActionViewState.sessionIds.has(id) || stopActionViewState.requestedAtBySessionId.has(id);
+}
+
+function markStopRequested(sessionID) {
+  const id = String(sessionID || '');
+  if (!id) {
+    return;
+  }
+  stopActionViewState.requestedAtBySessionId.set(id, Date.now());
+}
+
+function clearStopRequested(sessionID) {
+  const id = String(sessionID || '');
+  if (!id) {
+    return;
+  }
+  stopActionViewState.requestedAtBySessionId.delete(id);
+}
+
+function pruneExpiredStopRequests() {
+  const now = Date.now();
+  stopActionViewState.requestedAtBySessionId.forEach((requestedAt, sessionID) => {
+    if (now - Number(requestedAt || 0) > STOP_REQUEST_HOLD_MS) {
+      stopActionViewState.requestedAtBySessionId.delete(sessionID);
+    }
+  });
+}
+
+function clearSettledStopRequestsFromDetail(detail) {
+  const clearIfSettled = (sessionID, ...statuses) => {
+    const id = String(sessionID || '');
+    if (!id) {
+      return;
+    }
+    const active = statuses.some((status) => isStoppableSessionStatus(status));
+    if (!active) {
+      clearStopRequested(id);
+    }
+  };
+  clearIfSettled(detail?.metadata?.id, detail?.state?.status);
+  maybeArray(detail?.children?.sessions).forEach((item) => {
+    clearIfSettled(item?.id, item?.status);
+  });
+  maybeArray(detail?.children?.jobs).forEach((item) => {
+    clearIfSettled(item?.session_id, item?.session_status, item?.status);
+  });
+  maybeArray(detail?.background_notifications).forEach((item) => {
+    clearIfSettled(item?.session_id, item?.session_status, item?.status);
+  });
 }
 
 function currentSessionReferencesSession(sessionID) {
@@ -2824,6 +2882,7 @@ async function refreshCurrentSession(options = {}) {
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
+    clearSettledStopRequestsFromDetail(detail);
     syncWorkspaceToCurrentSession();
     await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs), {
       isCurrent: () => state.sessionId === sessionID && !sessionViewState.needsRefresh

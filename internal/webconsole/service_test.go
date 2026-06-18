@@ -6524,6 +6524,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "Session is not running") {
 		t.Fatalf("expected non-running session stop controls to render disabled explanatory text, got session-view.js body: %s", sessionBody)
 	}
+	if !strings.Contains(sessionBody, "backgroundNotificationPendingHint") || !strings.Contains(sessionBody, "parent run has not continued to accept it") {
+		t.Fatalf("expected pending background notifications to explain parent delivery state, got session-view.js body: %s", sessionBody)
+	}
 	if strings.Contains(sessionBody, "marked.parse") || strings.Contains(sessionBody, "unpkg.com") || strings.Contains(sessionBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected session-view.js to avoid external markdown/icon dependencies, got session-view.js body: %s", sessionBody)
 	}
@@ -6624,6 +6627,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "STOP_FALLBACK_STEER_MESSAGE") || !strings.Contains(jsBody, "requestStopViaBestAvailablePath") || !strings.Contains(jsBody, "data-stop-session-id") {
 		t.Fatalf("expected inline session stop handling with interrupt-steer fallback, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "STOP_REQUEST_HOLD_MS") || !strings.Contains(jsBody, "requestedAtBySessionId") || !strings.Contains(jsBody, "clearSettledStopRequestsFromDetail") {
+		t.Fatalf("expected stop controls to remain pending until durable state refresh settles, got app.js body: %s", jsBody)
 	}
 	if !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "message-bubble-plaintext") {
 		t.Fatalf("expected explicit plaintext user-message renderer, got session-view.js body: %s", sessionBody)

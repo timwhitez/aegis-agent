@@ -1052,6 +1052,10 @@ func defGrep() Definition {
 					"type":        "string",
 					"description": "Optional glob filter for searched files, for example **/*.go or spec/*.md.",
 				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": fmt.Sprintf("Optional maximum matching lines to return. Defaults to %d and is capped at %d.", defaultGrepMatchesLimit, maxGrepMatches),
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -1060,6 +1064,7 @@ func defGrep() Definition {
 				Pattern string `json:"pattern"`
 				Path    string `json:"path"`
 				Include string `json:"include"`
+				Limit   int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep", err), nil
@@ -1081,6 +1086,7 @@ func defGrep() Definition {
 			}
 			matcher, regexErr := regexp.Compile(input.Pattern)
 			useRegex := regexErr == nil
+			limit := normalizeGrepMatchesLimit(input.Limit)
 			var lines []string
 			truncatedLineCount := 0
 			walkErr := filepath.Walk(root.path, func(path string, info os.FileInfo, err error) error {
@@ -1125,7 +1131,7 @@ func defGrep() Definition {
 							truncatedLineCount++
 						}
 						lines = append(lines, formatted)
-						if len(lines) >= maxGrepMatches {
+						if len(lines) >= limit {
 							return errGrepLimitReached
 						}
 					}
@@ -1246,10 +1252,11 @@ var grepSkippedPathFragments = []string{
 var errGrepLimitReached = errors.New("grep limit reached")
 
 const (
-	defaultGrepFilesLimit  = 100
-	maxGrepFilesLimit      = 200
-	maxGrepMatches         = 200
-	maxGrepLineOutputBytes = 4096
+	defaultGrepMatchesLimit = 200
+	defaultGrepFilesLimit   = 100
+	maxGrepFilesLimit       = 200
+	maxGrepMatches          = 200
+	maxGrepLineOutputBytes  = 4096
 )
 
 func formatGrepMatchLine(workdir, path string, lineNo int, line string) (string, bool) {
@@ -1641,6 +1648,16 @@ func normalizeGrepFilesLimit(limit int) int {
 	}
 	if limit > maxGrepFilesLimit {
 		return maxGrepFilesLimit
+	}
+	return limit
+}
+
+func normalizeGrepMatchesLimit(limit int) int {
+	if limit <= 0 {
+		return defaultGrepMatchesLimit
+	}
+	if limit > maxGrepMatches {
+		return maxGrepMatches
 	}
 	return limit
 }

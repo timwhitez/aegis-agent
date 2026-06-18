@@ -4070,6 +4070,80 @@ func TestGrepFilesLimitIsCapped(t *testing.T) {
 	}
 }
 
+func TestGrepLimitIsHonoredAndCapped(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	if err := os.MkdirAll(filepath.Join(workdir, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	var builder strings.Builder
+	for i := 0; i < maxGrepMatches+5; i++ {
+		fmt.Fprintf(&builder, "needle line %03d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "pkg", "matches.txt"), []byte(builder.String()), 0o644); err != nil {
+		t.Fatalf("write matches: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":"pkg",
+		"include":"*.txt",
+		"limit":3
+	}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected grep limit to return 3 matching lines, got %d: %q", len(lines), result.DisplayOutput)
+	}
+	if strings.Contains(result.DisplayOutput, "needle line 003") {
+		t.Fatalf("expected grep small limit to stop before fourth match, got %q", result.DisplayOutput)
+	}
+
+	result, err = registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":"pkg",
+		"include":"*.txt",
+		"limit":1000000
+	}`))
+	if err != nil {
+		t.Fatalf("grep capped: %v", err)
+	}
+	lines = strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
+	if len(lines) != maxGrepMatches {
+		t.Fatalf("expected grep oversized limit capped at %d matching lines, got %d", maxGrepMatches, len(lines))
+	}
+	if strings.Contains(result.DisplayOutput, "needle line 200") {
+		t.Fatalf("expected capped grep output not to include match beyond cap, got %q", result.DisplayOutput)
+	}
+}
+
 func TestGrepAndGrepFilesSkipValidationRunArtifactsByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

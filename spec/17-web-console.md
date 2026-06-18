@@ -187,6 +187,7 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - 默认前端不再提供独立 Background Jobs tab、Background inspector、`Open job` 入口或 selected job facts panel
 - session 新建后仍可以通过 API / CLI 提交后台 queue job，后台 child / queue 结果必须回写 durable session / queue 文件事实源
 - queue job 的 provider、workdir、lease owner、heartbeat、raw payload 等内部事实仍可由 API 与文件事实追溯
+- `delivery_status=pending` 的 background notification 表示 parent session 尚未继续消费该 child / queue 结果，不应被 UI 表达成 child 仍在运行
 - 独立 queue submit 保留在 REST API 和 CLI advanced/experimental 面；默认 Web UI 不再提供单独 submit form，普通任务应回到 Session 执行
 
 #### Goal

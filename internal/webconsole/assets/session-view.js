@@ -2533,21 +2533,25 @@ function renderBackgroundNotificationsPreview(items) {
   if (!notifications.length) {
     return '<div class="empty-panel">No background notifications yet.</div>';
   }
-  return notifications.map((item) => `
-    <div class="notification-card">
-      <div class="job-card-top">
-        <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background result')}</div>
-        <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
-      </div>
-      <div class="notification-copy">${escapeHTML(truncateText(item.last_error || item.final_text || 'No final text recorded.', 180))}</div>
-      <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}</div>
-      ${item.session_id ? `
-        <div class="card-actions">
-          <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>
+  return notifications.map((item) => {
+    const pendingHint = backgroundNotificationPendingHint(item);
+    return `
+      <div class="notification-card">
+        <div class="job-card-top">
+          <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background result')}</div>
+          <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
         </div>
-      ` : ''}
-    </div>
-  `).join('');
+        <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 180))}</div>
+        ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
+        <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
+        ${item.session_id ? `
+          <div class="card-actions">
+            <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
 }
 
 function renderTimelineItem(item, options = {}) {
@@ -2667,8 +2671,9 @@ function renderSessionStopButton(sessionID, status, label = 'Stop') {
   }
   const stoppable = isStoppableSessionStatus(status);
   const busy = isStoppingSession(sessionID);
-  const text = label ? `<span>${escapeHTML(label)}</span>` : '';
-  const title = stoppable ? 'Stop session' : 'Session is not running';
+  const displayLabel = busy && label === 'Stop' ? 'Stopping' : label;
+  const text = displayLabel ? `<span>${escapeHTML(displayLabel)}</span>` : '';
+  const title = busy ? 'Stop already requested' : stoppable ? 'Stop session' : 'Session is not running';
   return `
     <button class="mini-link-btn danger" type="button" data-stop-session-id="${escapeAttr(sessionID)}" aria-label="Stop session ${escapeAttr(shortId(sessionID))}" title="${escapeAttr(title)}" ${busy || !stoppable ? 'disabled' : ''}>
       <i data-lucide="square"></i>
@@ -2678,20 +2683,57 @@ function renderSessionStopButton(sessionID, status, label = 'Stop') {
 }
 
 function renderNotificationCard(item) {
+  const pendingHint = backgroundNotificationPendingHint(item);
   return `
     <div class="notification-card">
       <div class="job-card-top">
         <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background notification')}</div>
         <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(truncateText(item.last_error || item.final_text || 'No final text recorded.', 200))}</div>
-      <div class="job-card-meta">${escapeHTML(shortId(item.queue_job_id || item.session_id || item.id))}${item.delivery_status ? ` · ${escapeHTML(item.delivery_status)}` : ''}</div>
+      <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 200))}</div>
+      ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
+      <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">
         ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
       </div>
     </div>
   `;
+}
+
+function backgroundNotificationCopy(item) {
+  if (item?.last_error) {
+    return item.last_error;
+  }
+  if (item?.final_text) {
+    return item.final_text;
+  }
+  if (isPendingBackgroundNotification(item)) {
+    return 'Delivery is pending; the parent session has not consumed this background result yet.';
+  }
+  return 'No final text recorded.';
+}
+
+function backgroundNotificationPendingHint(item) {
+  if (!isPendingBackgroundNotification(item)) {
+    return '';
+  }
+  return 'Pending delivery means the child/job result is recorded, but the parent run has not continued to accept it.';
+}
+
+function backgroundNotificationMeta(item) {
+  const parts = [shortId(item?.queue_job_id || item?.session_id || item?.id)];
+  if (item?.delivery_status) {
+    parts.push(item.delivery_status);
+  }
+  if (item?.session_status) {
+    parts.push(`session ${humanizeStatus(item.session_status)}`);
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+
+function isPendingBackgroundNotification(item) {
+  return String(item?.delivery_status || '').toLowerCase() === 'pending';
 }
 
 function renderTodoItem(item) {
