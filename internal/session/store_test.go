@@ -17,6 +17,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func countStoreEventType(items []events.Event, target string) int {
+	count := 0
+	for _, item := range items {
+		if item.Type == target {
+			count++
+		}
+	}
+	return count
+}
+
 func TestStoreEnsureRootReappliesOwnerOnlyMode(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	if err := os.MkdirAll(root, 0o777); err != nil {
@@ -5022,7 +5032,7 @@ func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop queued job: %v", err)
 	}
-	if stopped.Status != QueueStatusFailed || stopped.LastError != "stopped before claim" {
+	if stopped.Status != QueueStatusFailed || stopped.LastError != "stopped before claim" || stopped.StopReason != QueueStopReasonAgentStop {
 		t.Fatalf("expected failed stopped job, got %#v", stopped)
 	}
 	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); !errors.Is(err, os.ErrNotExist) {
@@ -5032,8 +5042,55 @@ func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load stopped job: %v", err)
 	}
-	if loaded.Status != QueueStatusFailed || loaded.LastError != stopped.LastError {
+	if loaded.Status != QueueStatusFailed || loaded.LastError != stopped.LastError || loaded.StopReason != QueueStopReasonAgentStop {
 		t.Fatalf("expected stopped failed job to load, got %#v", loaded)
+	}
+}
+
+func TestBlockQueuedJobForParentStopIsRequeueable(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_parent_stop_queued",
+		Status:        QueueStatusQueued,
+		Prompt:        "do parent-stopped work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+
+	blocked, err := store.BlockQueuedJobForParentStop(job.ID, "")
+	if err != nil {
+		t.Fatalf("block queued job: %v", err)
+	}
+	if blocked.Status != QueueStatusBlocked || blocked.StopReason != QueueStopReasonParentStop || blocked.LastError == "" {
+		t.Fatalf("expected parent-stopped blocked job, got %#v", blocked)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected queued job to be removed, got %v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusBlocked, job.ID)); err != nil {
+		t.Fatalf("expected blocked job copy: %v", err)
+	}
+
+	requeued, err := store.RequeueParentStoppedJob(job.ID, "", "finish from current evidence")
+	if err != nil {
+		t.Fatalf("requeue parent-stopped job: %v", err)
+	}
+	if requeued.Status != QueueStatusQueued || requeued.StopReason != "" || requeued.LastError != "" {
+		t.Fatalf("expected clean requeued job, got %#v", requeued)
+	}
+	if !strings.Contains(requeued.Prompt, "Parent restart prompt") || !strings.Contains(requeued.Prompt, "finish from current evidence") {
+		t.Fatalf("expected requeue prompt to include restart prompt, got %q", requeued.Prompt)
+	}
+	claimed, ok, err := store.ClaimNextQueuedJob()
+	if err != nil || !ok {
+		t.Fatalf("claim requeued job: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != job.ID || claimed.Status != QueueStatusRunning {
+		t.Fatalf("unexpected claimed requeued job: %#v", claimed)
 	}
 }
 
@@ -6864,7 +6921,7 @@ func TestReconcileCompletedSessionCompletesJob(t *testing.T) {
 	}
 }
 
-func TestLoadJobDoesNotTerminalRepairFreshRunningLease(t *testing.T) {
+func TestLoadJobReconcilesFreshRunningLeaseWhenLinkedSessionSettled(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -6949,44 +7006,134 @@ func TestLoadJobDoesNotTerminalRepairFreshRunningLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load fresh running job: %v", err)
 	}
-	if observed.Status != QueueStatusRunning {
-		t.Fatalf("fresh lease should remain owned by worker, got %#v", observed)
+	if observed.Status != QueueStatusCompleted || observed.SessionStatus != StatusCompleted || observed.FinalText != "Done." {
+		t.Fatalf("fresh lease should reconcile completed linked child, got %#v", observed)
 	}
-	if _, err := os.Stat(store.queueJobPath(QueueStatusCompleted, job.ID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("fresh lease should not persist completed queue copy, stat err=%v", err)
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh lease should remove running queue copy, stat err=%v", err)
 	}
 	var persisted QueueJob
-	if err := readJSONFile(store.queueJobPath(QueueStatusRunning, job.ID), &persisted); err != nil {
-		t.Fatalf("read persisted running job: %v", err)
+	if err := readJSONFile(store.queueJobPath(QueueStatusCompleted, job.ID), &persisted); err != nil {
+		t.Fatalf("read persisted completed job: %v", err)
 	}
-	if persisted.Status != QueueStatusRunning || persisted.SessionID != childMeta.ID || persisted.SessionStatus != StatusRunning {
-		t.Fatalf("fresh lease load should not rewrite durable running job before worker handoff, got %#v", persisted)
+	if persisted.Status != QueueStatusCompleted || persisted.SessionID != childMeta.ID || persisted.SessionStatus != StatusCompleted {
+		t.Fatalf("fresh lease load should persist completed queue job, got %#v", persisted)
 	}
 	notifications, err := store.LoadBackgroundNotifications(parentMeta.ID)
 	if err != nil {
 		t.Fatalf("load notifications: %v", err)
 	}
-	if len(notifications) != 0 {
-		t.Fatalf("fresh lease should not notify parent before worker handoff, got %#v", notifications)
+	if len(notifications) != 1 || notifications[0].Status != QueueStatusCompleted || notifications[0].QueueJobID != job.ID {
+		t.Fatalf("fresh lease should notify parent after linked child completion, got %#v", notifications)
 	}
 	coordination, err := store.LoadParentCoordination(parentMeta.ID)
 	if err != nil {
 		t.Fatalf("load parent coordination: %v", err)
 	}
-	if !slices.Equal(coordination.UnresolvedQueueJobs, []string{job.ID}) ||
-		len(coordination.CompletedQueueJobs) != 0 ||
+	if len(coordination.UnresolvedQueueJobs) != 0 ||
+		!slices.Equal(coordination.CompletedQueueJobs, []string{job.ID}) ||
 		len(coordination.FailedQueueJobs) != 0 ||
-		!coordination.Parked {
-		t.Fatalf("fresh lease should keep parent coordination unresolved, got %#v", coordination)
+		coordination.Parked {
+		t.Fatalf("fresh lease should resolve parent coordination after linked child completion, got %#v", coordination)
 	}
 	eventsList, err := store.LoadEvents(parentMeta.ID)
 	if err != nil {
 		t.Fatalf("load parent events: %v", err)
 	}
-	for _, evt := range eventsList {
-		if evt.Type == "queue.job.completed" || evt.Type == "queue.job.failed" || evt.Type == "queue.job.notified" {
-			t.Fatalf("fresh lease should not emit parent queue event before worker handoff, got %#v", evt)
-		}
+	if countStoreEventType(eventsList, "queue.job.notified") != 1 || countStoreEventType(eventsList, "queue.job.completed") != 1 {
+		t.Fatalf("fresh lease should emit parent completion events, got %#v", eventsList)
+	}
+}
+
+func TestLoadJobBlocksFreshRunningLeaseWhenLinkedSessionPaused(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_fresh_paused",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_fresh_paused",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_fresh_paused",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "Finish child.",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+	if err := store.SaveParentCoordination(parentMeta.ID, ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     parentMeta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_fresh_paused",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       job.ID,
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create paused child: %v", err)
+	}
+	job.SessionID = childMeta.ID
+	job.SessionStatus = StatusRunning
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save linked running job: %v", err)
+	}
+
+	observed, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load fresh paused job: %v", err)
+	}
+	if observed.Status != QueueStatusBlocked || observed.SessionStatus != StatusPaused || observed.StopReason != QueueStopReasonParentStop {
+		t.Fatalf("fresh lease should block parent-stopped paused child, got %#v", observed)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusRunning, job.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh lease should remove running queue copy, stat err=%v", err)
+	}
+	if _, err := os.Stat(store.queueJobPath(QueueStatusBlocked, job.ID)); err != nil {
+		t.Fatalf("fresh lease should persist blocked queue copy: %v", err)
+	}
+	coordination, err := store.LoadParentCoordination(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if !slices.Equal(coordination.UnresolvedQueueJobs, []string{job.ID}) || !coordination.Parked {
+		t.Fatalf("blocked parent-stopped child should remain unresolved, got %#v", coordination)
 	}
 }
 

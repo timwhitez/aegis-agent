@@ -226,6 +226,8 @@
 - 在活跃 CLI 进程内提供 auto worker
 - 将 child 完成/失败结果投递回 parent session 的控制通知
 - reconcile running job 时只做文件事实可证明的收敛：已完成/失败的 linked session 可修复为完成/失败；recent heartbeat 且未结算的 job 保持 running；stale 且找不到 linked session 的 job 可标记 failed 并记录 orphan/stale error
+- 当 parent session 被显式 stop 时，未 claim 的 parent-linked queued job 应转为 `blocked` 并标记 `stop_reason=parent_stop`，已 linked 且因 parent stop 暂停的 child session 对应 job 也应收敛为 `blocked` / `stop_reason=parent_stop`；这类 job 不阻断删除，但仍保留在 parent coordination 的 unresolved 集合中
+- parent 继续运行后，模型可用 `agent_prompt` 主动恢复这些 parent-stopped 子任务：有 linked child session 的 job 通过 child `continue` 恢复，尚未 claim 的 pre-claim job 重新进入 queued，由 worker 后续领取；runtime 不应自动无条件恢复所有 paused child，避免误启动用户单独暂停的子任务
 
 ### 2.19 TerminalDashboard
 

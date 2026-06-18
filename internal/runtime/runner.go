@@ -983,7 +983,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
+	if err := r.notifySessionActive(meta); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
 	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	r.notifySessionInactive(meta, result, err)
 	if err != nil && result.SessionID == "" {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}

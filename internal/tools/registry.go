@@ -133,6 +133,7 @@ type AgentStatusResult struct {
 	Status        string `json:"status,omitempty"`
 	SessionStatus string `json:"session_status,omitempty"`
 	FinalText     string `json:"final_text,omitempty"`
+	StopReason    string `json:"stop_reason,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
 	Workdir       string `json:"workdir,omitempty"`
 	AgentName     string `json:"agent_name,omitempty"`
@@ -3434,7 +3435,7 @@ func defAgentStop(control ControlPlane) Definition {
 func defAgentPrompt(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_prompt",
-		Description: "Send a prompt/steer to a running child agent or background child job owned by the current parent session. Use this to narrow scope, request a concise handoff, stop repeated discovery, ask for current-evidence delivery, or redirect a long-running sub-agent before waiting or synthesizing. This does not create, cancel, or mark child work complete; it appends a durable steer request to the child session. interrupt defaults to true so convergence prompts can preempt provider calls when possible.",
+		Description: "Send a prompt/steer to a child agent or background child job owned by the current parent session. Use this to narrow scope, request a concise handoff, stop repeated discovery, ask for current-evidence delivery, or redirect a long-running sub-agent before waiting or synthesizing. For a child paused because the parent was stopped, this restarts the child with the prompt; for a pre-claim job blocked by parent stop, this requeues it. This does not mark child work complete. interrupt defaults to true so convergence prompts can preempt provider calls when possible.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

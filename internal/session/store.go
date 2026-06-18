@@ -1911,6 +1911,10 @@ func (s *Store) DeleteJob(jobID string) error {
 }
 
 func (s *Store) StopQueuedJob(jobID, parentSessionID, lastError string) (QueueJob, error) {
+	return s.StopQueuedJobWithReason(jobID, parentSessionID, lastError, QueueStopReasonAgentStop)
+}
+
+func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopReason string) (QueueJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureQueueDirs(); err != nil {
@@ -1961,6 +1965,7 @@ func (s *Store) StopQueuedJob(jobID, parentSessionID, lastError string) (QueueJo
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	job.Status = QueueStatusFailed
 	job.UpdatedAt = now
+	job.StopReason = strings.TrimSpace(stopReason)
 	job.LastError = strings.TrimSpace(lastError)
 	if job.LastError == "" {
 		job.LastError = "stopped before worker claim"
@@ -1994,6 +1999,166 @@ func (s *Store) StopQueuedJob(jobID, parentSessionID, lastError string) (QueueJo
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, job.ID)
 		if path == failedPath {
+			continue
+		}
+		_ = fileutil.RemoveFileNoSymlink(path)
+	}
+	return job, nil
+}
+
+func (s *Store) BlockQueuedJobForParentStop(jobID, parentSessionID string) (QueueJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, err
+	}
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if parentSessionID != "" {
+		if err := validateStoreID("queue job parent session", parentSessionID); err != nil {
+			return QueueJob{}, err
+		}
+	}
+	queuedPath := s.queueJobPath(QueueStatusQueued, jobID)
+	blockedPath := s.queueJobPath(QueueStatusBlocked, jobID)
+	var job QueueJob
+	if err := readJSONFile(queuedPath, &job); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
+			if loadErr != nil {
+				return QueueJob{}, loadErr
+			}
+			if len(copies) == 0 {
+				return QueueJob{}, os.ErrNotExist
+			}
+			current := canonicalQueueJobCopy(copies).job
+			if parentSessionID != "" && strings.TrimSpace(current.ParentSessionID) != parentSessionID {
+				return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", current.ID, parentSessionID)
+			}
+			return QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be blocked before worker claim", current.ID, current.Status)
+		}
+		return QueueJob{}, err
+	}
+	if job.ID != jobID {
+		return QueueJob{}, fmt.Errorf("queue job %s id mismatch in queued file: %s", jobID, job.ID)
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if err := validateQueueJobStatusDirectory(job, QueueStatusQueued); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if parentSessionID != "" && strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+		return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
+	}
+	previous := job
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job.Status = QueueStatusBlocked
+	job.UpdatedAt = now
+	job.StopReason = QueueStopReasonParentStop
+	job.LastError = "child job paused by parent stop before worker claim"
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, err
+	}
+	if err := fileutil.RenamePathNoSymlink(queuedPath, blockedPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
+			if loadErr != nil {
+				return QueueJob{}, loadErr
+			}
+			if len(copies) == 0 {
+				return QueueJob{}, os.ErrNotExist
+			}
+			current := canonicalQueueJobCopy(copies).job
+			return QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be blocked before worker claim", current.ID, current.Status)
+		}
+		return QueueJob{}, err
+	}
+	if err := s.writeJSONFile(blockedPath, job); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(blockedPath, queuedPath); rollbackErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; rollback blocked job: %v", err, rollbackErr)
+		}
+		if restoreErr := s.writeJSONFile(queuedPath, previous); restoreErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; restore queued job: %v", err, restoreErr)
+		}
+		return QueueJob{}, err
+	}
+	for _, status := range queueStatuses() {
+		path := s.queueJobPath(status, job.ID)
+		if path == blockedPath {
+			continue
+		}
+		_ = fileutil.RemoveFileNoSymlink(path)
+	}
+	return job, nil
+}
+
+func (s *Store) RequeueParentStoppedJob(jobID, parentSessionID, restartPrompt string) (QueueJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, err
+	}
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if parentSessionID != "" {
+		if err := validateStoreID("queue job parent session", parentSessionID); err != nil {
+			return QueueJob{}, err
+		}
+	}
+	blockedPath := s.queueJobPath(QueueStatusBlocked, jobID)
+	queuedPath := s.queueJobPath(QueueStatusQueued, jobID)
+	var job QueueJob
+	if err := readJSONFile(blockedPath, &job); err != nil {
+		return QueueJob{}, err
+	}
+	if job.ID != jobID {
+		return QueueJob{}, fmt.Errorf("queue job %s id mismatch in blocked file: %s", jobID, job.ID)
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if err := validateQueueJobStatusDirectory(job, QueueStatusBlocked); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if parentSessionID != "" && strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+		return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
+	}
+	if job.StopReason != QueueStopReasonParentStop || strings.TrimSpace(job.SessionID) != "" {
+		return QueueJob{}, fmt.Errorf("queue job %s is not a parent-stopped pre-claim job", job.ID)
+	}
+	previous := job
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job.Status = QueueStatusQueued
+	job.UpdatedAt = now
+	if strings.TrimSpace(restartPrompt) != "" {
+		job.Prompt = strings.TrimSpace(job.Prompt) + "\n\nParent restart prompt:\n" + strings.TrimSpace(restartPrompt)
+	}
+	job.StopReason = ""
+	job.LastError = ""
+	job.SessionStatus = ""
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, err
+	}
+	if err := fileutil.RenamePathNoSymlink(blockedPath, queuedPath); err != nil {
+		return QueueJob{}, err
+	}
+	if err := s.writeJSONFile(queuedPath, job); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(queuedPath, blockedPath); rollbackErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; rollback requeued job: %v", err, rollbackErr)
+		}
+		if restoreErr := s.writeJSONFile(blockedPath, previous); restoreErr != nil {
+			return QueueJob{}, fmt.Errorf("%w; restore blocked job: %v", err, restoreErr)
+		}
+		return QueueJob{}, err
+	}
+	for _, status := range queueStatuses() {
+		path := s.queueJobPath(status, job.ID)
+		if path == queuedPath {
 			continue
 		}
 		_ = fileutil.RemoveFileNoSymlink(path)
@@ -2748,6 +2913,7 @@ func NewBackgroundNotification(job QueueJob) BackgroundNotification {
 		EffectiveWorkdir: job.EffectiveWorkdir,
 		VisiblePaths:     append([]string(nil), job.VisiblePaths...),
 		FinalText:        job.FinalText,
+		StopReason:       job.StopReason,
 		LastError:        job.LastError,
 		ResumeParent:     job.ResumeParent,
 		DeliveryStatus:   BackgroundNotificationPending,
@@ -2908,7 +3074,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, true, nil
 	}
-	if job.Status == QueueStatusRunning && queueJobHasRecentLease(job, now) {
+	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobHasRecentLease(job, now) {
 		syncLeasedQueueJobSession(&job, meta, state)
 		return job, false, nil
 	}
@@ -2962,14 +3128,26 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			job.Status = QueueStatusCompleted
 			changed = true
 		}
+		if strings.TrimSpace(job.StopReason) != "" {
+			job.StopReason = ""
+			changed = true
+		}
 	case StatusRunning:
 		if job.Status != QueueStatusRunning {
 			job.Status = QueueStatusRunning
 			changed = true
 		}
+		if strings.TrimSpace(job.StopReason) != "" {
+			job.StopReason = ""
+			changed = true
+		}
 	case StatusPaused, StatusAwaitingInput:
 		if job.Status != QueueStatusBlocked {
 			job.Status = QueueStatusBlocked
+			changed = true
+		}
+		if state.Status == StatusPaused && state.PauseReason == "manual_stop" && job.StopReason != QueueStopReasonParentStop {
+			job.StopReason = QueueStopReasonParentStop
 			changed = true
 		}
 		if strings.TrimSpace(job.LastError) == "" {
@@ -4171,6 +4349,13 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	if err := validateBackgroundNotificationResultStatus(notification); err != nil {
 		return err
 	}
+	if strings.TrimSpace(notification.StopReason) != "" {
+		switch notification.StopReason {
+		case QueueStopReasonParentStop, QueueStopReasonAgentStop:
+		default:
+			return fmt.Errorf("invalid background notification stop_reason %q", notification.StopReason)
+		}
+	}
 	switch notification.DeliveryStatus {
 	case BackgroundNotificationPending, BackgroundNotificationAccepted:
 	default:
@@ -4305,6 +4490,13 @@ func validateQueueJob(job QueueJob) error {
 		case "wait-all", "wait-any":
 		default:
 			return fmt.Errorf("invalid queue job wait_mode %q", job.WaitMode)
+		}
+	}
+	if strings.TrimSpace(job.StopReason) != "" {
+		switch job.StopReason {
+		case QueueStopReasonParentStop, QueueStopReasonAgentStop:
+		default:
+			return fmt.Errorf("invalid queue job stop_reason %q", job.StopReason)
 		}
 	}
 	if strings.TrimSpace(job.IsolationMode) != "" {
@@ -5175,6 +5367,7 @@ func backgroundNotificationFactsEqual(a, b BackgroundNotification) bool {
 		a.EffectiveWorkdir == b.EffectiveWorkdir &&
 		equalStringSlices(a.VisiblePaths, b.VisiblePaths) &&
 		a.FinalText == b.FinalText &&
+		a.StopReason == b.StopReason &&
 		a.LastError == b.LastError
 }
 
@@ -5234,6 +5427,9 @@ func mergeBackgroundNotification(existing, next BackgroundNotification) Backgrou
 	if strings.TrimSpace(next.FinalText) != "" {
 		merged.FinalText = next.FinalText
 	}
+	if strings.TrimSpace(next.StopReason) != "" {
+		merged.StopReason = next.StopReason
+	}
 	if strings.TrimSpace(next.LastError) != "" {
 		merged.LastError = next.LastError
 	} else if shouldClearBackgroundNotificationError(existing, next) {
@@ -5287,6 +5483,9 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 		return true
 	}
 	if strings.TrimSpace(next.FinalText) != "" && existing.FinalText != next.FinalText {
+		return true
+	}
+	if strings.TrimSpace(next.StopReason) != "" && existing.StopReason != next.StopReason {
 		return true
 	}
 	if strings.TrimSpace(next.LastError) != "" && existing.LastError != next.LastError {

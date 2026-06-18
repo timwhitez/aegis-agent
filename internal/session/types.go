@@ -27,6 +27,9 @@ const (
 	QueueStatusCompleted = "completed"
 	QueueStatusFailed    = "failed"
 
+	QueueStopReasonParentStop = "parent_stop"
+	QueueStopReasonAgentStop  = "agent_stop"
+
 	BackgroundNotificationPending  = "pending"
 	BackgroundNotificationAccepted = "accepted"
 )
@@ -346,6 +349,7 @@ type BackgroundNotification struct {
 	EffectiveWorkdir string   `json:"effective_workdir,omitempty"`
 	VisiblePaths     []string `json:"visible_paths,omitempty"`
 	FinalText        string   `json:"final_text,omitempty"`
+	StopReason       string   `json:"stop_reason,omitempty"`
 	LastError        string   `json:"last_error,omitempty"`
 	ResumeParent     bool     `json:"resume_parent,omitempty"`
 	DeliveryStatus   string   `json:"delivery_status"`
@@ -433,6 +437,7 @@ type QueueJob struct {
 	ResumeParent     bool            `json:"resume_parent,omitempty"`
 	IsolationMode    string          `json:"isolation_mode,omitempty"`
 	IsolationRoot    string          `json:"isolation_root,omitempty"`
+	StopReason       string          `json:"stop_reason,omitempty"`
 	LastError        string          `json:"last_error,omitempty"`
 	FinalText        string          `json:"final_text,omitempty"`
 }

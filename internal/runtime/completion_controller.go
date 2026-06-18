@@ -308,7 +308,7 @@ func (c *CompletionController) parentCoordinationGate(toolName string) (string, 
 	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
 		return "", "", nil
 	}
-	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Prompt running child work to converge with agent_prompt, wait for completion with agent_wait, stop queued background work that is no longer needed with agent_stop, or explicitly resolve the outstanding work before finishing.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+	return "parent_coordination", fmt.Sprintf("Parent-coordination gate: unresolved child or queue work remains before finish (children: %s; jobs: %s). Prompt running or parent-stopped child work to converge with agent_prompt, wait for completion with agent_wait, stop queued background work that is no longer needed with agent_stop, or explicitly resolve the outstanding work before finishing.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
 func (c *CompletionController) goalCompletionGate(toolName string) (string, string) {

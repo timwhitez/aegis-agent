@@ -2810,7 +2810,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
-		descendantStops, err := s.stopActiveDescendantSessions(sessionID)
+		descendantStops, err := s.stopDescendantSessionsAndJobs(sessionID)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
@@ -2849,7 +2849,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	descendantStops, err := s.stopActiveDescendantSessions(sessionID)
+	descendantStops, err := s.stopDescendantSessionsAndJobs(sessionID)
 	if err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
@@ -5695,6 +5695,84 @@ func (s *Service) stopActiveDescendantSessions(sessionID string) (int, error) {
 		stopped++
 	}
 	return stopped, nil
+}
+
+func (s *Service) stopDescendantSessionsAndJobs(sessionID string) (int, error) {
+	stopped, err := s.stopActiveDescendantSessions(sessionID)
+	if err != nil {
+		return stopped, err
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return stopped, err
+	}
+	targets := sessionTreeTargetIDs(sessionID, items)
+	ids := make([]string, 0, len(targets))
+	for id := range targets {
+		if id == sessionID {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if s.hasActiveHandle(id) {
+			continue
+		}
+		reconciled, err := s.reconcileStaleRunningSession(id, "manual_stop")
+		if err != nil {
+			return stopped, fmt.Errorf("stop descendant session %s: %w", id, err)
+		}
+		if reconciled {
+			stopped++
+		}
+	}
+	jobs, _, err := s.store.ListJobsPage(1000000, 0)
+	if err != nil {
+		return stopped, err
+	}
+	for _, job := range jobs {
+		if !queueJobBelongsToTargets(job, targets) || job.Status != session.QueueStatusQueued {
+			continue
+		}
+		blocked, err := s.store.BlockQueuedJobForParentStop(job.ID, job.ParentSessionID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "cannot be blocked before worker claim") {
+				continue
+			}
+			return stopped, fmt.Errorf("stop queued descendant job %s: %w", job.ID, err)
+		}
+		stopped++
+		if strings.TrimSpace(blocked.ParentSessionID) != "" {
+			if err := s.store.EnsureBackgroundNotification(blocked.ParentSessionID, session.NewBackgroundNotification(blocked)); err != nil {
+				return stopped, fmt.Errorf("notify parent-stopped job %s: %w", blocked.ID, err)
+			}
+			if err := s.store.AppendEvent(blocked.ParentSessionID, events.New(blocked.ParentSessionID, "queue.job.parent_stopped", "webconsole", map[string]any{
+				"job_id":     blocked.ID,
+				"status":     blocked.Status,
+				"last_error": blocked.LastError,
+			})); err != nil {
+				return stopped, fmt.Errorf("record parent-stopped job %s: %w", blocked.ID, err)
+			}
+		}
+	}
+	return stopped, nil
+}
+
+func queueJobBelongsToTargets(job session.QueueJob, targets map[string]struct{}) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	if _, ok := targets[job.ParentSessionID]; ok {
+		return true
+	}
+	if _, ok := targets[job.SessionID]; ok {
+		return true
+	}
+	if _, ok := targets[job.RootSessionID]; ok {
+		return true
+	}
+	return false
 }
 
 func (s *Service) pruneInactiveHandles() {

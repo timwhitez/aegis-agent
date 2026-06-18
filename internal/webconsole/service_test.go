@@ -7261,6 +7261,115 @@ func TestServiceStopParentStopsRunningQueueChildHandle(t *testing.T) {
 	}
 }
 
+func TestServiceStopParentBlocksQueuedChildJobForRestart(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	parentMeta := testSessionMetadata(t, "parent_stop_queued_child")
+	parentMeta.RootSessionID = parentMeta.ID
+	if err := svc.store.Create(parentMeta, testSessionState(session.StatusPaused)); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_parent_stop_queued_child",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusQueued,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "queued child",
+		Mode:            session.ModeExec,
+		Background:      true,
+	}
+	if err := svc.store.SaveJob(job); err != nil {
+		t.Fatalf("save queued job: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+parentMeta.ID+"/stop", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected stop accepted, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	loaded, err := svc.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load stopped queued job: %v", err)
+	}
+	if loaded.Status != session.QueueStatusBlocked || loaded.StopReason != session.QueueStopReasonParentStop || loaded.SessionID != "" {
+		t.Fatalf("expected queued child job to be parent-stopped and restartable, got %#v", loaded)
+	}
+	notifications, err := svc.store.LoadBackgroundNotifications(parentMeta.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].QueueJobID != job.ID || notifications[0].StopReason != session.QueueStopReasonParentStop {
+		t.Fatalf("expected parent-stopped notification, got %#v", notifications)
+	}
+}
+
+func TestServiceDeleteSessionReconcilesFreshRunningJobLinkedToPausedChild(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := testSessionMetadata(t, "parent_delete_paused_child_job")
+	parentMeta.RootSessionID = parentMeta.ID
+	if err := svc.store.Create(parentMeta, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childMeta := testSessionMetadata(t, "child_delete_paused_child_job")
+	childMeta.ParentSessionID = parentMeta.ID
+	childMeta.RootSessionID = parentMeta.ID
+	childMeta.QueueJobID = "job_delete_paused_child_job"
+	childMeta.Depth = 1
+	if err := svc.store.Create(childMeta, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		SessionID:       childMeta.ID,
+		SessionStatus:   session.StatusRunning,
+		Prompt:          "paused child",
+		Mode:            session.ModeExec,
+		Background:      true,
+	}); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+parentMeta.ID, nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected delete to reconcile paused child job, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := svc.store.LoadMetadata(parentMeta.ID); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected parent deleted, got %v", err)
+	}
+	if _, err := svc.store.LoadJob(childMeta.QueueJobID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected linked job deleted, got %v", err)
+	}
+}
+
 func TestServiceQueueJobDetailRequiresGet(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

@@ -1038,7 +1038,7 @@ func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, err
 	if coordination.ParentSessionID == "" || (len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0) {
 		return "", nil
 	}
-	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running (children: %s; jobs: %s). Do not stop the parent run while sub-agent work is unresolved. Either call agent_prompt to send a convergence or handoff prompt to running child work, call agent_wait with a required queue_job_id to park and auto-resume when that background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting. Running child work cannot be safely stopped without a durable control handle; prompt it, wait for it, or inspect it before concluding.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait with a required queue_job_id to park and auto-resume when that background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
 func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager, queueJobID string) (RunResult, error) {
@@ -1855,6 +1855,7 @@ func backgroundPayload(notifications []session.BackgroundNotification) []map[str
 			"agent_role":        notification.AgentRole,
 			"status":            notification.Status,
 			"session_status":    notification.SessionStatus,
+			"stop_reason":       notification.StopReason,
 			"requested_workdir": notification.RequestedWorkdir,
 			"effective_workdir": notification.EffectiveWorkdir,
 			"visible_paths":     append([]string(nil), notification.VisiblePaths...),
