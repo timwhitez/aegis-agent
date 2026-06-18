@@ -2879,8 +2879,11 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 		if last.Role != "user" || source != "harness_reminder" || kind != "artifact_written" {
 			t.Fatalf("expected artifact-written harness reminder, got %#v", last)
 		}
-		if !strings.Contains(last.Text, "reports/final-audit.md") || !strings.Contains(last.Text, "Call finish when required side effects are complete") {
+		if !strings.Contains(last.Text, "reports/final-audit.md") || !strings.Contains(last.Text, "If required side effects are done, call finish") {
 			t.Fatalf("expected artifact completion text, got %q", last.Text)
+		}
+		if strings.Contains(last.Text, "todo state is fully completed") {
+			t.Fatalf("todo completion must not be treated as delivery evidence, got %q", last.Text)
 		}
 		return provider.TurnResult{
 			ToolCalls:  []provider.ToolCall{{ID: "call_1", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},

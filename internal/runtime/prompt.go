@@ -68,6 +68,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
 	builder.WriteString("- Before reporting validation success, inspect actual command results or validation artifacts; if validation failed, was partial, or was not run, say that plainly.\n")
 	builder.WriteString("- Before running project validation, identify the relevant project or build root instead of assuming the initial workdir is always the build root.\n")
+	builder.WriteString("- Treat todo/task tools as a progress ledger only: preserve existing entries, append newly discovered work, and mark items complete only after the real file/code/command work is done. Updating todo/task state is never a substitute for doing or validating the task.\n")
 	builder.WriteString("- If you use child or background agents, check their final status and reconcile their durable results before final parent conclusions.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
 		builder.WriteString("\n## Runtime Notes\n")
@@ -162,12 +163,6 @@ func deliveryNote(workdir, mode string, messages []session.Message) string {
 
 	if hasArtifact {
 		path := displayPromptPath(workdir, stats.DeliverableWritePath)
-		if stats.CompletedTodoWrite {
-			if mode == session.ModeExec {
-				return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Call finish when required side effects are complete.", path)
-			}
-			return fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Continue only for required side effects or corrections.", path)
-		}
 		if mode == session.ModeExec {
 			return fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
 		}
@@ -1072,7 +1067,6 @@ type toolStats struct {
 	UniqueReadPaths      int
 	RepeatedReadCount    int
 	DeliverableWritePath string
-	CompletedTodoWrite   bool
 }
 
 func collectRecentToolStats(messages []session.Message) toolStats {
@@ -1100,9 +1094,6 @@ func collectRecentToolStats(messages []session.Message) toolStats {
 					if path, _ := result.Metadata["path"].(string); looksFinalArtifactPath(path) {
 						stats.DeliverableWritePath = path
 					}
-				}
-				if result.Name == "todo_write" && todoListAllCompleted(result.DisplayOutput) {
-					stats.CompletedTodoWrite = true
 				}
 			}
 		}
@@ -1209,18 +1200,10 @@ func artifactCompletionReminder(workdir, mode string, messages []session.Message
 	}
 	path := displayPromptPath(workdir, stats.DeliverableWritePath)
 	var note string
-	if stats.CompletedTodoWrite {
-		if mode == session.ModeExec {
-			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Call finish when required side effects are complete.", path)
-		} else {
-			note = fmt.Sprintf("A requested artifact was already written to %s and recent todo state is fully completed. Continue only for required side effects or corrections.", path)
-		}
+	if mode == session.ModeExec {
+		note = fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
 	} else {
-		if mode == session.ModeExec {
-			note = fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
-		} else {
-			note = fmt.Sprintf("A requested artifact was already written to %s. Continue only for required side effects or corrections.", path)
-		}
+		note = fmt.Sprintf("A requested artifact was already written to %s. Continue only for required side effects or corrections.", path)
 	}
 	return harnessReminder{
 		Kind: "artifact_written",
@@ -2353,22 +2336,6 @@ func isReadOnlyShellProgram(program string) bool {
 	default:
 		return false
 	}
-}
-
-func todoListAllCompleted(raw string) bool {
-	if strings.TrimSpace(raw) == "" {
-		return false
-	}
-	var todos []session.TodoItem
-	if err := json.Unmarshal([]byte(raw), &todos); err != nil || len(todos) == 0 {
-		return false
-	}
-	for _, item := range todos {
-		if item.Status != "completed" && item.Status != "cancelled" {
-			return false
-		}
-	}
-	return true
 }
 
 type interruptSteerDirective struct {

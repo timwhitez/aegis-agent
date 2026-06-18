@@ -2928,7 +2928,7 @@ func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
 		"edit_file":   {"Replace exact text", "after reading"},
 		"grep_files":  {"default discovery step", "return only files"},
 		"finish":      {"required artifacts", "unrun/failed validation"},
-		"todo_write":  {"non-trivial multi-step work", "skip trivial one-step"},
+		"todo_write":  {"progress ledger", "preserved", "does not perform or verify"},
 		"task_create": {"durable task-graph node", "do not use it for trivial"},
 	}
 	for name, needles := range checks {
@@ -5267,6 +5267,99 @@ func TestTodoWriteRejectsInvalidItems(t *testing.T) {
 	}
 }
 
+func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          root,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	initial := []session.TodoItem{
+		{Content: "Inspect current implementation", Status: "completed", Priority: "high", UpdatedAt: "2026-05-28T00:00:00Z"},
+		{Content: "Patch todo semantics", Status: "pending", Priority: "high", UpdatedAt: "2026-05-28T00:01:00Z"},
+	}
+	if err := store.SaveTodo(meta.ID, initial); err != nil {
+		t.Fatalf("save initial todo: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
+
+	rejected := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "delete completed item",
+			payload: `{"todos":[{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
+			want:    "must preserve existing todo items",
+		},
+		{
+			name:    "rewrite existing text",
+			payload: `{"todos":[{"content":"Inspect current implementation again","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
+			want:    "cannot rewrite existing todo 1 content",
+		},
+		{
+			name:    "change priority",
+			payload: `{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"low"},{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
+			want:    "cannot rewrite existing todo 1 priority",
+		},
+		{
+			name:    "terminal status regression",
+			payload: `{"todos":[{"content":"Inspect current implementation","status":"in_progress","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
+			want:    "cannot change existing todo 1 status from completed to in_progress",
+		},
+		{
+			name:    "new completed item",
+			payload: `{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"},{"content":"Done without work","status":"completed","priority":"medium"}]}`,
+			want:    "cannot add new todo 3 directly as completed",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.want) {
+				t.Fatalf("expected %q error, got %#v", tc.want, result)
+			}
+			todo, err := store.LoadTodo(meta.ID)
+			if err != nil {
+				t.Fatalf("load todo: %v", err)
+			}
+			if !normalizedTodosEqual(todo, initial) {
+				t.Fatalf("rejected update mutated todo: %#v", todo)
+			}
+		})
+	}
+
+	accepted, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"in_progress","priority":"high"},{"content":"Run focused tests","status":"pending","priority":"medium"}]}`))
+	if err != nil || accepted.IsError {
+		t.Fatalf("expected append/progress update to succeed, err=%v result=%#v", err, accepted)
+	}
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load accepted todo: %v", err)
+	}
+	if len(todo) != 3 || todo[1].Status != "in_progress" || todo[2].Content != "Run focused tests" || todo[2].Status != "pending" {
+		t.Fatalf("unexpected accepted todo snapshot: %#v", todo)
+	}
+}
+
 func TestTodoWriteReportsLoadErrorBeforeNoop(t *testing.T) {
 	cfg := config.Default()
 	root := t.TempDir()
@@ -5345,7 +5438,7 @@ func TestTodoWriteReportsRequiredEventErrorAndRestoresPreviousSnapshot(t *testin
 		},
 	}
 
-	result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"New work","status":"in_progress","priority":"medium"}]}`))
+	result, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Keep original","status":"completed","priority":"high"}]}`))
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}

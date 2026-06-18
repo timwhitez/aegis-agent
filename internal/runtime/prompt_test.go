@@ -741,8 +741,11 @@ func TestBuildSystemPromptHighlightsCompletedArtifactWrite(t *testing.T) {
 	if !strings.Contains(prompt, "A requested artifact was already written to reports/final-audit.md") {
 		t.Fatalf("expected artifact write note, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Call finish when required side effects are complete") {
+	if !strings.Contains(prompt, "If required side effects are done, call finish") {
 		t.Fatalf("expected soft finish note, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "todo state is fully completed") {
+		t.Fatalf("todo completion must not be treated as delivery evidence, got:\n%s", prompt)
 	}
 }
 

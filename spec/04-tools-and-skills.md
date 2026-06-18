@@ -202,7 +202,8 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 ### 4.11 `todo_write`
 
 - 用于高频更新 session 级 todo 列表
-- 只表达“当前执行计划”，不表达依赖图
+- 只表达“执行进度账本”，不表达依赖图，也不替代实际执行、验证或 `finish`
+- 保留已有 todo 的顺序、内容和优先级；已完成/取消项不可删除或回退；新 todo 只能追加，不能直接新增为 completed/cancelled
 - 仅允许一个 todo 为 `in_progress`
 
 ### 4.12 `todo_read`

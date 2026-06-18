@@ -2551,13 +2551,13 @@ func defRequestUserInput() Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Replace the session todo list with the current execution plan. Use for non-trivial multi-step work, after new user instructions, or when progress needs durable visibility; skip trivial one-step or purely conversational tasks. Keep at most one item in_progress and mark items completed immediately after the work and relevant verification are done.",
+		Description: "Update the session todo progress ledger for non-trivial multi-step work. Use it to append newly discovered concrete steps or advance existing items after doing the corresponding work; skip trivial one-step or purely conversational tasks. Existing todo text/order/priority must be preserved, completed or cancelled items must remain in the list unchanged, and new items must start as pending or in_progress rather than completed. This tool tracks progress only; it does not perform or verify the work.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"todos": map[string]any{
 					"type":        "array",
-					"description": "Full replacement snapshot of the session todo list.",
+					"description": "Full current snapshot of the session todo list. Include all existing items in their original order; only append new items or advance existing statuses.",
 					"items":       todoItemSchema(),
 				},
 			},
@@ -2585,6 +2585,9 @@ func defTodoWrite() Definition {
 			}
 			existing, err := execCtx.Store.LoadTodo(execCtx.SessionID)
 			if err != nil {
+				return errorResult("todo_write", err), nil
+			}
+			if err := validateTodoProgressUpdate(existing, input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
 			changed := !normalizedTodosEqual(existing, input.Todos)
@@ -2767,6 +2770,46 @@ func validateTodoSnapshot(todos []session.TodoItem) error {
 		return errors.New("todo_write allows at most one in_progress item")
 	}
 	return nil
+}
+
+func validateTodoProgressUpdate(existing, next []session.TodoItem) error {
+	if len(next) < len(existing) {
+		return fmt.Errorf("todo_write must preserve existing todo items: got %d items, existing list has %d", len(next), len(existing))
+	}
+	for i, old := range existing {
+		updated := next[i]
+		if old.Content != updated.Content {
+			return fmt.Errorf("todo_write cannot rewrite existing todo %d content; append a new todo instead", i+1)
+		}
+		if old.Priority != updated.Priority {
+			return fmt.Errorf("todo_write cannot rewrite existing todo %d priority", i+1)
+		}
+		if !validTodoStatusTransition(old.Status, updated.Status) {
+			return fmt.Errorf("todo_write cannot change existing todo %d status from %s to %s", i+1, old.Status, updated.Status)
+		}
+	}
+	for i := len(existing); i < len(next); i++ {
+		if next[i].Status == "completed" || next[i].Status == "cancelled" {
+			return fmt.Errorf("todo_write cannot add new todo %d directly as %s; add it as pending or in_progress, then mark done after the work", i+1, next[i].Status)
+		}
+	}
+	return nil
+}
+
+func validTodoStatusTransition(from, to string) bool {
+	if from == to {
+		return true
+	}
+	switch from {
+	case "pending":
+		return to == "in_progress" || to == "completed" || to == "cancelled"
+	case "in_progress":
+		return to == "completed" || to == "cancelled"
+	case "completed", "cancelled":
+		return false
+	default:
+		return false
+	}
 }
 
 func normalizedTodosEqual(a, b []session.TodoItem) bool {
