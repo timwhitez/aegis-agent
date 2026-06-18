@@ -77,6 +77,13 @@ const sessionViewState = {
   needsRefresh: false
 };
 
+const fileChangesViewState = {
+  sessionID: '',
+  loaded: false,
+  loading: false,
+  requestSeq: 0
+};
+
 const queueJobViewState = {
   selectedJobId: '',
   selectedJobDetail: null
@@ -1693,6 +1700,7 @@ function adoptSession(sessionID, backed) {
     clearPlanInputSelections();
     resetMessagePagingWindowState();
     resetWorkspaceSessionSync();
+    resetSessionFileChangesState();
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1718,6 +1726,7 @@ function resetChatSession() {
   setComposerMode(null);
   resetMessagePagingWindowState();
   resetWorkspaceSessionSync();
+  resetSessionFileChangesState();
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
   }
@@ -2913,6 +2922,9 @@ async function refreshCurrentSession(options = {}) {
     }
     renderCurrentSession();
     updateUI();
+    loadSessionFileChanges(sessionID).catch((err) => {
+      console.error('session file changes error', err);
+    });
     syncPollingForState();
   } catch (err) {
     if (state.sessionId !== sessionID || sessionViewState.needsRefresh) {
@@ -2933,6 +2945,44 @@ async function refreshCurrentSession(options = {}) {
     if (sessionViewState.needsRefresh) {
       sessionViewState.needsRefresh = false;
       queueSessionRefresh(80);
+    }
+  }
+}
+
+function resetSessionFileChangesState() {
+  fileChangesViewState.sessionID = '';
+  fileChangesViewState.loaded = false;
+  fileChangesViewState.loading = false;
+  fileChangesViewState.requestSeq++;
+}
+
+async function loadSessionFileChanges(sessionID) {
+  if (!sessionID || !hasDurableSession() || isEphemeralSessionId(sessionID)) {
+    return;
+  }
+  if (fileChangesViewState.sessionID !== sessionID) {
+    fileChangesViewState.sessionID = sessionID;
+    fileChangesViewState.loaded = false;
+    fileChangesViewState.loading = false;
+  }
+  if (fileChangesViewState.loaded || fileChangesViewState.loading) {
+    return;
+  }
+  const requestSeq = ++fileChangesViewState.requestSeq;
+  fileChangesViewState.loading = true;
+  try {
+    const resp = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/file-changes`);
+    if (state.sessionId !== sessionID || fileChangesViewState.requestSeq !== requestSeq) {
+      return;
+    }
+    if (state.sessionDetail?.metadata?.id === sessionID) {
+      state.sessionDetail.file_changes = maybeArray(resp?.file_changes);
+      renderCurrentSession();
+    }
+    fileChangesViewState.loaded = true;
+  } finally {
+    if (fileChangesViewState.requestSeq === requestSeq) {
+      fileChangesViewState.loading = false;
     }
   }
 }
@@ -3314,7 +3364,7 @@ async function fetchHistory(page = currentHistoryPage(), options = {}) {
   }
   try {
     const data = await requestJSON(`/api/history?page=${encodeURIComponent(requestedPage)}&page_size=${encodeURIComponent(pageSize)}`);
-    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || currentHistoryPage() !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || currentHistoryPage() !== requestedPage) {
       return;
     }
     setHistoryData(data);
@@ -3323,7 +3373,7 @@ async function fetchHistory(page = currentHistoryPage(), options = {}) {
       console.error('overview refresh error', err);
     });
   } catch (err) {
-    if (historyViewState.requestSeq !== requestSeq || historyViewState.needsRefresh || currentHistoryPage() !== requestedPage) {
+    if (historyViewState.requestSeq !== requestSeq || currentHistoryPage() !== requestedPage) {
       return;
     }
     console.error('history error', err);

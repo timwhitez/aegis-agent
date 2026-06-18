@@ -1515,7 +1515,7 @@ func (s *Store) List(limit int) ([]SessionSummary, error) {
 	if len(result) > limit {
 		result = result[:limit]
 	}
-	return result, nil
+	return s.populateSessionSummarySnapshots(result)
 }
 
 func (s *Store) ListPage(limit, offset int) ([]SessionSummary, int, error) {
@@ -1537,7 +1537,12 @@ func (s *Store) ListPage(limit, offset int) ([]SessionSummary, int, error) {
 	if end > total {
 		end = total
 	}
-	return result[offset:end], total, nil
+	page := result[offset:end]
+	page, err = s.populateSessionSummarySnapshots(page)
+	if err != nil {
+		return nil, 0, err
+	}
+	return page, total, nil
 }
 
 func (s *Store) listAllSessions() ([]SessionSummary, error) {
@@ -1560,9 +1565,6 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			}
 			continue
 		}
-		if err := s.reconcileSessionQueueJob(meta); err != nil {
-			return nil, err
-		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("state.json: %w", err)
@@ -1584,18 +1586,24 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 		}
-		if err := s.populateGoalSummary(&summary); err != nil {
-			return nil, err
-		}
-		if err := s.populatePlanModeSummary(&summary); err != nil {
-			return nil, err
-		}
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].UpdatedAt > result[j].UpdatedAt
 	})
 	return result, nil
+}
+
+func (s *Store) populateSessionSummarySnapshots(items []SessionSummary) ([]SessionSummary, error) {
+	for i := range items {
+		if err := s.populateGoalSummary(&items[i]); err != nil {
+			return nil, err
+		}
+		if err := s.populatePlanModeSummary(&items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummary, error) {
@@ -1625,9 +1633,6 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		if meta.ParentSessionID != parentSessionID {
 			continue
 		}
-		if err := s.reconcileSessionQueueJob(meta); err != nil {
-			return nil, err
-		}
 		state, err := s.LoadState(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("state.json: %w", err)
@@ -1649,12 +1654,6 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 		}
-		if err := s.populateGoalSummary(&summary); err != nil {
-			return nil, err
-		}
-		if err := s.populatePlanModeSummary(&summary); err != nil {
-			return nil, err
-		}
 		result = append(result, summary)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -1666,7 +1665,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 	if !all && len(result) > limit {
 		result = result[:limit]
 	}
-	return result, nil
+	return s.populateSessionSummarySnapshots(result)
 }
 
 func sessionMetadataFileExists(root, sessionID string) bool {
@@ -2058,14 +2057,30 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 }
 
 func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, "")
+	return s.listJobs(limit, "", true)
+}
+
+func (s *Store) ListJobsSnapshot(limit int) ([]QueueJob, error) {
+	return s.listJobs(limit, "", false)
 }
 
 func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
-	items, err := s.listJobs(-1, "")
+	items, err := s.listJobs(-1, "", true)
 	if err != nil {
 		return nil, 0, err
 	}
+	return pageQueueJobs(items, limit, offset), len(items), nil
+}
+
+func (s *Store) ListJobsPageSnapshot(limit, offset int) ([]QueueJob, int, error) {
+	items, err := s.listJobs(-1, "", false)
+	if err != nil {
+		return nil, 0, err
+	}
+	return pageQueueJobs(items, limit, offset), len(items), nil
+}
+
+func pageQueueJobs(items []QueueJob, limit, offset int) []QueueJob {
 	total := len(items)
 	if limit <= 0 {
 		limit = 20
@@ -2074,20 +2089,24 @@ func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
 		offset = 0
 	}
 	if offset >= total {
-		return []QueueJob{}, total, nil
+		return []QueueJob{}
 	}
 	end := offset + limit
 	if end > total {
 		end = total
 	}
-	return items[offset:end], total, nil
+	return items[offset:end]
 }
 
 func (s *Store) ListJobsByParent(parentSessionID string, limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, parentSessionID)
+	return s.listJobs(limit, parentSessionID, true)
 }
 
-func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) {
+func (s *Store) ListJobsByParentSnapshot(parentSessionID string, limit int) ([]QueueJob, error) {
+	return s.listJobs(limit, parentSessionID, false)
+}
+
+func (s *Store) listJobs(limit int, parentSessionID string, reconcile bool) ([]QueueJob, error) {
 	if limit == 0 {
 		limit = 100
 	}
@@ -2108,10 +2127,12 @@ func (s *Store) listJobs(limit int, parentSessionID string) ([]QueueJob, error) 
 		if parentSessionID != "" && job.ParentSessionID != parentSessionID {
 			continue
 		}
-		if repaired, changed, err := s.reconcileQueueJobSession(job); err != nil {
-			return nil, err
-		} else if changed {
-			job = repaired
+		if reconcile {
+			if repaired, changed, err := s.reconcileQueueJobSession(job); err != nil {
+				return nil, err
+			} else if changed {
+				job = repaired
+			}
 		}
 		out = append(out, job)
 	}
@@ -2362,7 +2383,7 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 			}
 		}
 	}
-	jobs, err := s.listJobs(0, "")
+	jobs, err := s.listJobs(0, "", true)
 	if err != nil {
 		return err
 	}
@@ -2854,7 +2875,7 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	originalStatus := job.Status
 	now := time.Now().UTC()
-	meta, state, messages, ok, err := s.findSessionForQueueJob(job)
+	meta, state, ok, err := s.findSessionForQueueJob(job)
 	if err != nil {
 		return job, false, err
 	}
@@ -2912,7 +2933,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	}
 	failedWithQueueError := job.Status == QueueStatusFailed && strings.TrimSpace(job.LastError) != ""
 	queueError := job.LastError
-	changed := syncRunningQueueJobSession(&job, meta, state, messages)
+	changed := syncRunningQueueJobSession(&job, meta, state)
 	if failedWithQueueError {
 		if job.Status != QueueStatusFailed {
 			job.Status = QueueStatusFailed
@@ -2964,6 +2985,13 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			job.LastError = "child session is resumable: " + state.Status
 			changed = true
 		}
+	}
+	if shouldRepairQueueVisiblePaths(job, state, originalStatus) {
+		visiblePathsChanged, err := s.repairQueueVisiblePaths(&job, meta)
+		if err != nil {
+			return job, false, err
+		}
+		changed = visiblePathsChanged || changed
 	}
 	if !changed {
 		if isTerminalQueueStatus(job.Status) {
@@ -3128,7 +3156,7 @@ func removeStringValue(items []string, value string) []string {
 	return out
 }
 
-func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State, messages []Message) bool {
+func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State) bool {
 	changed := false
 	if job.SessionID != meta.ID {
 		job.SessionID = meta.ID
@@ -3150,13 +3178,27 @@ func syncRunningQueueJobSession(job *QueueJob, meta SessionMetadata, state State
 		job.EffectiveWorkdir = meta.Workdir
 		changed = true
 	}
-	visiblePaths := collectQueueVisiblePaths(meta.Workdir, messages)
-	visiblePaths = syncQueueVisiblePaths(job.RequestedWorkdir, meta.Workdir, visiblePaths)
-	if !equalStringSlices(job.VisiblePaths, visiblePaths) {
-		job.VisiblePaths = visiblePaths
-		changed = true
-	}
 	return changed
+}
+
+func shouldRepairQueueVisiblePaths(job QueueJob, state State, originalStatus string) bool {
+	if state.Status != StatusCompleted {
+		return false
+	}
+	return originalStatus != QueueStatusCompleted || (len(job.VisiblePaths) == 0 && strings.TrimSpace(job.EffectiveWorkdir) == "")
+}
+
+func (s *Store) repairQueueVisiblePaths(job *QueueJob, meta SessionMetadata) (bool, error) {
+	visiblePaths, err := s.collectQueueVisiblePathsFromSession(meta.ID, meta.Workdir)
+	if err != nil {
+		return false, fmt.Errorf("linked session %s messages.jsonl: %w", meta.ID, err)
+	}
+	visiblePaths = syncQueueVisiblePaths(job.RequestedWorkdir, meta.Workdir, visiblePaths)
+	if equalStringSlices(job.VisiblePaths, visiblePaths) {
+		return false, nil
+	}
+	job.VisiblePaths = visiblePaths
+	return true, nil
 }
 
 func syncLeasedQueueJobSession(job *QueueJob, meta SessionMetadata, state State) {
@@ -3222,34 +3264,30 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, []Message, bool, error) {
+func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, bool, error) {
 	jobID := strings.TrimSpace(job.ID)
 	if linkedSessionID := strings.TrimSpace(job.SessionID); linkedSessionID != "" {
 		meta, err := s.LoadMetadata(linkedSessionID)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
-				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s session.json: %w", linkedSessionID, err)
+				return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s session.json: %w", linkedSessionID, err)
 			}
 		} else if strings.TrimSpace(meta.QueueJobID) != "" && meta.QueueJobID != jobID {
-			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s session.json queue_job_id mismatch: got %q, want %q", linkedSessionID, meta.QueueJobID, jobID)
+			return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s session.json queue_job_id mismatch: got %q, want %q", linkedSessionID, meta.QueueJobID, jobID)
 		} else if meta.QueueJobID == jobID {
 			state, err := s.LoadState(meta.ID)
 			if err != nil {
-				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s state.json: %w", meta.ID, err)
+				return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s state.json: %w", meta.ID, err)
 			}
-			messages, err := s.LoadMessages(meta.ID)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s messages.jsonl: %w", meta.ID, err)
-			}
-			return meta, state, messages, true, nil
+			return meta, state, true, nil
 		}
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return SessionMetadata{}, State{}, nil, false, nil
+			return SessionMetadata{}, State{}, false, nil
 		}
-		return SessionMetadata{}, State{}, nil, false, err
+		return SessionMetadata{}, State{}, false, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -3262,15 +3300,11 @@ func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, []
 		}
 		state, err := s.LoadState(sessionID)
 		if err != nil {
-			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s state.json: %w", sessionID, err)
+			return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s state.json: %w", sessionID, err)
 		}
-		messages, err := s.LoadMessages(sessionID)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return SessionMetadata{}, State{}, nil, false, fmt.Errorf("linked session %s messages.jsonl: %w", sessionID, err)
-		}
-		return meta, state, messages, true, nil
+		return meta, state, true, nil
 	}
-	return SessionMetadata{}, State{}, nil, false, nil
+	return SessionMetadata{}, State{}, false, nil
 }
 
 func (s *Store) ensureBackgroundNotification(job QueueJob) error {
@@ -3403,38 +3437,83 @@ func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) error 
 }
 
 func collectQueueVisiblePaths(effectiveWorkdir string, messages []Message) []string {
+	collector := newQueueVisiblePathCollector(effectiveWorkdir)
+	if collector == nil {
+		return nil
+	}
+	for _, msg := range messages {
+		collector.addMessage(msg)
+	}
+	return collector.paths()
+}
+
+func (s *Store) collectQueueVisiblePathsFromSession(sessionID, effectiveWorkdir string) ([]string, error) {
+	collector := newQueueVisiblePathCollector(effectiveWorkdir)
+	if collector == nil {
+		return nil, nil
+	}
+	if err := s.VisitMessages(sessionID, func(msg Message) error {
+		collector.addMessage(msg)
+		return nil
+	}); err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return collector.paths(), nil
+}
+
+type queueVisiblePathCollector struct {
+	base string
+	seen map[string]struct{}
+	out  []string
+}
+
+func newQueueVisiblePathCollector(effectiveWorkdir string) *queueVisiblePathCollector {
 	base := strings.TrimSpace(effectiveWorkdir)
 	if base == "" {
 		return nil
 	}
-	base = filepath.Clean(base)
-	seen := map[string]struct{}{}
-	var out []string
-	for _, msg := range messages {
-		if msg.Role != "tool" {
+	return &queueVisiblePathCollector{
+		base: filepath.Clean(base),
+		seen: map[string]struct{}{},
+	}
+}
+
+func (collector *queueVisiblePathCollector) addMessage(msg Message) {
+	if collector == nil {
+		return
+	}
+	if msg.Role != "tool" {
+		return
+	}
+	for _, result := range msg.ToolResults {
+		if result.IsError || (result.Name != "write_file" && result.Name != "edit_file") {
 			continue
 		}
-		for _, result := range msg.ToolResults {
-			if result.IsError || (result.Name != "write_file" && result.Name != "edit_file") {
-				continue
-			}
-			path, _ := result.Metadata["path"].(string)
-			if strings.TrimSpace(path) == "" {
-				continue
-			}
-			rel, ok := relativePathWithinRoot(base, path)
-			if !ok {
-				continue
-			}
-			rel = filepath.ToSlash(rel)
-			if _, exists := seen[rel]; exists {
-				continue
-			}
-			seen[rel] = struct{}{}
-			out = append(out, rel)
+		path, _ := result.Metadata["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			continue
 		}
+		rel, ok := relativePathWithinRoot(collector.base, path)
+		if !ok {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if _, exists := collector.seen[rel]; exists {
+			continue
+		}
+		collector.seen[rel] = struct{}{}
+		collector.out = append(collector.out, rel)
 	}
-	return out
+}
+
+func (collector *queueVisiblePathCollector) paths() []string {
+	if collector == nil {
+		return nil
+	}
+	return collector.out
 }
 
 func syncQueueVisiblePaths(requestedWorkdir, effectiveWorkdir string, visiblePaths []string) []string {

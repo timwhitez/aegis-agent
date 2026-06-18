@@ -2428,7 +2428,7 @@ func TestClearGoalRejectsSymlinkedSessionDirectory(t *testing.T) {
 	}
 }
 
-func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
+func TestStoreListReportsCorruptVisibleSummarySnapshots(t *testing.T) {
 	cases := []struct {
 		name string
 		file string
@@ -2440,6 +2440,38 @@ func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := NewStore(t.TempDir())
 			parentID := "summary_snapshot_parent_" + tc.name
+			cleanChildMeta := SessionMetadata{
+				SchemaVersion:    1,
+				ID:               "summary_snapshot_clean_child_" + tc.name,
+				CreatedAt:        time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				Mode:             ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: CompletionPolicyInteractive,
+				ParentSessionID:  parentID,
+				RootSessionID:    parentID,
+				Depth:            1,
+			}
+			cleanChildState := State{Status: StatusCompleted, Phase: "done", UpdatedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)}
+			if err := store.Create(cleanChildMeta, cleanChildState); err != nil {
+				t.Fatalf("create clean child session: %v", err)
+			}
+			newerMeta := SessionMetadata{
+				SchemaVersion:    1,
+				ID:               "summary_snapshot_newer_" + tc.name,
+				CreatedAt:        time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				Mode:             ModeRun,
+				Provider:         "fake",
+				Model:            "fake",
+				CompletionPolicy: CompletionPolicyInteractive,
+				RootSessionID:    "summary_snapshot_newer_" + tc.name,
+			}
+			newerState := State{Status: StatusCompleted, Phase: "done", UpdatedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)}
+			if err := store.Create(newerMeta, newerState); err != nil {
+				t.Fatalf("create newer session: %v", err)
+			}
 			meta := SessionMetadata{
 				SchemaVersion:    1,
 				ID:               NewSessionID(),
@@ -2461,14 +2493,24 @@ func TestStoreListReportsCorruptSummarySnapshots(t *testing.T) {
 				t.Fatalf("write invalid %s: %v", tc.file, err)
 			}
 
+			if _, err := store.List(1); err != nil {
+				t.Fatalf("List should not read summary snapshots outside visible limit, got %v", err)
+			}
+			if _, _, err := store.ListPage(1, 0); err != nil {
+				t.Fatalf("ListPage should not read summary snapshots outside visible page, got %v", err)
+			}
+			if _, err := store.ListChildren(parentID, 1); err != nil {
+				t.Fatalf("ListChildren should not read summary snapshots outside visible limit, got %v", err)
+			}
+
 			if _, err := store.List(10); err == nil || !strings.Contains(err.Error(), tc.file) {
-				t.Fatalf("expected List to report %s, got %v", tc.file, err)
+				t.Fatalf("expected List to report visible %s, got %v", tc.file, err)
 			}
 			if _, _, err := store.ListPage(10, 0); err == nil || !strings.Contains(err.Error(), tc.file) {
-				t.Fatalf("expected ListPage to report %s, got %v", tc.file, err)
+				t.Fatalf("expected ListPage to report visible %s, got %v", tc.file, err)
 			}
 			if _, err := store.ListChildren(parentID, 10); err == nil || !strings.Contains(err.Error(), tc.file) {
-				t.Fatalf("expected ListChildren to report %s, got %v", tc.file, err)
+				t.Fatalf("expected ListChildren to report visible %s, got %v", tc.file, err)
 			}
 		})
 	}
@@ -6195,7 +6237,7 @@ func TestClearHistoryRemovesRegularRootFiles(t *testing.T) {
 	}
 }
 
-func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
+func TestLoadJobReconcilesLinkedQueueJobStatusWithoutSessionList(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	childMeta := SessionMetadata{
@@ -6246,15 +6288,30 @@ func TestListPageReconcilesLinkedQueueJobStatus(t *testing.T) {
 			break
 		}
 	}
-	if childSummary == nil || childSummary.Status != StatusFailed || childSummary.LastError != "worker failed" {
-		t.Fatalf("expected list page to reconcile linked failed job, got %#v", childSummary)
+	if childSummary == nil || childSummary.Status != StatusRunning || childSummary.LastError != "" {
+		t.Fatalf("expected list page to use session state without queue repair, got %#v", childSummary)
 	}
 	loadedState, err := store.LoadState(childMeta.ID)
 	if err != nil {
-		t.Fatalf("load child state: %v", err)
+		t.Fatalf("load child state before repair: %v", err)
+	}
+	if loadedState.Status != StatusRunning || loadedState.LastError != "" {
+		t.Fatalf("session list should not persist queue repair, got %#v", loadedState)
+	}
+
+	loadedJob, err := store.LoadJob(childMeta.QueueJobID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if loadedJob.Status != QueueStatusFailed || loadedJob.LastError != "worker failed" {
+		t.Fatalf("expected direct job load to preserve failed job, got %#v", loadedJob)
+	}
+	loadedState, err = store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state after repair: %v", err)
 	}
 	if loadedState.Status != StatusFailed || loadedState.LastError != "worker failed" {
-		t.Fatalf("expected child state to be reconciled, got %#v", loadedState)
+		t.Fatalf("expected direct job load to reconcile child state, got %#v", loadedState)
 	}
 }
 
@@ -6382,7 +6439,6 @@ func TestLoadJobReportsCorruptLinkedSessionFacts(t *testing.T) {
 	}{
 		{name: "metadata", file: "session.json", persistJobSID: true},
 		{name: "state", file: "state.json"},
-		{name: "messages", file: "messages.jsonl"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6444,6 +6500,168 @@ func TestLoadJobReportsCorruptLinkedSessionFacts(t *testing.T) {
 				t.Fatalf("expected corrupt linked session facts not to mark job orphan, got %#v", persisted)
 			}
 		})
+	}
+}
+
+func TestLoadJobDoesNotReadChildMessagesForRunningStatusRepair(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	oldHeartbeat := time.Now().UTC().Add(-queueRunningStaleAfter - time.Minute).Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_corrupt_messages_running",
+		CreatedAt:        oldHeartbeat,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_corrupt_messages_running",
+		RootSessionID:    "parent_corrupt_messages_running",
+		AgentName:        "corrupt-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_corrupt_messages_running",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: oldHeartbeat}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       oldHeartbeat,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       oldHeartbeat,
+		HeartbeatAt:     oldHeartbeat,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "stale",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save stale running job: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(childMeta.ID), "messages.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt linked messages: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load reconciled job should not read corrupt running messages: %v", err)
+	}
+	if reconciled.Status != QueueStatusFailed || reconciled.SessionStatus != StatusFailed || !strings.Contains(reconciled.LastError, "linked running session heartbeat is stale") {
+		t.Fatalf("expected stale running job to repair from state without reading messages, got %#v", reconciled)
+	}
+}
+
+func TestLoadJobReportsCorruptCompletedChildMessagesWhenRepairingVisiblePaths(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_corrupt_completed_messages",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_corrupt_completed_messages",
+		RootSessionID:    "parent_corrupt_completed_messages",
+		AgentName:        "corrupt-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_corrupt_completed_messages",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusRunning,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(childMeta.ID), "messages.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt linked messages: %v", err)
+	}
+
+	reconciled, err := store.LoadJob(job.ID)
+	if err == nil || !strings.Contains(err.Error(), "messages.jsonl") {
+		t.Fatalf("expected corrupt completed messages error, got job=%#v err=%v", reconciled, err)
+	}
+}
+
+func TestListJobsSnapshotDoesNotRepairCompletedChildVisiblePaths(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_snapshot_no_repair",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_snapshot_no_repair",
+		RootSessionID:    "parent_snapshot_no_repair",
+		AgentName:        "snapshot-child",
+		AgentRole:        "evaluator",
+		QueueJobID:       "job_snapshot_no_repair",
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		Status:          QueueStatusRunning,
+		ParentSessionID: childMeta.ParentSessionID,
+		RootSessionID:   childMeta.RootSessionID,
+		AgentName:       childMeta.AgentName,
+		AgentRole:       childMeta.AgentRole,
+		Prompt:          "done",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(childMeta.ID), "messages.jsonl"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt linked messages: %v", err)
+	}
+
+	jobs, err := store.ListJobsSnapshot(10)
+	if err != nil {
+		t.Fatalf("snapshot list should not read corrupt child messages: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].Status != QueueStatusRunning || jobs[0].ID != job.ID {
+		t.Fatalf("expected unrepaired running job snapshot, got %#v", jobs)
+	}
+	parentJobs, err := store.ListJobsByParentSnapshot(childMeta.ParentSessionID, 10)
+	if err != nil {
+		t.Fatalf("parent snapshot list should not read corrupt child messages: %v", err)
+	}
+	if len(parentJobs) != 1 || parentJobs[0].Status != QueueStatusRunning || parentJobs[0].ID != job.ID {
+		t.Fatalf("expected unrepaired parent running job snapshot, got %#v", parentJobs)
+	}
+	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "messages.jsonl") {
+		t.Fatalf("expected reconciled list to still report corrupt completed child messages, got %v", err)
 	}
 }
 

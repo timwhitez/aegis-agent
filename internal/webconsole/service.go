@@ -247,6 +247,10 @@ type FileChangeSummary struct {
 	LinesRemoved int    `json:"lines_removed"`
 }
 
+type FileChangesResponse struct {
+	FileChanges []FileChangeSummary `json:"file_changes"`
+}
+
 type GoalFactsResponse struct {
 	Coverage                  session.MissionPlanCoverage  `json:"coverage"`
 	LatestHistory             *session.GoalHistoryEntry    `json:"latest_history,omitempty"`
@@ -497,7 +501,7 @@ func (s *Service) overview() (OverviewResponse, error) {
 	if err != nil {
 		return OverviewResponse{}, err
 	}
-	jobs, err := s.store.ListJobs(50)
+	jobs, err := s.store.ListJobsSnapshot(50)
 	if err != nil {
 		return OverviewResponse{}, err
 	}
@@ -804,6 +808,12 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSessionMessages(w, sessionID, r)
+	case "file-changes":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		s.handleSessionFileChanges(w, sessionID)
 	case "tasks":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -1303,10 +1313,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
-	fileChanges, err := collectSessionFileChangesFromStore(s.store, sessionID)
-	if err != nil {
-		return SessionDetailResponse{}, err
-	}
+	fileChanges := collectSessionFileChanges(messages)
 	background = tailBackground(dedupeBackgroundNotifications(background), limit)
 	steers = tailSteers(steers, limit)
 	if messages == nil {
@@ -1351,6 +1358,18 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	}, nil
 }
 
+func (s *Service) handleSessionFileChanges(w http.ResponseWriter, sessionID string) {
+	fileChanges, err := collectSessionFileChangesFromStore(s.store, sessionID)
+	if err != nil {
+		writeError(w, sessionStoreStatus(err), err)
+		return
+	}
+	if fileChanges == nil {
+		fileChanges = []FileChangeSummary{}
+	}
+	writeJSON(w, http.StatusOK, FileChangesResponse{FileChanges: fileChanges})
+}
+
 func (s *Service) handleChildren(w http.ResponseWriter, sessionID string, limit int) {
 	resp, err := s.children(sessionID, limit)
 	if err != nil {
@@ -1365,7 +1384,7 @@ func (s *Service) children(sessionID string, limit int) (ChildrenResponse, error
 	if err != nil {
 		return ChildrenResponse{}, err
 	}
-	jobs, err := s.store.ListJobsByParent(sessionID, limit)
+	jobs, err := s.store.ListJobsByParentSnapshot(sessionID, limit)
 	if err != nil {
 		return ChildrenResponse{}, err
 	}
@@ -2840,7 +2859,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	limit := queryBoundedInt(r, "limit", 50, 1, 200)
-	jobs, err := s.store.ListJobs(limit)
+	jobs, err := s.store.ListJobsSnapshot(limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

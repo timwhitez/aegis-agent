@@ -10318,7 +10318,7 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 	}
 }
 
-func TestServiceSessionDetailFileChangesUseFullMessageHistory(t *testing.T) {
+func TestServiceSessionFileChangesLoadFullHistoryLazily(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
 	if err != nil {
@@ -10360,24 +10360,32 @@ func TestServiceSessionDetailFileChangesUseFullMessageHistory(t *testing.T) {
 	if !detail.HasMoreMessages || len(detail.Messages) != 2 {
 		t.Fatalf("expected tailed detail messages with more flag, got has_more=%v len=%d", detail.HasMoreMessages, len(detail.Messages))
 	}
-	byPath := map[string]FileChangeSummary{}
 	for _, item := range detail.FileChanges {
+		if item.Path == "reports/spec.md" || item.Path == "reports/git_status_before_docs.txt" || item.Path == "reports/file_inventory_before_docs.txt" {
+			t.Fatalf("session detail should only include tail-derived file changes, got full-history change %#v in %#v", item, detail.FileChanges)
+		}
+	}
+
+	var fileChanges FileChangesResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/file-changes", &fileChanges)
+	byPath := map[string]FileChangeSummary{}
+	for _, item := range fileChanges.FileChanges {
 		byPath[item.Path] = item
 	}
 	if got := byPath["reports/spec.md"]; got.Writes != 1 || got.LinesAdded != 2 {
-		t.Fatalf("expected early write_file summary from full history, got %#v in %#v", got, detail.FileChanges)
+		t.Fatalf("expected early write_file summary from full history, got %#v in %#v", got, fileChanges.FileChanges)
 	}
 	if got := byPath["reports/git_status_before_docs.txt"]; got.Writes != 1 {
-		t.Fatalf("expected early shell redirect summary from full history, got %#v in %#v", got, detail.FileChanges)
+		t.Fatalf("expected early shell redirect summary from full history, got %#v in %#v", got, fileChanges.FileChanges)
 	}
 	if got := byPath["reports/file_inventory_before_docs.txt"]; got.Writes != 1 {
-		t.Fatalf("expected shell redirect after fd redirect to be counted, got %#v in %#v", got, detail.FileChanges)
+		t.Fatalf("expected shell redirect after fd redirect to be counted, got %#v in %#v", got, fileChanges.FileChanges)
 	}
 	if _, ok := byPath["/dev/null"]; ok {
-		t.Fatalf("fd redirect target must not be surfaced as a file change: %#v", detail.FileChanges)
+		t.Fatalf("fd redirect target must not be surfaced as a file change: %#v", fileChanges.FileChanges)
 	}
 	if _, ok := byPath["1"]; ok {
-		t.Fatalf("fd duplication target must not be surfaced as a file change: %#v", detail.FileChanges)
+		t.Fatalf("fd duplication target must not be surfaced as a file change: %#v", fileChanges.FileChanges)
 	}
 }
 
