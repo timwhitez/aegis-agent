@@ -501,7 +501,7 @@ func (s *Service) overview() (OverviewResponse, error) {
 	if err != nil {
 		return OverviewResponse{}, err
 	}
-	jobs, err := s.store.ListJobsSnapshot(50)
+	jobs, err := s.store.ListJobsStatusSnapshot(50)
 	if err != nil {
 		return OverviewResponse{}, err
 	}
@@ -1384,7 +1384,7 @@ func (s *Service) children(sessionID string, limit int) (ChildrenResponse, error
 	if err != nil {
 		return ChildrenResponse{}, err
 	}
-	jobs, err := s.store.ListJobsByParentSnapshot(sessionID, limit)
+	jobs, err := s.store.ListJobsByParentStatusSnapshot(sessionID, limit)
 	if err != nil {
 		return ChildrenResponse{}, err
 	}
@@ -2859,7 +2859,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	limit := queryBoundedInt(r, "limit", 50, 1, 200)
-	jobs, err := s.store.ListJobsSnapshot(limit)
+	jobs, err := s.store.ListJobsStatusSnapshot(limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

@@ -2222,15 +2222,19 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 }
 
 func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, "", true)
+	return s.listJobs(limit, "", queueJobReconcileFull)
 }
 
 func (s *Store) ListJobsSnapshot(limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, "", false)
+	return s.listJobs(limit, "", queueJobReconcileNone)
+}
+
+func (s *Store) ListJobsStatusSnapshot(limit int) ([]QueueJob, error) {
+	return s.listJobs(limit, "", queueJobReconcileStatus)
 }
 
 func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
-	items, err := s.listJobs(-1, "", true)
+	items, err := s.listJobs(-1, "", queueJobReconcileFull)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2238,7 +2242,7 @@ func (s *Store) ListJobsPage(limit, offset int) ([]QueueJob, int, error) {
 }
 
 func (s *Store) ListJobsPageSnapshot(limit, offset int) ([]QueueJob, int, error) {
-	items, err := s.listJobs(-1, "", false)
+	items, err := s.listJobs(-1, "", queueJobReconcileNone)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2264,14 +2268,26 @@ func pageQueueJobs(items []QueueJob, limit, offset int) []QueueJob {
 }
 
 func (s *Store) ListJobsByParent(parentSessionID string, limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, parentSessionID, true)
+	return s.listJobs(limit, parentSessionID, queueJobReconcileFull)
 }
 
 func (s *Store) ListJobsByParentSnapshot(parentSessionID string, limit int) ([]QueueJob, error) {
-	return s.listJobs(limit, parentSessionID, false)
+	return s.listJobs(limit, parentSessionID, queueJobReconcileNone)
 }
 
-func (s *Store) listJobs(limit int, parentSessionID string, reconcile bool) ([]QueueJob, error) {
+func (s *Store) ListJobsByParentStatusSnapshot(parentSessionID string, limit int) ([]QueueJob, error) {
+	return s.listJobs(limit, parentSessionID, queueJobReconcileStatus)
+}
+
+type queueJobReconcileMode int
+
+const (
+	queueJobReconcileNone queueJobReconcileMode = iota
+	queueJobReconcileStatus
+	queueJobReconcileFull
+)
+
+func (s *Store) listJobs(limit int, parentSessionID string, reconcile queueJobReconcileMode) ([]QueueJob, error) {
 	if limit == 0 {
 		limit = 100
 	}
@@ -2284,6 +2300,14 @@ func (s *Store) listJobs(limit int, parentSessionID string, reconcile bool) ([]Q
 	for _, copy := range copies {
 		byID[copy.job.ID] = append(byID[copy.job.ID], copy)
 	}
+	var metaIndex *queueSessionMetadataIndex
+	if reconcile == queueJobReconcileStatus {
+		index, err := s.buildQueueSessionMetadataIndex()
+		if err != nil {
+			return nil, err
+		}
+		metaIndex = &index
+	}
 	out := make([]QueueJob, 0, len(byID))
 	for _, group := range byID {
 		canonical := canonicalQueueJobCopy(group)
@@ -2292,12 +2316,19 @@ func (s *Store) listJobs(limit int, parentSessionID string, reconcile bool) ([]Q
 		if parentSessionID != "" && job.ParentSessionID != parentSessionID {
 			continue
 		}
-		if reconcile {
+		switch reconcile {
+		case queueJobReconcileFull:
 			if repaired, changed, err := s.reconcileQueueJobSession(job); err != nil {
 				return nil, err
 			} else if changed {
 				job = repaired
 			}
+		case queueJobReconcileStatus:
+			repaired, err := s.reconcileQueueJobSessionStatusSnapshot(job, metaIndex)
+			if err != nil {
+				return nil, err
+			}
+			job = repaired
 		}
 		out = append(out, job)
 	}
@@ -2548,7 +2579,7 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 			}
 		}
 	}
-	jobs, err := s.listJobs(0, "", true)
+	jobs, err := s.listJobs(0, "", queueJobReconcileFull)
 	if err != nil {
 		return err
 	}
@@ -3483,6 +3514,118 @@ func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, bo
 		return meta, state, true, nil
 	}
 	return SessionMetadata{}, State{}, false, nil
+}
+
+type queueSessionMetadataIndex struct {
+	bySessionID  map[string]SessionMetadata
+	byQueueJobID map[string]SessionMetadata
+}
+
+func (s *Store) buildQueueSessionMetadataIndex() (queueSessionMetadataIndex, error) {
+	index := queueSessionMetadataIndex{
+		bySessionID:  map[string]SessionMetadata{},
+		byQueueJobID: map[string]SessionMetadata{},
+	}
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return index, nil
+		}
+		return index, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		meta, err := s.LoadMetadata(entry.Name())
+		if err != nil {
+			continue
+		}
+		index.bySessionID[meta.ID] = meta
+		if strings.TrimSpace(meta.QueueJobID) != "" {
+			if _, exists := index.byQueueJobID[meta.QueueJobID]; !exists {
+				index.byQueueJobID[meta.QueueJobID] = meta
+			}
+		}
+	}
+	return index, nil
+}
+
+func (index queueSessionMetadataIndex) sessionForQueueJob(job QueueJob) (SessionMetadata, bool) {
+	jobID := strings.TrimSpace(job.ID)
+	if linkedSessionID := strings.TrimSpace(job.SessionID); linkedSessionID != "" {
+		if meta, ok := index.bySessionID[linkedSessionID]; ok && meta.QueueJobID == jobID {
+			return meta, true
+		}
+	}
+	meta, ok := index.byQueueJobID[jobID]
+	return meta, ok
+}
+
+func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *queueSessionMetadataIndex) (QueueJob, error) {
+	if metaIndex == nil {
+		return job, nil
+	}
+	now := time.Now().UTC()
+	meta, ok := metaIndex.sessionForQueueJob(job)
+	if !ok {
+		if job.Status == QueueStatusRunning && queueJobIsStale(job, now) {
+			job.Status = QueueStatusFailed
+			job.SessionStatus = StatusFailed
+			if strings.TrimSpace(job.LastError) == "" {
+				job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
+			}
+		}
+		return job, nil
+	}
+	state, err := s.LoadState(meta.ID)
+	if err != nil {
+		return job, nil
+	}
+	if job.Status == QueueStatusRunning && state.Status == StatusRunning {
+		syncLeasedQueueJobSession(&job, meta, state)
+		if queueJobIsStale(job, now) {
+			job.Status = QueueStatusFailed
+			job.SessionStatus = StatusFailed
+			if strings.TrimSpace(job.LastError) == "" {
+				job.LastError = "queue job stale: linked running session heartbeat is stale"
+			}
+		}
+		return job, nil
+	}
+	failedWithQueueError := job.Status == QueueStatusFailed && strings.TrimSpace(job.LastError) != ""
+	queueError := job.LastError
+	syncRunningQueueJobSession(&job, meta, state)
+	if failedWithQueueError {
+		job.Status = QueueStatusFailed
+		job.LastError = queueError
+		return job, nil
+	}
+	switch state.Status {
+	case StatusCompleted:
+		job.Status = QueueStatusCompleted
+		job.StopReason = ""
+	case StatusFailed:
+		job.Status = QueueStatusFailed
+		job.StopReason = ""
+	case StatusRunning:
+		job.Status = QueueStatusRunning
+		job.StopReason = ""
+	case StatusPaused, StatusAwaitingInput:
+		job.Status = QueueStatusBlocked
+		if state.Status == StatusPaused && state.PauseReason == "manual_stop" {
+			job.StopReason = QueueStopReasonParentStop
+		}
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "child session is resumable: " + state.Status
+		}
+	default:
+		job.Status = QueueStatusBlocked
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "child session is resumable: " + state.Status
+		}
+	}
+	return job, nil
 }
 
 func (s *Store) ensureBackgroundNotification(job QueueJob) error {

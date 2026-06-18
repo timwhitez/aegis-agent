@@ -6717,8 +6717,92 @@ func TestListJobsSnapshotDoesNotRepairCompletedChildVisiblePaths(t *testing.T) {
 	if len(parentJobs) != 1 || parentJobs[0].Status != QueueStatusRunning || parentJobs[0].ID != job.ID {
 		t.Fatalf("expected unrepaired parent running job snapshot, got %#v", parentJobs)
 	}
+	statusJobs, err := store.ListJobsStatusSnapshot(10)
+	if err != nil {
+		t.Fatalf("status snapshot list should not read corrupt child messages: %v", err)
+	}
+	if len(statusJobs) != 1 || statusJobs[0].Status != QueueStatusCompleted || statusJobs[0].SessionID != childMeta.ID {
+		t.Fatalf("expected status snapshot to reconcile child state without visible paths, got %#v", statusJobs)
+	}
+	parentStatusJobs, err := store.ListJobsByParentStatusSnapshot(childMeta.ParentSessionID, 10)
+	if err != nil {
+		t.Fatalf("parent status snapshot list should not read corrupt child messages: %v", err)
+	}
+	if len(parentStatusJobs) != 1 || parentStatusJobs[0].Status != QueueStatusCompleted || parentStatusJobs[0].SessionID != childMeta.ID {
+		t.Fatalf("expected parent status snapshot to reconcile child state without visible paths, got %#v", parentStatusJobs)
+	}
 	if _, err := store.ListJobs(10); err == nil || !strings.Contains(err.Error(), "messages.jsonl") {
 		t.Fatalf("expected reconciled list to still report corrupt completed child messages, got %v", err)
+	}
+}
+
+func TestListJobsStatusSnapshotBlocksRunningJobLinkedByChildMetadata(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_status_snapshot_paused",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		RootSessionID:    "parent_status_snapshot_paused",
+	}
+	if err := store.Create(parentMeta, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_status_snapshot_paused",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "paused child",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+	childMeta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_status_snapshot_paused",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentMeta.ID,
+		RootSessionID:    parentMeta.ID,
+		QueueJobID:       job.ID,
+		Depth:            1,
+	}
+	if err := store.Create(childMeta, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	jobs, err := store.ListJobsStatusSnapshot(10)
+	if err != nil {
+		t.Fatalf("status snapshot list: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].Status != QueueStatusBlocked || jobs[0].SessionID != childMeta.ID || jobs[0].SessionStatus != StatusPaused || jobs[0].StopReason != QueueStopReasonParentStop {
+		t.Fatalf("expected status snapshot to block child-linked running job, got %#v", jobs)
+	}
+	var persisted QueueJob
+	if err := readJSONFile(store.queueJobPath(QueueStatusRunning, job.ID), &persisted); err != nil {
+		t.Fatalf("read persisted running job: %v", err)
+	}
+	if persisted.Status != QueueStatusRunning || persisted.SessionID != "" {
+		t.Fatalf("status snapshot should not persist lightweight repair, got %#v", persisted)
 	}
 }
 

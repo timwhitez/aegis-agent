@@ -7314,6 +7314,68 @@ func TestServiceStopParentBlocksQueuedChildJobForRestart(t *testing.T) {
 	}
 }
 
+func TestServiceListJobsStatusSnapshotShowsPausedChildLinkedByMetadata(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentMeta := testSessionMetadata(t, "parent_list_jobs_paused_child")
+	parentMeta.RootSessionID = parentMeta.ID
+	if err := svc.store.Create(parentMeta, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	childMeta := testSessionMetadata(t, "child_list_jobs_paused_child")
+	childMeta.ParentSessionID = parentMeta.ID
+	childMeta.RootSessionID = parentMeta.ID
+	childMeta.QueueJobID = "job_list_jobs_paused_child"
+	childMeta.Depth = 1
+	if err := svc.store.Create(childMeta, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusRunning,
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		ParentSessionID: parentMeta.ID,
+		RootSessionID:   parentMeta.ID,
+		Prompt:          "paused child",
+		Mode:            session.ModeExec,
+		Background:      true,
+	}); err != nil {
+		t.Fatalf("save running job: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/queue/jobs?limit=10", nil)
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected queue jobs ok, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var jobs []session.QueueJob
+	if err := json.Unmarshal(recorder.Body.Bytes(), &jobs); err != nil {
+		t.Fatalf("decode queue jobs: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != childMeta.QueueJobID || jobs[0].Status != session.QueueStatusBlocked || jobs[0].SessionID != childMeta.ID || jobs[0].StopReason != session.QueueStopReasonParentStop {
+		t.Fatalf("expected API to expose status-reconciled blocked job, got %#v", jobs)
+	}
+
+	children, err := svc.children(parentMeta.ID, 10)
+	if err != nil {
+		t.Fatalf("load children: %v", err)
+	}
+	if len(children.Jobs) != 1 || children.Jobs[0].Status != session.QueueStatusBlocked || children.Jobs[0].SessionID != childMeta.ID {
+		t.Fatalf("expected children jobs to use status snapshot, got %#v", children.Jobs)
+	}
+}
+
 func TestServiceDeleteSessionReconcilesFreshRunningJobLinkedToPausedChild(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
