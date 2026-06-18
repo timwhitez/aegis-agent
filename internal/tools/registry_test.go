@@ -3831,6 +3831,75 @@ func TestReadFileAllowsRegisteredSkillReferencesOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestGrepAllowsRegisteredSkillReferencesOutsideWorkspace(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	root := t.TempDir()
+	workdir := filepath.Join(root, "workspace")
+	skillDir := filepath.Join(root, "skills", "pentest-toolset")
+	referenceDir := filepath.Join(skillDir, "references")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(referenceDir, 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: pentest-toolset\ndescription: pentest helper\n---\nSee references/01-cli-contract.md\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(referenceDir, "01-cli-contract.md"), []byte("# CLI Contract\n\nUse schema first.\n"), 0o644); err != nil {
+		t.Fatalf("write reference: %v", err)
+	}
+	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})
+	if err != nil {
+		t.Fatalf("scan skills: %v", err)
+	}
+	registry, err := NewRegistry(cfg, catalog, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{Workdir: workdir, Store: store, Config: cfg, Catalog: catalog}
+
+	grepResult, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"path":"skills/pentest-toolset/references/full-audit-workflow.md",
+		"pattern":"missing"
+	}`))
+	if err != nil {
+		t.Fatalf("grep missing explicit skill file: %v", err)
+	}
+	if !grepResult.IsError || !strings.Contains(grepResult.DisplayOutput, "skills/pentest-toolset/references/full-audit-workflow.md") || strings.Contains(grepResult.DisplayOutput, "workspace/skills") {
+		t.Fatalf("expected missing skill path error without workspace fallback, got %#v", grepResult)
+	}
+
+	grepResult, err = registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"path":"skills/pentest-toolset/references/01-cli-contract.md",
+		"pattern":"schema"
+	}`))
+	if err != nil {
+		t.Fatalf("grep skill path: %v", err)
+	}
+	if grepResult.IsError {
+		t.Fatalf("expected skill grep to succeed, got %#v", grepResult)
+	}
+	if !strings.Contains(grepResult.DisplayOutput, "skills/pentest-toolset/references/01-cli-contract.md:3:Use schema first.") {
+		t.Fatalf("expected skill-relative grep output, got %q", grepResult.DisplayOutput)
+	}
+
+	grepFilesResult, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
+		"path":"references",
+		"pattern":"schema"
+	}`))
+	if err != nil {
+		t.Fatalf("grep_files skill-relative path: %v", err)
+	}
+	if grepFilesResult.IsError {
+		t.Fatalf("expected skill-relative grep_files to succeed, got %#v", grepFilesResult)
+	}
+	if strings.TrimSpace(grepFilesResult.DisplayOutput) != "skills/pentest-toolset/references/01-cli-contract.md" {
+		t.Fatalf("expected skill-relative grep_files output, got %q", grepFilesResult.DisplayOutput)
+	}
+}
+
 func TestReadFileRejectsRegisteredSkillSymlinkEscape(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

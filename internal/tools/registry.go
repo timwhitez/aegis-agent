@@ -1036,7 +1036,7 @@ func defGlob() Definition {
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search workspace text recursively and return matching lines as path:line:text. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
+		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1046,7 +1046,7 @@ func defGrep() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative file or directory to search. Omit to search the workspace.",
+					"description": "Optional workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Omit to search the workspace.",
 				},
 			},
 			"required": []string{"pattern"},
@@ -1062,31 +1062,31 @@ func defGrep() Definition {
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("grep", err), nil
 			}
-			if input.Path != "" {
+			root, err := resolveGrepRoot(execCtx, input.Path)
+			if err != nil {
+				return errorResult("grep", err), nil
+			}
+			if input.Path != "" && root.source == "workspace" {
 				if isInternalGeneratedArtifactInput(input.Path) {
 					return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 				}
 			}
-			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
-			if err != nil {
-				return errorResult("grep", err), nil
-			}
-			if input.Path != "" && isInternalGeneratedArtifactPath(execCtx.Workdir, root) {
+			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, root.path) {
 				return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, regexErr := regexp.Compile(input.Pattern)
 			useRegex := regexErr == nil
 			var lines []string
 			truncatedLineCount := 0
-			walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			walkErr := filepath.Walk(root.path, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
-					if sameCleanPath(path, root) {
+					if sameCleanPath(path, root.path) {
 						return err
 					}
 					return nil
 				}
 				if info.IsDir() {
-					if path != root && shouldSkipGrepDir(path) {
+					if path != root.path && shouldSkipGrepDir(path) {
 						return filepath.SkipDir
 					}
 					return nil
@@ -1096,7 +1096,7 @@ func defGrep() Definition {
 				}
 				data, _, readErr := fileutil.ReadRegularFileNoSymlink(path)
 				if readErr != nil {
-					if sameCleanPath(path, root) {
+					if sameCleanPath(path, root.path) {
 						return readErr
 					}
 					return nil
@@ -1112,7 +1112,7 @@ func defGrep() Definition {
 						matched = strings.Contains(line, input.Pattern)
 					}
 					if matched {
-						formatted, truncated := formatGrepMatchLine(execCtx.Workdir, path, lineNo+1, line)
+						formatted, truncated := formatGrepMatchLine(root.displayBase, path, lineNo+1, line)
 						if truncated {
 							truncatedLineCount++
 						}
@@ -1143,7 +1143,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Search workspace text recursively and return only files that contain the pattern. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
+		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1155,7 +1155,7 @@ func defGrepFiles() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative file or directory to search. Omit to search the workspace.",
+					"description": "Optional workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -1181,24 +1181,24 @@ func defGrepFiles() Definition {
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("grep_files", err), nil
 			}
-			if input.Path != "" && isInternalGeneratedArtifactInput(input.Path) {
-				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
-			}
-			root, err := resolveGrepRoot(execCtx.Workdir, input.Path)
+			root, err := resolveGrepRoot(execCtx, input.Path)
 			if err != nil {
 				return errorResult("grep_files", err), nil
 			}
-			if input.Path != "" && isInternalGeneratedArtifactPath(execCtx.Workdir, root) {
+			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactInput(input.Path) {
+				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
+			}
+			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, root.path) {
 				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
 			limit := normalizeGrepFilesLimit(input.Limit)
 			var matches []string
-			err = walkTextSearchFiles(execCtx.Workdir, root, input.Include, func(path string, data string) error {
+			err = walkTextSearchFiles(root.displayBase, root.path, input.Include, func(path string, data string) error {
 				if !textMatchesPattern(data, matcher, useRegex, input.Pattern) {
 					return nil
 				}
-				matches = append(matches, relativeOrAbsolute(execCtx.Workdir, path))
+				matches = append(matches, relativeOrAbsolute(root.displayBase, path))
 				if len(matches) >= limit {
 					return errGrepLimitReached
 				}
@@ -1336,6 +1336,13 @@ type resolvedSkillPath struct {
 	displayBase string
 	skillName   string
 	explicit    bool
+}
+
+type resolvedSearchRoot struct {
+	path        string
+	displayBase string
+	source      string
+	skillName   string
 }
 
 func resolveShellWorkdir(execCtx ExecContext, input string) (string, string, string, error) {
@@ -1552,19 +1559,46 @@ func skillDisplayBase(skillDir string) string {
 	return parent
 }
 
-func resolveGrepRoot(workdir, inputPath string) (string, error) {
-	root := workdir
+func resolveGrepRoot(execCtx ExecContext, inputPath string) (resolvedSearchRoot, error) {
 	if inputPath == "" {
-		return root, nil
+		return resolvedSearchRoot{path: execCtx.Workdir, displayBase: execCtx.Workdir, source: "workspace"}, nil
 	}
-	path, err := ResolveWorkspacePath(workdir, inputPath)
-	if err != nil {
-		return "", err
+	path, workspaceErr := ResolveWorkspacePath(execCtx.Workdir, inputPath)
+	if workspaceErr == nil {
+		if _, err := os.Lstat(path); err == nil {
+			return resolvedSearchRoot{path: path, displayBase: execCtx.Workdir, source: "workspace"}, nil
+		} else {
+			workspaceErr = fmt.Errorf("path %q does not exist or is not accessible: %w", inputPath, err)
+		}
 	}
-	if _, err := os.Lstat(path); err != nil {
-		return "", fmt.Errorf("path %q does not exist or is not accessible: %w", inputPath, err)
+
+	skillPath, skillErr := resolveRegisteredSearchPath(execCtx.Catalog, inputPath)
+	if skillErr == nil {
+		if _, err := os.Lstat(skillPath.path); err != nil {
+			return resolvedSearchRoot{}, fmt.Errorf("path %q does not exist or is not accessible: %w", inputPath, err)
+		}
+		return resolvedSearchRoot{
+			path:        skillPath.path,
+			displayBase: skillPath.displayBase,
+			source:      "skill",
+			skillName:   skillPath.skillName,
+		}, nil
 	}
-	return path, nil
+	if !errors.Is(skillErr, errNoRegisteredSkillPath) {
+		return resolvedSearchRoot{}, skillErr
+	}
+	if workspaceErr != nil {
+		return resolvedSearchRoot{}, workspaceErr
+	}
+	return resolvedSearchRoot{}, fmt.Errorf("path %q does not exist or is not accessible", inputPath)
+}
+
+func resolveRegisteredSearchPath(catalog *skills.Catalog, input string) (resolvedSkillPath, error) {
+	match, err := resolveRegisteredSkillPath(catalog, input, false)
+	if err == nil || !errors.Is(err, errNoRegisteredSkillPath) {
+		return match, err
+	}
+	return resolveRegisteredSkillPath(catalog, input, true)
 }
 
 func compileGrepMatcher(pattern string) (*regexp.Regexp, bool) {
@@ -1746,7 +1780,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 			skillDir := filepath.Dir(skill.Path)
 			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
 			if !input.ForceReload && skillLoaded(execCtx, input.Name) {
-				output := fmt.Sprintf("<skill name=%q path=%q already_loaded=true shell_workdir=%q>\nThis skill has already been loaded in this session. Reuse the prior instructions; call load_skill again with force_reload=true only if the skill file changed or the user explicitly asks to reload it.\nAvailable bundle files can still be inspected with read_file using paths like `skills/%s/references/...` or skill-relative links.\n</skill>", skill.Name, skill.Path, shellWorkdir, skill.Name)
+				output := fmt.Sprintf("<skill name=%q path=%q already_loaded=true shell_workdir=%q>\nThis skill has already been loaded in this session. Reuse the prior instructions; call load_skill again with force_reload=true only if the skill file changed or the user explicitly asks to reload it.\nAvailable bundle files can still be inspected or searched with read_file, grep, or grep_files using paths like `skills/%s/references/...` or skill-relative links.\n</skill>", skill.Name, skill.Path, shellWorkdir, skill.Name)
 				return session.ToolResult{
 					Name:          "load_skill",
 					LLMOutput:     output,
@@ -1769,7 +1803,7 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 			if err := markSkillLoaded(execCtx, input.Name); err != nil {
 				return errorResult("load_skill", err), nil
 			}
-			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect referenced skill files, call read_file with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
+			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect or search referenced skill files, call read_file, grep, or grep_files with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
 			return session.ToolResult{
 				Name:          "load_skill",
 				LLMOutput:     output,

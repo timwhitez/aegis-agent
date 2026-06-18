@@ -119,6 +119,7 @@ v1 内置工具固定为：
 ### 4.6 `grep_files`
 
 - 在工作区内递归搜索文本内容
+- 例外：已注册 skill bundle 文件和目录属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径搜索；不得把这些路径误解析成 `workspace/skills/...`
 - 仅返回命中文件路径，不返回整段上下文
 - 用于先做便宜的候选文件发现，再配合 `read_file` 定点读取
 - 默认跳过常见构建产物、缓存目录和二进制文件
@@ -126,6 +127,7 @@ v1 内置工具固定为：
 ### 4.7 `grep`
 
 - 在工作区内递归搜索文本
+- 例外：已注册 skill bundle 文件和目录属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径搜索；不得把这些路径误解析成 `workspace/skills/...`
 - 返回匹配文件、行号、片段摘要
 - 默认跳过常见构建产物、缓存目录和二进制文件
 - 命中文件内容读取必须复用 capped regular-file reader；超出 16 MiB 的单文件应跳过或返回受控错误，不得完整读入内存后再截断
@@ -142,7 +144,7 @@ v1 内置工具固定为：
 - 接受 `name`
 - 返回目标 `SKILL.md` 的完整内容与路径信息
 - 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
-- 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` 的 `skills/<skill-name>/references/...` 或唯一匹配的 `references/...` 读取，不属于 workspace 文件
+- 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` / `grep` / `grep_files` 的 `skills/<skill-name>/references/...`、`load_skill` 返回的绝对路径，或唯一匹配的 `references/...` 访问，不属于 workspace 文件
 
 ### 4.9.1 Goal Tools
 
