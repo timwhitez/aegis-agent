@@ -218,6 +218,43 @@ func TestAgentStatusRejectsQueueJobOutsideParent(t *testing.T) {
 	}
 }
 
+func TestRunnerQueueSubmitPersistsResumeParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "background child task",
+		ResumeParent:    true,
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	if !job.ResumeParent {
+		t.Fatalf("expected returned job to persist resume_parent, got %#v", job)
+	}
+	loaded, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if !loaded.ResumeParent {
+		t.Fatalf("expected stored job to persist resume_parent, got %#v", loaded)
+	}
+	notification := session.NewBackgroundNotification(session.QueueJob{
+		ID:              loaded.ID,
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: parentID,
+		SessionID:       "child_resume_parent",
+		SessionStatus:   session.StatusCompleted,
+		ResumeParent:    loaded.ResumeParent,
+	})
+	if !notification.ResumeParent {
+		t.Fatalf("expected background notification to mirror resume_parent, got %#v", notification)
+	}
+}
+
 func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

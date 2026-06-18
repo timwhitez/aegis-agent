@@ -64,6 +64,84 @@ func TestEngineAwaitingInputReportsEventAppendError(t *testing.T) {
 	}
 }
 
+func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate and wait")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
+	engine.SetRunner(runner)
+	registry, err := tools.NewRegistry(engine.cfg, catalog, engine.store, backgroundWaitControl{})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		job := session.QueueJob{
+			ID:               "job_background_wait",
+			Status:           session.QueueStatusCompleted,
+			ParentSessionID:  meta.ID,
+			SessionID:        "child_background_wait",
+			SessionStatus:    session.StatusCompleted,
+			RequestedWorkdir: meta.Workdir,
+			EffectiveWorkdir: meta.Workdir,
+			FinalText:        "child done",
+			ResumeParent:     true,
+		}
+		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+	}()
+	turns := 0
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		turns++
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_agent_spawn",
+				Name:      "agent_spawn",
+				Arguments: json.RawMessage(`{"prompt":"child work","background":true,"resume_parent":true}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.FinalText != "continued" || result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected continue result, got %#v", result)
+	}
+	if turns != 1 || len(runner.requests) != 1 || runner.requests[0].SessionID != meta.ID || runner.requests[0].Source != "background" {
+		t.Fatalf("expected one background continue request, turns=%d requests=%#v", turns, runner.requests)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Status != session.StatusAwaitingInput || loadedState.Phase != "background_wait" {
+		t.Fatalf("expected durable background_wait state, got %#v", loadedState)
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted || !notifications[0].ResumeParent {
+		t.Fatalf("expected accepted resume notification, got %#v", notifications)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var foundBackground bool
+	for _, msg := range messages {
+		if msg.Meta["source"] == "background_results" && strings.Contains(msg.Text, "child done") {
+			foundBackground = true
+		}
+	}
+	if !foundBackground {
+		t.Fatalf("expected background results message, got %#v", messages)
+	}
+}
+
 func TestEnginePreservesLoadedSkillStateAcrossNextTurn(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngineWithSkill(t, session.ModeRun, "helpers", "helper skill", "FULL SKILL BODY")
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "load helper")); err != nil {
@@ -5256,6 +5334,35 @@ func (a emittingAdapter) Name() string {
 
 func (a emittingAdapter) RunTurn(ctx context.Context, req provider.TurnRequest, emit provider.EmitFunc) (provider.TurnResult, error) {
 	return a.run(ctx, req, emit)
+}
+
+type backgroundContinueRecorder struct {
+	requests []ContinueRequest
+	result   RunResult
+	err      error
+}
+
+func (r *backgroundContinueRecorder) AutoContinue(context.Context, string) (RunResult, error) {
+	return RunResult{}, errors.New("unexpected auto-continue")
+}
+
+func (r *backgroundContinueRecorder) Continue(_ context.Context, req ContinueRequest) (RunResult, error) {
+	r.requests = append(r.requests, req)
+	return r.result, r.err
+}
+
+type backgroundWaitControl struct{}
+
+func (backgroundWaitControl) SpawnAgent(_ context.Context, req tools.AgentSpawnRequest) (tools.AgentSpawnResult, error) {
+	return tools.AgentSpawnResult{QueueJobID: "job_background_wait", Status: session.QueueStatusQueued}, nil
+}
+
+func (backgroundWaitControl) AgentStatus(context.Context, tools.AgentStatusRequest) (tools.AgentStatusResult, error) {
+	return tools.AgentStatusResult{}, errors.New("unexpected agent_status")
+}
+
+func (backgroundWaitControl) AgentList(context.Context, string) (tools.AgentListResult, error) {
+	return tools.AgentListResult{}, errors.New("unexpected agent_list")
 }
 
 func bytesSplitNonEmpty(data []byte, sep byte) [][]byte {

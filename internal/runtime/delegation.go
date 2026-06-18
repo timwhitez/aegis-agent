@@ -26,6 +26,7 @@ type DelegateRequest struct {
 	SystemOverride  string
 	Background      bool
 	WaitMode        string
+	ResumeParent    bool
 	Mode            string
 	IsolationMode   string
 	IsolationRoot   string
@@ -59,6 +60,7 @@ func (r *Runner) Delegate(ctx context.Context, req DelegateRequest) (DelegateRes
 		SystemOverride:  req.SystemOverride,
 		Background:      req.Background,
 		WaitMode:        req.WaitMode,
+		ResumeParent:    req.ResumeParent,
 		Mode:            req.Mode,
 		IsolationMode:   req.IsolationMode,
 		IsolationRoot:   req.IsolationRoot,
@@ -128,6 +130,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			SystemOverride:  req.SystemOverride,
 			Mode:            mode,
 			WaitMode:        waitMode,
+			ResumeParent:    req.ResumeParent,
 			IsolationMode:   isolationMode,
 			IsolationRoot:   req.IsolationRoot,
 		})
@@ -329,6 +332,7 @@ type QueueSubmitRequest struct {
 	SystemOverride  string
 	Mode            string
 	WaitMode        string
+	ResumeParent    bool
 	IsolationMode   string
 	IsolationRoot   string
 }
@@ -402,6 +406,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		SystemOverride:   req.SystemOverride,
 		Background:       true,
 		WaitMode:         waitMode,
+		ResumeParent:     req.ResumeParent,
 		IsolationMode:    isolationMode,
 		IsolationRoot:    req.IsolationRoot,
 	}
@@ -424,10 +429,11 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		}
 		if err := retryQueuePersistence("append session.child.queued event for job "+job.ID, func() error {
 			return r.appendEvent(job.ParentSessionID, "session.child.queued", "delegate", map[string]any{
-				"job_id":     job.ID,
-				"agent_name": job.AgentName,
-				"agent_role": job.AgentRole,
-				"wait_mode":  job.WaitMode,
+				"job_id":        job.ID,
+				"agent_name":    job.AgentName,
+				"agent_role":    job.AgentRole,
+				"wait_mode":     job.WaitMode,
+				"resume_parent": job.ResumeParent,
 			})
 		}); err != nil {
 			if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, previousCoordination); restoreErr != nil {

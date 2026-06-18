@@ -60,6 +60,9 @@ type recordingControlPlane struct {
 func (r *recordingControlPlane) SpawnAgent(_ context.Context, req AgentSpawnRequest) (AgentSpawnResult, error) {
 	r.spawnCalls++
 	r.spawnReq = req
+	if req.Background {
+		return AgentSpawnResult{QueueJobID: "job_child_1", Status: session.QueueStatusQueued}, nil
+	}
 	return AgentSpawnResult{SessionID: "child_1", Status: session.StatusCompleted}, nil
 }
 
@@ -2779,9 +2782,10 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 		t.Fatalf("expected properties schema, got %#v", def.InputSchema["properties"])
 	}
 	for name, want := range map[string]string{
-		"prompt":     "objective, scope, boundaries",
-		"agent_role": "Choose exactly one of planner, generator, or evaluator",
-		"background": "agent_status or agent_list",
+		"prompt":        "objective, scope, boundaries",
+		"agent_role":    "Choose exactly one of planner, generator, or evaluator",
+		"background":    "agent_status or agent_list",
+		"resume_parent": "automatically resume",
 	} {
 		schema, ok := properties[name].(map[string]any)
 		if !ok {
@@ -2829,6 +2833,38 @@ func TestAgentSpawnRejectsBlankPromptBeforeControlPlane(t *testing.T) {
 	}
 	if control.spawnCalls != 0 {
 		t.Fatalf("blank prompt reached control plane: calls=%d req=%#v", control.spawnCalls, control.spawnReq)
+	}
+}
+
+func TestAgentSpawnResumeParentMetadata(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: "sess_parent", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	state := session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "agent_spawn", ExecContext{
+		SessionID: meta.ID,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"prompt":"child work","background":true,"resume_parent":true}`))
+	if err != nil {
+		t.Fatalf("agent_spawn execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful agent_spawn, got %#v", result)
+	}
+	if !control.spawnReq.ResumeParent || !control.spawnReq.Background {
+		t.Fatalf("expected resume_parent to reach control plane, got %#v", control.spawnReq)
+	}
+	if result.Metadata["background_wait"] != true {
+		t.Fatalf("expected background_wait metadata, got %#v", result.Metadata)
 	}
 }
 

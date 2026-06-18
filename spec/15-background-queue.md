@@ -69,6 +69,7 @@
   "system_override": "",
   "background": true,
   "wait_mode": "notify",
+  "resume_parent": true,
   "isolation_mode": "auto",
   "isolation_root": "",
   "last_error": "",
@@ -194,6 +195,8 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 - `last_error`
 
 该通知在 parent 的下一次 `control_drain` 安全边界自动并入上下文。
+
+若 job 带有 `resume_parent=true`，这是 parent agent 自己选择停车等待的事实。活跃 parent run 可以在 `agent_spawn(background=true, resume_parent=true)` 的 tool result 落盘后进入 `awaiting_input` / `background_wait`，保持 auto worker 存活；worker 写入该 job 的 background notification 后，parent 在同一 harness 流程中自动接纳 `<background-agent-results>` 并继续下一次 provider turn。该能力不能由 runtime 自动替 parent 决定，只能由模型显式选择。
 
 ### 5.4 失败定义
 

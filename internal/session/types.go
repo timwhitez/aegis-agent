@@ -347,6 +347,7 @@ type BackgroundNotification struct {
 	VisiblePaths     []string `json:"visible_paths,omitempty"`
 	FinalText        string   `json:"final_text,omitempty"`
 	LastError        string   `json:"last_error,omitempty"`
+	ResumeParent     bool     `json:"resume_parent,omitempty"`
 	DeliveryStatus   string   `json:"delivery_status"`
 }
 
@@ -429,6 +430,7 @@ type QueueJob struct {
 	SystemOverride   string          `json:"system_override,omitempty"`
 	Background       bool            `json:"background"`
 	WaitMode         string          `json:"wait_mode,omitempty"`
+	ResumeParent     bool            `json:"resume_parent,omitempty"`
 	IsolationMode    string          `json:"isolation_mode,omitempty"`
 	IsolationRoot    string          `json:"isolation_root,omitempty"`
 	LastError        string          `json:"last_error,omitempty"`

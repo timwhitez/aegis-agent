@@ -74,6 +74,7 @@ type AgentSpawnRequest struct {
 	Mode            string `json:"mode,omitempty"`
 	Background      bool   `json:"background,omitempty"`
 	WaitMode        string `json:"wait_mode,omitempty"`
+	ResumeParent    bool   `json:"resume_parent,omitempty"`
 	IsolationMode   string `json:"isolation_mode,omitempty"`
 	IsolationRoot   string `json:"isolation_root,omitempty"`
 }
@@ -3218,6 +3219,10 @@ func defAgentSpawn(control ControlPlane) Definition {
 					"enum":        []string{"wait-all", "wait-any", "all", "any", "default"},
 					"description": "Optional parent coordination mode for background or child work. default/all means parent finish waits for all unresolved work; any allows finish after one completed result while keeping other work visible.",
 				},
+				"resume_parent": map[string]any{
+					"type":        "boolean",
+					"description": "Only meaningful with background=true. Set true when the parent should park after this tool result and automatically resume when this background child reports completed, failed, or blocked results.",
+				},
 				"isolation_mode": map[string]any{
 					"type":        "string",
 					"enum":        []string{"auto", "copy", "git", "off", "none", "workspace-write", "default"},
@@ -3250,7 +3255,12 @@ func defAgentSpawn(control ControlPlane) Definition {
 				return errorResult("agent_spawn", err), nil
 			}
 			data, _ := json.MarshalIndent(result, "", "  ")
-			return session.ToolResult{Name: "agent_spawn", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+			metadata := map[string]any{}
+			if input.Background && input.ResumeParent {
+				metadata["background_wait"] = true
+				metadata["queue_job_id"] = result.QueueJobID
+			}
+			return session.ToolResult{Name: "agent_spawn", LLMOutput: string(data), DisplayOutput: string(data), Metadata: metadata}, nil
 		},
 	}
 }

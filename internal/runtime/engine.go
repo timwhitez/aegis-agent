@@ -576,6 +576,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			doneCandidates = 0
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
 			planModeTerminal := ""
+			backgroundWaitJobID := ""
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
@@ -875,6 +876,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}
 					break
 				}
+				if jobID := backgroundWaitQueueJobID(toolResult); jobID != "" && backgroundWaitJobID == "" {
+					backgroundWaitJobID = jobID
+				}
 				if toolResult.Final {
 					if callIndex+1 < len(result.ToolCalls) {
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: finish completed the session; this later tool call was not executed")...)
@@ -895,6 +899,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			if planModeTerminal == planModeTerminalPlanCancelled {
 				return e.awaitingPlanCancelled(ctx, meta, state, hookManager)
+			}
+			if backgroundWaitJobID != "" {
+				return e.awaitingBackground(ctx, meta, state, hookManager, backgroundWaitJobID)
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
@@ -986,6 +993,91 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return result, nil
+}
+
+func backgroundWaitQueueJobID(result session.ToolResult) string {
+	if result.IsError || result.Metadata == nil {
+		return ""
+	}
+	wait, _ := result.Metadata["background_wait"].(bool)
+	if !wait {
+		return ""
+	}
+	jobID, _ := result.Metadata["queue_job_id"].(string)
+	return strings.TrimSpace(jobID)
+}
+
+func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager, queueJobID string) (RunResult, error) {
+	text := "Waiting for background agent result. The parent session will resume automatically when the child reports a result."
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "background_wait"
+	state.LastAssistantExcerpt = truncateText(text, 500)
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "background_wait", "queue_job_id": queueJobID}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for background_wait: %w", err)
+	}
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	if count, err := e.waitForBackgroundResult(ctx, meta, hookManager, queueJobID); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+		}
+		return RunResult{}, err
+	} else if count > 0 {
+		continuer, ok := e.runner.(interface {
+			Continue(context.Context, ContinueRequest) (RunResult, error)
+		})
+		if !ok || continuer == nil {
+			return RunResult{}, errors.New("background wait requires runner continue support")
+		}
+		return continuer.Continue(ctx, ContinueRequest{SessionID: meta.ID, Source: "background"})
+	}
+	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
+}
+
+func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager, queueJobID string) (int, error) {
+	ticker := time.NewTicker(e.backgroundWaitPollInterval())
+	defer ticker.Stop()
+	for {
+		ready, err := e.backgroundNotificationReady(meta.ID, queueJobID)
+		if err != nil {
+			return 0, err
+		}
+		if ready {
+			return e.drainBackground(ctx, meta, hookManager)
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *Engine) backgroundWaitPollInterval() time.Duration {
+	poll := time.Duration(e.cfg.Runtime.Queue.PollIntervalMS) * time.Millisecond
+	if poll <= 0 {
+		return time.Second
+	}
+	return poll
+}
+
+func (e *Engine) backgroundNotificationReady(sessionID, queueJobID string) (bool, error) {
+	notifications, err := e.store.LoadBackgroundNotifications(sessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, notification := range notifications {
+		if notification.DeliveryStatus == session.BackgroundNotificationPending && notification.QueueJobID == queueJobID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
@@ -1734,6 +1826,7 @@ func backgroundPayload(notifications []session.BackgroundNotification) []map[str
 			"visible_paths":     append([]string(nil), notification.VisiblePaths...),
 			"final_text":        notification.FinalText,
 			"last_error":        notification.LastError,
+			"resume_parent":     notification.ResumeParent,
 		})
 	}
 	return out

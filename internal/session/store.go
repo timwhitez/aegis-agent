@@ -2637,6 +2637,7 @@ func NewBackgroundNotification(job QueueJob) BackgroundNotification {
 		VisiblePaths:     append([]string(nil), job.VisiblePaths...),
 		FinalText:        job.FinalText,
 		LastError:        job.LastError,
+		ResumeParent:     job.ResumeParent,
 		DeliveryStatus:   BackgroundNotificationPending,
 	}
 }
