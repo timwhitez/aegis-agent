@@ -40,12 +40,18 @@ v1 内置工具固定为：
 - `feature_list_update`
 - `feature_list_read`
 - `agent_spawn`
+- `agent_wait`
+- `agent_stop`
+- `agent_prompt`
 - `agent_status`
 - `agent_list`
 
 当前仓库默认还会向 session 工具面暴露一组扩展 phase 兼容工具，让 master agent 自己决定是否需要派生 child：
 
 - `agent_spawn`
+- `agent_wait`
+- `agent_stop`
+- `agent_prompt`
 - `agent_status`
 - `agent_list`
 
@@ -257,13 +263,32 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
 
-### 4.20 `agent_status`
+### 4.20 `agent_wait`
+
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
+- parent agent 主动停车等待一个 background child job 的 durable result，并由 harness 后续自动恢复 parent
+
+### 4.21 `agent_stop`
+
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
+- 停止尚未被 worker claim 的 queued background child job；不能安全停止 running child
+
+### 4.22 `agent_prompt`
+
+- 默认注册到 session tool list
+- 设置 `runtime.multi_agent.enabled=false` 时不注册
+- 向当前 parent 名下的 running child session 或已启动 background child job 追加 durable steer prompt
+- 用于 scope 收窄、长时间循环收敛、请求当前证据交付或要求 child 写 handoff；不创建、不取消、不完成 child work
+
+### 4.23 `agent_status`
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 查询 child session 或后台 job 的状态
 
-### 4.21 `agent_list`
+### 4.24 `agent_list`
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册

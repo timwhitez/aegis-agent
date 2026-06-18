@@ -65,7 +65,7 @@ Allowed before approval:
 - use submit_plan when the plan is complete
 
 Not allowed before approval:
-- shell, write_file, edit_file, todo_write, task_create, task_update, feature_list_create, feature_list_update, create_goal, record_goal_progress, update_goal, agent_spawn, agent_wait, agent_stop, agent_status, agent_list, queue/delegate submission, skill command tools, custom extension tools, or finish
+- shell, write_file, edit_file, todo_write, task_create, task_update, feature_list_create, feature_list_update, create_goal, record_goal_progress, update_goal, agent_spawn, agent_wait, agent_stop, agent_prompt, agent_status, agent_list, queue/delegate submission, skill command tools, custom extension tools, or finish
 
 A complete plan must include Summary, Implementation Steps, Interfaces and Data Model, Verification, Risks, and Assumptions. Do not use todo_write or task tools as the Plan Mode plan.`, planMode.Status, planMode.Objective, planMode.PlanVersion))
 }

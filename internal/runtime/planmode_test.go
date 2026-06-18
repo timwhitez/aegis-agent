@@ -40,7 +40,7 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 			t.Fatalf("expected %s in Plan Mode tools: %#v", name, planTools)
 		}
 	}
-	for _, name := range []string{"shell", "write_file", "todo_write", "agent_spawn", "finish"} {
+	for _, name := range []string{"shell", "write_file", "todo_write", "agent_spawn", "agent_prompt", "finish"} {
 		if hasProviderTool(planTools, name) {
 			t.Fatalf("did not expect %s in Plan Mode tools: %#v", name, planTools)
 		}
@@ -518,6 +518,10 @@ func TestPlanModeGateBlocksToolsAfterCreateGoalRequiresApproval(t *testing.T) {
 	decision := controller.EvaluateToolCall(nil, "write_file", json.RawMessage(`{"path":"x.txt","content":"blocked"}`))
 	if decision.Status != GateBlock || decision.GateID != "plan_mode_pending" {
 		t.Fatalf("expected write_file blocked by pending plan mode, got %#v", decision)
+	}
+	decision = controller.EvaluateToolCall(nil, "agent_prompt", json.RawMessage(`{"session_id":"child","message":"finish current slice"}`))
+	if decision.Status != GateBlock || decision.GateID != "plan_mode_pending" {
+		t.Fatalf("expected agent_prompt blocked by pending plan mode, got %#v", decision)
 	}
 }
 

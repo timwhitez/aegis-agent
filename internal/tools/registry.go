@@ -106,10 +106,25 @@ type AgentStopRequest struct {
 	QueueJobID      string `json:"queue_job_id"`
 }
 
+type AgentPromptRequest struct {
+	ParentSessionID string `json:"-"`
+	SessionID       string `json:"session_id,omitempty"`
+	QueueJobID      string `json:"queue_job_id,omitempty"`
+	Message         string `json:"message"`
+	Interrupt       *bool  `json:"interrupt,omitempty"`
+}
+
 type AgentStopResult struct {
 	QueueJobID string `json:"queue_job_id"`
 	Status     string `json:"status"`
 	LastError  string `json:"last_error,omitempty"`
+}
+
+type AgentPromptResult struct {
+	SessionID  string `json:"session_id"`
+	QueueJobID string `json:"queue_job_id,omitempty"`
+	Accepted   bool   `json:"accepted"`
+	Behavior   string `json:"behavior"`
 }
 
 type AgentStatusResult struct {
@@ -137,6 +152,7 @@ const (
 type ControlPlane interface {
 	SpawnAgent(context.Context, AgentSpawnRequest) (AgentSpawnResult, error)
 	StopAgent(context.Context, AgentStopRequest) (AgentStopResult, error)
+	PromptAgent(context.Context, AgentPromptRequest) (AgentPromptResult, error)
 	AgentStatus(context.Context, AgentStatusRequest) (AgentStatusResult, error)
 	AgentList(context.Context, string) (AgentListResult, error)
 }
@@ -154,7 +170,7 @@ var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
 	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_wait": {}, "agent_stop": {}, "agent_status": {},
-	"agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
+	"agent_prompt": {}, "agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
 }
 
@@ -411,6 +427,7 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 			defAgentSpawn(control),
 			defAgentWait(control),
 			defAgentStop(control),
+			defAgentPrompt(control),
 			defAgentStatus(control),
 			defAgentList(control),
 		)
@@ -3410,6 +3427,60 @@ func defAgentStop(control ControlPlane) Definition {
 			}
 			data, _ := json.MarshalIndent(result, "", "  ")
 			return session.ToolResult{Name: "agent_stop", LLMOutput: string(data), DisplayOutput: string(data)}, nil
+		},
+	}
+}
+
+func defAgentPrompt(control ControlPlane) Definition {
+	return Definition{
+		Name:        "agent_prompt",
+		Description: "Send a prompt/steer to a running child agent or background child job owned by the current parent session. Use this to narrow scope, request a concise handoff, stop repeated discovery, ask for current-evidence delivery, or redirect a long-running sub-agent before waiting or synthesizing. This does not create, cancel, or mark child work complete; it appends a durable steer request to the child session. interrupt defaults to true so convergence prompts can preempt provider calls when possible.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_id": map[string]any{
+					"type":        "string",
+					"description": "Child session id returned by agent_spawn, agent_status, or agent_list. Provide either session_id or queue_job_id.",
+				},
+				"queue_job_id": map[string]any{
+					"type":        "string",
+					"description": "Background queue job id returned by agent_spawn(background=true), agent_status, or agent_list. Provide either session_id or queue_job_id.",
+				},
+				"message": map[string]any{
+					"type":        "string",
+					"description": "Prompt to send to the child. Be specific about the desired scope, artifact, stop condition, or evidence to deliver.",
+				},
+				"interrupt": map[string]any{
+					"type":        "boolean",
+					"description": "Whether to request best-effort interruption of the child run. Defaults to true.",
+				},
+			},
+			"required": []string{"message"},
+		},
+		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			if control == nil {
+				return errorResult("agent_prompt", errors.New("agent control plane is not available")), nil
+			}
+			var input AgentPromptRequest
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("agent_prompt", err), nil
+			}
+			if strings.TrimSpace(input.SessionID) == "" && strings.TrimSpace(input.QueueJobID) == "" {
+				return errorResult("agent_prompt", errors.New("session_id or queue_job_id is required")), nil
+			}
+			if strings.TrimSpace(input.Message) == "" {
+				return errorResult("agent_prompt", errors.New("message is required")), nil
+			}
+			if err := requireToolSessionMetadata(execCtx); err != nil {
+				return errorResult("agent_prompt", err), nil
+			}
+			input.ParentSessionID = execCtx.SessionID
+			result, err := control.PromptAgent(ctx, input)
+			if err != nil {
+				return errorResult("agent_prompt", err), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return session.ToolResult{Name: "agent_prompt", LLMOutput: string(data), DisplayOutput: string(data)}, nil
 		},
 	}
 }

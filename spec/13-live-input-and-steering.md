@@ -73,7 +73,7 @@
 
 说明：
 
-- `source` 当前可取 `cli` 或 `web`
+- `source` 当前可取 `cli`、`web` 或 `agent`；`agent` 表示 parent agent 通过 multi-agent 控制工具向 child session 追加 prompt
 - 无论入口来自 CLI 还是 Web，最终都必须落到同一个 `control/steer.jsonl` 文件事实中
 
 ## 5. Runner 行为

@@ -325,6 +325,153 @@ func TestRunnerStopAgentRejectsRunningJob(t *testing.T) {
 	}
 }
 
+func TestRunnerPromptAgentSteersLinkedChildSession(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_prompt_linked",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+
+	result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.ID,
+		Message:         "Stop discovery and write reports/child.md.",
+	})
+	if err != nil {
+		t.Fatalf("prompt agent: %v", err)
+	}
+	if !result.Accepted || result.Behavior != "queued" || result.SessionID != child.ID {
+		t.Fatalf("unexpected prompt result: %#v", result)
+	}
+	requests, err := runner.store.LoadSteerRequests(child.ID)
+	if err != nil {
+		t.Fatalf("load child steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Source != "agent" || !requests[0].Interrupt || requests[0].Text != "Stop discovery and write reports/child.md." {
+		t.Fatalf("unexpected child steer requests: %#v", requests)
+	}
+	state, err := runner.store.LoadState(child.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if state.PendingSteerCount != 1 {
+		t.Fatalf("expected pending steer count, got %#v", state)
+	}
+	events, err := runner.store.LoadEvents(parentID)
+	if err != nil {
+		t.Fatalf("load parent events: %v", err)
+	}
+	if countRuntimeEventType(events, "session.child.prompted") != 1 {
+		t.Fatalf("expected parent prompt event, got %#v", events)
+	}
+}
+
+func TestRunnerPromptAgentResolvesRunningQueueJobSession(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "running child task",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	claimed, ok, err := runner.store.ClaimNextQueuedJob()
+	if err != nil || !ok {
+		t.Fatalf("claim queued job: ok=%v err=%v", ok, err)
+	}
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_prompt_queue",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       claimed.ID,
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create queue child session: %v", err)
+	}
+	interrupt := false
+	result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		QueueJobID:      job.ID,
+		Message:         "Use current evidence and finish.",
+		Interrupt:       &interrupt,
+	})
+	if err != nil {
+		t.Fatalf("prompt queue agent: %v", err)
+	}
+	if result.SessionID != child.ID || result.QueueJobID != job.ID || !result.Accepted {
+		t.Fatalf("unexpected queue prompt result: %#v", result)
+	}
+	requests, err := runner.store.LoadSteerRequests(child.ID)
+	if err != nil {
+		t.Fatalf("load queue child steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Interrupt || requests[0].Text != "Use current evidence and finish." {
+		t.Fatalf("expected explicit interrupt=false steer, got %#v", requests)
+	}
+}
+
+func TestRunnerPromptAgentRejectsOutsideParent(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	otherParentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_prompt_outside",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  otherParentID,
+		RootSessionID:    otherParentID,
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+
+	result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.ID,
+		Message:         "finish now",
+	})
+	if err == nil {
+		t.Fatalf("expected outside-parent rejection, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "not linked to parent session") {
+		t.Fatalf("expected parent linkage error, got %v", err)
+	}
+}
+
 func TestRunnerDelegateReportsParentCoordinationError(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

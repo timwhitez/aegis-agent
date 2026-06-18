@@ -403,7 +403,7 @@ hooks:
 - `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限，不再触发 `max_turns_hard_exceeded`
 - 默认 `runtime.max_turns_hard` 为 `-1`，master session、child session 与 queue worker session 都不安装固定 turn 数上限；只有显式设置正数时才启用硬性上限
 - `runtime.multi_agent.enabled` 默认 `true`
-- 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
+- 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_wait` / `agent_stop` / `agent_prompt` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
 - `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置

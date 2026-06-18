@@ -259,8 +259,9 @@
 
 ### 4.2.2 Multi-agent 工具面的当前产品决策
 
-- `agent_spawn` / `agent_status` / `agent_list` 默认暴露给 session tool list
+- `agent_spawn` / `agent_wait` / `agent_stop` / `agent_prompt` / `agent_status` / `agent_list` 默认暴露给 session tool list
 - 这只是给当前 master agent 提供 delegation 能力，不代表 runtime 会自动拆任务或自动新建 child session
+- `agent_prompt` 只是让 master agent 复用 Live Steer 给自己名下的 child/job 追加 prompt；是否收敛、等待或继续仍由 master agent 判断
 - 若部署方需要更窄的能力面，仍可显式设置 `runtime.multi_agent.enabled=false`
 
 ### 4.3 Provider generation 选项进入事实源

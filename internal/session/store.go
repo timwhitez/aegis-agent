@@ -4006,7 +4006,7 @@ func validateSteerRequest(request SteerRequest) error {
 		return fmt.Errorf("steer request created_at must be RFC3339Nano: %w", err)
 	}
 	switch request.Source {
-	case "cli", "web":
+	case "cli", "web", "agent":
 	default:
 		if strings.TrimSpace(request.Source) == "" {
 			return errors.New("steer request source is required")

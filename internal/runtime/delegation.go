@@ -376,6 +376,100 @@ func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools
 	return tools.AgentStopResult{QueueJobID: job.ID, Status: job.Status, LastError: job.LastError}, nil
 }
 
+func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) (tools.AgentPromptResult, error) {
+	parentSessionID := strings.TrimSpace(req.ParentSessionID)
+	if parentSessionID == "" {
+		return tools.AgentPromptResult{}, errors.New("parent session id is required")
+	}
+	parentMeta, err := r.store.LoadMetadata(parentSessionID)
+	if err != nil {
+		return tools.AgentPromptResult{}, err
+	}
+	message := strings.TrimSpace(req.Message)
+	if message == "" {
+		return tools.AgentPromptResult{}, errors.New("message is required")
+	}
+	childSessionID, queueJobID, err := r.resolvePromptTarget(parentMeta.ID, req)
+	if err != nil {
+		return tools.AgentPromptResult{}, err
+	}
+	interrupt := true
+	if req.Interrupt != nil {
+		interrupt = *req.Interrupt
+	}
+	result, err := r.Steer(ctx, SteerRequest{
+		SessionID: childSessionID,
+		Message:   message,
+		Interrupt: interrupt,
+		Source:    "agent",
+	})
+	if err != nil {
+		return tools.AgentPromptResult{}, err
+	}
+	if err := r.appendEvent(parentMeta.ID, "session.child.prompted", "delegate", map[string]any{
+		"session_id":   childSessionID,
+		"queue_job_id": queueJobID,
+		"interrupt":    interrupt,
+	}); err != nil {
+		return tools.AgentPromptResult{}, err
+	}
+	_ = writeSessionSummary(r.store, parentMeta.ID)
+	_ = writeLongRunCheckpoint(r.store, parentMeta.ID)
+	return tools.AgentPromptResult{
+		SessionID:  childSessionID,
+		QueueJobID: queueJobID,
+		Accepted:   result.Accepted,
+		Behavior:   result.Behavior,
+	}, nil
+}
+
+func (r *Runner) resolvePromptTarget(parentSessionID string, req tools.AgentPromptRequest) (string, string, error) {
+	if strings.TrimSpace(req.SessionID) != "" {
+		meta, err := r.store.LoadMetadata(strings.TrimSpace(req.SessionID))
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(meta.ParentSessionID) != parentSessionID {
+			return "", "", fmt.Errorf("child session %s is not linked to parent session %s", meta.ID, parentSessionID)
+		}
+		return meta.ID, strings.TrimSpace(meta.QueueJobID), nil
+	}
+	jobID := strings.TrimSpace(req.QueueJobID)
+	if jobID == "" {
+		return "", "", errors.New("session_id or queue_job_id is required")
+	}
+	job, err := r.store.LoadJob(jobID)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+		return "", "", fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
+	}
+	if strings.TrimSpace(job.SessionID) != "" {
+		meta, err := r.store.LoadMetadata(strings.TrimSpace(job.SessionID))
+		if err != nil {
+			return "", "", err
+		}
+		if strings.TrimSpace(meta.ParentSessionID) != parentSessionID {
+			return "", "", fmt.Errorf("child session %s is not linked to parent session %s", meta.ID, parentSessionID)
+		}
+		if strings.TrimSpace(meta.QueueJobID) != "" && strings.TrimSpace(meta.QueueJobID) != job.ID {
+			return "", "", fmt.Errorf("child session %s queue_job_id mismatch: got %q, want %q", meta.ID, meta.QueueJobID, job.ID)
+		}
+		return meta.ID, job.ID, nil
+	}
+	children, err := r.store.ListChildren(parentSessionID, -1)
+	if err != nil {
+		return "", "", err
+	}
+	for _, child := range children {
+		if strings.TrimSpace(child.QueueJobID) == job.ID {
+			return child.ID, job.ID, nil
+		}
+	}
+	return "", "", fmt.Errorf("queue job %s has no linked running child session yet; use agent_status/agent_list and retry after the worker starts it", job.ID)
+}
+
 func (r *Runner) AgentList(_ context.Context, parentSessionID string) (tools.AgentListResult, error) {
 	if _, err := r.store.LoadMetadata(parentSessionID); err != nil {
 		return tools.AgentListResult{}, err

@@ -109,6 +109,7 @@ child session 使用独立工作目录执行。当前支持：
 - `agent_spawn`
 - `agent_wait`
 - `agent_stop`
+- `agent_prompt`
 - `agent_status`
 - `agent_list`
 
@@ -172,6 +173,24 @@ child session 使用独立工作目录执行。当前支持：
 - runtime 写入 background notification，使 parent transcript 后续可看到该 job 已被停止
 - 该工具当前不能安全停止 `running` / `blocked` child job；如果 job 已经启动，parent 必须使用 `agent_wait` 等待结果，或通过 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理
 - 不允许把 running child 仅在 parent coordination 中标记为 resolved；停止必须有真实 durable 结果或可验证的控制动作
+
+#### `agent_prompt`
+
+输入：
+
+- `session_id?`
+- `queue_job_id?`
+- `message`
+- `interrupt?`
+
+行为：
+
+- parent agent 可以向当前 parent 名下的 running child session 或已启动 background child job 发送一条 durable steer prompt
+- prompt 通过 child session 的 `control/steer.jsonl` 进入现有 Live Steer 流程，最终以普通 user message 进入 child transcript，而不是引入第二套控制状态
+- `interrupt` 默认 `true`，用于让 parent 在发现 child 长时间重复 discovery、重复 read/grep/load_skill、范围漂移或需要当前证据交付时，请求 child 尽快收敛
+- 该工具不会创建、取消、停止或标记 child work 完成；parent 仍需用 `agent_status` / `agent_list` / `agent_wait` 回收结果，或用 `agent_stop` 停止尚未启动且不再需要的 queued job
+- 只能操作当前 parent 关联的 child/session job；不得向无关 session 注入 prompt
+- 这只是给 master agent 一个 Codex-style steer 能力，不代表 runtime 自动替 parent 决定何时收敛子任务或固定任何审计 workflow
 
 #### `agent_status`
 

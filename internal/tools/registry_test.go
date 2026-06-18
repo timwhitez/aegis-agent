@@ -53,6 +53,8 @@ type recordingControlPlane struct {
 	spawnReq    AgentSpawnRequest
 	stopCalls   int
 	stopReq     AgentStopRequest
+	promptCalls int
+	promptReq   AgentPromptRequest
 	statusCalls int
 	statusReq   AgentStatusRequest
 	listCalls   int
@@ -74,6 +76,12 @@ func (r *recordingControlPlane) StopAgent(_ context.Context, req AgentStopReques
 	return AgentStopResult{QueueJobID: req.QueueJobID, Status: session.QueueStatusFailed, LastError: "stopped"}, nil
 }
 
+func (r *recordingControlPlane) PromptAgent(_ context.Context, req AgentPromptRequest) (AgentPromptResult, error) {
+	r.promptCalls++
+	r.promptReq = req
+	return AgentPromptResult{SessionID: firstNonEmptyString(req.SessionID, "child_prompted"), QueueJobID: req.QueueJobID, Accepted: true, Behavior: "queued"}, nil
+}
+
 func (r *recordingControlPlane) AgentStatus(_ context.Context, req AgentStatusRequest) (AgentStatusResult, error) {
 	r.statusCalls++
 	r.statusReq = req
@@ -84,6 +92,15 @@ func (r *recordingControlPlane) AgentList(_ context.Context, parent string) (Age
 	r.listCalls++
 	r.listParent = parent
 	return AgentListResult{}, nil
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
@@ -2741,7 +2758,7 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
-	for _, name := range []string{"agent_spawn", "agent_wait", "agent_stop", "agent_status", "agent_list"} {
+	for _, name := range []string{"agent_spawn", "agent_wait", "agent_stop", "agent_prompt", "agent_status", "agent_list"} {
 		if _, ok := registry.defs[name]; !ok {
 			t.Fatalf("expected %s to be registered by default", name)
 		}
@@ -2757,7 +2774,7 @@ func TestAgentToolsAreEnabledByDefaultAndCanBeDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new registry with multi-agent disabled: %v", err)
 	}
-	for _, name := range []string{"agent_spawn", "agent_wait", "agent_stop", "agent_status", "agent_list"} {
+	for _, name := range []string{"agent_spawn", "agent_wait", "agent_stop", "agent_prompt", "agent_status", "agent_list"} {
 		if _, ok := registry.defs[name]; ok {
 			t.Fatalf("expected %s to be hidden when multi-agent is disabled", name)
 		}
@@ -2831,6 +2848,13 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	}
 	if !strings.Contains(stopDef.Description, "Stop a queued background child job") || !strings.Contains(stopDef.Description, "cannot safely stop a running child") {
 		t.Fatalf("expected agent_stop description to explain stop boundary, got %q", stopDef.Description)
+	}
+	promptDef := registry.Get("agent_prompt")
+	if promptDef == nil {
+		t.Fatal("agent_prompt definition missing")
+	}
+	if !strings.Contains(promptDef.Description, "Send a prompt/steer") || !strings.Contains(promptDef.Description, "stop repeated discovery") || !strings.Contains(promptDef.Description, "interrupt defaults to true") {
+		t.Fatalf("expected agent_prompt description to explain child steer semantics, got %q", promptDef.Description)
 	}
 }
 
@@ -2973,6 +2997,7 @@ func TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane(t *testing.T) 
 		{name: "spawn", tool: "agent_spawn", args: json.RawMessage(`{"prompt":"audit child slice"}`)},
 		{name: "wait", tool: "agent_wait", args: json.RawMessage(`{"queue_job_id":"job_missing_parent"}`)},
 		{name: "stop", tool: "agent_stop", args: json.RawMessage(`{"queue_job_id":"job_missing_parent"}`)},
+		{name: "prompt", tool: "agent_prompt", args: json.RawMessage(`{"session_id":"child_missing_parent","message":"stop discovery"}`)},
 		{name: "status_session", tool: "agent_status", args: json.RawMessage(`{"session_id":"child_missing_parent"}`)},
 		{name: "status_queue", tool: "agent_status", args: json.RawMessage(`{"queue_job_id":"job_missing_parent"}`)},
 		{name: "list", tool: "agent_list", args: json.RawMessage(`{}`)},
@@ -2988,8 +3013,40 @@ func TestAgentToolsRejectMissingSessionMetadataBeforeControlPlane(t *testing.T) 
 			}
 		})
 	}
-	if control.spawnCalls != 0 || control.stopCalls != 0 || control.statusCalls != 0 || control.listCalls != 0 {
-		t.Fatalf("missing current session reached control plane: spawn=%d stop=%d status=%d list=%d spawnReq=%#v stopReq=%#v statusReq=%#v listParent=%q", control.spawnCalls, control.stopCalls, control.statusCalls, control.listCalls, control.spawnReq, control.stopReq, control.statusReq, control.listParent)
+	if control.spawnCalls != 0 || control.stopCalls != 0 || control.promptCalls != 0 || control.statusCalls != 0 || control.listCalls != 0 {
+		t.Fatalf("missing current session reached control plane: spawn=%d stop=%d prompt=%d status=%d list=%d spawnReq=%#v stopReq=%#v promptReq=%#v statusReq=%#v listParent=%q", control.spawnCalls, control.stopCalls, control.promptCalls, control.statusCalls, control.listCalls, control.spawnReq, control.stopReq, control.promptReq, control.statusReq, control.listParent)
+	}
+}
+
+func TestAgentPromptPassesCurrentSessionToControlPlane(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: "sess_parent_prompt", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	state := session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "agent_prompt", ExecContext{
+		SessionID: meta.ID,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"queue_job_id":"job_child_1","message":"stop discovery and write the handoff","interrupt":false}`))
+	if err != nil {
+		t.Fatalf("agent_prompt execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful agent_prompt, got %#v", result)
+	}
+	if control.promptCalls != 1 || control.promptReq.QueueJobID != "job_child_1" || control.promptReq.ParentSessionID != meta.ID || control.promptReq.Message != "stop discovery and write the handoff" {
+		t.Fatalf("expected agent_prompt to use current parent session, calls=%d req=%#v", control.promptCalls, control.promptReq)
+	}
+	if control.promptReq.Interrupt == nil || *control.promptReq.Interrupt {
+		t.Fatalf("expected explicit interrupt=false to reach control plane, got %#v", control.promptReq)
 	}
 }
 

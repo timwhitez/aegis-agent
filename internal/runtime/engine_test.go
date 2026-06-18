@@ -5435,6 +5435,10 @@ func (backgroundWaitControl) StopAgent(context.Context, tools.AgentStopRequest) 
 	return tools.AgentStopResult{}, errors.New("unexpected agent_stop")
 }
 
+func (backgroundWaitControl) PromptAgent(context.Context, tools.AgentPromptRequest) (tools.AgentPromptResult, error) {
+	return tools.AgentPromptResult{}, errors.New("unexpected agent_prompt")
+}
+
 func (backgroundWaitControl) AgentStatus(context.Context, tools.AgentStatusRequest) (tools.AgentStatusResult, error) {
 	return tools.AgentStatusResult{}, errors.New("unexpected agent_status")
 }
