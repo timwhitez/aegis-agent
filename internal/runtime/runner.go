@@ -37,6 +37,9 @@ type Runner struct {
 	activeSessionID string
 	activeDepth     int
 
+	lifecycleMu    sync.Mutex
+	lifecycleHooks RunLifecycleHooks
+
 	planInputMu       sync.Mutex
 	planInputWaiters  map[string]chan planInputResponse
 	planInputHandlers map[string]PlanInputHandler
@@ -51,6 +54,12 @@ type Runner struct {
 
 const defaultSteerMaxMessageChars = 12000
 const defaultWorkspaceDirName = "workspace"
+const StopWithoutFinishSteerMessage = "Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue."
+
+type RunLifecycleHooks struct {
+	OnSessionActive   func(session.SessionMetadata, *Runner) error
+	OnSessionInactive func(session.SessionMetadata, *Runner, RunResult, error)
+}
 
 type SteerValidationError struct {
 	Code        string
@@ -89,6 +98,34 @@ func NewRunner(cfg *config.Config) *Runner {
 }
 
 func (r *Runner) Bus() *events.Bus { return r.bus }
+
+func (r *Runner) SetRunLifecycleHooks(hooks RunLifecycleHooks) {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	r.lifecycleHooks = hooks
+}
+
+func (r *Runner) lifecycleHooksSnapshot() RunLifecycleHooks {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	return r.lifecycleHooks
+}
+
+func (r *Runner) notifySessionActive(meta session.SessionMetadata) error {
+	hooks := r.lifecycleHooksSnapshot()
+	if hooks.OnSessionActive == nil {
+		return nil
+	}
+	return hooks.OnSessionActive(meta, r)
+}
+
+func (r *Runner) notifySessionInactive(meta session.SessionMetadata, result RunResult, err error) {
+	hooks := r.lifecycleHooksSnapshot()
+	if hooks.OnSessionInactive == nil {
+		return
+	}
+	hooks.OnSessionInactive(meta, r, result, err)
+}
 
 func planInputWaiterKey(sessionID, requestID string) string {
 	return sessionID + ":" + requestID
@@ -413,7 +450,11 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
+	if err := r.notifySessionActive(meta); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
 	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
+	r.notifySessionInactive(meta, result, err)
 	if err != nil {
 		currentState, loadErr := r.store.LoadState(meta.ID)
 		if loadErr == nil && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {

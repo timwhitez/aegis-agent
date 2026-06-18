@@ -69,7 +69,7 @@ const (
 	workspaceFilePreviewDefaultSize = 256 << 10
 	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
-	stopFallbackSteerMessage        = "Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue."
+	stopFallbackSteerMessage        = runtime.StopWithoutFinishSteerMessage
 )
 
 var (
@@ -152,7 +152,8 @@ type launchHandle struct {
 }
 
 type workerPool struct {
-	cfg *config.Config
+	cfg            *config.Config
+	lifecycleHooks runtime.RunLifecycleHooks
 
 	mu      sync.RWMutex
 	nextID  int
@@ -330,7 +331,7 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		setProcessEnv:   os.Setenv,
 		unsetProcessEnv: os.Unsetenv,
 	}
-	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount)
+	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
 	return svc, nil
 }
 
@@ -2345,6 +2346,7 @@ func (s *Service) startSession(req runtime.StartRequest) (LaunchResponse, error)
 		return LaunchResponse{}, err
 	}
 	runner := runtime.NewRunner(cfg)
+	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	sub := runner.Bus().Subscribe(32)
 	runCtx, cancel := context.WithCancel(context.Background())
 	pendingStartID, err := s.registerPendingStart(cancel)
@@ -2426,6 +2428,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	runner := runtime.NewRunner(cfg)
+	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	if err := s.addHandle(handle); err != nil {
@@ -2788,13 +2791,18 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
+		descendantStops, err := s.stopActiveDescendantSessions(sessionID)
+		if err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		reconciled, err := s.reconcileStaleRunningSession(sessionID, "manual_stop")
 		if err != nil {
 			writeError(w, sessionStoreStatus(err), err)
 			return
 		}
 		if reconciled {
-			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true})
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true, "descendant_stops": descendantStops})
 			return
 		}
 		cleaned, err := s.rejectStopFallbackSteersForPausedStop(sessionID, "manual_stop")
@@ -2803,7 +2811,11 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 			return
 		}
 		if cleaned {
-			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true, "cleared_pending_stop_steers": true})
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true, "cleared_pending_stop_steers": true, "descendant_stops": descendantStops})
+			return
+		}
+		if descendantStops > 0 {
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested", "descendant_stops": descendantStops})
 			return
 		}
 		writeError(w, http.StatusConflict, newWebError(
@@ -2818,7 +2830,12 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 		writeError(w, http.StatusConflict, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested"})
+	descendantStops, err := s.stopActiveDescendantSessions(sessionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested", "descendant_stops": descendantStops})
 }
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
@@ -3048,6 +3065,16 @@ func (s *Service) finishHandle(handle *launchHandle, outcome launchOutcome) {
 	}
 }
 
+func (s *Service) finishHandleForSession(sessionID string, runner *runtime.Runner, outcome launchOutcome) {
+	s.mu.RLock()
+	handle, ok := s.handles[sessionID]
+	s.mu.RUnlock()
+	if !ok || handle.runner != runner {
+		return
+	}
+	s.finishHandle(handle, outcome)
+}
+
 func newLaunchHandle(sessionID string, runner *runtime.Runner, cancel context.CancelFunc) *launchHandle {
 	return &launchHandle{
 		sessionID:      sessionID,
@@ -3057,6 +3084,30 @@ func newLaunchHandle(sessionID string, runner *runtime.Runner, cancel context.Ca
 		processStartID: webconsoleProcessOwner.processStartID,
 		pid:            webconsoleProcessOwner.pid,
 	}
+}
+
+func (s *Service) runLifecycleHooks() runtime.RunLifecycleHooks {
+	return runtime.RunLifecycleHooks{
+		OnSessionActive: func(meta session.SessionMetadata, runner *runtime.Runner) error {
+			if !webConsoleShouldTrackChildSession(meta) {
+				return nil
+			}
+			handle := newLaunchHandle(meta.ID, runner, func() {
+				_ = runner.InterruptWithReason(meta.ID, "manual_stop")
+			})
+			return s.addHandle(handle)
+		},
+		OnSessionInactive: func(meta session.SessionMetadata, runner *runtime.Runner, result runtime.RunResult, err error) {
+			if !webConsoleShouldTrackChildSession(meta) {
+				return
+			}
+			s.finishHandleForSession(meta.ID, runner, launchOutcome{result: result, err: err})
+		},
+	}
+}
+
+func webConsoleShouldTrackChildSession(meta session.SessionMetadata) bool {
+	return strings.TrimSpace(meta.ParentSessionID) != "" || strings.TrimSpace(meta.QueueJobID) != "" || meta.Depth > 0
 }
 
 func (s *Service) recordLaunchHandleEvent(handle *launchHandle, eventType string, extra map[string]any) error {
@@ -5573,27 +5624,58 @@ func (s *Service) hasAnyActiveHandle() bool {
 }
 
 func (s *Service) hasActiveDescendantHandle(sessionID string) (bool, error) {
-	s.pruneInactiveHandles()
-	s.mu.RLock()
-	handleIDs := make([]string, 0, len(s.handles))
-	for id := range s.handles {
-		handleIDs = append(handleIDs, id)
-	}
-	s.mu.RUnlock()
-	if len(handleIDs) == 0 {
-		return false, nil
-	}
-	items, _, err := s.store.ListPage(1000000, 0)
+	handles, err := s.activeDescendantHandles(sessionID)
 	if err != nil {
 		return false, err
 	}
+	return len(handles) > 0, nil
+}
+
+func (s *Service) activeDescendantHandles(sessionID string) ([]*launchHandle, error) {
+	s.pruneInactiveHandles()
+	s.mu.RLock()
+	handles := make(map[string]*launchHandle, len(s.handles))
+	for id, handle := range s.handles {
+		handles[id] = handle
+	}
+	s.mu.RUnlock()
+	if len(handles) == 0 {
+		return nil, nil
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return nil, err
+	}
 	targets := sessionTreeTargetIDs(sessionID, items)
-	for _, id := range handleIDs {
+	out := make([]*launchHandle, 0, len(handles))
+	for id, handle := range handles {
+		if id == sessionID {
+			continue
+		}
 		if _, ok := targets[id]; ok {
-			return true, nil
+			out = append(out, handle)
 		}
 	}
-	return false, nil
+	return out, nil
+}
+
+func (s *Service) stopActiveDescendantSessions(sessionID string) (int, error) {
+	handles, err := s.activeDescendantHandles(sessionID)
+	if err != nil {
+		return 0, err
+	}
+	stopped := 0
+	for _, handle := range handles {
+		if err := handle.runner.InterruptWithReason(handle.sessionID, "manual_stop"); err != nil {
+			state, loadErr := s.store.LoadState(handle.sessionID)
+			if loadErr == nil && state.Status != session.StatusRunning {
+				continue
+			}
+			return stopped, fmt.Errorf("stop descendant session %s: %w", handle.sessionID, err)
+		}
+		stopped++
+	}
+	return stopped, nil
 }
 
 func (s *Service) pruneInactiveHandles() {
@@ -6728,13 +6810,14 @@ func canonicalManagedPath(path string) string {
 	return filepath.Clean(path)
 }
 
-func newWorkerPool(cfg *config.Config, desired int) *workerPool {
+func newWorkerPool(cfg *config.Config, desired int, hooks runtime.RunLifecycleHooks) *workerPool {
 	if desired > maxWorkerCount {
 		desired = maxWorkerCount
 	}
 	pool := &workerPool{
-		cfg:     cfg,
-		workers: map[int]*workerHandle{},
+		cfg:            cfg,
+		lifecycleHooks: hooks,
+		workers:        map[int]*workerHandle{},
 	}
 	pool.Scale(desired)
 	return pool
@@ -6793,6 +6876,7 @@ func (p *workerPool) startWorkerLocked() {
 			UpdatedAt: nowString(),
 		},
 	}
+	worker.runner.SetRunLifecycleHooks(p.lifecycleHooks)
 	p.workers[id] = worker
 	go func() {
 		defer close(worker.done)
@@ -6829,6 +6913,7 @@ func (p *workerPool) runWorker(ctx context.Context, worker *workerHandle) {
 			UpdatedAt:     nowString(),
 		})
 		worker.runner = runtime.NewRunner(cfg)
+		worker.runner.SetRunLifecycleHooks(p.lifecycleHooks)
 		job, ok, err := worker.runner.ProcessNextJob(ctx)
 		if err != nil {
 			current = worker.snapshot()

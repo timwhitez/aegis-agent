@@ -2857,17 +2857,19 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 	case StatusPaused, StatusAwaitingInput:
 		if job.Status != QueueStatusBlocked {
 			job.Status = QueueStatusBlocked
-			if strings.TrimSpace(job.LastError) == "" {
-				job.LastError = "child session is resumable: " + state.Status
-			}
+			changed = true
+		}
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "child session is resumable: " + state.Status
 			changed = true
 		}
 	default:
 		if job.Status != QueueStatusBlocked {
 			job.Status = QueueStatusBlocked
-			if strings.TrimSpace(job.LastError) == "" {
-				job.LastError = "child session is resumable: " + state.Status
-			}
+			changed = true
+		}
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "child session is resumable: " + state.Status
 			changed = true
 		}
 	}

@@ -3284,7 +3284,7 @@ func TestEngineSteerAcceptanceReportsGoalUpdatedEventAppendError(t *testing.T) {
 		}
 	}
 
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil || !strings.Contains(err.Error(), "goal.updated") || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected goal.updated event append error, accepted=%d err=%v", accepted, err)
 	}
@@ -3391,7 +3391,7 @@ func TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails(t *testing.T) {
 	}
 	blockRuntimeContractHistoryPath(t, engine.store, meta.ID)
 
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil || !strings.Contains(err.Error(), "refresh contract for accepted steer") || !strings.Contains(err.Error(), "contract-history.jsonl") {
 		t.Fatalf("expected contract refresh error, accepted=%d err=%v", accepted, err)
 	}
@@ -3461,7 +3461,7 @@ func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T
 		return nil
 	})
 
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil {
 		t.Fatalf("expected steer status update error, accepted=%d err=%v", accepted, err)
 	}
@@ -3521,7 +3521,7 @@ func TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails(t *te
 		return nil
 	})
 
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil {
 		t.Fatalf("expected pending steer count refresh error, accepted=%d err=%v", accepted, err)
 	}
@@ -3575,7 +3575,7 @@ func TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails(
 		}
 	}
 
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err == nil || !strings.Contains(err.Error(), "session.steer.accepted") || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected second steer accepted event append error, accepted=%d err=%v", accepted, err)
 	}
@@ -3623,6 +3623,41 @@ func TestEngineSteerAcceptancePersistsEarlierAcceptedStatusWhenLaterAcceptFails(
 	}
 	if loadedState.PendingSteerCount != 1 {
 		t.Fatalf("expected pending steer count to reflect failed second steer, got %#v", loadedState)
+	}
+}
+
+func TestEngineDrainSteerFlagsStopWithoutFinishFallback(t *testing.T) {
+	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeExec)
+	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest(StopWithoutFinishSteerMessage, true)); err != nil {
+		t.Fatalf("append stop fallback steer: %v", err)
+	}
+
+	accepted, stopAfterSteer, err := engine.drainSteer(context.Background(), meta, hookManager)
+	if err != nil {
+		t.Fatalf("drain steer: %v", err)
+	}
+	if accepted != 1 || !stopAfterSteer {
+		t.Fatalf("expected accepted stop fallback to request pause, accepted=%d stop=%v", accepted, stopAfterSteer)
+	}
+	requests, err := engine.store.LoadSteerRequests(meta.ID)
+	if err != nil {
+		t.Fatalf("load steer requests: %v", err)
+	}
+	if len(requests) != 1 || requests[0].Status != session.SteerStatusAccepted {
+		t.Fatalf("expected stop fallback steer to be accepted, got %#v", requests)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	found := false
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Text == StopWithoutFinishSteerMessage && msg.Meta["source"] == "steer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected accepted stop fallback steer to remain replayable in messages, got %#v", messages)
 	}
 }
 
@@ -3714,7 +3749,7 @@ func TestEngineRefreshesPendingSteerCountAfterConcurrentAppend(t *testing.T) {
 		}
 		return nil
 	})
-	accepted, err := engine.drainSteer(context.Background(), meta, hookManager)
+	accepted, _, err := engine.drainSteer(context.Background(), meta, hookManager)
 	if err != nil {
 		t.Fatalf("drain steer: %v", err)
 	}

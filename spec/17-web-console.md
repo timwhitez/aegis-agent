@@ -485,6 +485,7 @@ Settings API：
 行为：
 
 - 若 session 由当前 Web server 托管并仍在运行，则调用其 active runner interrupt，并把 pause reason 写为 `manual_stop`
+- 若当前 Web server 同时托管该 session tree 下的 running child / queue child active handle，同一次 stop 也必须 best-effort 对这些 descendant session 请求 `manual_stop`，避免 parent 已暂停但子任务仍继续运行
 - 若 session durable state 仍为 `running`，但 active handle 属于已退出的旧 Web 进程，则写入可审计恢复事件并将 session 收敛为 `paused` / `manual_stop`，使用户可以继续或删除该 session
 - orphan stop 恢复完成后，之前由 Web stop fallback 产生且尚未被 runner 接纳的 pending interrupt stop steer 必须标记为 `rejected`，避免后续 `continue` 再次消费旧的 stop 请求
 - 否则返回可理解的错误，提示该 session 可能已结算

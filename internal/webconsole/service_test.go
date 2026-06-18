@@ -7121,6 +7121,140 @@ func TestServiceQueueWorkersProcessJob(t *testing.T) {
 	}
 }
 
+func TestServiceStopParentStopsRunningQueueChildHandle(t *testing.T) {
+	server := newSleepToolServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 1})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	parentWorkdir := t.TempDir()
+	parentMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "parent_stop_running_child",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          parentWorkdir,
+		RequestedWorkdir: parentWorkdir,
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		RootSessionID:    "parent_stop_running_child",
+	}
+	parentState := session.State{
+		Status:      session.StatusPaused,
+		Phase:       "interrupt",
+		PauseReason: "manual_stop",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(parentMeta, parentState); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+
+	var job session.QueueJob
+	postJSON(t, ts.URL+"/api/queue/jobs", map[string]any{
+		"prompt":            "Run a slow child tool.",
+		"parent_session_id": parentMeta.ID,
+		"workdir":           parentWorkdir,
+		"isolation_mode":    "off",
+		"agent_name":        "slow-child",
+		"agent_role":        "evaluator",
+	}, http.StatusAccepted, &job)
+	if job.ID == "" {
+		t.Fatal("expected queue job id")
+	}
+
+	childID := ""
+	waitFor(t, 5*time.Second, func() bool {
+		items, _, err := svc.store.ListPage(1000000, 0)
+		if err != nil {
+			return false
+		}
+		for _, item := range items {
+			if item.QueueJobID != job.ID {
+				continue
+			}
+			state, stateErr := svc.store.LoadState(item.ID)
+			if stateErr == nil && state.Status == session.StatusRunning && state.Phase == "tool_execute" && svc.hasActiveHandle(item.ID) {
+				childID = item.ID
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		items, _, listErr := svc.store.ListPage(1000000, 0)
+		current, jobErr := svc.store.LoadJob(job.ID)
+		payload := map[string]any{
+			"list_err": listErr,
+			"items":    items,
+			"job":      current,
+			"job_err":  jobErr,
+			"workers":  svc.workers.Snapshot(),
+		}
+		data, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+childID, &detail)
+	if !detail.ActiveHandle || detail.ActiveHandleOwner.State != "current_process" {
+		t.Fatalf("expected running child to expose current-process active handle, got active=%v owner=%#v", detail.ActiveHandle, detail.ActiveHandleOwner)
+	}
+
+	var response map[string]any
+	postJSON(t, ts.URL+"/api/sessions/"+parentMeta.ID+"/stop", map[string]any{}, http.StatusAccepted, &response)
+	if got, _ := response["descendant_stops"].(float64); got < 1 {
+		t.Fatalf("expected parent stop to request descendant stop, got %#v", response)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		childState, childErr := svc.store.LoadState(childID)
+		current, jobErr := svc.store.LoadJob(job.ID)
+		return childErr == nil &&
+			jobErr == nil &&
+			childState.Status == session.StatusPaused &&
+			childState.PauseReason == "manual_stop" &&
+			current.Status == session.QueueStatusBlocked &&
+			current.SessionStatus == session.StatusPaused
+	}, func() string {
+		childState, childErr := svc.store.LoadState(childID)
+		current, jobErr := svc.store.LoadJob(job.ID)
+		payload := map[string]any{
+			"child_state": childState,
+			"child_err":   childErr,
+			"job":         current,
+			"job_err":     jobErr,
+			"workers":     svc.workers.Snapshot(),
+		}
+		data, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return marshalErr.Error()
+		}
+		return string(data)
+	})
+
+	current, err := svc.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load stopped queue job: %v", err)
+	}
+	if !strings.Contains(current.LastError, "child session is resumable: paused") {
+		t.Fatalf("expected blocked queue job to explain resumable paused child, got %#v", current)
+	}
+	if svc.hasActiveHandle(childID) {
+		t.Fatalf("expected child active handle to be released after stop")
+	}
+}
+
 func TestServiceQueueJobDetailRequiresGet(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

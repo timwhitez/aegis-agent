@@ -142,6 +142,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		}, nil
 	}
 	childRunner := NewRunner(r.cfg)
+	childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 	result, err := childRunner.Start(ctx, StartRequest{
 		Prompt:          req.Prompt,
 		Provider:        providerName,
@@ -473,6 +474,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		}
 	}
 	childRunner := NewRunner(r.cfg)
+	childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 	stopHeartbeat := r.startQueueJobHeartbeat(ctx, job.ID)
 	result, runErr := childRunner.Start(ctx, StartRequest{
 		Prompt:          job.Prompt,
