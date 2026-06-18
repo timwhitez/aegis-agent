@@ -305,8 +305,8 @@ func Default() *Config {
 		Runtime: RuntimeConfig{
 			ExecFinishRequired: true,
 			MaxTurnsSoft:       24,
-			MaxTurnsHard:       40,
-			CommandTimeoutSec:  120,
+			MaxTurnsHard:       -1,
+			CommandTimeoutSec:  300,
 			GuardrailsMode:     "yolo",
 			ProviderAutoResume: ProviderAutoResumeConfig{
 				Enabled:     true,
@@ -355,7 +355,7 @@ func Default() *Config {
 			ShowRawEvents: false,
 		},
 		Hooks: HooksConfig{
-			DefaultTimeoutSec: 15,
+			DefaultTimeoutSec: 300,
 		},
 	}
 }
@@ -428,7 +428,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 		cfg.DefaultProvider = "openai"
 	}
 	if cfg.Runtime.CommandTimeoutSec <= 0 {
-		cfg.Runtime.CommandTimeoutSec = 120
+		cfg.Runtime.CommandTimeoutSec = 300
 	}
 	cfg.Runtime.GuardrailsMode = normalizeGuardrailsMode(cfg.Runtime.GuardrailsMode)
 	normalizeRoleProviderOverride(&cfg.RoleProviders.Planner)
@@ -447,9 +447,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.MaxTurnsSoft <= 0 {
 		cfg.Runtime.MaxTurnsSoft = 24
 	}
-	if cfg.Runtime.MaxTurnsHard == 0 {
-		cfg.Runtime.MaxTurnsHard = 40
-	} else if cfg.Runtime.MaxTurnsHard < 0 {
+	if cfg.Runtime.MaxTurnsHard <= 0 {
 		cfg.Runtime.MaxTurnsHard = -1
 	}
 	if cfg.Runtime.Steer.PollIntervalMS <= 0 {
@@ -477,6 +475,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.ProviderAutoResume.MaxAttempts <= 0 {
 		cfg.Runtime.ProviderAutoResume.MaxAttempts = defaultProviderAutoResumeMaxAttempt
+	}
+	if cfg.Hooks.DefaultTimeoutSec <= 0 {
+		cfg.Hooks.DefaultTimeoutSec = 300
 	}
 	if cfg.Runtime.RalphLoop.MaxIterations <= 0 {
 		cfg.Runtime.RalphLoop.MaxIterations = 5

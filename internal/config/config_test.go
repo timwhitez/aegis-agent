@@ -74,6 +74,33 @@ func TestExampleConfigUsesCurrentProviderTimeoutAndRetryDefaults(t *testing.T) {
 	if !cfg.Runtime.ProviderAutoResume.Enabled || cfg.Runtime.ProviderAutoResume.MaxAttempts != 2 {
 		t.Fatalf("unexpected provider_auto_resume example config: %#v", cfg.Runtime.ProviderAutoResume)
 	}
+	if cfg.Runtime.MaxTurnsHard != -1 {
+		t.Fatalf("expected example config to disable hard turn limit by default, got %d", cfg.Runtime.MaxTurnsHard)
+	}
+	if cfg.Runtime.CommandTimeoutSec != 300 {
+		t.Fatalf("expected command_timeout_sec 300, got %d", cfg.Runtime.CommandTimeoutSec)
+	}
+	if cfg.Hooks.DefaultTimeoutSec != 300 {
+		t.Fatalf("expected hook default_timeout_sec 300, got %d", cfg.Hooks.DefaultTimeoutSec)
+	}
+}
+
+func TestDefaultDisablesHardTurnLimitAndUsesFiveMinuteTimeouts(t *testing.T) {
+	cfg := Default()
+	if cfg.Runtime.MaxTurnsHard != -1 {
+		t.Fatalf("expected default hard turn limit disabled, got %d", cfg.Runtime.MaxTurnsHard)
+	}
+	if cfg.Runtime.CommandTimeoutSec != 300 {
+		t.Fatalf("expected default command timeout 300, got %d", cfg.Runtime.CommandTimeoutSec)
+	}
+	if cfg.Hooks.DefaultTimeoutSec != 300 {
+		t.Fatalf("expected default hook timeout 300, got %d", cfg.Hooks.DefaultTimeoutSec)
+	}
+	for name, provider := range cfg.Providers {
+		if provider.RequestTimeoutSec != 300 || provider.TimeoutSec != 300 || provider.StreamIdleTimeoutMS != 300000 {
+			t.Fatalf("expected provider %s default timeouts to be 300s request/legacy and 300000ms idle, got %#v", name, provider)
+		}
+	}
 }
 
 func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
@@ -267,6 +294,30 @@ func TestNormalizeConfigAllowsDisabledHardTurnLimit(t *testing.T) {
 
 	if cfg.Runtime.MaxTurnsHard != -1 {
 		t.Fatalf("expected disabled hard turn limit to normalize to -1, got %d", cfg.Runtime.MaxTurnsHard)
+	}
+}
+
+func TestNormalizeConfigDefaultsHardTurnLimitToDisabled(t *testing.T) {
+	cfg := &Config{
+		Runtime: RuntimeConfig{},
+		Session: SessionConfig{
+			Dir: ".go-cli-agent/sessions",
+		},
+		Skills: SkillsConfig{
+			Dirs: []string{"./skills"},
+		},
+	}
+
+	normalizeConfig(cfg, "/tmp/project")
+
+	if cfg.Runtime.MaxTurnsHard != -1 {
+		t.Fatalf("expected omitted hard turn limit to normalize to disabled -1, got %d", cfg.Runtime.MaxTurnsHard)
+	}
+	if cfg.Runtime.CommandTimeoutSec != 300 {
+		t.Fatalf("expected omitted command timeout to normalize to 300, got %d", cfg.Runtime.CommandTimeoutSec)
+	}
+	if cfg.Hooks.DefaultTimeoutSec != 300 {
+		t.Fatalf("expected omitted hook timeout to normalize to 300, got %d", cfg.Hooks.DefaultTimeoutSec)
 	}
 }
 

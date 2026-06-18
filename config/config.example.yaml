@@ -119,8 +119,8 @@ runtime:
   # yolo: disable non-essential runtime reminders/checks and let the model self-manage within tool-enforced boundaries
   guardrails_mode: yolo
   max_turns_soft: 24
-  max_turns_hard: 40
-  command_timeout_sec: 120
+  max_turns_hard: -1
+  command_timeout_sec: 300
   provider_auto_resume:
     enabled: true
     max_attempts: 2
@@ -163,4 +163,4 @@ output:
   show_raw_events: false
 
 hooks:
-  default_timeout_sec: 15
+  default_timeout_sec: 300

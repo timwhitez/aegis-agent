@@ -370,8 +370,8 @@ runtime:
   guardrails_mode: yolo
   exec_finish_required: true
   max_turns_soft: 24
-  max_turns_hard: 40
-  command_timeout_sec: 120
+  max_turns_hard: -1
+  command_timeout_sec: 300
   provider_auto_resume:
     enabled: true
     max_attempts: 2
@@ -392,7 +392,7 @@ runtime:
     max_depth: 4
 
 hooks:
-  default_timeout_sec: 15
+  default_timeout_sec: 300
 ```
 
 说明：
@@ -401,6 +401,7 @@ hooks:
 - 默认 `yolo`，即关闭 retrieval / project-memory / review-artifact 这类非必要 runtime reminder / guard，由模型在工具边界内自主管理
 - `standard` 可以开启更保守的交付一致性、project-memory 协作提示和 review-artifact 检查；但 `read_file` / grep / glob / read-only shell 不按次数或重复窗口设置 runtime 预算，也不因多文件读取被 hard guard 阻断
 - `runtime.max_turns_hard: -1` 表示禁用硬性 turn 上限，不再触发 `max_turns_hard_exceeded`
+- 默认 `runtime.max_turns_hard` 为 `-1`，master session、child session 与 queue worker session 都不安装固定 turn 数上限；只有显式设置正数时才启用硬性上限
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
