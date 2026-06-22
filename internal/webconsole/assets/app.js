@@ -2629,10 +2629,30 @@ function sessionDetailHasCurrentProcessHandle(detail) {
 
 function sessionDetailDisplayStatus(detail) {
   const status = detail?.state?.status || '';
+  const planModeStatus = planModeActionDisplayStatus(detail?.plan_mode?.status);
+  if (planModeStatus) {
+    return planModeStatus;
+  }
   if (sessionDetailHasCurrentProcessHandle(detail) && status !== 'completed') {
     return 'running';
   }
   return status;
+}
+
+function sessionSummaryDisplayStatus(item) {
+  const planModeStatus = planModeActionDisplayStatus(item?.plan_mode_status);
+  return planModeStatus || item?.status || 'unknown';
+}
+
+function planModeActionDisplayStatus(status) {
+  switch (String(status || '').toLowerCase()) {
+    case 'awaiting_approval':
+      return 'awaiting_plan_approval';
+    case 'awaiting_user_input':
+      return 'awaiting_plan_input';
+    default:
+      return '';
+  }
 }
 
 function isStoppableSessionStatus(status) {
@@ -2826,6 +2846,25 @@ function sessionActivityForState(sessionState = {}) {
   };
 }
 
+function sessionActivityForDetail(detail = {}) {
+  const planModeStatus = String(detail?.plan_mode?.status || '').toLowerCase();
+  if (planModeStatus === 'awaiting_approval') {
+    return {
+      title: 'Awaiting plan approval',
+      copy: 'Review the submitted Plan Mode plan, then approve it to run, ask for changes, or cancel it.',
+      tone: 'queued'
+    };
+  }
+  if (planModeStatus === 'awaiting_user_input') {
+    return {
+      title: 'Awaiting plan input',
+      copy: 'Answer the pending Plan Mode question before planning can continue.',
+      tone: 'queued'
+    };
+  }
+  return sessionActivityForState(detail?.state);
+}
+
 function overviewErrorMessage(err, fallback = 'Failed to load session overview.') {
   return err?.message || fallback;
 }
@@ -2916,7 +2955,7 @@ async function refreshCurrentSession(options = {}) {
     } else {
       setGeneratingViewState(false);
       if (!hasLiveEvents() || toneForStatus(detail?.state?.status) !== 'live') {
-        setLiveActivity(sessionActivityForState(detail?.state));
+        setLiveActivity(sessionActivityForDetail(detail));
       }
       setNextSendInterruptArmed(false);
     }
@@ -3216,6 +3255,8 @@ function toneForStatus(status) {
     case 'queued':
     case 'paused':
     case 'awaiting_input':
+    case 'awaiting_plan_approval':
+    case 'awaiting_plan_input':
     case 'pending':
     case 'deferred':
       return 'queued';
@@ -3555,9 +3596,14 @@ function restoreUIState() {
 }
 
 function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevronSVG, childCount) {
+  const displayStatus = sessionSummaryDisplayStatus(item);
   const metaText = item.last_error
     ? truncateText(item.last_error, 140)
-    : `${item.model || item.provider || 'n/a'} · ${phaseHeadline(item.phase || 'prepare')}`;
+    : item.plan_mode_status === 'awaiting_approval'
+      ? `${item.model || item.provider || 'n/a'} · Plan approval needed`
+      : item.plan_mode_status === 'awaiting_user_input'
+        ? `${item.model || item.provider || 'n/a'} · Plan input needed`
+        : `${item.model || item.provider || 'n/a'} · ${phaseHeadline(item.phase || 'prepare')}`;
   const rowClass = isChild ? 'child-session' : (hasChildren ? 'parent-session' : '');
   const expandToggle = hasChildren
     ? `<button class="history-expand-toggle${isExpanded ? ' is-expanded' : ''}" type="button" data-history-toggle-children="${escapeAttr(item.id)}" title="${isExpanded ? 'Collapse' : 'Expand'} children">${chevronSVG}<span>${isExpanded ? 'Collapse' : 'Expand'}</span></button>`
@@ -3569,7 +3615,7 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
     <div class="history-session-row ${rowClass}">
       <div class="history-session-main">
         <div class="history-session-top">
-          <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
+          <span class="status-badge ${toneForStatus(displayStatus)}">${escapeHTML(humanizeStatus(displayStatus))}</span>
           <span class="tiny-code-chip">${escapeHTML(shortId(item.id))}</span>
           ${childrenBadge}
           <span class="history-session-time" title="${escapeAttr(formatTimestamp(item.updated_at || item.created_at))}">${escapeHTML(formatRelativeTime(item.updated_at || item.created_at))}</span>

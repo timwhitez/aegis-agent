@@ -6518,6 +6518,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(sessionBody, "renderPlanPanel") || !strings.Contains(sessionBody, "renderPlanInputRequest") || !strings.Contains(sessionBody, "data-plan-action=\"approve\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"select\"") || !strings.Contains(sessionBody, "data-plan-input-action=\"submit\"") {
 		t.Fatalf("expected session-view.js to render Plan Mode inspector and pending input controls, got session-view.js body: %s", sessionBody)
 	}
+	if !strings.Contains(sessionBody, "plan-approval-actions") || !strings.Contains(sessionBody, "Approve & Run") || !strings.Contains(sessionBody, "Ask for Changes") || !strings.Contains(sessionBody, "Review the submitted plan") {
+		t.Fatalf("expected session-view.js to surface Plan Mode approval actions in the main session card, got session-view.js body: %s", sessionBody)
+	}
 	if !strings.Contains(sessionBody, "renderSessionStopButton") || !strings.Contains(sessionBody, "data-stop-session-id") {
 		t.Fatalf("expected session and sub-session cards to expose inline stop controls, got session-view.js body: %s", sessionBody)
 	}
@@ -6546,6 +6549,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "togglePlanMode") || !strings.Contains(jsBody, "collectPlanModeDraft") || !strings.Contains(jsBody, "handlePlanModeAction") || !strings.Contains(jsBody, "handlePlanInputAction") {
 		t.Fatalf("expected app.js to wire Plan Mode toggle and controls, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "planModeActionDisplayStatus") || !strings.Contains(jsBody, "awaiting_plan_approval") || !strings.Contains(jsBody, "sessionSummaryDisplayStatus") || !strings.Contains(jsBody, "sessionActivityForDetail") {
+		t.Fatalf("expected app.js to expose Plan Mode waiting states distinctly from generic awaiting_input, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "collectAgentDraft") || strings.Contains(jsBody, "agentName:") || strings.Contains(jsBody, "agentRole:") {
 		t.Fatalf("expected default start payload to omit agent identity fields, got app.js body: %s", jsBody)

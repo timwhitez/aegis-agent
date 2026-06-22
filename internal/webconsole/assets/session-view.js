@@ -464,18 +464,34 @@ function renderSessionActivityCard() {
   const detail = state.sessionDetail;
   const liveActivity = currentLiveActivity();
   const counters = summarizeCurrentSession();
+  const rawStatus = detail?.state?.status || '';
   const status = typeof sessionDetailDisplayStatus === 'function'
     ? sessionDetailDisplayStatus(detail) || (isGenerating() ? 'running' : 'idle')
-    : detail?.state?.status || (isGenerating() ? 'running' : 'idle');
+    : rawStatus || (isGenerating() ? 'running' : 'idle');
   const goal = detail?.goal || null;
   const planMode = detail?.plan_mode || null;
-  const phase = detail?.state?.phase ? phaseHeadline(detail.state.phase) : liveActivity.title;
+  const planModeStatus = String(planMode?.status || '').toLowerCase();
+  const awaitingPlanApproval = planModeStatus === 'awaiting_approval';
+  const awaitingPlanInput = planModeStatus === 'awaiting_user_input';
+  const phase = awaitingPlanApproval
+    ? 'Plan approval'
+    : awaitingPlanInput
+      ? 'Plan input'
+      : detail?.state?.phase ? phaseHeadline(detail.state.phase) : liveActivity.title;
   const tone = toneForStatus(status);
   const failureSummary = detail ? summarizeProviderFailure(detail) : null;
-  const copy = failureSummary?.activityCopy || detail?.state?.last_error || liveActivity.copy;
+  const copy = awaitingPlanApproval
+    ? (planMode?.summary
+        ? `Review the submitted plan, then approve it to run, ask for changes, or cancel Plan Mode. Summary: ${planMode.summary}`
+        : 'Review the submitted plan, then approve it to run, ask for changes, or cancel Plan Mode.')
+    : awaitingPlanInput
+      ? 'Plan Mode is waiting for your answer in the Plan inspector before it can continue planning.'
+      : failureSummary?.activityCopy || detail?.state?.last_error || liveActivity.copy;
   const summary = summarizeLiveCounters(counters);
   const canContinue = hasDurableSession() &&
-    ['paused', 'awaiting_input', 'failed'].includes(status);
+    ['paused', 'awaiting_input', 'failed'].includes(rawStatus) &&
+    !awaitingPlanApproval &&
+    !awaitingPlanInput;
 
   return `
     <section class="session-flow-card">
@@ -493,6 +509,19 @@ function renderSessionActivityCard() {
       </div>
       <div class="session-flow-copy">${escapeHTML(copy || 'Waiting for the next update.')}</div>
       ${detail ? renderSessionGoalLine(detail) : ''}
+      ${awaitingPlanApproval ? `
+        <div class="session-flow-actions plan-approval-actions">
+          <button class="inline-action-btn" type="button" data-plan-action="approve">Approve & Run</button>
+          <button class="mini-link-btn" type="button" data-plan-action="revise">Ask for Changes</button>
+          <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+        </div>
+      ` : ''}
+      ${awaitingPlanInput ? `
+        <div class="session-flow-actions plan-approval-actions">
+          <button class="inline-action-btn" type="button" data-focus-inspector-tab="plan">Open Plan Input</button>
+          <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+        </div>
+      ` : ''}
       ${canContinue ? `<div class="session-flow-actions"><button class="inline-action-btn" type="button" data-continue-session="${escapeAttr(state.sessionId)}">Continue session</button></div>` : ''}
     </section>
   `;

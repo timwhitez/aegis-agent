@@ -3458,6 +3458,7 @@ textarea {
   margin-top: 10px;
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .flow-lane {
