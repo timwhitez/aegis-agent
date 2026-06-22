@@ -315,7 +315,7 @@ function renderWorkspaceActions() {
     busy: pending === 'refresh'
   });
   setWorkspaceButtonState(nodes.workspaceDeleteDirBtn, {
-    visible: Boolean(currentPath),
+    visible: Boolean(currentPath) && !hasSelection,
     disabled: Boolean(pending) || !currentPath,
     busy: pending === 'delete-dir'
   });
@@ -340,6 +340,7 @@ function renderWorkspaceActions() {
   });
   if (nodes.workspaceDeleteSelectedBtn && hasSelection) {
     nodes.workspaceDeleteSelectedBtn.title = selectedCount === 1 ? 'Delete selected item' : `Delete ${selectedCount} selected items`;
+    nodes.workspaceDeleteSelectedBtn.setAttribute('aria-label', nodes.workspaceDeleteSelectedBtn.title);
   }
   setWorkspaceButtonState(nodes.workspaceDeleteFileBtn, {
     visible: hasFile && !hasSelection,

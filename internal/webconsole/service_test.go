@@ -6520,6 +6520,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceItems") || !strings.Contains(workspaceBody, "workspace-select-checkbox") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
 		t.Fatalf("expected Workspace view to expose create/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
 	}
+	if !strings.Contains(workspaceBody, "visible: Boolean(currentPath) && !hasSelection") || !strings.Contains(workspaceBody, "nodes.workspaceDeleteSelectedBtn.setAttribute('aria-label'") {
+		t.Fatalf("expected Workspace view to route selected-item deletion to the top action button without showing current-folder delete, got workspace-view.js body: %s", workspaceBody)
+	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
@@ -6683,6 +6686,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	cssBody := checkBody(server.URL + "/styles.css")
 	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") || !strings.Contains(cssBody, ".session-rail") || !strings.Contains(cssBody, ".selected-queue-job-panel") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
+	}
+	if !strings.Contains(cssBody, ".workspace-icon-btn:disabled") || !strings.Contains(cssBody, "cursor: not-allowed") || !strings.Contains(cssBody, ".workspace-icon-btn.is-loading:disabled") || !strings.Contains(cssBody, "cursor: wait") {
+		t.Fatalf("expected Workspace buttons to distinguish disabled and loading cursors, got styles.css body: %s", cssBody)
 	}
 	if strings.Contains(cssBody, ".queue-primer") || strings.Contains(cssBody, ".queue-submit-panel") || strings.Contains(cssBody, "#queue-view") {
 		t.Fatalf("expected standalone Background Jobs styles to be removed, got styles.css body: %s", cssBody)
