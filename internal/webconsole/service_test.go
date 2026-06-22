@@ -6427,7 +6427,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-selected-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
@@ -6478,7 +6478,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
 	}
-	if !strings.Contains(apiBody, "function listWorkspaceFiles") || !strings.Contains(apiBody, "function createWorkspaceDirectory") || !strings.Contains(apiBody, "function deleteWorkspacePath") || !strings.Contains(apiBody, "function workspaceDownloadURL") {
+	if !strings.Contains(apiBody, "function listWorkspaceFiles") || !strings.Contains(apiBody, "function createWorkspaceDirectory") || !strings.Contains(apiBody, "function deleteWorkspacePath") || !strings.Contains(apiBody, "function deleteWorkspacePaths") || !strings.Contains(apiBody, "function workspaceDownloadURL") {
 		t.Fatalf("expected api.js to expose Workspace file operation helpers, got api.js body: %s", apiBody)
 	}
 	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
@@ -6517,7 +6517,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "currentSessionWorkspacePath()") || !strings.Contains(workspaceBody, "function syncWorkspaceToCurrentSession") || !strings.Contains(workspaceBody, "syncedSessionWorkdir") {
 		t.Fatalf("expected Workspace view to sync to the selected session workdir, got workspace-view.js body: %s", workspaceBody)
 	}
-	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
+	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceItems") || !strings.Contains(workspaceBody, "workspace-select-checkbox") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
 		t.Fatalf("expected Workspace view to expose create/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
 	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
@@ -11132,6 +11132,111 @@ func TestServiceWorkspaceRoutesCreateDownloadAndDelete(t *testing.T) {
 	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
 	if !hasWebAuditEvent(events, "web.workspace.mkdir") || !hasWebAuditEvent(events, "web.workspace.delete") {
 		t.Fatalf("expected workspace mkdir/delete audit events, got %#v", events)
+	}
+}
+
+func TestServiceWorkspaceRoutesBatchDelete(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	writeWorkspaceFile := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(workspaceRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir parent for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	writeWorkspaceFile("batch-file.txt", "delete file")
+	writeWorkspaceFile("batch-dir/child/note.txt", "delete dir")
+	writeWorkspaceFile("batch-dir/child/dup.txt", "covered child")
+	writeWorkspaceFile("atomic-file.txt", "keep on rejected batch")
+	writeWorkspaceFile("sensitive-dir/.env", "NESTED_SECRET=1")
+	writeWorkspaceFile("symlink-target.txt", "keep symlink target")
+	if err := os.Symlink("symlink-target.txt", filepath.Join(workspaceRoot, "symlink-delete.txt")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write root-only file: %v", err)
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var deleteResp map[string]any
+	postJSON(t, ts.URL+"/api/files/delete", map[string]any{
+		"paths": []string{
+			"batch-file.txt",
+			"batch-dir",
+			"batch-dir/child/dup.txt",
+			"batch-file.txt",
+		},
+	}, http.StatusOK, &deleteResp)
+	if deleteResp["deleted"] != true || int(deleteResp["count"].(float64)) != 2 {
+		t.Fatalf("unexpected batch delete response: %#v", deleteResp)
+	}
+	if items, ok := deleteResp["items"].([]any); !ok || len(items) != 2 {
+		t.Fatalf("expected duplicate and covered child paths to collapse, got %#v", deleteResp["items"])
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "batch-file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected batch file to be deleted, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "batch-dir")); !os.IsNotExist(err) {
+		t.Fatalf("expected batch dir to be deleted, stat err=%v", err)
+	}
+
+	postJSON(t, ts.URL+"/api/files/delete", map[string]any{
+		"paths": []string{"atomic-file.txt", "sensitive-dir"},
+	}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "atomic-file.txt")); err != nil || string(data) != "keep on rejected batch" {
+		t.Fatalf("atomic batch failure should keep earlier selected file, data=%q err=%v", string(data), err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "sensitive-dir", ".env")); err != nil || string(data) != "NESTED_SECRET=1" {
+		t.Fatalf("sensitive directory should remain after rejected batch, data=%q err=%v", string(data), err)
+	}
+
+	postJSON(t, ts.URL+"/api/files/delete", map[string]any{
+		"paths": []string{"../root-only.txt"},
+	}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(root, "root-only.txt")); err != nil || string(data) != "do not delete" {
+		t.Fatalf("parent file should not be deleted by batch, data=%q err=%v", string(data), err)
+	}
+
+	postJSON(t, ts.URL+"/api/files/delete", map[string]any{
+		"paths": []string{"symlink-delete.txt"},
+	}, http.StatusBadRequest, nil)
+	if _, err := os.Lstat(filepath.Join(workspaceRoot, "symlink-delete.txt")); err != nil {
+		t.Fatalf("symlink should not be deleted by batch, err=%v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "symlink-target.txt")); err != nil || string(data) != "keep symlink target" {
+		t.Fatalf("symlink target should remain after batch rejection, data=%q err=%v", string(data), err)
+	}
+
+	postJSON(t, ts.URL+"/api/files/delete", map[string]any{"paths": []string{}}, http.StatusBadRequest, nil)
+	requestWithoutJSONContentType(t, http.MethodPost, ts.URL+"/api/files/delete", http.StatusForbidden)
+
+	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
+	if !hasWebAuditEvent(events, "web.workspace.delete") {
+		t.Fatalf("expected batch workspace delete audit events, got %#v", events)
 	}
 }
 

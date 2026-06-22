@@ -428,6 +428,8 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleListFiles(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/files/mkdir":
 		s.handleCreateWorkspaceDirectory(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/files/delete":
+		s.handleDeleteWorkspacePaths(w, r)
 	case r.Method == http.MethodDelete && r.URL.Path == "/api/files":
 		s.handleDeleteWorkspacePath(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/file/read":
@@ -3388,6 +3390,10 @@ type workspaceMkdirRequest struct {
 	Name string `json:"name"`
 }
 
+type workspaceDeleteRequest struct {
+	Paths []string `json:"paths"`
+}
+
 func (s *Service) handleCreateWorkspaceDirectory(w http.ResponseWriter, r *http.Request) {
 	var req workspaceMkdirRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -3485,84 +3491,28 @@ func (s *Service) handleCreateWorkspaceDirectory(w http.ResponseWriter, r *http.
 
 func (s *Service) handleDeleteWorkspacePath(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
-	if path == "" || path == "." {
-		writeError(w, http.StatusBadRequest, errors.New("path is required"))
-		return
-	}
 	root, browseRoot, policy, err := workspaceBrowserContext()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	lexicalPath, err := workspaceBrowserLexicalPath(root, browseRoot, path)
+	target, status, err := resolveWorkspaceDeleteTarget(root, browseRoot, policy, path)
 	if err != nil {
-		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		writeError(w, status, err)
 		return
-	}
-	resolvedPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
-	if err != nil {
-		writeError(w, http.StatusForbidden, errors.New("access denied"))
-		return
-	}
-	if filepath.Clean(lexicalPath) == filepath.Clean(root) || !pathWithinRoot(root, lexicalPath) || !pathWithinRoot(root, resolvedPath) {
-		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
-		return
-	}
-	if policy.targetDenied(lexicalPath) || policy.targetDenied(resolvedPath) {
-		writeError(w, http.StatusForbidden, errors.New("access denied"))
-		return
-	}
-	info, err := os.Lstat(lexicalPath)
-	if err != nil {
-		writeError(w, workspaceBrowserStatStatus(err), err)
-		return
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		writeError(w, http.StatusBadRequest, errors.New("refusing to delete symlink path"))
-		return
-	}
-	kind := ""
-	switch {
-	case info.IsDir():
-		kind = "directory"
-	case info.Mode().IsRegular():
-		kind = "file"
-	default:
-		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file or directory"))
-		return
-	}
-	rel, err := filepath.Rel(root, lexicalPath)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	rel = filepath.ToSlash(filepath.Clean(rel))
-	if rel == "." {
-		writeError(w, http.StatusForbidden, errors.New("workspace root cannot be deleted"))
-		return
-	}
-	if kind == "directory" {
-		if err := ensureWorkspaceDeleteTreeAllowed(root, browseRoot, lexicalPath, policy); err != nil {
-			if errors.Is(err, errWorkspaceDeleteDenied) {
-				writeError(w, http.StatusForbidden, err)
-				return
-			}
-			writeError(w, workspaceBrowserStatStatus(err), err)
-			return
-		}
 	}
 	if err := s.ensureAuditLogWritable(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	tx, err := prepareWorkspaceDeleteTransaction(lexicalPath, kind)
+	tx, err := prepareWorkspaceDeleteTransaction(target.lexicalPath, target.kind)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	if err := s.appendAuditEvent("web.workspace.delete", map[string]any{
-		"path": rel,
-		"type": kind,
+		"path": target.rel,
+		"type": target.kind,
 	}); err != nil {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore workspace delete after audit error %v: %w", err, rollbackErr))
@@ -3577,9 +3527,216 @@ func (s *Service) handleDeleteWorkspacePath(w http.ResponseWriter, r *http.Reque
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deleted": true,
-		"path":    rel,
-		"type":    kind,
+		"path":    target.rel,
+		"type":    target.kind,
 	})
+}
+
+func (s *Service) handleDeleteWorkspacePaths(w http.ResponseWriter, r *http.Request) {
+	var req workspaceDeleteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	targets, status, err := resolveWorkspaceDeleteTargets(root, browseRoot, policy, req.Paths)
+	if err != nil {
+		writeError(w, status, err)
+		return
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	txs := make([]*workspaceDeleteTransaction, 0, len(targets))
+	for _, target := range targets {
+		tx, err := prepareWorkspaceDeleteTransaction(target.lexicalPath, target.kind)
+		if err != nil {
+			if rollbackErr := rollbackWorkspaceDeleteTransactions(txs); rollbackErr != nil {
+				writeError(w, http.StatusInternalServerError, errors.Join(err, fmt.Errorf("restore workspace batch delete after transaction error: %w", rollbackErr)))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		txs = append(txs, tx)
+	}
+	auditEvents := make([]pendingWebAuditEvent, 0, len(targets))
+	for _, target := range targets {
+		auditEvents = append(auditEvents, pendingWebAuditEvent{
+			eventType: "web.workspace.delete",
+			data: map[string]any{
+				"path":  target.rel,
+				"type":  target.kind,
+				"batch": true,
+			},
+		})
+	}
+	if err := s.appendAuditEvents(auditEvents...); err != nil {
+		if rollbackErr := rollbackWorkspaceDeleteTransactions(txs); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore workspace batch delete after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, tx := range txs {
+		if err := tx.Finalize(); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	items := make([]map[string]any, 0, len(targets))
+	for _, target := range targets {
+		items = append(items, map[string]any{
+			"path": target.rel,
+			"type": target.kind,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"count":   len(items),
+		"items":   items,
+	})
+}
+
+type workspaceDeleteTarget struct {
+	rel         string
+	lexicalPath string
+	kind        string
+}
+
+func resolveWorkspaceDeleteTargets(root, browseRoot string, policy *webFileBrowserReadPolicy, paths []string) ([]workspaceDeleteTarget, int, error) {
+	if len(paths) == 0 {
+		return nil, http.StatusBadRequest, errors.New("paths are required")
+	}
+	targets := make([]workspaceDeleteTarget, 0, len(paths))
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		target, status, err := resolveWorkspaceDeleteTarget(root, browseRoot, policy, path)
+		if err != nil {
+			return nil, status, err
+		}
+		if _, ok := seen[target.rel]; ok {
+			continue
+		}
+		seen[target.rel] = struct{}{}
+		targets = append(targets, target)
+	}
+	targets = collapseNestedWorkspaceDeleteTargets(targets)
+	if len(targets) == 0 {
+		return nil, http.StatusBadRequest, errors.New("paths are required")
+	}
+	sort.SliceStable(targets, func(i, j int) bool {
+		depthI := strings.Count(targets[i].rel, "/")
+		depthJ := strings.Count(targets[j].rel, "/")
+		if depthI != depthJ {
+			return depthI > depthJ
+		}
+		return targets[i].rel < targets[j].rel
+	})
+	return targets, http.StatusOK, nil
+}
+
+func resolveWorkspaceDeleteTarget(root, browseRoot string, policy *webFileBrowserReadPolicy, requestedPath string) (workspaceDeleteTarget, int, error) {
+	path := strings.TrimSpace(requestedPath)
+	if path == "" || path == "." {
+		return workspaceDeleteTarget{}, http.StatusBadRequest, errors.New("path is required")
+	}
+	lexicalPath, err := workspaceBrowserLexicalPath(root, browseRoot, path)
+	if err != nil {
+		return workspaceDeleteTarget{}, http.StatusForbidden, errors.New("access denied")
+	}
+	resolvedPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
+	if err != nil {
+		return workspaceDeleteTarget{}, http.StatusForbidden, errors.New("access denied")
+	}
+	if filepath.Clean(lexicalPath) == filepath.Clean(root) || !pathWithinRoot(root, lexicalPath) || !pathWithinRoot(root, resolvedPath) {
+		return workspaceDeleteTarget{}, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root")
+	}
+	if policy.targetDenied(lexicalPath) || policy.targetDenied(resolvedPath) {
+		return workspaceDeleteTarget{}, http.StatusForbidden, errors.New("access denied")
+	}
+	info, err := os.Lstat(lexicalPath)
+	if err != nil {
+		return workspaceDeleteTarget{}, workspaceBrowserStatStatus(err), err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return workspaceDeleteTarget{}, http.StatusBadRequest, errors.New("refusing to delete symlink path")
+	}
+	kind := ""
+	switch {
+	case info.IsDir():
+		kind = "directory"
+	case info.Mode().IsRegular():
+		kind = "file"
+	default:
+		return workspaceDeleteTarget{}, http.StatusBadRequest, errors.New("path is not a regular file or directory")
+	}
+	rel, err := filepath.Rel(root, lexicalPath)
+	if err != nil {
+		return workspaceDeleteTarget{}, http.StatusInternalServerError, err
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." {
+		return workspaceDeleteTarget{}, http.StatusForbidden, errors.New("workspace root cannot be deleted")
+	}
+	if kind == "directory" {
+		if err := ensureWorkspaceDeleteTreeAllowed(root, browseRoot, lexicalPath, policy); err != nil {
+			if errors.Is(err, errWorkspaceDeleteDenied) {
+				return workspaceDeleteTarget{}, http.StatusForbidden, err
+			}
+			return workspaceDeleteTarget{}, workspaceBrowserStatStatus(err), err
+		}
+	}
+	return workspaceDeleteTarget{
+		rel:         rel,
+		lexicalPath: filepath.Clean(lexicalPath),
+		kind:        kind,
+	}, http.StatusOK, nil
+}
+
+func collapseNestedWorkspaceDeleteTargets(targets []workspaceDeleteTarget) []workspaceDeleteTarget {
+	if len(targets) < 2 {
+		return targets
+	}
+	collapsed := make([]workspaceDeleteTarget, 0, len(targets))
+	for i, target := range targets {
+		covered := false
+		for j, parent := range targets {
+			if i == j || parent.kind != "directory" {
+				continue
+			}
+			if workspaceDeleteRelContains(parent.rel, target.rel) && parent.rel != target.rel {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			collapsed = append(collapsed, target)
+		}
+	}
+	return collapsed
+}
+
+func workspaceDeleteRelContains(parent, child string) bool {
+	parent = strings.Trim(strings.ReplaceAll(parent, "\\", "/"), "/")
+	child = strings.Trim(strings.ReplaceAll(child, "\\", "/"), "/")
+	return parent != "" && (child == parent || strings.HasPrefix(child, parent+"/"))
+}
+
+func rollbackWorkspaceDeleteTransactions(txs []*workspaceDeleteTransaction) error {
+	var joined error
+	for i := len(txs) - 1; i >= 0; i-- {
+		if err := txs[i].Rollback(); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
 }
 
 type workspaceDeleteTransaction struct {
@@ -8296,6 +8453,7 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		switch path {
 		case "/api/config",
 			"/api/config/test",
+			"/api/files/delete",
 			"/api/files/mkdir",
 			"/api/sessions/start",
 			"/api/queue/jobs",

@@ -211,6 +211,12 @@ function deleteWorkspacePath(path) {
   return requestJSON(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
 }
 
+function deleteWorkspacePaths(paths = []) {
+  return requestJSON('/api/files/delete', jsonRequest({
+    paths
+  }));
+}
+
 function workspaceDownloadURL(path) {
   return `/api/file/download?path=${encodeURIComponent(path)}`;
 }

@@ -124,7 +124,7 @@ print_lan_warning() {
 			;;
 	esac
 	echo "WARNING: web console is reachable from non-loopback clients."
-	echo "It can write config and .env API keys, delete sessions, manage skills, read/download workspace files, and create/delete workspace files or folders. Use only on trusted local networks."
+	echo "It can write config and .env API keys, delete sessions, manage skills, read/download workspace files, and create workspace folders or delete one or more workspace files or folders. Use only on trusted local networks."
 }
 
 ensure_binary() {

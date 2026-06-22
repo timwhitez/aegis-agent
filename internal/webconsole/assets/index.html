@@ -157,8 +157,12 @@
             <div class="editor-header">
               <span class="editor-title" id="editor-filename">Select a file</span>
               <div class="workspace-selection-actions" id="workspace-selection-actions">
+                <span class="workspace-selected-chip is-hidden" id="workspace-selected-chip">0 selected</span>
                 <button class="workspace-editor-action is-hidden" id="workspace-download-btn" type="button" aria-label="Download selected file" title="Download file">
                   <i data-lucide="download"></i>
+                </button>
+                <button class="workspace-editor-action danger is-hidden" id="workspace-delete-selected-btn" type="button" aria-label="Delete selected items" title="Delete selected items">
+                  <i data-lucide="trash-2"></i>
                 </button>
                 <button class="workspace-editor-action danger is-hidden" id="workspace-delete-file-btn" type="button" aria-label="Delete selected file" title="Delete file">
                   <i data-lucide="trash-2"></i>

@@ -5,6 +5,7 @@ const workspaceViewState = {
   path: '',
   tree: [],
   selectedTreePath: '',
+  selectedPaths: new Set(),
   filePreview: null,
   syncedSessionWorkdir: '',
   actionPending: ''
@@ -20,6 +21,7 @@ async function fetchWorkspace() {
     if (sessionPath !== null && sessionPath !== currentWorkspacePath()) {
       setCurrentWorkspacePath(sessionPath);
       setSelectedWorkspaceTreePath('');
+      clearSelectedWorkspacePaths();
       setWorkspaceFilePreview(null);
     }
     workspaceViewState.syncedSessionWorkdir = currentSessionWorkdir();
@@ -56,6 +58,7 @@ function syncWorkspaceToCurrentSession(options = {}) {
   }
   setCurrentWorkspacePath(sessionPath);
   setSelectedWorkspaceTreePath('');
+  clearSelectedWorkspacePaths();
   setWorkspaceFilePreview(null);
   updateWorkspaceMeta();
   if (currentViewName() === 'workspace') {
@@ -131,6 +134,7 @@ async function loadWorkspaceDirectory(path = '') {
   setCurrentWorkspacePath(normalized);
   setCurrentWorkspaceTree(tree);
   setSelectedWorkspaceTreePath('');
+  clearSelectedWorkspacePaths();
   setWorkspaceFilePreview(null);
   renderFileTree(tree);
   updateWorkspaceMeta();
@@ -165,6 +169,62 @@ function selectedWorkspaceTreePath() {
 
 function setSelectedWorkspaceTreePath(path) {
   workspaceViewState.selectedTreePath = String(path || '');
+}
+
+function selectedWorkspacePaths() {
+  const selected = workspaceViewState.selectedPaths;
+  if (!(selected instanceof Set)) {
+    workspaceViewState.selectedPaths = new Set();
+    return [];
+  }
+  return Array.from(selected).sort((left, right) => left.localeCompare(right));
+}
+
+function selectedWorkspacePathCount() {
+  return selectedWorkspacePaths().length;
+}
+
+function isWorkspacePathSelected(path) {
+  const selected = workspaceViewState.selectedPaths;
+  return selected instanceof Set && selected.has(normalizeWorkspacePath(path));
+}
+
+function clearSelectedWorkspacePaths() {
+  workspaceViewState.selectedPaths = new Set();
+}
+
+function toggleWorkspacePathSelection(path, checked) {
+  const normalized = normalizeWorkspacePath(path);
+  if (!normalized) {
+    return;
+  }
+  const selected = workspaceViewState.selectedPaths instanceof Set ? workspaceViewState.selectedPaths : new Set();
+  if (checked) {
+    selected.add(normalized);
+  } else {
+    selected.delete(normalized);
+  }
+  workspaceViewState.selectedPaths = selected;
+  syncWorkspaceSelectionNode(normalized);
+  renderWorkspaceActions();
+}
+
+function syncWorkspaceSelectionNode(path) {
+  if (!nodes.fileTree) {
+    return;
+  }
+  const selector = `.workspace-select-checkbox[data-path="${cssEscape(path)}"]`;
+  const input = nodes.fileTree.querySelector(selector);
+  if (!input) {
+    return;
+  }
+  const selected = isWorkspacePathSelected(path);
+  input.checked = selected;
+  input.setAttribute('aria-checked', selected ? 'true' : 'false');
+  const row = input.closest('.tree-node-row');
+  if (row) {
+    row.classList.toggle('is-selected', selected);
+  }
 }
 
 function workspaceFilePreview() {
@@ -231,6 +291,10 @@ function ensureWorkspaceActionBindings() {
     nodes.workspaceDeleteFileBtn.dataset.bound = '1';
     nodes.workspaceDeleteFileBtn.addEventListener('click', handleDeleteSelectedWorkspaceFile);
   }
+  if (nodes.workspaceDeleteSelectedBtn && nodes.workspaceDeleteSelectedBtn.dataset.bound !== '1') {
+    nodes.workspaceDeleteSelectedBtn.dataset.bound = '1';
+    nodes.workspaceDeleteSelectedBtn.addEventListener('click', handleDeleteSelectedWorkspaceItems);
+  }
 }
 
 function renderWorkspaceActions() {
@@ -238,6 +302,8 @@ function renderWorkspaceActions() {
   const currentPath = currentWorkspacePath();
   const preview = workspaceFilePreview();
   const hasFile = Boolean(preview?.path);
+  const selectedCount = selectedWorkspacePathCount();
+  const hasSelection = selectedCount > 0;
   setWorkspaceButtonState(nodes.workspaceNewFolderBtn, {
     visible: true,
     disabled: Boolean(pending),
@@ -263,8 +329,20 @@ function renderWorkspaceActions() {
     disabled: Boolean(pending) || !hasFile,
     busy: false
   });
+  if (nodes.workspaceSelectedChip) {
+    nodes.workspaceSelectedChip.classList.toggle('is-hidden', !hasSelection);
+    nodes.workspaceSelectedChip.textContent = selectedCount === 1 ? '1 selected' : `${selectedCount} selected`;
+  }
+  setWorkspaceButtonState(nodes.workspaceDeleteSelectedBtn, {
+    visible: hasSelection,
+    disabled: Boolean(pending) || !hasSelection,
+    busy: pending === 'delete-selected'
+  });
+  if (nodes.workspaceDeleteSelectedBtn && hasSelection) {
+    nodes.workspaceDeleteSelectedBtn.title = selectedCount === 1 ? 'Delete selected item' : `Delete ${selectedCount} selected items`;
+  }
   setWorkspaceButtonState(nodes.workspaceDeleteFileBtn, {
-    visible: hasFile,
+    visible: hasFile && !hasSelection,
     disabled: Boolean(pending) || !hasFile,
     busy: pending === 'delete-file'
   });
@@ -402,6 +480,36 @@ async function handleDeleteSelectedWorkspaceFile() {
   }
 }
 
+async function handleDeleteSelectedWorkspaceItems() {
+  const paths = selectedWorkspacePaths();
+  if (!paths.length || workspaceActionPending()) {
+    return;
+  }
+  const ok = await confirmLocalAction({
+    title: 'Delete selected items',
+    message: `Delete ${paths.length} selected workspace item${paths.length === 1 ? '' : 's'}? Folders will be removed with all of their contents. This cannot be undone from the web console.`,
+    confirmLabel: 'Delete selected',
+    tone: 'danger'
+  });
+  if (!ok) {
+    return;
+  }
+  setWorkspaceActionPending('delete-selected');
+  try {
+    const result = await deleteWorkspacePaths(paths);
+    const count = Number(result?.count || paths.length);
+    clearSelectedWorkspacePaths();
+    setSelectedWorkspaceTreePath('');
+    setWorkspaceFilePreview(null);
+    showToast(count === 1 ? 'Deleted 1 selected item.' : `Deleted ${count} selected items.`, 'success');
+    await loadWorkspaceDirectory(currentWorkspacePath());
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to delete selected items.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
 function parentWorkspacePath(path) {
   const normalized = normalizeWorkspacePath(path);
   const index = normalized.lastIndexOf('/');
@@ -427,9 +535,30 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
 
   tree.forEach((node) => {
     const itemWrapper = document.createElement('div');
+    itemWrapper.className = 'tree-entry';
+    const row = document.createElement('div');
+    row.className = 'tree-node-row';
+    row.style.paddingLeft = `${8 + level * 16}px`;
+    const canSelect = node.navigation !== 'parent' && (node.type === 'directory' || node.type === 'file') && Boolean(node.path);
+    if (canSelect) {
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'workspace-select-checkbox';
+      checkbox.dataset.path = node.path || '';
+      checkbox.dataset.type = node.type || '';
+      checkbox.checked = isWorkspacePathSelected(node.path);
+      checkbox.setAttribute('aria-label', `Select ${node.name}`);
+      checkbox.setAttribute('aria-checked', checkbox.checked ? 'true' : 'false');
+      row.classList.toggle('is-selected', checkbox.checked);
+      row.appendChild(checkbox);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'workspace-select-spacer';
+      spacer.setAttribute('aria-hidden', 'true');
+      row.appendChild(spacer);
+    }
     const button = document.createElement('button');
     button.className = 'tree-node';
-    button.style.paddingLeft = `${16 + level * 16}px`;
     button.dataset.path = node.path || '';
     button.dataset.type = node.type || '';
     button.dataset.navigation = node.navigation || '';
@@ -448,7 +577,8 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     if (node.type === 'directory') {
       childrenContainer.classList.add('is-collapsed');
     }
-    itemWrapper.appendChild(button);
+    row.appendChild(button);
+    itemWrapper.appendChild(row);
     itemWrapper.appendChild(childrenContainer);
     container.appendChild(itemWrapper);
     if (node.type === 'directory' && node.children) {
@@ -468,6 +598,7 @@ function ensureFileTreeDelegation(container) {
   container.dataset.delegationBound = '1';
   container.addEventListener('click', handleFileTreeClick);
   container.addEventListener('keydown', handleFileTreeKeydown);
+  container.addEventListener('change', handleFileTreeSelectionChange);
 }
 
 async function handleFileTreeClick(event) {
@@ -478,6 +609,15 @@ async function handleFileTreeClick(event) {
   event.preventDefault?.();
   event.stopPropagation?.();
   await activateFileTreeNode(button);
+}
+
+function handleFileTreeSelectionChange(event) {
+  const input = event.target.closest('.workspace-select-checkbox');
+  if (!input || !nodes.fileTree.contains(input) || input.disabled) {
+    return;
+  }
+  event.stopPropagation?.();
+  toggleWorkspacePathSelection(input.dataset.path || '', input.checked);
 }
 
 async function handleFileTreeKeydown(event) {

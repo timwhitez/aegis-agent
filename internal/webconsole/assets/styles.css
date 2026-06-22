@@ -1079,6 +1079,38 @@ textarea {
   padding: 12px;
 }
 
+.tree-entry {
+  min-width: 0;
+}
+
+.tree-node-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  transition: background-color 0.18s ease;
+}
+
+.tree-node-row.is-selected {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.workspace-select-checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.workspace-select-spacer {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
 .tree-node {
   display: flex;
   align-items: center;
@@ -1090,6 +1122,8 @@ textarea {
   width: 100%;
   text-align: left;
   position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
   transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 
@@ -1106,6 +1140,12 @@ textarea {
 }
 
 .tree-node .icon-small { width: 16px; height: 16px; flex-shrink: 0; }
+.tree-node span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tree-node i[data-lucide="folder"] { color: var(--accent); }
 .tree-node i[data-lucide="file-code"] { color: var(--text-muted); }
 .tree-node i[data-lucide="corner-up-left"] { color: var(--text-soft); }
@@ -1160,6 +1200,26 @@ textarea {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 50%;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.workspace-selected-chip {
+  min-height: 24px;
+  max-width: 160px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  background: rgba(96, 165, 250, 0.16);
+  color: #BFDBFE;
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .workspace-editor-action {
@@ -3155,6 +3215,10 @@ textarea {
   .file-tree {
     width: 100%;
     max-height: 200px;
+  }
+
+  .workspace-selection-actions {
+    max-width: 100%;
   }
 
   .overview-columns {
