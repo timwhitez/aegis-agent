@@ -8714,6 +8714,47 @@ func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 	}
 }
 
+func TestServiceDeleteSessionRouteDoesNotStageHistoryBackup(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "delete_without_backup")
+	meta.RootSessionID = meta.ID
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	calledBackupHook := false
+	beforeWebHistoryBackupRootCreate = func(parent string) error {
+		calledBackupHook = true
+		return fmt.Errorf("delete route should not stage history backup under %s", parent)
+	}
+	defer func() {
+		beforeWebHistoryBackupRootCreate = nil
+	}()
+
+	req, err := http.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	if err != nil {
+		t.Fatalf("new delete request: %v", err)
+	}
+	req.Header.Set(webMutationHeader, "1")
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if calledBackupHook {
+		t.Fatal("delete route staged a history backup before deleting")
+	}
+	if _, err := svc.store.LoadMetadata(meta.ID); !os.IsNotExist(err) {
+		t.Fatalf("expected session to be deleted, got err=%v", err)
+	}
+}
+
 func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

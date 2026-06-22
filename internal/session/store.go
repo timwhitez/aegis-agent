@@ -2579,7 +2579,7 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 			}
 		}
 	}
-	jobs, err := s.listJobs(0, "", queueJobReconcileFull)
+	jobs, err := s.listJobs(0, "", queueJobReconcileNone)
 	if err != nil {
 		return err
 	}

@@ -1960,6 +1960,35 @@ func TestRunnerQueueSubmitRejectsUnsupportedProviderConfigAPIProviderBeforeEnque
 	}
 }
 
+func TestRunnerRejectsNestedSubAgentCreation(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	childID := createParentSessionWithDepth(t, runner.store, t.TempDir(), 1)
+
+	_, err := runner.SpawnAgent(context.Background(), tools.AgentSpawnRequest{
+		ParentSessionID: childID,
+		Prompt:          "nested child should not start",
+		Background:      true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "nested sub-agents are not allowed") {
+		t.Fatalf("expected nested SpawnAgent rejection, got %v", err)
+	}
+	_, err = runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: childID,
+		Prompt:          "nested queue should not start",
+	})
+	if err == nil || !strings.Contains(err.Error(), "nested sub-agents are not allowed") {
+		t.Fatalf("expected nested QueueSubmit rejection, got %v", err)
+	}
+	jobs, listErr := runner.store.ListJobs(10)
+	if listErr != nil {
+		t.Fatalf("list jobs: %v", listErr)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("nested rejection should not enqueue jobs, got %#v", jobs)
+	}
+}
+
 func TestRunnerQueueSubmitNormalizesFullAutoAndWorkspaceWriteAliases(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

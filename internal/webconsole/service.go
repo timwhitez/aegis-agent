@@ -909,23 +909,14 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	deleteTx, err := s.prepareDeleteSessionTreeTransaction(sessionID)
-	if err != nil {
-		writeError(w, sessionStoreStatus(err), err)
-		return
-	}
 	if err := s.appendAuditEvent("web.session.delete", map[string]any{
 		"session_id": sessionID,
 	}); err != nil {
-		if rollbackErr := deleteTx.Rollback(); rollbackErr != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore session delete after audit error %v: %w", err, rollbackErr))
-			return
-		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := deleteTx.Finalize(); err != nil {
-		writeError(w, http.StatusInternalServerError, err)
+	if err := s.store.DeleteSessionTree(sessionID); err != nil {
+		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "deleted": true})

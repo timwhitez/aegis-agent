@@ -359,6 +359,7 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载 workspace 文件，以及在 workspace 内创建文件夹或删除单个/多个文件夹和文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。
+- 单个 session tree 删除必须先完成 active handle、stale running owner、running session/job 与 audit writability 检查；审计事件写入成功后直接调用 session store 删除目标 session tree 和 linked queue jobs。不要在请求路径上先把整棵 session tree 搬到历史备份目录再删除，因为大型 master/child 会话会让删除响应被大目录 I/O 阻塞。全量 clear history 仍可使用 history mutation transaction 提供 audit 失败回滚。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。
 

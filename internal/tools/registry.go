@@ -98,7 +98,7 @@ type AgentStatusRequest struct {
 
 type AgentWaitRequest struct {
 	ParentSessionID string `json:"-"`
-	QueueJobID      string `json:"queue_job_id"`
+	QueueJobID      string `json:"queue_job_id,omitempty"`
 }
 
 type AgentStopRequest struct {
@@ -2263,13 +2263,23 @@ func defUpdateGoal() Definition {
 }
 
 func requireToolSessionMetadata(execCtx ExecContext) error {
+	_, err := loadToolSessionMetadata(execCtx)
+	return err
+}
+
+func loadToolSessionMetadata(execCtx ExecContext) (session.SessionMetadata, error) {
 	if execCtx.Store == nil {
-		return errors.New("session store is required")
+		return session.SessionMetadata{}, errors.New("session store is required")
 	}
-	if _, err := execCtx.Store.LoadMetadata(execCtx.SessionID); err != nil {
-		return err
+	meta, err := execCtx.Store.LoadMetadata(execCtx.SessionID)
+	if err != nil {
+		return session.SessionMetadata{}, err
 	}
-	return nil
+	return meta, nil
+}
+
+func isSubAgentSession(meta session.SessionMetadata) bool {
+	return meta.Depth > 0 || strings.TrimSpace(meta.ParentSessionID) != ""
 }
 
 func defGetPlanMode() Definition {
@@ -3283,8 +3293,12 @@ func defAgentSpawn(control ControlPlane) Definition {
 			if strings.TrimSpace(input.Prompt) == "" {
 				return errorResult("agent_spawn", errors.New("prompt is required")), nil
 			}
-			if err := requireToolSessionMetadata(execCtx); err != nil {
+			meta, err := loadToolSessionMetadata(execCtx)
+			if err != nil {
 				return errorResult("agent_spawn", err), nil
+			}
+			if isSubAgentSession(meta) {
+				return errorResult("agent_spawn", errors.New("nested sub-agents are not allowed; only the root master session can create sub-agents")), nil
 			}
 			input.ParentSessionID = execCtx.SessionID
 			result, err := control.SpawnAgent(ctx, input)
@@ -3347,47 +3361,48 @@ func defAgentStatus(control ControlPlane) Definition {
 func defAgentWait(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_wait",
-		Description: "Park the parent agent until a specific background child job reports a durable result, then automatically resume the parent with that result in context. Use this when unresolved background work is required before the parent can proceed or exit. This does not cancel or stop child work.",
+		Description: "Park the parent agent until any background child job reports a durable result, then automatically resume the parent with that result in context. Use this when unresolved background work is required before the parent can proceed or exit; after resuming, the model decides whether to continue waiting. This does not cancel or stop child work. queue_job_id is optional and kept only as a compatibility hint; it does not restrict which background result wakes the parent.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"queue_job_id": map[string]any{
 					"type":        "string",
-					"description": "Background queue job id returned by agent_spawn(background=true) or agent_list.",
+					"description": "Optional compatibility hint for a background queue job id returned by agent_spawn(background=true) or agent_list. The parent still wakes on any pending background result.",
 				},
 			},
-			"required": []string{"queue_job_id"},
 		},
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input AgentWaitRequest
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("agent_wait", err), nil
 			}
-			if strings.TrimSpace(input.QueueJobID) == "" {
-				return errorResult("agent_wait", errors.New("queue_job_id is required")), nil
-			}
 			if err := requireToolSessionMetadata(execCtx); err != nil {
 				return errorResult("agent_wait", err), nil
 			}
-			if control != nil {
+			queueJobID := strings.TrimSpace(input.QueueJobID)
+			if control != nil && queueJobID != "" {
 				input.ParentSessionID = execCtx.SessionID
-				if _, err := control.AgentStatus(ctx, AgentStatusRequest{ParentSessionID: input.ParentSessionID, QueueJobID: input.QueueJobID}); err != nil {
+				if _, err := control.AgentStatus(ctx, AgentStatusRequest{ParentSessionID: input.ParentSessionID, QueueJobID: queueJobID}); err != nil {
 					return errorResult("agent_wait", err), nil
 				}
 			}
 			output := map[string]any{
-				"queue_job_id":    strings.TrimSpace(input.QueueJobID),
 				"background_wait": true,
+				"wake_on":         "any_background_result",
+			}
+			metadata := map[string]any{
+				"background_wait": true,
+			}
+			if queueJobID != "" {
+				output["queue_job_id"] = queueJobID
+				metadata["queue_job_id"] = queueJobID
 			}
 			data, _ := json.MarshalIndent(output, "", "  ")
 			return session.ToolResult{
 				Name:          "agent_wait",
 				LLMOutput:     string(data),
 				DisplayOutput: string(data),
-				Metadata: map[string]any{
-					"background_wait": true,
-					"queue_job_id":    strings.TrimSpace(input.QueueJobID),
-				},
+				Metadata:      metadata,
 			}, nil
 		},
 	}

@@ -2842,6 +2842,9 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	if !strings.Contains(waitDef.Description, "Park the parent agent") || !strings.Contains(waitDef.Description, "does not cancel") {
 		t.Fatalf("expected agent_wait description to explain parking semantics, got %q", waitDef.Description)
 	}
+	if !strings.Contains(waitDef.Description, "any background child job") || !strings.Contains(waitDef.Description, "queue_job_id is optional") {
+		t.Fatalf("expected agent_wait description to explain any-result wake semantics, got %q", waitDef.Description)
+	}
 	stopDef := registry.Get("agent_stop")
 	if stopDef == nil {
 		t.Fatal("agent_stop definition missing")
@@ -2943,6 +2946,82 @@ func TestAgentWaitReturnsBackgroundWaitMetadata(t *testing.T) {
 	}
 	if control.statusCalls != 1 || control.statusReq.QueueJobID != "job_child_1" || control.statusReq.ParentSessionID != meta.ID {
 		t.Fatalf("expected agent_wait to verify queue ownership, calls=%d req=%#v", control.statusCalls, control.statusReq)
+	}
+}
+
+func TestAgentWaitAllowsEmptyInputAndDoesNotVerifySpecificJob(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: "sess_parent_wait_any", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	state := session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "agent_wait", ExecContext{
+		SessionID: meta.ID,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("agent_wait execute: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected successful agent_wait without queue_job_id, got %#v", result)
+	}
+	if result.Metadata["background_wait"] != true || result.Metadata["queue_job_id"] != nil {
+		t.Fatalf("expected generic background wait metadata, got %#v", result.Metadata)
+	}
+	if control.statusCalls != 0 {
+		t.Fatalf("generic agent_wait should not verify a specific queue job, calls=%d req=%#v", control.statusCalls, control.statusReq)
+	}
+	if !strings.Contains(result.DisplayOutput, "any_background_result") {
+		t.Fatalf("expected generic wait output to document wake semantics, got %q", result.DisplayOutput)
+	}
+}
+
+func TestAgentSpawnRejectsNestedSubAgentSession(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "sess_child",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  "sess_master",
+		RootSessionID:    "sess_master",
+		Depth:            1,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "tool_execute", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	control := &recordingControlPlane{}
+	registry, err := NewRegistry(cfg, nil, store, control)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "agent_spawn", ExecContext{
+		SessionID: meta.ID,
+		Store:     store,
+		Config:    cfg,
+	}, json.RawMessage(`{"prompt":"nested work","background":true}`))
+	if err != nil {
+		t.Fatalf("agent_spawn execute: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "nested sub-agents are not allowed") {
+		t.Fatalf("expected nested sub-agent rejection, got %#v", result)
+	}
+	if control.spawnCalls != 0 {
+		t.Fatalf("nested agent_spawn reached control plane: calls=%d req=%#v", control.spawnCalls, control.spawnReq)
 	}
 }
 

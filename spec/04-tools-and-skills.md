@@ -267,7 +267,9 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
-- parent agent 主动停车等待一个 background child job 的 durable result，并由 harness 后续自动恢复 parent
+- parent agent 主动停车等待 background child work 的 durable result，并由 harness 在任一后台结果到达后自动恢复 parent
+- `queue_job_id` 为兼容旧调用的可选字段；它不限制唤醒目标，恢复后由 parent agent 判断是否继续等待其他 child
+- child session 不允许再创建 sub-agent；只有 root master session 可以使用 `agent_spawn` 派生 child work
 
 ### 4.21 `agent_stop`
 

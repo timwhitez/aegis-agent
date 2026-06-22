@@ -576,7 +576,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			doneCandidates = 0
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
 			planModeTerminal := ""
-			backgroundWaitJobID := ""
+			backgroundWait := false
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
@@ -876,8 +876,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}
 					break
 				}
-				if jobID := backgroundWaitQueueJobID(toolResult); jobID != "" && backgroundWaitJobID == "" {
-					backgroundWaitJobID = jobID
+				if isBackgroundWaitResult(toolResult) {
+					backgroundWait = true
 				}
 				if toolResult.Final {
 					if callIndex+1 < len(result.ToolCalls) {
@@ -900,8 +900,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			if planModeTerminal == planModeTerminalPlanCancelled {
 				return e.awaitingPlanCancelled(ctx, meta, state, hookManager)
 			}
-			if backgroundWaitJobID != "" {
-				return e.awaitingBackground(ctx, meta, state, hookManager, backgroundWaitJobID)
+			if backgroundWait {
+				return e.awaitingBackground(ctx, meta, state, hookManager)
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
@@ -1015,16 +1015,12 @@ func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata
 	return result, nil
 }
 
-func backgroundWaitQueueJobID(result session.ToolResult) string {
+func isBackgroundWaitResult(result session.ToolResult) bool {
 	if result.IsError || result.Metadata == nil {
-		return ""
+		return false
 	}
 	wait, _ := result.Metadata["background_wait"].(bool)
-	if !wait {
-		return ""
-	}
-	jobID, _ := result.Metadata["queue_job_id"].(string)
-	return strings.TrimSpace(jobID)
+	return wait
 }
 
 func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, error) {
@@ -1038,11 +1034,11 @@ func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, err
 	if coordination.ParentSessionID == "" || (len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0) {
 		return "", nil
 	}
-	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait with a required queue_job_id to park and auto-resume when that background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
 }
 
-func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager, queueJobID string) (RunResult, error) {
-	text := "Waiting for background agent result. The parent session will resume automatically when the child reports a result."
+func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+	text := "Waiting for background agent result. The parent session will resume automatically when any child reports a result."
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
@@ -1052,12 +1048,12 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
 	}
-	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "background_wait", "queue_job_id": queueJobID}); err != nil {
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{"reason": "background_wait", "wake_on": "any_background_result"}); err != nil {
 		return RunResult{}, fmt.Errorf("record session.awaiting_input event for background_wait: %w", err)
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	if count, err := e.waitForBackgroundResult(ctx, meta, hookManager, queueJobID); err != nil {
+	if count, err := e.waitForBackgroundResult(ctx, meta, hookManager); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 		}
@@ -1074,11 +1070,11 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 }
 
-func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager, queueJobID string) (int, error) {
+func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager) (int, error) {
 	ticker := time.NewTicker(e.backgroundWaitPollInterval())
 	defer ticker.Stop()
 	for {
-		ready, err := e.backgroundNotificationReady(meta.ID, queueJobID)
+		ready, err := e.backgroundNotificationReady(meta.ID)
 		if err != nil {
 			return 0, err
 		}
@@ -1101,13 +1097,13 @@ func (e *Engine) backgroundWaitPollInterval() time.Duration {
 	return poll
 }
 
-func (e *Engine) backgroundNotificationReady(sessionID, queueJobID string) (bool, error) {
+func (e *Engine) backgroundNotificationReady(sessionID string) (bool, error) {
 	notifications, err := e.store.LoadBackgroundNotifications(sessionID)
 	if err != nil {
 		return false, err
 	}
 	for _, notification := range notifications {
-		if notification.DeliveryStatus == session.BackgroundNotificationPending && notification.QueueJobID == queueJobID {
+		if notification.DeliveryStatus == session.BackgroundNotificationPending {
 			return true, nil
 		}
 	}

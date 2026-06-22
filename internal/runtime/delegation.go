@@ -96,6 +96,9 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
 	}
+	if isNestedAgentParent(parentMeta) {
+		return tools.AgentSpawnResult{}, errors.New("nested sub-agents are not allowed; only the root master session can create sub-agents")
+	}
 	workdir, err := resolveRequestedWorkdir(req.Workdir, &parentMeta)
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
@@ -617,6 +620,9 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		if err != nil {
 			return session.QueueJob{}, err
 		}
+		if isNestedAgentParent(loadedParentMeta) {
+			return session.QueueJob{}, errors.New("nested sub-agents are not allowed; only the root master session can create sub-agents")
+		}
 		parentMeta = &loadedParentMeta
 		if parentMeta.RootSessionID != "" {
 			rootSessionID = parentMeta.RootSessionID
@@ -697,6 +703,10 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		_ = writeLongRunCheckpoint(r.store, job.ParentSessionID)
 	}
 	return job, nil
+}
+
+func isNestedAgentParent(meta session.SessionMetadata) bool {
+	return meta.Depth > 0 || strings.TrimSpace(meta.ParentSessionID) != ""
 }
 
 func (r *Runner) QueueShow(jobID string) (session.QueueJob, error) {

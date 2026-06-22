@@ -144,20 +144,22 @@ child session 使用独立工作目录执行。当前支持：
 - `background=true` 时提交到后台自治队列
 - 当 parent 处于活跃 `run` / `exec` 中时，后台 child 默认由同一 CLI 进程内的 auto worker 自动拉起执行
 - child 完成或失败后，结果需要回投到 parent session 的控制通知，供下一安全边界自动并入上下文
-- `resume_parent=true` 只在 `background=true` 下生效，表示 master agent 明确选择本轮暂时停止推进，进入 `awaiting_input` / `background_wait`，等待该 background child 产生 durable notification 后由 harness 自动接纳结果并继续 parent loop
+- `resume_parent=true` 只在 `background=true` 下生效，表示 master agent 明确选择本轮暂时停止推进，进入 `awaiting_input` / `background_wait`，等待任一后台 child 产生 durable notification 后由 harness 自动接纳结果并继续 parent loop；master agent 恢复后自行判断是否继续等待其他 child
 - `background=false` 时同步执行 child session，直到 child 到达稳定状态
 - `agent_role` 允许显式声明 `planner` / `generator` / `evaluator`；`agent_name` 只作为人类可读标签，不参与 role provider override 匹配；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
+- 只有 root master session 可以创建 child agent。`depth > 0` 或存在 `parent_session_id` 的 child session 不允许再调用 `agent_spawn` 或提交 parent-linked queue job，避免 nested sub-agent 树把等待和恢复状态分散到多层 parent coordination 中
 
 #### `agent_wait`
 
 输入：
 
-- `queue_job_id`
+- `queue_job_id?`：兼容旧调用的可选提示字段，不作为唤醒过滤条件
 
 行为：
 
-- parent agent 显式选择暂时停车等待一个 background child job
-- runtime 将 parent 进入 `awaiting_input` / `background_wait`，等待该 job 的 background notification 后自动接纳结果并继续 parent loop
+- parent agent 显式选择暂时停车等待 background child work
+- runtime 将 parent 进入 `awaiting_input` / `background_wait`，等待任一 pending background notification 后自动接纳结果并继续 parent loop
+- parent 恢复后由模型基于注入的 `<background-agent-results>`、`agent_status` / `agent_list` 和 parent coordination 判断是否继续 `agent_wait`、提示其他 child 收敛或停止不需要的 queued job
 - 该工具不取消、不停止 child work；若 child work 不再需要，parent 必须先通过可用控制面解决该 work，再退出
 
 #### `agent_stop`
