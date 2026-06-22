@@ -6445,6 +6445,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, `id="plan-mode-input-actions"`) {
+		t.Fatalf("expected shell input actions to include visible Plan Mode controls, got shell body: %s", indexBody)
+	}
 	if !strings.Contains(indexBody, `id="send-btn" type="button" aria-label="Send message" title="Send message"`) {
 		t.Fatalf("expected icon-only send button to expose an accessible name, got shell body: %s", indexBody)
 	}
@@ -6552,6 +6555,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(jsBody, "planModeActionDisplayStatus") || !strings.Contains(jsBody, "awaiting_plan_approval") || !strings.Contains(jsBody, "sessionSummaryDisplayStatus") || !strings.Contains(jsBody, "sessionActivityForDetail") {
 		t.Fatalf("expected app.js to expose Plan Mode waiting states distinctly from generic awaiting_input, got app.js body: %s", jsBody)
+	}
+	if !strings.Contains(jsBody, "renderPlanModeInputActions") || !strings.Contains(jsBody, "planModeInputActions") || !strings.Contains(jsBody, "Open Plan Input") {
+		t.Fatalf("expected app.js to render Plan Mode approval controls beside the visible input status, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "collectAgentDraft") || strings.Contains(jsBody, "agentName:") || strings.Contains(jsBody, "agentRole:") {
 		t.Fatalf("expected default start payload to omit agent identity fields, got app.js body: %s", jsBody)

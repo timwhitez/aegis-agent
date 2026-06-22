@@ -529,6 +529,7 @@ const nodes = {
   planToggleBtn: document.getElementById('plan-toggle-btn'),
   goalComposerPanel: document.getElementById('goal-composer-panel'),
   inputStatusText: document.getElementById('input-status-text'),
+  planModeInputActions: document.getElementById('plan-mode-input-actions'),
   toastRack: document.getElementById('toast-rack'),
   skillUploadBtn: document.getElementById('skill-upload-btn'),
   skillUpload: document.getElementById('skill-upload'),
@@ -1805,6 +1806,7 @@ function updateUI() {
   nodes.chatInput.placeholder = chatInputPlaceholder();
 
   nodes.inputStatusText.textContent = inputActionLabel();
+  renderPlanModeInputActions();
   renderGoalComposer();
 
   if (!isLiveRelayConnected()) {
@@ -1857,6 +1859,29 @@ function inputActionLabel() {
     return 'Completed session loaded: next send starts a new session unless you open another session from the Sessions view.';
   }
   return 'Start new session: Enter sends, Shift+Enter / Ctrl+Enter inserts a line.';
+}
+
+function renderPlanModeInputActions() {
+  if (!nodes.planModeInputActions) {
+    return;
+  }
+  const planMode = currentPlanMode();
+  const status = String(planMode?.status || '').toLowerCase();
+  let html = '';
+  if (status === 'awaiting_approval') {
+    html = `
+      <button class="mini-link-btn" type="button" data-plan-action="approve">Approve & Run</button>
+      <button class="mini-link-btn" type="button" data-plan-action="revise">Ask for Changes</button>
+      <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+    `;
+  } else if (status === 'awaiting_user_input') {
+    html = `
+      <button class="mini-link-btn" type="button" data-focus-inspector-tab="plan">Open Plan Input</button>
+      <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+    `;
+  }
+  nodes.planModeInputActions.hidden = html === '';
+  nodes.planModeInputActions.innerHTML = html;
 }
 
 function canShowGoalComposer() {
