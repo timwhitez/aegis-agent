@@ -6556,7 +6556,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(jsBody, "planModeActionDisplayStatus") || !strings.Contains(jsBody, "awaiting_plan_approval") || !strings.Contains(jsBody, "sessionSummaryDisplayStatus") || !strings.Contains(jsBody, "sessionActivityForDetail") {
 		t.Fatalf("expected app.js to expose Plan Mode waiting states distinctly from generic awaiting_input, got app.js body: %s", jsBody)
 	}
-	if !strings.Contains(jsBody, "renderPlanModeInputActions") || !strings.Contains(jsBody, "planModeInputActions") || !strings.Contains(jsBody, "Open Plan Input") {
+	if !strings.Contains(jsBody, "renderPlanModeInputActions") || !strings.Contains(jsBody, "planModeInputActions") || !strings.Contains(jsBody, "plan-action-group") || !strings.Contains(jsBody, "check-circle-2") || !strings.Contains(jsBody, "Open Plan Input") {
 		t.Fatalf("expected app.js to render Plan Mode approval controls beside the visible input status, got app.js body: %s", jsBody)
 	}
 	if strings.Contains(jsBody, "collectAgentDraft") || strings.Contains(jsBody, "agentName:") || strings.Contains(jsBody, "agentRole:") {

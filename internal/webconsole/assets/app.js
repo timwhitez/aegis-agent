@@ -1870,18 +1870,40 @@ function renderPlanModeInputActions() {
   let html = '';
   if (status === 'awaiting_approval') {
     html = `
-      <button class="mini-link-btn" type="button" data-plan-action="approve">Approve & Run</button>
-      <button class="mini-link-btn" type="button" data-plan-action="revise">Ask for Changes</button>
-      <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+      <div class="plan-action-group" role="group" aria-label="Plan Mode approval actions">
+        <button class="plan-action-btn primary" type="button" data-plan-action="approve" title="Approve the submitted plan and start execution">
+          <i data-lucide="check-circle-2"></i>
+          <span>Approve & Run</span>
+        </button>
+        <button class="plan-action-btn" type="button" data-plan-action="revise" title="Send your input as a plan revision request">
+          <i data-lucide="corner-down-left"></i>
+          <span>Ask for Changes</span>
+        </button>
+        <button class="plan-action-btn danger" type="button" data-plan-action="cancel" title="Cancel Plan Mode for this session">
+          <i data-lucide="x-circle"></i>
+          <span>Cancel</span>
+        </button>
+      </div>
     `;
   } else if (status === 'awaiting_user_input') {
     html = `
-      <button class="mini-link-btn" type="button" data-focus-inspector-tab="plan">Open Plan Input</button>
-      <button class="mini-link-btn danger" type="button" data-plan-action="cancel">Cancel</button>
+      <div class="plan-action-group" role="group" aria-label="Plan Mode input actions">
+        <button class="plan-action-btn primary" type="button" data-focus-inspector-tab="plan" title="Open the pending Plan Mode question">
+          <i data-lucide="corner-down-left"></i>
+          <span>Open Plan Input</span>
+        </button>
+        <button class="plan-action-btn danger" type="button" data-plan-action="cancel" title="Cancel Plan Mode for this session">
+          <i data-lucide="x-circle"></i>
+          <span>Cancel</span>
+        </button>
+      </div>
     `;
   }
   nodes.planModeInputActions.hidden = html === '';
   nodes.planModeInputActions.innerHTML = html;
+  if (window.lucide && lucide.createIcons) {
+    lucide.createIcons({ root: nodes.planModeInputActions });
+  }
 }
 
 function canShowGoalComposer() {
