@@ -6427,7 +6427,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
@@ -6478,6 +6478,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
 	}
+	if !strings.Contains(apiBody, "function listWorkspaceFiles") || !strings.Contains(apiBody, "function createWorkspaceDirectory") || !strings.Contains(apiBody, "function deleteWorkspacePath") || !strings.Contains(apiBody, "function workspaceDownloadURL") {
+		t.Fatalf("expected api.js to expose Workspace file operation helpers, got api.js body: %s", apiBody)
+	}
 	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected api.js to avoid external dependencies, got api.js body: %s", apiBody)
 	}
@@ -6513,6 +6516,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(workspaceBody, "currentSessionWorkspacePath()") || !strings.Contains(workspaceBody, "function syncWorkspaceToCurrentSession") || !strings.Contains(workspaceBody, "syncedSessionWorkdir") {
 		t.Fatalf("expected Workspace view to sync to the selected session workdir, got workspace-view.js body: %s", workspaceBody)
+	}
+	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
+		t.Fatalf("expected Workspace view to expose create/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
 	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
@@ -10976,6 +10982,156 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected forbidden for escape list, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func TestServiceWorkspaceRoutesCreateDownloadAndDelete(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "trash-dir", "child"), 0o755); err != nil {
+		t.Fatalf("mkdir trash dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "sensitive-dir"), 0o755); err != nil {
+		t.Fatalf("mkdir sensitive dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "download.txt"), []byte("download me"), 0o644); err != nil {
+		t.Fatalf("write download file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "trash-file.txt"), []byte("delete me"), 0o644); err != nil {
+		t.Fatalf("write trash file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "trash-dir", "child", "note.txt"), []byte("delete recursively"), 0o644); err != nil {
+		t.Fatalf("write trash dir file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, ".env"), []byte("SECRET=1"), 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "sensitive-dir", ".env"), []byte("NESTED_SECRET=1"), 0o600); err != nil {
+		t.Fatalf("write nested env file: %v", err)
+	}
+	if err := os.Symlink("download.txt", filepath.Join(workspaceRoot, "download-link.txt")); err != nil {
+		t.Fatalf("symlink download file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("do not delete"), 0o644); err != nil {
+		t.Fatalf("write root-only file: %v", err)
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var mkdirResp map[string]any
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{
+		"path": ".",
+		"name": "created",
+	}, http.StatusCreated, &mkdirResp)
+	if mkdirResp["created"] != true || mkdirResp["path"] != "created" || mkdirResp["type"] != "directory" {
+		t.Fatalf("unexpected mkdir response: %#v", mkdirResp)
+	}
+	if info, err := os.Stat(filepath.Join(workspaceRoot, "created")); err != nil || !info.IsDir() {
+		t.Fatalf("expected created directory, info=%#v err=%v", info, err)
+	}
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{
+		"path": "created",
+		"name": "child",
+	}, http.StatusCreated, &mkdirResp)
+	if info, err := os.Stat(filepath.Join(workspaceRoot, "created", "child")); err != nil || !info.IsDir() {
+		t.Fatalf("expected nested created directory, info=%#v err=%v", info, err)
+	}
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{
+		"path": ".",
+		"name": "../bad",
+	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{
+		"path": ".",
+		"name": ".ssh",
+	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{
+		"path": "..",
+		"name": "outside-create",
+	}, http.StatusForbidden, nil)
+	if _, err := os.Stat(filepath.Join(root, "outside-create")); !os.IsNotExist(err) {
+		t.Fatalf("parent directory mutation should be rejected, stat err=%v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/file/download?path=" + url.QueryEscape("download.txt"))
+	if err != nil {
+		t.Fatalf("download request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || string(body) != "download me" {
+		t.Fatalf("unexpected download response status=%d body=%q", resp.StatusCode, string(body))
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "download.txt") {
+		t.Fatalf("expected attachment content disposition, got %q", disposition)
+	}
+	resp, err = http.Get(ts.URL + "/api/file/download?path=" + url.QueryEscape(".env"))
+	if err != nil {
+		t.Fatalf("sensitive download request: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected forbidden sensitive download, got %d body=%s", resp.StatusCode, string(body))
+	}
+
+	var deleteResp map[string]any
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("trash-file.txt"), map[string]any{}, http.StatusOK, &deleteResp)
+	if deleteResp["deleted"] != true || deleteResp["path"] != "trash-file.txt" || deleteResp["type"] != "file" {
+		t.Fatalf("unexpected file delete response: %#v", deleteResp)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "trash-file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("expected trash file to be deleted, stat err=%v", err)
+	}
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("trash-dir"), map[string]any{}, http.StatusOK, &deleteResp)
+	if deleteResp["deleted"] != true || deleteResp["path"] != "trash-dir" || deleteResp["type"] != "directory" {
+		t.Fatalf("unexpected directory delete response: %#v", deleteResp)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "trash-dir")); !os.IsNotExist(err) {
+		t.Fatalf("expected trash dir to be deleted, stat err=%v", err)
+	}
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("."), map[string]any{}, http.StatusBadRequest, nil)
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("../root-only.txt"), map[string]any{}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(root, "root-only.txt")); err != nil || string(data) != "do not delete" {
+		t.Fatalf("parent file should not be deleted, data=%q err=%v", string(data), err)
+	}
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape(".env"), map[string]any{}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, ".env")); err != nil || string(data) != "SECRET=1" {
+		t.Fatalf("sensitive file should not be deleted, data=%q err=%v", string(data), err)
+	}
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("sensitive-dir"), map[string]any{}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "sensitive-dir", ".env")); err != nil || string(data) != "NESTED_SECRET=1" {
+		t.Fatalf("directory containing sensitive file should not be deleted, data=%q err=%v", string(data), err)
+	}
+	postJSONWithMethod(t, http.MethodDelete, ts.URL+"/api/files?path="+url.QueryEscape("download-link.txt"), map[string]any{}, http.StatusBadRequest, nil)
+	if _, err := os.Lstat(filepath.Join(workspaceRoot, "download-link.txt")); err != nil {
+		t.Fatalf("symlink should not be deleted, err=%v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "download.txt")); err != nil || string(data) != "download me" {
+		t.Fatalf("symlink target should remain, data=%q err=%v", string(data), err)
+	}
+
+	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
+	if !hasWebAuditEvent(events, "web.workspace.mkdir") || !hasWebAuditEvent(events, "web.workspace.delete") {
+		t.Fatalf("expected workspace mkdir/delete audit events, got %#v", events)
 	}
 }
 

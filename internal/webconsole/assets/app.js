@@ -537,6 +537,12 @@ const nodes = {
   fileTree: document.getElementById('file-tree'),
   workspaceSubtitle: document.getElementById('workspace-subtitle'),
   workspaceRootChip: document.getElementById('workspace-root-chip'),
+  workspaceNewFolderBtn: document.getElementById('workspace-new-folder-btn'),
+  workspaceRefreshBtn: document.getElementById('workspace-refresh-btn'),
+  workspaceDeleteDirBtn: document.getElementById('workspace-delete-dir-btn'),
+  workspaceSelectionActions: document.getElementById('workspace-selection-actions'),
+  workspaceDownloadBtn: document.getElementById('workspace-download-btn'),
+  workspaceDeleteFileBtn: document.getElementById('workspace-delete-file-btn'),
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),
   views: {

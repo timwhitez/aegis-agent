@@ -42,7 +42,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 不把 Web UI 变成权威状态源
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
-- 当前 workspace 面板只作为“服务进程当前 cwd”的只读浏览器存在，不承诺独立的 workspace-root 切换能力
+- 当前 workspace 面板只作为“服务进程当前 cwd”的受限本地文件管理器存在，不承诺独立的 workspace-root 切换能力；它可以浏览、预览、下载文件，并在默认 `workspace/` 根内创建文件夹或删除文件/文件夹
 - 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `go-cli-agent web --workers`、兼容的 `experimental web --workers` 或后端 API 调整
 - 不把普通 start / steer / continue / Plan approve 设计成多步确认向导；用户明确提交后应直接执行，风险动作才确认
 
@@ -353,10 +353,11 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 - 前端 REST payload 构造、统一错误解析和控制面 wrapper 集中在 `api.js`；`app.js` 不应继续手写 WebSocket session-control payload。
 - timeline/event descriptor、event refresh filter 和 live-activity event promotion helper 集中在 `events.js`；`app.js` 只调用这些 helper，不重复维护事件文案映射。
 - Settings view 的 render 与 save handler 集中在 `settings-view.js`；`app.js` 只负责视图切换时调用 `renderSettings()`。
-- Workspace read-only browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
-- Workspace read-only browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
+- Workspace browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
+- Workspace browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取或下载 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
+- Workspace 创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；创建/删除只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成删除服务 cwd 或仓库元数据的入口。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
-- 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取 workspace 文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
+- 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载 workspace 文件，以及在 workspace 内创建或删除文件夹/文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。

@@ -6,11 +6,13 @@ const workspaceViewState = {
   tree: [],
   selectedTreePath: '',
   filePreview: null,
-  syncedSessionWorkdir: ''
+  syncedSessionWorkdir: '',
+  actionPending: ''
 };
 
 async function fetchWorkspace() {
   try {
+    ensureWorkspaceActionBindings();
     if (!state.meta) {
       await refreshMeta().catch(() => {});
     }
@@ -25,6 +27,7 @@ async function fetchWorkspace() {
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
     nodes.editorFilename.innerText = workspaceDisplayName();
     nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
+    renderWorkspaceActions();
     await loadWorkspaceDirectory(currentWorkspacePath());
   } catch (err) {
     console.error('workspace error', err);
@@ -32,6 +35,7 @@ async function fetchWorkspace() {
     nodes.fileTree.innerHTML = '<div class="empty-panel">Failed to load workspace.</div>';
     nodes.editorFilename.innerText = 'Workspace';
     nodes.editorContent.innerText = message;
+    renderWorkspaceActions();
     showToast(message, 'error');
   }
 }
@@ -114,7 +118,7 @@ async function loadWorkspaceDirectory(path = '') {
   nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
   let tree;
   try {
-    tree = await requestJSON(`/api/files?path=${encodeURIComponent(queryPath)}`);
+    tree = await listWorkspaceFiles(queryPath);
   } catch (err) {
     if (workspaceViewState.requestSeq !== requestSeq) {
       return;
@@ -130,6 +134,7 @@ async function loadWorkspaceDirectory(path = '') {
   setWorkspaceFilePreview(null);
   renderFileTree(tree);
   updateWorkspaceMeta();
+  renderWorkspaceActions();
   nodes.editorFilename.innerText = workspaceDisplayName();
   nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
 }
@@ -170,6 +175,15 @@ function setWorkspaceFilePreview(preview) {
   workspaceViewState.filePreview = preview || null;
 }
 
+function workspaceActionPending() {
+  return workspaceViewState.actionPending || '';
+}
+
+function setWorkspaceActionPending(action) {
+  workspaceViewState.actionPending = String(action || '');
+  renderWorkspaceActions();
+}
+
 function resetWorkspaceSessionSync() {
   workspaceViewState.syncedSessionWorkdir = '';
 }
@@ -194,6 +208,204 @@ function selectedWorkspaceWorkdir() {
   }
   const rel = normalizeWorkspacePath(currentWorkspacePath());
   return rel ? `${root.replace(/\/+$/g, '')}/${rel}` : root;
+}
+
+function ensureWorkspaceActionBindings() {
+  if (nodes.workspaceNewFolderBtn && nodes.workspaceNewFolderBtn.dataset.bound !== '1') {
+    nodes.workspaceNewFolderBtn.dataset.bound = '1';
+    nodes.workspaceNewFolderBtn.addEventListener('click', handleCreateWorkspaceFolder);
+  }
+  if (nodes.workspaceRefreshBtn && nodes.workspaceRefreshBtn.dataset.bound !== '1') {
+    nodes.workspaceRefreshBtn.dataset.bound = '1';
+    nodes.workspaceRefreshBtn.addEventListener('click', handleRefreshWorkspace);
+  }
+  if (nodes.workspaceDeleteDirBtn && nodes.workspaceDeleteDirBtn.dataset.bound !== '1') {
+    nodes.workspaceDeleteDirBtn.dataset.bound = '1';
+    nodes.workspaceDeleteDirBtn.addEventListener('click', handleDeleteCurrentWorkspaceDirectory);
+  }
+  if (nodes.workspaceDownloadBtn && nodes.workspaceDownloadBtn.dataset.bound !== '1') {
+    nodes.workspaceDownloadBtn.dataset.bound = '1';
+    nodes.workspaceDownloadBtn.addEventListener('click', handleDownloadSelectedWorkspaceFile);
+  }
+  if (nodes.workspaceDeleteFileBtn && nodes.workspaceDeleteFileBtn.dataset.bound !== '1') {
+    nodes.workspaceDeleteFileBtn.dataset.bound = '1';
+    nodes.workspaceDeleteFileBtn.addEventListener('click', handleDeleteSelectedWorkspaceFile);
+  }
+}
+
+function renderWorkspaceActions() {
+  const pending = workspaceActionPending();
+  const currentPath = currentWorkspacePath();
+  const preview = workspaceFilePreview();
+  const hasFile = Boolean(preview?.path);
+  setWorkspaceButtonState(nodes.workspaceNewFolderBtn, {
+    visible: true,
+    disabled: Boolean(pending),
+    busy: pending === 'mkdir'
+  });
+  setWorkspaceButtonState(nodes.workspaceRefreshBtn, {
+    visible: true,
+    disabled: Boolean(pending),
+    busy: pending === 'refresh'
+  });
+  setWorkspaceButtonState(nodes.workspaceDeleteDirBtn, {
+    visible: Boolean(currentPath),
+    disabled: Boolean(pending) || !currentPath,
+    busy: pending === 'delete-dir'
+  });
+  if (nodes.workspaceDeleteDirBtn) {
+    const label = currentPath ? `Delete folder ${currentPath}` : 'Delete current folder';
+    nodes.workspaceDeleteDirBtn.setAttribute('aria-label', label);
+    nodes.workspaceDeleteDirBtn.title = label;
+  }
+  setWorkspaceButtonState(nodes.workspaceDownloadBtn, {
+    visible: hasFile,
+    disabled: Boolean(pending) || !hasFile,
+    busy: false
+  });
+  setWorkspaceButtonState(nodes.workspaceDeleteFileBtn, {
+    visible: hasFile,
+    disabled: Boolean(pending) || !hasFile,
+    busy: pending === 'delete-file'
+  });
+  if (nodes.workspaceDownloadBtn && hasFile) {
+    nodes.workspaceDownloadBtn.title = `Download ${preview.path}`;
+  }
+  if (nodes.workspaceDeleteFileBtn && hasFile) {
+    nodes.workspaceDeleteFileBtn.title = `Delete ${preview.path}`;
+  }
+}
+
+function setWorkspaceButtonState(button, options = {}) {
+  if (!button) {
+    return;
+  }
+  button.classList.toggle('is-hidden', options.visible === false);
+  button.disabled = Boolean(options.disabled);
+  button.classList.toggle('is-loading', Boolean(options.busy));
+  button.setAttribute('aria-busy', options.busy ? 'true' : 'false');
+}
+
+async function handleCreateWorkspaceFolder() {
+  if (workspaceActionPending()) {
+    return;
+  }
+  const parentPath = currentWorkspacePath();
+  const parentLabel = parentPath || 'workspace root';
+  const name = window.prompt(`New folder in ${parentLabel}`, '');
+  if (name === null) {
+    return;
+  }
+  const trimmed = String(name || '').trim();
+  if (!trimmed) {
+    showToast('Folder name is required.', 'error');
+    return;
+  }
+  if (trimmed === '.' || trimmed === '..' || /[\\/]/.test(trimmed)) {
+    showToast('Folder name must not contain path separators.', 'error');
+    return;
+  }
+  setWorkspaceActionPending('mkdir');
+  try {
+    await createWorkspaceDirectory(parentPath || '.', trimmed);
+    showToast(`Created folder ${trimmed}.`, 'success');
+    await loadWorkspaceDirectory(parentPath);
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to create folder.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
+async function handleRefreshWorkspace() {
+  if (workspaceActionPending()) {
+    return;
+  }
+  setWorkspaceActionPending('refresh');
+  try {
+    await loadWorkspaceDirectory(currentWorkspacePath());
+    showToast('Workspace refreshed.', 'success');
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to refresh workspace.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
+async function handleDeleteCurrentWorkspaceDirectory() {
+  const path = currentWorkspacePath();
+  if (!path || workspaceActionPending()) {
+    return;
+  }
+  const ok = await confirmLocalAction({
+    title: 'Delete folder',
+    message: `Delete workspace folder ${path} and all of its contents? This cannot be undone from the web console.`,
+    confirmLabel: 'Delete',
+    tone: 'danger'
+  });
+  if (!ok) {
+    return;
+  }
+  const parent = parentWorkspacePath(path);
+  setWorkspaceActionPending('delete-dir');
+  try {
+    await deleteWorkspacePath(path);
+    showToast(`Deleted folder ${path}.`, 'success');
+    await loadWorkspaceDirectory(parent);
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to delete folder.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
+function handleDownloadSelectedWorkspaceFile() {
+  const preview = workspaceFilePreview();
+  if (!preview?.path) {
+    return;
+  }
+  const anchor = document.createElement('a');
+  anchor.href = workspaceDownloadURL(preview.path);
+  anchor.download = preview.path.split('/').pop() || 'download';
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  showToast(`Download started for ${preview.path}.`, 'success');
+}
+
+async function handleDeleteSelectedWorkspaceFile() {
+  const preview = workspaceFilePreview();
+  if (!preview?.path || workspaceActionPending()) {
+    return;
+  }
+  const ok = await confirmLocalAction({
+    title: 'Delete file',
+    message: `Delete workspace file ${preview.path}? This cannot be undone from the web console.`,
+    confirmLabel: 'Delete',
+    tone: 'danger'
+  });
+  if (!ok) {
+    return;
+  }
+  setWorkspaceActionPending('delete-file');
+  try {
+    await deleteWorkspacePath(preview.path);
+    showToast(`Deleted file ${preview.path}.`, 'success');
+    setSelectedWorkspaceTreePath('');
+    setWorkspaceFilePreview(null);
+    await loadWorkspaceDirectory(currentWorkspacePath());
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to delete file.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
+function parentWorkspacePath(path) {
+  const normalized = normalizeWorkspacePath(path);
+  const index = normalized.lastIndexOf('/');
+  return index > 0 ? normalized.slice(0, index) : '';
 }
 
 function renderFileTree(tree, container = nodes.fileTree, level = 0) {
@@ -404,12 +616,13 @@ async function loadFile(path) {
   nodes.editorFilename.innerText = path;
   nodes.editorContent.innerText = 'Loading...';
   setWorkspaceFilePreview(null);
+  renderWorkspaceActions();
   return loadFilePreviewPage(path, requestSeq, 0, false);
 }
 
 async function loadFilePreviewPage(path, requestSeq, offset, append) {
   try {
-    const data = await requestJSON(workspaceFileReadURL(path, offset));
+    const data = await readWorkspaceFile(path, offset, WORKSPACE_FILE_PREVIEW_CHUNK_SIZE);
     if (workspaceViewState.requestSeq !== requestSeq) {
       return false;
     }
@@ -431,6 +644,7 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
     };
     setWorkspaceFilePreview(preview);
     renderWorkspaceFilePreview(preview);
+    renderWorkspaceActions();
     return true;
   } catch (err) {
     if (workspaceViewState.requestSeq !== requestSeq) {
@@ -443,13 +657,10 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
     } else {
       nodes.editorContent.innerText = message;
     }
+    renderWorkspaceActions();
     showToast(message, 'error');
     return true;
   }
-}
-
-function workspaceFileReadURL(path, offset) {
-  return `/api/file/read?path=${encodeURIComponent(path)}&offset=${encodeURIComponent(String(offset || 0))}&limit=${WORKSPACE_FILE_PREVIEW_CHUNK_SIZE}`;
 }
 
 function normalizePreviewNumber(value, fallback) {

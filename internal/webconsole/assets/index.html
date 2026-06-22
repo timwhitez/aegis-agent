@@ -136,14 +136,35 @@
             <h2 class="view-title">Workspace</h2>
             <p class="view-subtitle" id="workspace-subtitle">Browsing the current server workspace only. Switching roots is not available in this experimental view.</p>
           </div>
-          <span class="surface-chip" id="workspace-root-chip">current cwd</span>
+          <div class="workspace-header-actions">
+            <span class="surface-chip" id="workspace-root-chip">current cwd</span>
+            <button class="workspace-icon-btn" id="workspace-new-folder-btn" type="button" aria-label="New folder" title="New folder">
+              <i data-lucide="folder-plus"></i>
+            </button>
+            <button class="workspace-icon-btn" id="workspace-refresh-btn" type="button" aria-label="Refresh workspace" title="Refresh">
+              <i data-lucide="rotate-cw"></i>
+            </button>
+            <button class="workspace-icon-btn danger is-hidden" id="workspace-delete-dir-btn" type="button" aria-label="Delete current folder" title="Delete current folder">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
         </div>
         <div class="workspace-layout">
           <div class="file-tree" id="file-tree">
             <!-- Files injected here -->
           </div>
           <div class="editor-container">
-            <div class="editor-header" id="editor-filename">Select a file</div>
+            <div class="editor-header">
+              <span class="editor-title" id="editor-filename">Select a file</span>
+              <div class="workspace-selection-actions" id="workspace-selection-actions">
+                <button class="workspace-editor-action is-hidden" id="workspace-download-btn" type="button" aria-label="Download selected file" title="Download file">
+                  <i data-lucide="download"></i>
+                </button>
+                <button class="workspace-editor-action danger is-hidden" id="workspace-delete-file-btn" type="button" aria-label="Delete selected file" title="Delete file">
+                  <i data-lucide="trash-2"></i>
+                </button>
+              </div>
+            </div>
             <div class="editor-content" id="editor-content">
               Select a file to view its content...
             </div>

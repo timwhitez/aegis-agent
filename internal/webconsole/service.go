@@ -76,6 +76,7 @@ var (
 	errWebServiceClosing       = errors.New("web service is closing")
 	errSessionAlreadyActive    = errors.New("session is already active in this web console")
 	errJSONMutationContentType = errors.New("JSON API mutation requires Content-Type: application/json")
+	errWorkspaceDeleteDenied   = errors.New("workspace directory contains restricted paths")
 
 	// beforeReserveSkillBackupCleanup is set only by package tests to force a
 	// deterministic filesystem replacement between reservation and cleanup.
@@ -425,8 +426,14 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleTestConfig(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/files":
 		s.handleListFiles(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/files/mkdir":
+		s.handleCreateWorkspaceDirectory(w, r)
+	case r.Method == http.MethodDelete && r.URL.Path == "/api/files":
+		s.handleDeleteWorkspacePath(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/file/read":
 		s.handleReadFile(w, r)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/file/download":
+		s.handleDownloadWorkspaceFile(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/skills":
 		s.handleListSkills(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/skills/upload":
@@ -3322,6 +3329,351 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
 }
 
+func (s *Service) handleDownloadWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if path == "" {
+		writeError(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	fullPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if policy.targetDenied(fullPath) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file"))
+		return
+	}
+	file, err := fileutil.OpenFileNoSymlink(fullPath, os.O_RDONLY, 0)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	defer file.Close()
+	fileInfo, err := file.Stat()
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !fileInfo.Mode().IsRegular() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file"))
+		return
+	}
+	filename := filepath.Base(filepath.FromSlash(strings.ReplaceAll(path, "\\", "/")))
+	if filename == "." || filename == string(filepath.Separator) || strings.TrimSpace(filename) == "" {
+		filename = "download"
+	}
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, filename, fileInfo.ModTime(), file)
+}
+
+type workspaceMkdirRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+func (s *Service) handleCreateWorkspaceDirectory(w http.ResponseWriter, r *http.Request) {
+	var req workspaceMkdirRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if err := validateWorkspaceDirectoryName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	parentRel := normalizeWorkspaceBrowserRel(req.Path)
+	parentLexical, err := workspaceBrowserLexicalPath(root, browseRoot, parentRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	parentResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, parentRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if !pathWithinRoot(root, parentLexical) || !pathWithinRoot(root, parentResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(parentLexical) || policy.targetDenied(parentResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	info, err := os.Stat(parentLexical)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
+		return
+	}
+	targetRel := workspaceBrowserJoinRel(parentRel, name)
+	targetLexical := filepath.Join(parentLexical, name)
+	if filepath.Dir(targetLexical) != filepath.Clean(parentLexical) {
+		writeError(w, http.StatusBadRequest, errors.New("folder name must not contain path separators"))
+		return
+	}
+	targetResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, targetRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if !pathWithinRoot(root, targetLexical) || !pathWithinRoot(root, targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(targetLexical) || policy.targetDenied(targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if _, err := os.Lstat(targetLexical); err == nil {
+		writeError(w, http.StatusConflict, errors.New("path already exists"))
+		return
+	} else if !os.IsNotExist(err) {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := fileutil.MkdirAllNoSymlink(targetLexical, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.appendAuditEvent("web.workspace.mkdir", map[string]any{
+		"path": targetRel,
+	}); err != nil {
+		if rollbackErr := fileutil.RemoveDirAllNoSymlink(targetLexical); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("remove created workspace folder after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"created": true,
+		"path":    targetRel,
+		"type":    "directory",
+	})
+}
+
+func (s *Service) handleDeleteWorkspacePath(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(r.URL.Query().Get("path"))
+	if path == "" || path == "." {
+		writeError(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	lexicalPath, err := workspaceBrowserLexicalPath(root, browseRoot, path)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	resolvedPath, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if filepath.Clean(lexicalPath) == filepath.Clean(root) || !pathWithinRoot(root, lexicalPath) || !pathWithinRoot(root, resolvedPath) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(lexicalPath) || policy.targetDenied(resolvedPath) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	info, err := os.Lstat(lexicalPath)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		writeError(w, http.StatusBadRequest, errors.New("refusing to delete symlink path"))
+		return
+	}
+	kind := ""
+	switch {
+	case info.IsDir():
+		kind = "directory"
+	case info.Mode().IsRegular():
+		kind = "file"
+	default:
+		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file or directory"))
+		return
+	}
+	rel, err := filepath.Rel(root, lexicalPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." {
+		writeError(w, http.StatusForbidden, errors.New("workspace root cannot be deleted"))
+		return
+	}
+	if kind == "directory" {
+		if err := ensureWorkspaceDeleteTreeAllowed(root, browseRoot, lexicalPath, policy); err != nil {
+			if errors.Is(err, errWorkspaceDeleteDenied) {
+				writeError(w, http.StatusForbidden, err)
+				return
+			}
+			writeError(w, workspaceBrowserStatStatus(err), err)
+			return
+		}
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	tx, err := prepareWorkspaceDeleteTransaction(lexicalPath, kind)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := s.appendAuditEvent("web.workspace.delete", map[string]any{
+		"path": rel,
+		"type": kind,
+	}); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore workspace delete after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := tx.Finalize(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"path":    rel,
+		"type":    kind,
+	})
+}
+
+type workspaceDeleteTransaction struct {
+	targetPath string
+	backupPath string
+	kind       string
+}
+
+func prepareWorkspaceDeleteTransaction(targetPath, kind string) (*workspaceDeleteTransaction, error) {
+	parent := filepath.Dir(targetPath)
+	base := sanitizeDirName(filepath.Base(targetPath))
+	if strings.TrimSpace(base) == "" {
+		base = "workspace-item"
+	}
+	backupPath, err := fileutil.MkdirTempNoSymlink(parent, "."+base+".delete-*")
+	if err != nil {
+		return nil, err
+	}
+	if err := fileutil.RemoveDirAllNoSymlink(backupPath); err != nil {
+		return nil, err
+	}
+	if err := fileutil.RenamePathNoSymlink(targetPath, backupPath); err != nil {
+		return nil, err
+	}
+	return &workspaceDeleteTransaction{
+		targetPath: filepath.Clean(targetPath),
+		backupPath: filepath.Clean(backupPath),
+		kind:       kind,
+	}, nil
+}
+
+func (tx *workspaceDeleteTransaction) Finalize() error {
+	if tx == nil || tx.backupPath == "" {
+		return nil
+	}
+	var err error
+	if tx.kind == "directory" {
+		err = fileutil.RemoveDirAllNoSymlink(tx.backupPath)
+	} else {
+		err = fileutil.RemoveFileNoSymlink(tx.backupPath)
+	}
+	if err != nil {
+		return err
+	}
+	tx.backupPath = ""
+	return nil
+}
+
+func (tx *workspaceDeleteTransaction) Rollback() error {
+	if tx == nil || tx.backupPath == "" {
+		return nil
+	}
+	if err := fileutil.RenamePathNoSymlink(tx.backupPath, tx.targetPath); err != nil {
+		return err
+	}
+	tx.backupPath = ""
+	return nil
+}
+
+func ensureWorkspaceDeleteTreeAllowed(root, browseRoot, target string, policy *webFileBrowserReadPolicy) error {
+	target = filepath.Clean(target)
+	return filepath.WalkDir(target, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry == nil || filepath.Clean(path) == target {
+			return nil
+		}
+		if webFileBrowserPathDenied(root, path) || policy.targetDenied(path) {
+			return errWorkspaceDeleteDenied
+		}
+		resolved, err := tools.ResolveWorkspacePath(browseRoot, path)
+		if err != nil {
+			return errWorkspaceDeleteDenied
+		}
+		if policy.targetDenied(resolved) {
+			return errWorkspaceDeleteDenied
+		}
+		return nil
+	})
+}
+
+func workspaceBrowserContext() (string, string, *webFileBrowserReadPolicy, error) {
+	root, err := currentServerWorkspaceRoot()
+	if err != nil {
+		return "", "", nil, err
+	}
+	browseRoot, err := currentServerBrowseRoot()
+	if err != nil {
+		return "", "", nil, err
+	}
+	return root, browseRoot, newWebFileBrowserReadPolicy(root, browseRoot), nil
+}
+
 type workspaceFilePageResponse struct {
 	Content    string `json:"content"`
 	Offset     int64  `json:"offset"`
@@ -3412,6 +3764,56 @@ func resolveWorkspaceBrowserPath(workspaceRoot, browseRoot, requestedPath string
 		return "", errors.New("path denied")
 	}
 	return tools.ResolveWorkspacePath(browseRoot, lexicalPath)
+}
+
+func workspaceBrowserLexicalPath(workspaceRoot, browseRoot, requestedPath string) (string, error) {
+	workspaceRel, err := filepath.Rel(browseRoot, workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	lexicalPath := filepath.Join(workspaceRel, requestedPath)
+	target := filepath.Clean(filepath.Join(browseRoot, lexicalPath))
+	if !pathWithinRoot(browseRoot, target) {
+		return "", errors.New("path escapes browse root")
+	}
+	if webFileBrowserPathDenied(browseRoot, target) {
+		return "", errors.New("path denied")
+	}
+	return target, nil
+}
+
+func normalizeWorkspaceBrowserRel(path string) string {
+	normalized := strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	normalized = strings.Trim(normalized, "/")
+	if normalized == "" || normalized == "." {
+		return "."
+	}
+	return filepath.FromSlash(normalized)
+}
+
+func workspaceBrowserJoinRel(parentRel, name string) string {
+	parentRel = normalizeWorkspaceBrowserRel(parentRel)
+	if parentRel == "." || parentRel == "" {
+		return filepath.ToSlash(filepath.Clean(name))
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.Join(parentRel, name)))
+}
+
+func validateWorkspaceDirectoryName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("folder name is required")
+	}
+	if name == "." || name == ".." {
+		return errors.New("folder name is invalid")
+	}
+	if strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
+		return errors.New("folder name must not contain path separators")
+	}
+	if webFileBrowserNameDenied(name) {
+		return errors.New("folder name is not allowed")
+	}
+	return nil
 }
 
 func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
@@ -7894,6 +8296,7 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		switch path {
 		case "/api/config",
 			"/api/config/test",
+			"/api/files/mkdir",
 			"/api/sessions/start",
 			"/api/queue/jobs",
 			"/api/workers":

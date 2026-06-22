@@ -53,8 +53,9 @@ Environment overrides:
   GO_CLI_AGENT_WEB_CONFIG   Explicit config file passed to `go-cli-agent web`.
   GO_CLI_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
                            Non-loopback listen exposes config writes, .env API keys,
-                           session deletion, skill management, and workspace reads
-                           to network-reachable clients; use trusted local networks.
+                           session deletion, skill management, workspace reads/downloads,
+                           and workspace file creation/deletion to network-reachable clients;
+                           use trusted local networks.
   GO_CLI_AGENT_WEB_WORKERS  Worker count, default `2`.
   GO_CLI_AGENT_BIN          Binary path, default `bin/go-cli-agent`.
   GO_CLI_AGENT_ENV_FILE     Optional .env file to source before start.
@@ -123,7 +124,7 @@ print_lan_warning() {
 			;;
 	esac
 	echo "WARNING: web console is reachable from non-loopback clients."
-	echo "It can write config and .env API keys, delete sessions, manage skills, and read workspace files. Use only on trusted local networks."
+	echo "It can write config and .env API keys, delete sessions, manage skills, read/download workspace files, and create/delete workspace files or folders. Use only on trusted local networks."
 }
 
 ensure_binary() {

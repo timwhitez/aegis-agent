@@ -191,3 +191,26 @@ function testConfig(payload) {
     api_key: payload.apiKey
   }));
 }
+
+function listWorkspaceFiles(path = '.') {
+  return requestJSON(`/api/files?path=${encodeURIComponent(path || '.')}`);
+}
+
+function readWorkspaceFile(path, offset = 0, limit = 256 * 1024) {
+  return requestJSON(`/api/file/read?path=${encodeURIComponent(path)}&offset=${encodeURIComponent(String(offset || 0))}&limit=${encodeURIComponent(String(limit))}`);
+}
+
+function createWorkspaceDirectory(path, name) {
+  return requestJSON('/api/files/mkdir', jsonRequest({
+    path: path || '.',
+    name
+  }));
+}
+
+function deleteWorkspacePath(path) {
+  return requestJSON(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+}
+
+function workspaceDownloadURL(path) {
+  return `/api/file/download?path=${encodeURIComponent(path)}`;
+}
