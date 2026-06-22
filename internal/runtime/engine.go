@@ -1069,7 +1069,7 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 		if !ok || continuer == nil {
 			return RunResult{}, errors.New("background wait requires runner continue support")
 		}
-		return continuer.Continue(ctx, ContinueRequest{SessionID: meta.ID, Source: "background"})
+		return continuer.Continue(ctx, ContinueRequest{SessionID: meta.ID, Source: continueSourceBackground})
 	}
 	return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 }

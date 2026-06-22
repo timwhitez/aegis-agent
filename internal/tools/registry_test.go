@@ -2853,7 +2853,7 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	if promptDef == nil {
 		t.Fatal("agent_prompt definition missing")
 	}
-	if !strings.Contains(promptDef.Description, "Send a prompt/steer") || !strings.Contains(promptDef.Description, "stop repeated discovery") || !strings.Contains(promptDef.Description, "interrupt defaults to true") {
+	if !strings.Contains(promptDef.Description, "Send a prompt/steer") || !strings.Contains(promptDef.Description, "request a progress update") || !strings.Contains(promptDef.Description, "interrupt defaults to false") {
 		t.Fatalf("expected agent_prompt description to explain child steer semantics, got %q", promptDef.Description)
 	}
 }

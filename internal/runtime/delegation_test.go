@@ -362,7 +362,7 @@ func TestRunnerPromptAgentSteersLinkedChildSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load child steer requests: %v", err)
 	}
-	if len(requests) != 1 || requests[0].Source != "agent" || !requests[0].Interrupt || requests[0].Text != "Stop discovery and write reports/child.md." {
+	if len(requests) != 1 || requests[0].Source != "agent" || requests[0].Interrupt || requests[0].Text != "Stop discovery and write reports/child.md." {
 		t.Fatalf("unexpected child steer requests: %#v", requests)
 	}
 	state, err := runner.store.LoadState(child.ID)
@@ -378,6 +378,49 @@ func TestRunnerPromptAgentSteersLinkedChildSession(t *testing.T) {
 	}
 	if countRuntimeEventType(events, "session.child.prompted") != 1 {
 		t.Fatalf("expected parent prompt event, got %#v", events)
+	}
+}
+
+func TestRunnerPromptAgentHonorsExplicitInterruptTrue(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_prompt_interrupt",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child session: %v", err)
+	}
+	interrupt := true
+	result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.ID,
+		Message:         "Stop discovery and return a handoff now.",
+		Interrupt:       &interrupt,
+	})
+	if err != nil {
+		t.Fatalf("prompt agent: %v", err)
+	}
+	if !result.Accepted || result.SessionID != child.ID {
+		t.Fatalf("unexpected prompt result: %#v", result)
+	}
+	requests, err := runner.store.LoadSteerRequests(child.ID)
+	if err != nil {
+		t.Fatalf("load child steer requests: %v", err)
+	}
+	if len(requests) != 1 || !requests[0].Interrupt || requests[0].Text != "Stop discovery and return a handoff now." {
+		t.Fatalf("expected explicit interrupt=true steer, got %#v", requests)
 	}
 }
 

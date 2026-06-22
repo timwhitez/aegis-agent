@@ -455,7 +455,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 			Behavior:   "continued_parent_stopped_child",
 		}, nil
 	}
-	interrupt := true
+	interrupt := false
 	if req.Interrupt != nil {
 		interrupt = *req.Interrupt
 	}

@@ -263,6 +263,8 @@ type ContinueRequest struct {
 	Source               string
 }
 
+const continueSourceBackground = "background"
+
 type PlanInputHandler func(context.Context, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error)
 
 type planInputResponse struct {
@@ -959,20 +961,22 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if _, err := r.appendDanglingToolCallRecoveryResults(meta.ID, "continue"); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
-	checkpointHint, checkpointWarnings, checkpointMessageID, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
-	if checkpointErr != nil {
-		return r.failBeforeRun(meta.ID, state, "prepare", checkpointErr)
-	}
-	if checkpointHint {
-		if err := r.appendEvent(meta.ID, "checkpoint.resume_hint.injected", "prepare", map[string]any{
-			"provider":       meta.Provider,
-			"model":          meta.Model,
-			"drift_warnings": append([]string(nil), checkpointWarnings...),
-		}); err != nil {
-			if rollbackErr := r.store.RemoveLastMessageIfID(meta.ID, checkpointMessageID); rollbackErr != nil {
-				return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event after rolling back resume hint failed with %v: %w", rollbackErr, err))
+	if source != continueSourceBackground {
+		checkpointHint, checkpointWarnings, checkpointMessageID, checkpointErr := appendCheckpointResumeHint(r.store, meta, meta.Provider, meta.Model)
+		if checkpointErr != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", checkpointErr)
+		}
+		if checkpointHint {
+			if err := r.appendEvent(meta.ID, "checkpoint.resume_hint.injected", "prepare", map[string]any{
+				"provider":       meta.Provider,
+				"model":          meta.Model,
+				"drift_warnings": append([]string(nil), checkpointWarnings...),
+			}); err != nil {
+				if rollbackErr := r.store.RemoveLastMessageIfID(meta.ID, checkpointMessageID); rollbackErr != nil {
+					return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event after rolling back resume hint failed with %v: %w", rollbackErr, err))
+				}
+				return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event: %w", err))
 			}
-			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record checkpoint.resume_hint.injected event: %w", err))
 		}
 	}
 	if stringsTrim(req.Message) != "" {

@@ -280,7 +280,8 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 向当前 parent 名下的 running child session 或已启动 background child job 追加 durable steer prompt
-- 用于 scope 收窄、长时间循环收敛、请求当前证据交付或要求 child 写 handoff；不创建、不取消、不完成 child work
+- 用于 scope 收窄、补充证据要求、请求进度或 handoff、重定向 child；不创建、不取消、不完成 child work
+- `interrupt` 默认 `false`，避免普通 child steer 抢占正在自主探索的 sub-agent；只有明确需要抢占当前 provider/tool 边界时才显式传 `interrupt=true`
 
 ### 4.23 `agent_status`
 

@@ -2276,7 +2276,7 @@ func TestRunnerContinueReportsCheckpointResumeHintEventAppendError(t *testing.T)
 		Model:            meta.Model,
 		Workdir:          meta.Workdir,
 		RequestedWorkdir: meta.RequestedWorkdir,
-		ResumeHints:      []string{"resume from checkpoint"},
+		ResumeHints:      []string{"resume from last error: provider timeout"},
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
@@ -2306,6 +2306,112 @@ func TestRunnerContinueReportsCheckpointResumeHintEventAppendError(t *testing.T)
 	for _, msg := range messages {
 		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
 			t.Fatalf("event append failure should roll back checkpoint resume hint, got %#v", msg)
+		}
+	}
+}
+
+func TestRunnerBackgroundContinueSkipsCheckpointResumeHint(t *testing.T) {
+	var seenMessages []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		if input, ok := body["input"].([]any); ok {
+			for _, raw := range input {
+				if msg, ok := raw.(map[string]any); ok {
+					seenMessages = append(seenMessages, msg)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_background_continue",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	state := session.State{Status: session.StatusAwaitingInput, Phase: "background_wait", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "parent task")); err != nil {
+		t.Fatalf("append parent message: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.Message{
+		ID:        "msg_background_results",
+		Role:      "user",
+		Text:      "<background-agent-results>{}</background-agent-results>",
+		Meta:      map[string]any{"source": "background_results"},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("append background message: %v", err)
+	}
+	if err := runner.store.SaveLongRunCheckpoint(meta.ID, session.LongRunCheckpoint{
+		SchemaVersion:    1,
+		SessionID:        meta.ID,
+		RootSessionID:    meta.ID,
+		Provider:         meta.Provider,
+		Model:            meta.Model,
+		Workdir:          meta.Workdir,
+		RequestedWorkdir: meta.RequestedWorkdir,
+		ResumeHints:      []string{"resume from last error: provider timeout"},
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Source: continueSourceBackground})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	messages, err := runner.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			t.Fatalf("background continue should not append checkpoint resume note, got %#v", msg)
+		}
+	}
+	for _, msg := range seenMessages {
+		if text, ok := msg["content"].(string); ok && strings.Contains(text, "long-run checkpoint") {
+			t.Fatalf("provider request should not include checkpoint resume note on background continue, got %#v", seenMessages)
 		}
 	}
 }

@@ -3435,7 +3435,7 @@ func defAgentStop(control ControlPlane) Definition {
 func defAgentPrompt(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_prompt",
-		Description: "Send a prompt/steer to a child agent or background child job owned by the current parent session. Use this to narrow scope, request a concise handoff, stop repeated discovery, ask for current-evidence delivery, or redirect a long-running sub-agent before waiting or synthesizing. For a child paused because the parent was stopped, this restarts the child with the prompt; for a pre-claim job blocked by parent stop, this requeues it. This does not mark child work complete. interrupt defaults to true so convergence prompts can preempt provider calls when possible.",
+		Description: "Send a prompt/steer to a child agent or background child job owned by the current parent session. Use this to refine scope, add evidence requirements, request a progress update, ask for a handoff, or redirect a sub-agent before waiting or synthesizing. For a child paused because the parent was stopped, this restarts the child with the prompt; for a pre-claim job blocked by parent stop, this requeues it. This does not mark child work complete or require it to stop. interrupt defaults to false; set interrupt=true only when the child should be preempted at the next best-effort boundary.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3453,7 +3453,7 @@ func defAgentPrompt(control ControlPlane) Definition {
 				},
 				"interrupt": map[string]any{
 					"type":        "boolean",
-					"description": "Whether to request best-effort interruption of the child run. Defaults to true.",
+					"description": "Whether to request best-effort interruption of the child run. Defaults to false.",
 				},
 			},
 			"required": []string{"message"},

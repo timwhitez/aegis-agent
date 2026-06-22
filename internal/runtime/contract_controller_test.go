@@ -1405,6 +1405,69 @@ func TestCheckpointResumeHintWarnsOnIsolationAndTrustDrift(t *testing.T) {
 	}
 }
 
+func TestCheckpointResumeHintSkipsPlainActiveGoalCheckpoint(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if _, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Explore deeply before final synthesis",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	checkpoint, err := store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if !containsString(checkpoint.ResumeHints, "audit active goal before finish") {
+		t.Fatalf("expected checkpoint to retain active goal resume index, got %#v", checkpoint.ResumeHints)
+	}
+
+	injected, warnings, messageID, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	if err != nil {
+		t.Fatalf("append checkpoint hint: %v", err)
+	}
+	if injected || len(warnings) != 0 || messageID != "" {
+		t.Fatalf("expected plain active goal checkpoint not to inject resume note, injected=%t warnings=%#v messageID=%q", injected, warnings, messageID)
+	}
+	messages, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			t.Fatalf("did not expect checkpoint resume note for plain active goal, got %#v", msg)
+		}
+	}
+}
+
+func TestCheckpointResumeHintInjectsForParentCoordination(t *testing.T) {
+	store, meta := newRuntimeTestSession(t)
+	if err := addParentQueueJob(store, meta.ID, "job_resume_hint", "wait-all"); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	if err := writeLongRunCheckpoint(store, meta.ID); err != nil {
+		t.Fatalf("write checkpoint: %v", err)
+	}
+	injected, warnings, messageID, err := appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	if err != nil {
+		t.Fatalf("append checkpoint hint: %v", err)
+	}
+	if !injected || len(warnings) != 0 || strings.TrimSpace(messageID) == "" {
+		t.Fatalf("expected parent coordination checkpoint hint, injected=%t warnings=%#v messageID=%q", injected, warnings, messageID)
+	}
+	messages, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) == 0 || !strings.Contains(messages[len(messages)-1].Text, "resolve parent child or queue wait state") {
+		t.Fatalf("expected parent coordination hint in last message, got %#v", messages)
+	}
+}
+
 func TestCheckpointResumeHintReportsCorruptContractSnapshot(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	if err := store.SaveContract(meta.ID, session.SessionContract{

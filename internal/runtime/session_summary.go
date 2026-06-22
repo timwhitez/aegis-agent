@@ -668,6 +668,9 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 	if err != nil {
 		return false, nil, "", err
 	}
+	if !shouldInjectCheckpointResumeHint(checkpoint, warnings) {
+		return false, warnings, "", nil
+	}
 	text := "Harness resume note: a long-run checkpoint is available. Use durable session facts first"
 	if len(checkpoint.ResumeHints) > 0 {
 		text += "; hints: " + strings.Join(checkpoint.ResumeHints, "; ")
@@ -683,6 +686,37 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 		"drift_warnings": append([]string(nil), warnings...),
 	}
 	return true, warnings, msg.ID, store.AppendMessage(meta.ID, msg)
+}
+
+func shouldInjectCheckpointResumeHint(checkpoint session.LongRunCheckpoint, warnings []string) bool {
+	if len(warnings) > 0 {
+		return true
+	}
+	if (checkpoint.ParentWaitState == "waiting" || checkpoint.ParentWaitState == "parked") && (len(checkpoint.UnresolvedChildSessions) > 0 || len(checkpoint.UnresolvedQueueJobs) > 0) {
+		return true
+	}
+	if checkpoint.LatestCompactionArtifact != "" {
+		return true
+	}
+	if checkpoint.GoalSnapshot != nil {
+		switch checkpoint.GoalSnapshot.Status {
+		case session.GoalStatusBudgetLimited, session.GoalStatusPaused:
+			return true
+		}
+	}
+	if checkpoint.PlanModeSnapshot != nil {
+		switch checkpoint.PlanModeSnapshot.Status {
+		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput, session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+			return true
+		}
+	}
+	for _, hint := range checkpoint.ResumeHints {
+		hint = strings.TrimSpace(hint)
+		if strings.HasPrefix(hint, "resume from last error:") {
+			return true
+		}
+	}
+	return false
 }
 
 func checkpointDriftWarnings(store *session.Store, meta session.SessionMetadata, checkpoint session.LongRunCheckpoint, provider, model string) ([]string, error) {
