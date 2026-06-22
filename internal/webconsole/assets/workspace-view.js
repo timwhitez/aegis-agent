@@ -281,7 +281,7 @@ function ensureWorkspaceActionBindings() {
   }
   if (nodes.workspaceDeleteDirBtn && nodes.workspaceDeleteDirBtn.dataset.bound !== '1') {
     nodes.workspaceDeleteDirBtn.dataset.bound = '1';
-    nodes.workspaceDeleteDirBtn.addEventListener('click', handleDeleteCurrentWorkspaceDirectory);
+    nodes.workspaceDeleteDirBtn.addEventListener('click', handleDeleteWorkspaceHeaderAction);
   }
   if (nodes.workspaceDownloadBtn && nodes.workspaceDownloadBtn.dataset.bound !== '1') {
     nodes.workspaceDownloadBtn.dataset.bound = '1';
@@ -290,10 +290,6 @@ function ensureWorkspaceActionBindings() {
   if (nodes.workspaceDeleteFileBtn && nodes.workspaceDeleteFileBtn.dataset.bound !== '1') {
     nodes.workspaceDeleteFileBtn.dataset.bound = '1';
     nodes.workspaceDeleteFileBtn.addEventListener('click', handleDeleteSelectedWorkspaceFile);
-  }
-  if (nodes.workspaceDeleteSelectedBtn && nodes.workspaceDeleteSelectedBtn.dataset.bound !== '1') {
-    nodes.workspaceDeleteSelectedBtn.dataset.bound = '1';
-    nodes.workspaceDeleteSelectedBtn.addEventListener('click', handleDeleteSelectedWorkspaceItems);
   }
 }
 
@@ -315,12 +311,14 @@ function renderWorkspaceActions() {
     busy: pending === 'refresh'
   });
   setWorkspaceButtonState(nodes.workspaceDeleteDirBtn, {
-    visible: Boolean(currentPath) && !hasSelection,
-    disabled: Boolean(pending) || !currentPath,
-    busy: pending === 'delete-dir'
+    visible: hasSelection || Boolean(currentPath),
+    disabled: Boolean(pending) || (!hasSelection && !currentPath),
+    busy: pending === 'delete-dir' || pending === 'delete-selected'
   });
   if (nodes.workspaceDeleteDirBtn) {
-    const label = currentPath ? `Delete folder ${currentPath}` : 'Delete current folder';
+    const label = hasSelection
+      ? selectedCount === 1 ? 'Delete selected item' : `Delete ${selectedCount} selected items`
+      : currentPath ? `Delete folder ${currentPath}` : 'Delete current folder';
     nodes.workspaceDeleteDirBtn.setAttribute('aria-label', label);
     nodes.workspaceDeleteDirBtn.title = label;
   }
@@ -332,15 +330,6 @@ function renderWorkspaceActions() {
   if (nodes.workspaceSelectedChip) {
     nodes.workspaceSelectedChip.classList.toggle('is-hidden', !hasSelection);
     nodes.workspaceSelectedChip.textContent = selectedCount === 1 ? '1 selected' : `${selectedCount} selected`;
-  }
-  setWorkspaceButtonState(nodes.workspaceDeleteSelectedBtn, {
-    visible: hasSelection,
-    disabled: Boolean(pending) || !hasSelection,
-    busy: pending === 'delete-selected'
-  });
-  if (nodes.workspaceDeleteSelectedBtn && hasSelection) {
-    nodes.workspaceDeleteSelectedBtn.title = selectedCount === 1 ? 'Delete selected item' : `Delete ${selectedCount} selected items`;
-    nodes.workspaceDeleteSelectedBtn.setAttribute('aria-label', nodes.workspaceDeleteSelectedBtn.title);
   }
   setWorkspaceButtonState(nodes.workspaceDeleteFileBtn, {
     visible: hasFile && !hasSelection,
@@ -436,6 +425,14 @@ async function handleDeleteCurrentWorkspaceDirectory() {
   } finally {
     setWorkspaceActionPending('');
   }
+}
+
+async function handleDeleteWorkspaceHeaderAction() {
+  if (selectedWorkspacePathCount() > 0) {
+    await handleDeleteSelectedWorkspaceItems();
+    return;
+  }
+  await handleDeleteCurrentWorkspaceDirectory();
 }
 
 function handleDownloadSelectedWorkspaceFile() {

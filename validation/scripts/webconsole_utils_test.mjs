@@ -5671,6 +5671,70 @@ test('workspace file tree renders delegated tree semantics', () => {
   });
 });
 
+test('workspace selected paths use the refresh-adjacent trash action', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  workspaceContext.nodes.workspaceDeleteDirBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceRefreshBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceNewFolderBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceSelectedChip = fakeAppElement();
+
+  vm.runInContext(`
+    confirmRequests = [];
+    deletedPaths = [];
+    confirmLocalAction = async function(options) {
+      confirmRequests.push(options);
+      return true;
+    };
+    deleteWorkspacePaths = async function(paths) {
+      deletedPaths.push([...paths]);
+      return { count: paths.length };
+    };
+    loadWorkspaceDirectory = async function(path) {
+      state.reloadedPath = path;
+    };
+    setCurrentWorkspacePath('src');
+    ensureWorkspaceActionBindings();
+    toggleWorkspacePathSelection('src/main.go', true);
+    toggleWorkspacePathSelection('src/util.go', true);
+  `, workspaceContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    selectedCount: selectedWorkspacePathCount(),
+    hidden: nodes.workspaceDeleteDirBtn.classList.contains('is-hidden'),
+    disabled: nodes.workspaceDeleteDirBtn.disabled,
+    title: nodes.workspaceDeleteDirBtn.title,
+    label: nodes.workspaceDeleteDirBtn.getAttribute('aria-label'),
+    chipHidden: nodes.workspaceSelectedChip.classList.contains('is-hidden'),
+    chipText: nodes.workspaceSelectedChip.textContent
+  })`, workspaceContext)), {
+    selectedCount: 2,
+    hidden: false,
+    disabled: false,
+    title: 'Delete 2 selected items',
+    label: 'Delete 2 selected items',
+    chipHidden: false,
+    chipText: '2 selected'
+  });
+
+  await vm.runInContext(`nodes.workspaceDeleteDirBtn.listeners.click()`, workspaceContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    confirmTitle: confirmRequests[0].title,
+    confirmLabel: confirmRequests[0].confirmLabel,
+    deletedPaths,
+    selectedCount: selectedWorkspacePathCount(),
+    reloadedPath: state.reloadedPath,
+    pending: workspaceActionPending()
+  })`, workspaceContext)), {
+    confirmTitle: 'Delete selected items',
+    confirmLabel: 'Delete selected',
+    deletedPaths: [['src/main.go', 'src/util.go']],
+    selectedCount: 0,
+    reloadedPath: 'src',
+    pending: ''
+  });
+});
+
 test('workspace file tree keyboard activates and moves focus', async () => {
   const workspaceContext = createWorkspaceHarnessContext();
   vm.runInContext(`

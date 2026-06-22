@@ -543,7 +543,6 @@ const nodes = {
   workspaceSelectionActions: document.getElementById('workspace-selection-actions'),
   workspaceSelectedChip: document.getElementById('workspace-selected-chip'),
   workspaceDownloadBtn: document.getElementById('workspace-download-btn'),
-  workspaceDeleteSelectedBtn: document.getElementById('workspace-delete-selected-btn'),
   workspaceDeleteFileBtn: document.getElementById('workspace-delete-file-btn'),
   editorFilename: document.getElementById('editor-filename'),
   editorContent: document.getElementById('editor-content'),

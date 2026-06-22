@@ -6427,11 +6427,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-selected-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "workspace-delete-selected-action") || !strings.Contains(indexBody, "Delete selected") {
-		t.Fatalf("expected Workspace batch delete to be an explicit top action, got shell body: %s", indexBody)
+	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
+		t.Fatalf("expected Workspace batch delete to reuse the header trash icon instead of a second text action, got shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
 		t.Fatalf("expected shell to expose Plan Mode toggle beside Goal, got shell body: %s", indexBody)
@@ -6523,8 +6523,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceItems") || !strings.Contains(workspaceBody, "workspace-select-checkbox") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
 		t.Fatalf("expected Workspace view to expose create/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
 	}
-	if !strings.Contains(workspaceBody, "visible: Boolean(currentPath) && !hasSelection") || !strings.Contains(workspaceBody, "nodes.workspaceDeleteSelectedBtn.setAttribute('aria-label'") {
-		t.Fatalf("expected Workspace view to route selected-item deletion to the top action button without showing current-folder delete, got workspace-view.js body: %s", workspaceBody)
+	if !strings.Contains(workspaceBody, "handleDeleteWorkspaceHeaderAction") || !strings.Contains(workspaceBody, "visible: hasSelection || Boolean(currentPath)") || !strings.Contains(workspaceBody, "pending === 'delete-dir' || pending === 'delete-selected'") || strings.Contains(workspaceBody, "nodes.workspaceDeleteSelectedBtn") {
+		t.Fatalf("expected Workspace view to route selected-item deletion through the refresh-adjacent trash button, got workspace-view.js body: %s", workspaceBody)
 	}
 	sessionBody := checkBody(server.URL + "/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
@@ -6693,8 +6693,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(cssBody, ".workspace-icon-btn:disabled") || !strings.Contains(cssBody, "cursor: not-allowed") || !strings.Contains(cssBody, ".workspace-icon-btn.is-loading:disabled") || !strings.Contains(cssBody, "cursor: wait") {
 		t.Fatalf("expected Workspace buttons to distinguish disabled and loading cursors, got styles.css body: %s", cssBody)
 	}
-	if !strings.Contains(cssBody, ".workspace-delete-selected-action") || !strings.Contains(cssBody, "min-width: 132px") {
-		t.Fatalf("expected Workspace batch delete action to remain a visible text button, got styles.css body: %s", cssBody)
+	if strings.Contains(cssBody, ".workspace-delete-selected-action") || strings.Contains(cssBody, "min-width: 132px") {
+		t.Fatalf("expected Workspace batch delete text-button styling to be removed, got styles.css body: %s", cssBody)
 	}
 	if strings.Contains(cssBody, ".queue-primer") || strings.Contains(cssBody, ".queue-submit-panel") || strings.Contains(cssBody, "#queue-view") {
 		t.Fatalf("expected standalone Background Jobs styles to be removed, got styles.css body: %s", cssBody)

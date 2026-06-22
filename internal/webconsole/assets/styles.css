@@ -1030,23 +1030,6 @@ textarea {
   transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
 }
 
-.workspace-delete-selected-action {
-  width: auto;
-  min-width: 132px;
-  padding: 0 12px;
-  gap: 8px;
-  color: var(--error);
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.22);
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.workspace-delete-selected-action span {
-  display: inline-block;
-}
-
 .workspace-icon-btn:hover:not(:disabled),
 .workspace-icon-btn:focus-visible:not(:disabled),
 .workspace-editor-action:hover:not(:disabled),
@@ -3219,11 +3202,6 @@ textarea {
     word-break: break-all;
     height: auto;
     min-height: 22px;
-  }
-
-  .workspace-delete-selected-action {
-    width: 100%;
-    min-width: 0;
   }
 
   /* Header adapts to content height on narrow screens */
