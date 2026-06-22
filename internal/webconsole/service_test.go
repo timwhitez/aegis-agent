@@ -6430,6 +6430,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-selected-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, "workspace-delete-selected-action") || !strings.Contains(indexBody, "Delete selected") {
+		t.Fatalf("expected Workspace batch delete to be an explicit top action, got shell body: %s", indexBody)
+	}
 	if !strings.Contains(indexBody, "plan-toggle-btn") || !strings.Contains(indexBody, "<span>Plan</span>") {
 		t.Fatalf("expected shell to expose Plan Mode toggle beside Goal, got shell body: %s", indexBody)
 	}
@@ -6689,6 +6692,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(cssBody, ".workspace-icon-btn:disabled") || !strings.Contains(cssBody, "cursor: not-allowed") || !strings.Contains(cssBody, ".workspace-icon-btn.is-loading:disabled") || !strings.Contains(cssBody, "cursor: wait") {
 		t.Fatalf("expected Workspace buttons to distinguish disabled and loading cursors, got styles.css body: %s", cssBody)
+	}
+	if !strings.Contains(cssBody, ".workspace-delete-selected-action") || !strings.Contains(cssBody, "min-width: 132px") {
+		t.Fatalf("expected Workspace batch delete action to remain a visible text button, got styles.css body: %s", cssBody)
 	}
 	if strings.Contains(cssBody, ".queue-primer") || strings.Contains(cssBody, ".queue-submit-panel") || strings.Contains(cssBody, "#queue-view") {
 		t.Fatalf("expected standalone Background Jobs styles to be removed, got styles.css body: %s", cssBody)

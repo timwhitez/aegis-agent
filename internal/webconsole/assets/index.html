@@ -137,11 +137,12 @@
             <p class="view-subtitle" id="workspace-subtitle">Browsing the current server workspace only. Switching roots is not available in this experimental view.</p>
           </div>
           <div class="workspace-header-actions">
-            <span class="surface-chip" id="workspace-root-chip">current cwd</span>
             <span class="workspace-selected-chip is-hidden" id="workspace-selected-chip">0 selected</span>
-            <button class="workspace-icon-btn danger is-hidden" id="workspace-delete-selected-btn" type="button" aria-label="Delete selected items" title="Delete selected items">
+            <button class="workspace-icon-btn workspace-delete-selected-action danger is-hidden" id="workspace-delete-selected-btn" type="button" aria-label="Delete selected items" title="Delete selected items">
               <i data-lucide="trash-2"></i>
+              <span>Delete selected</span>
             </button>
+            <span class="surface-chip" id="workspace-root-chip">current cwd</span>
             <button class="workspace-icon-btn" id="workspace-new-folder-btn" type="button" aria-label="New folder" title="New folder">
               <i data-lucide="folder-plus"></i>
             </button>
