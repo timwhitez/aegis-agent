@@ -100,6 +100,7 @@
 
 - 管理 `session.json`、`state.json`、`messages.jsonl`、`events.jsonl`、`control/`
 - 管理 `goal.json`、`artifacts/goal-history.jsonl`、`contract.json`、`artifact-tracker.json`、`provider-attempts.jsonl`、`parent-coordination.json`、`session.md` 与 `checkpoints/`
+- 管理 `file-changes.json`：runtime 在每个 write_file / edit_file / shell 工具调用**成功**后增量累加该 session 的文件变更账本（按 workspace 相对路径归一化、仅统计成功操作），作为 Web 文件变更面板的事实源；该文件是派生视图，缺失或为旧 session 时由 Web 服务从完整 `messages.jsonl` 回填并持久化一次
 - 管理 `planmode.json`、`artifacts/planmode-history.jsonl` 与 `artifacts/planmode-plan.md`
 - 写入 compaction artifacts
 - 为 `continue` 提供恢复数据

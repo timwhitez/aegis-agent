@@ -10560,7 +10560,7 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 	}
 }
 
-func TestServiceSessionFileChangesLoadFullHistoryLazily(t *testing.T) {
+func TestServiceSessionFileChangesDurableFromFullHistory(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
 	if err != nil {
@@ -10583,9 +10583,23 @@ func TestServiceSessionFileChangesLoadFullHistoryLazily(t *testing.T) {
 			Name:      "shell",
 			Arguments: json.RawMessage(`{"command":"git status --short > reports/git_status_before_docs.txt && find docs spec reports -maxdepth 3 -type f 2>/dev/null | sort > reports/file_inventory_before_docs.txt && printf 'ok\\n' 2>&1"}`),
 		},
+		{
+			ID:        "call_edit_missing",
+			Name:      "edit_file",
+			Arguments: json.RawMessage(`{"path":"reports/never.md","old_text":"absent","new_text":"present"}`),
+		},
 	})
 	if err := svc.store.AppendMessage(meta.ID, early); err != nil {
 		t.Fatalf("append early message: %v", err)
+	}
+	// Only successful tool results count toward the durable record; the failed
+	// edit_file must be excluded.
+	if err := svc.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{
+		{ToolCallID: "call_write_report", Name: "write_file"},
+		{ToolCallID: "call_shell_inventory", Name: "shell"},
+		{ToolCallID: "call_edit_missing", Name: "edit_file", IsError: true, LLMOutput: "Error: old_text not found"},
+	})); err != nil {
+		t.Fatalf("append tool results: %v", err)
 	}
 	for i := 0; i < 45; i++ {
 		msg := session.NewMessage("user", "tail message "+strconv.Itoa(i))
@@ -10597,15 +10611,22 @@ func TestServiceSessionFileChangesLoadFullHistoryLazily(t *testing.T) {
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
+	// Even with a tiny message limit, the durable file-change record is complete
+	// because it does not depend on how much history is loaded.
 	var detail SessionDetailResponse
 	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=2", &detail)
 	if !detail.HasMoreMessages || len(detail.Messages) != 2 {
 		t.Fatalf("expected tailed detail messages with more flag, got has_more=%v len=%d", detail.HasMoreMessages, len(detail.Messages))
 	}
+	detailByPath := map[string]FileChangeSummary{}
 	for _, item := range detail.FileChanges {
-		if item.Path == "reports/spec.md" || item.Path == "reports/git_status_before_docs.txt" || item.Path == "reports/file_inventory_before_docs.txt" {
-			t.Fatalf("session detail should only include tail-derived file changes, got full-history change %#v in %#v", item, detail.FileChanges)
-		}
+		detailByPath[item.Path] = item
+	}
+	if got := detailByPath["reports/spec.md"]; got.Writes != 1 || got.LinesAdded != 2 {
+		t.Fatalf("expected durable write_file summary in detail despite tail limit, got %#v in %#v", got, detail.FileChanges)
+	}
+	if _, ok := detailByPath["reports/never.md"]; ok {
+		t.Fatalf("failed edit_file must not appear as a file change: %#v", detail.FileChanges)
 	}
 
 	var fileChanges FileChangesResponse
@@ -10623,56 +10644,23 @@ func TestServiceSessionFileChangesLoadFullHistoryLazily(t *testing.T) {
 	if got := byPath["reports/file_inventory_before_docs.txt"]; got.Writes != 1 {
 		t.Fatalf("expected shell redirect after fd redirect to be counted, got %#v in %#v", got, fileChanges.FileChanges)
 	}
+	if _, ok := byPath["reports/never.md"]; ok {
+		t.Fatalf("failed edit_file must not appear as a file change: %#v", fileChanges.FileChanges)
+	}
 	if _, ok := byPath["/dev/null"]; ok {
 		t.Fatalf("fd redirect target must not be surfaced as a file change: %#v", fileChanges.FileChanges)
 	}
 	if _, ok := byPath["1"]; ok {
 		t.Fatalf("fd duplication target must not be surfaced as a file change: %#v", fileChanges.FileChanges)
 	}
-}
 
-func TestCollectShellRedirectTargetsIgnoresHereDocBodies(t *testing.T) {
-	command := strings.Join([]string{
-		"{",
-		"  cat > reports/glata-staging/evidence/static-file-sample.txt <<'MD'",
-		"- `GET /status` -> `{status}`",
-		"- template target should not become {r.get(status)} or \\]+ or ]+",
-		"MD",
-		"  python3 - <<'PY'",
-		"pat=r'''(?:(?:https?:)?//[^\\s\"'<>\\\\]+|/[A-Za-z0-9_./?&=%#:@+-]{2,})'''",
-		"print(f'`{r.get(\"status\")}` {r.get(\"file\",\"\")} -> {r.get(\"status\")}')",
-		"PY",
-		"} > reports/glata-staging/evidence/file-list-current.txt 2>&1",
-		"printf 'saved file-list-current.txt\\n'",
-	}, "\n")
-
-	targets := collectShellRedirectTargets(command)
-	byPath := map[string]shellRedirectTarget{}
-	for _, target := range targets {
-		byPath[target.path] = target
+	// The backfill must have been persisted so a later read finds the durable file.
+	persisted, err := svc.store.LoadFileChanges(meta.ID)
+	if err != nil {
+		t.Fatalf("load durable file changes: %v", err)
 	}
-	for _, want := range []string{
-		"reports/glata-staging/evidence/static-file-sample.txt",
-		"reports/glata-staging/evidence/file-list-current.txt",
-	} {
-		if _, ok := byPath[want]; !ok {
-			t.Fatalf("expected redirect target %q in %#v", want, targets)
-		}
-	}
-	for _, bad := range []string{
-		"`{status}`",
-		"`{r.get(status)}`",
-		"{r.get(status)}",
-		"{r.get(file,)}",
-		"\\]+",
-		"]+",
-	} {
-		if _, ok := byPath[bad]; ok {
-			t.Fatalf("heredoc body token %q must not be surfaced as file change: %#v", bad, targets)
-		}
-	}
-	if len(targets) != 2 {
-		t.Fatalf("expected only real redirect targets, got %#v", targets)
+	if len(persisted) == 0 {
+		t.Fatalf("expected backfilled file changes to be persisted")
 	}
 }
 

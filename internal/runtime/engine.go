@@ -13,6 +13,7 @@ import (
 
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
+	"go-cli-agent/internal/filechanges"
 	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/hooks"
 	"go-cli-agent/internal/provider"
@@ -851,6 +852,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 
 				toolResults = append(toolResults, toolResult)
+				e.recordFileChanges(meta, call.Name, call.ID, toolArgs, toolResult)
 				eventData := map[string]any{
 					"call_id":        call.ID,
 					"tool_name":      call.Name,
@@ -991,6 +993,28 @@ func (e *Engine) ephemeralArtifactPath(sessionID, toolName string, turn int) str
 		base = filepath.Join(base, sessionID)
 	}
 	return filepath.Join(base, fmt.Sprintf("%s-turn%d.txt", toolName, turn))
+}
+
+// recordFileChanges folds the file mutations from one successful tool call into
+// the session's durable file-change record. The record is a derived view, so a
+// persistence failure is logged via an event but never aborts the run.
+func (e *Engine) recordFileChanges(meta session.SessionMetadata, toolName, callID string, args json.RawMessage, result session.ToolResult) {
+	deltas := filechanges.FromCall(meta.Workdir, session.ToolCall{
+		ID:        callID,
+		Name:      toolName,
+		Arguments: args,
+	}, result)
+	if len(deltas) == 0 {
+		return
+	}
+	if _, err := e.store.MutateFileChanges(meta.ID, func(current []session.FileChange) ([]session.FileChange, error) {
+		return filechanges.Merge(current, deltas), nil
+	}); err != nil {
+		e.emit(meta.ID, "file_changes.persist_failed", "tool_execute", map[string]any{
+			"tool_name": toolName,
+			"error":     err.Error(),
+		})
+	}
 }
 
 func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {

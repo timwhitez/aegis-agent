@@ -28,6 +28,7 @@ import (
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/extensions"
+	"go-cli-agent/internal/filechanges"
 	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
@@ -240,13 +241,9 @@ type SessionDetailResponse struct {
 	ActiveHandleOwner       ActiveHandleOwner                `json:"active_handle_owner"`
 }
 
-type FileChangeSummary struct {
-	Path         string `json:"path"`
-	Writes       int    `json:"writes"`
-	Edits        int    `json:"edits"`
-	LinesAdded   int    `json:"lines_added"`
-	LinesRemoved int    `json:"lines_removed"`
-}
+// FileChangeSummary aliases the durable session file-change record so the Web
+// API serves exactly what the runtime persisted.
+type FileChangeSummary = session.FileChange
 
 type FileChangesResponse struct {
 	FileChanges []FileChangeSummary `json:"file_changes"`
@@ -1313,7 +1310,10 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	if err != nil {
 		return SessionDetailResponse{}, err
 	}
-	fileChanges := collectSessionFileChanges(messages)
+	fileChanges, err := s.sessionFileChanges(sessionID, meta.Workdir)
+	if err != nil {
+		return SessionDetailResponse{}, err
+	}
 	background = tailBackground(dedupeBackgroundNotifications(background), limit)
 	steers = tailSteers(steers, limit)
 	if messages == nil {
@@ -1359,7 +1359,12 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 }
 
 func (s *Service) handleSessionFileChanges(w http.ResponseWriter, sessionID string) {
-	fileChanges, err := collectSessionFileChangesFromStore(s.store, sessionID)
+	meta, err := s.store.LoadMetadata(sessionID)
+	if err != nil {
+		writeError(w, sessionStoreStatus(err), err)
+		return
+	}
+	fileChanges, err := s.sessionFileChanges(sessionID, meta.Workdir)
 	if err != nil {
 		writeError(w, sessionStoreStatus(err), err)
 		return
@@ -7686,408 +7691,57 @@ func tailMessages(items []session.Message, limit int) []session.Message {
 	return items[len(items)-limit:]
 }
 
-func collectSessionFileChanges(messages []session.Message) []FileChangeSummary {
-	collector := newFileChangeCollector()
-	for _, msg := range messages {
-		collector.addMessage(msg)
-	}
-	return collector.summaries()
-}
-
-func collectSessionFileChangesFromStore(store *session.Store, sessionID string) ([]FileChangeSummary, error) {
-	collector := newFileChangeCollector()
-	if err := store.VisitMessages(sessionID, func(msg session.Message) error {
-		collector.addMessage(msg)
-		return nil
-	}); err != nil {
+// sessionFileChanges returns the durable file-change accounting for a session.
+//
+// The runtime records changes incrementally as tools succeed, so the durable
+// file-changes.json is the source of truth and never depends on how much of the
+// message history happens to be loaded. For sessions created before durable
+// recording existed (or whose record is missing), it backfills from the full
+// message history once and persists the result so later reads are cheap.
+func (s *Service) sessionFileChanges(sessionID, workdir string) ([]FileChangeSummary, error) {
+	durable, err := s.store.LoadFileChanges(sessionID)
+	if err != nil {
 		return nil, err
 	}
-	return collector.summaries(), nil
+	if len(durable) > 0 {
+		return durable, nil
+	}
+	backfilled, err := s.backfillSessionFileChanges(sessionID, workdir)
+	if err != nil {
+		return nil, err
+	}
+	return backfilled, nil
 }
 
-type fileChangeAccumulator struct {
-	FileChangeSummary
-	firstSeen int
-}
-
-type fileChangeCollector struct {
-	changes map[string]*fileChangeAccumulator
-	order   int
-}
-
-func newFileChangeCollector() *fileChangeCollector {
-	return &fileChangeCollector{changes: map[string]*fileChangeAccumulator{}}
-}
-
-func (collector *fileChangeCollector) ensure(pathValue string) *fileChangeAccumulator {
-	pathValue = strings.TrimSpace(pathValue)
-	if pathValue == "" {
+// backfillSessionFileChanges recomputes the file-change record from the full
+// message history and persists it. It is used for legacy sessions that predate
+// durable recording. Persistence failures (for example a read-only archived
+// session) are tolerated: the computed view is still returned.
+func (s *Service) backfillSessionFileChanges(sessionID, workdir string) ([]FileChangeSummary, error) {
+	collector := filechanges.NewCollector(workdir)
+	if err := s.store.VisitMessages(sessionID, func(msg session.Message) error {
+		collector.AddMessage(msg)
 		return nil
+	}); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []FileChangeSummary{}, nil
+		}
+		return nil, err
 	}
-	current := collector.changes[pathValue]
-	if current != nil {
-		return current
+	computed := collector.Summaries()
+	if len(computed) == 0 {
+		return []FileChangeSummary{}, nil
 	}
-	current = &fileChangeAccumulator{
-		FileChangeSummary: FileChangeSummary{Path: pathValue},
-		firstSeen:         collector.order,
+	if _, err := s.store.MutateFileChanges(sessionID, func(current []session.FileChange) ([]session.FileChange, error) {
+		if len(current) > 0 {
+			return current, nil
+		}
+		return computed, nil
+	}); err != nil {
+		// A derived view must not fail the request if it cannot be cached.
+		return computed, nil
 	}
-	collector.order++
-	collector.changes[pathValue] = current
-	return current
-}
-
-func (collector *fileChangeCollector) addMessage(msg session.Message) {
-	for _, call := range msg.ToolCalls {
-		var args map[string]any
-		if len(call.Arguments) > 0 {
-			_ = json.Unmarshal(call.Arguments, &args)
-		}
-		switch call.Name {
-		case "write_file":
-			pathValue, _ := args["path"].(string)
-			item := collector.ensure(pathValue)
-			if item == nil {
-				continue
-			}
-			item.Writes++
-			if content, ok := args["content"].(string); ok {
-				item.LinesAdded += countTextLines(content)
-			}
-		case "edit_file":
-			pathValue, _ := args["path"].(string)
-			item := collector.ensure(pathValue)
-			if item == nil {
-				continue
-			}
-			item.Edits++
-			oldText, _ := args["old_text"].(string)
-			newText, _ := args["new_text"].(string)
-			oldLines := countTextLines(oldText)
-			newLines := countTextLines(newText)
-			if newLines > oldLines {
-				item.LinesAdded += newLines - oldLines
-			}
-			if oldLines > newLines {
-				item.LinesRemoved += oldLines - newLines
-			}
-		case "shell":
-			command, _ := args["command"].(string)
-			for _, redirect := range collectShellRedirectTargets(command) {
-				item := collector.ensure(redirect.path)
-				if item == nil {
-					continue
-				}
-				if redirect.append {
-					item.Edits++
-				} else {
-					item.Writes++
-				}
-			}
-		}
-	}
-}
-
-func (collector *fileChangeCollector) summaries() []FileChangeSummary {
-	if len(collector.changes) == 0 {
-		return nil
-	}
-	out := make([]FileChangeSummary, 0, len(collector.changes))
-	for _, item := range collector.changes {
-		out = append(out, item.FileChangeSummary)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		left := collector.changes[out[i].Path]
-		right := collector.changes[out[j].Path]
-		if left.firstSeen != right.firstSeen {
-			return left.firstSeen < right.firstSeen
-		}
-		return out[i].Path < out[j].Path
-	})
-	return out
-}
-
-func countTextLines(text string) int {
-	if text == "" {
-		return 0
-	}
-	return strings.Count(text, "\n") + 1
-}
-
-type shellRedirectTarget struct {
-	path   string
-	append bool
-}
-
-func collectShellRedirectTargets(command string) []shellRedirectTarget {
-	tokens := tokenizeShellCommand(stripShellHereDocBodies(command))
-	var out []shellRedirectTarget
-	for i := 0; i < len(tokens); i++ {
-		token := tokens[i]
-		if !isShellOutputRedirect(token) {
-			continue
-		}
-		if i+1 >= len(tokens) {
-			break
-		}
-		target := cleanShellRedirectTarget(tokens[i+1])
-		if target == "" {
-			i++
-			continue
-		}
-		out = append(out, shellRedirectTarget{
-			path:   target,
-			append: strings.Contains(token, ">>"),
-		})
-		i++
-	}
-	return out
-}
-
-type shellHereDocDelimiter struct {
-	value     string
-	stripTabs bool
-}
-
-func stripShellHereDocBodies(command string) string {
-	if !strings.Contains(command, "<<") {
-		return command
-	}
-	lines := strings.SplitAfter(command, "\n")
-	var out strings.Builder
-	var pending []shellHereDocDelimiter
-	for _, line := range lines {
-		lineText := strings.TrimRight(line, "\r\n")
-		if len(pending) > 0 {
-			target := lineText
-			if pending[0].stripTabs {
-				target = strings.TrimLeft(target, "\t")
-			}
-			if target == pending[0].value {
-				pending = pending[1:]
-			}
-			continue
-		}
-		out.WriteString(line)
-		pending = append(pending, collectShellHereDocDelimiters(line)...)
-	}
-	return out.String()
-}
-
-func collectShellHereDocDelimiters(line string) []shellHereDocDelimiter {
-	var out []shellHereDocDelimiter
-	quote := byte(0)
-	escaping := false
-	for i := 0; i < len(line); i++ {
-		ch := line[i]
-		if escaping {
-			escaping = false
-			continue
-		}
-		if ch == '\\' && quote != '\'' {
-			escaping = true
-			continue
-		}
-		if quote != 0 {
-			if ch == quote {
-				quote = 0
-			}
-			continue
-		}
-		if ch == '\'' || ch == '"' {
-			quote = ch
-			continue
-		}
-		if ch != '<' || i+1 >= len(line) || line[i+1] != '<' {
-			continue
-		}
-		if i+2 < len(line) && line[i+2] == '<' {
-			i += 2
-			continue
-		}
-		cursor := i + 2
-		stripTabs := false
-		if cursor < len(line) && line[cursor] == '-' {
-			stripTabs = true
-			cursor++
-		}
-		for cursor < len(line) && (line[cursor] == ' ' || line[cursor] == '\t') {
-			cursor++
-		}
-		value, end := readShellHereDocDelimiter(line, cursor)
-		if value != "" {
-			out = append(out, shellHereDocDelimiter{value: value, stripTabs: stripTabs})
-		}
-		if end > i {
-			i = end - 1
-		}
-	}
-	return out
-}
-
-func readShellHereDocDelimiter(line string, start int) (string, int) {
-	var out strings.Builder
-	quote := byte(0)
-	escaping := false
-	for i := start; i < len(line); i++ {
-		ch := line[i]
-		if escaping {
-			out.WriteByte(ch)
-			escaping = false
-			continue
-		}
-		if ch == '\\' && quote != '\'' {
-			escaping = true
-			continue
-		}
-		if quote != 0 {
-			if ch == quote {
-				quote = 0
-			} else {
-				out.WriteByte(ch)
-			}
-			continue
-		}
-		if ch == '\'' || ch == '"' {
-			quote = ch
-			continue
-		}
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ';' || ch == '|' || ch == '&' || ch == '<' || ch == '>' {
-			return out.String(), i
-		}
-		out.WriteByte(ch)
-	}
-	return out.String(), len(line)
-}
-
-func tokenizeShellCommand(command string) []string {
-	var tokens []string
-	var current strings.Builder
-	quote := byte(0)
-	escaping := false
-	expectRedirectTarget := false
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		tokens = append(tokens, current.String())
-		current.Reset()
-		expectRedirectTarget = false
-	}
-	for i := 0; i < len(command); i++ {
-		ch := command[i]
-		if escaping {
-			current.WriteByte(ch)
-			escaping = false
-			continue
-		}
-		if ch == '\\' && quote != '\'' {
-			escaping = true
-			continue
-		}
-		if quote != 0 {
-			if ch == quote {
-				quote = 0
-			} else {
-				current.WriteByte(ch)
-			}
-			continue
-		}
-		if ch == '\'' || ch == '"' {
-			quote = ch
-			continue
-		}
-		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
-			flush()
-			continue
-		}
-		if redirect, end := readShellOutputRedirect(command, i); redirect != "" {
-			flush()
-			tokens = append(tokens, redirect)
-			expectRedirectTarget = true
-			i = end
-			continue
-		}
-		if ch == '&' && expectRedirectTarget && current.Len() == 0 {
-			current.WriteByte(ch)
-			continue
-		}
-		if ch == ';' || ch == '|' || ch == '&' {
-			flush()
-			expectRedirectTarget = false
-			continue
-		}
-		current.WriteByte(ch)
-	}
-	flush()
-	return tokens
-}
-
-func readShellOutputRedirect(source string, index int) (string, int) {
-	if index < 0 || index >= len(source) {
-		return "", index
-	}
-	first := source[index]
-	prefix := ""
-	cursor := index
-	if (first >= '0' && first <= '9') || first == '&' {
-		if index+1 >= len(source) || source[index+1] != '>' {
-			return "", index
-		}
-		prefix = string(first)
-		cursor++
-	} else if first != '>' {
-		return "", index
-	}
-	if cursor >= len(source) || source[cursor] != '>' {
-		return "", index
-	}
-	if cursor+1 < len(source) && source[cursor+1] == '>' {
-		return prefix + ">>", cursor + 1
-	}
-	if cursor+1 < len(source) && source[cursor+1] == '|' {
-		return prefix + ">|", cursor + 1
-	}
-	return prefix + ">", cursor
-}
-
-func isShellOutputRedirect(token string) bool {
-	if token == ">" || token == ">>" || token == ">|" {
-		return true
-	}
-	if len(token) < 2 {
-		return false
-	}
-	prefix := token[:len(token)-1]
-	if strings.HasSuffix(token, ">>") {
-		prefix = token[:len(token)-2]
-	}
-	if strings.HasSuffix(token, ">|") {
-		prefix = token[:len(token)-2]
-	}
-	if prefix == "&" {
-		return true
-	}
-	if prefix == "" {
-		return false
-	}
-	for _, ch := range prefix {
-		if ch < '0' || ch > '9' {
-			return false
-		}
-	}
-	return strings.HasSuffix(token, ">") || strings.HasSuffix(token, ">>") || strings.HasSuffix(token, ">|")
-}
-
-func cleanShellRedirectTarget(target string) string {
-	value := strings.TrimSpace(target)
-	if value == "" || value == "-" || strings.HasPrefix(value, "&") || strings.HasPrefix(value, "(") {
-		return ""
-	}
-	if value == "/dev/null" || strings.HasPrefix(value, "/dev/fd/") {
-		return ""
-	}
-	return value
+	return computed, nil
 }
 
 func tailEvents(items []events.Event, limit int) []events.Event {

@@ -272,6 +272,18 @@ type ToolResult struct {
 	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
+// FileChange is a durable, workspace-relative accounting of how a session
+// mutated a file via write_file, edit_file, or shell output redirects. It is
+// the source of truth for the Web console file-change panel and must only
+// reflect operations that actually succeeded.
+type FileChange struct {
+	Path         string `json:"path"`
+	Writes       int    `json:"writes"`
+	Edits        int    `json:"edits"`
+	LinesAdded   int    `json:"lines_added"`
+	LinesRemoved int    `json:"lines_removed"`
+}
+
 type ProviderContentBlock struct {
 	Provider         string          `json:"provider,omitempty"`
 	ProviderProfile  string          `json:"provider_profile,omitempty"`

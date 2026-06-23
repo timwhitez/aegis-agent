@@ -1079,6 +1079,75 @@ func (s *Store) SaveFeatureList(sessionID string, featureList FeatureList) error
 	return s.writeJSONFile(path, featureList)
 }
 
+// LoadFileChanges returns the durable file-change accounting for a session.
+// A missing file is not an error and yields an empty slice.
+func (s *Store) LoadFileChanges(sessionID string) ([]FileChange, error) {
+	path, err := s.sessionPath(sessionID, "file-changes.json")
+	if err != nil {
+		return nil, err
+	}
+	var changes []FileChange
+	err = readJSONFile(path, &changes)
+	if errors.Is(err, os.ErrNotExist) {
+		return []FileChange{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if changes == nil {
+		changes = []FileChange{}
+	}
+	return changes, nil
+}
+
+// SaveFileChanges persists the full durable file-change accounting for a session.
+func (s *Store) SaveFileChanges(sessionID string, changes []FileChange) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveFileChangesLocked(sessionID, changes)
+}
+
+func (s *Store) saveFileChangesLocked(sessionID string, changes []FileChange) error {
+	path, err := s.sessionPath(sessionID, "file-changes.json")
+	if err != nil {
+		return err
+	}
+	if changes == nil {
+		changes = []FileChange{}
+	}
+	return s.writeJSONFile(path, changes)
+}
+
+// MutateFileChanges applies mutate to the current durable file-change record
+// under the store lock and persists the result, returning the updated slice.
+func (s *Store) MutateFileChanges(sessionID string, mutate func([]FileChange) ([]FileChange, error)) ([]FileChange, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "file-changes.json")
+	if err != nil {
+		return nil, err
+	}
+	var current []FileChange
+	err = readJSONFile(path, &current)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if current == nil {
+		current = []FileChange{}
+	}
+	updated, err := mutate(current)
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil {
+		updated = []FileChange{}
+	}
+	if err := s.saveFileChangesLocked(sessionID, updated); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
 func (s *Store) AppendSteerRequest(sessionID string, request SteerRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

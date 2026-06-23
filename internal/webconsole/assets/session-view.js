@@ -1732,8 +1732,20 @@ function collectFileChanges() {
   }
   const messages = maybeArray(detail.messages);
   const fileMap = {};
+  // Mirror the backend: only count tool calls whose result succeeded. A failed
+  // write_file/edit_file (e.g. "old_text not found") or errored shell must not
+  // appear. This fallback only runs when no durable record is available.
+  const failedCallIds = new Set();
+  messages.forEach((msg) => {
+    maybeArray(msg.tool_results).forEach((res) => {
+      if (res && res.is_error && res.tool_call_id) {
+        failedCallIds.add(String(res.tool_call_id));
+      }
+    });
+  });
   messages.forEach((msg) => {
     maybeArray(msg.tool_calls).forEach((call) => {
+      if (call && call.id && failedCallIds.has(String(call.id))) return;
       const parsed = parseMaybeJSON(call.arguments);
       if (call.name === 'shell') {
         collectShellRedirectPaths(parsed?.command).forEach((redirect) => {
