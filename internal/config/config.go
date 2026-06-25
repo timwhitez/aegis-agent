@@ -40,6 +40,7 @@ type Provider struct {
 	APIKeyEnv           string   `yaml:"api_key_env"`
 	BaseURL             string   `yaml:"base_url"`
 	Model               string   `yaml:"model"`
+	ContextWindowTokens int      `yaml:"context_window_tokens,omitempty"`
 	TimeoutSec          int      `yaml:"timeout_sec"`
 	RequestTimeoutSec   int      `yaml:"request_timeout_sec,omitempty"`
 	StreamIdleTimeoutMS int      `yaml:"stream_idle_timeout_ms,omitempty"`
@@ -149,6 +150,9 @@ type CompactConfig struct {
 	InputCharThreshold    int                              `yaml:"input_char_threshold"`
 	KeepRecentToolResults int                              `yaml:"keep_recent_tool_results"`
 	HysteresisDeltaChars  int                              `yaml:"hysteresis_delta_chars,omitempty"`
+	KeepRecentMessages    int                              `yaml:"keep_recent_messages,omitempty"`
+	UtilizationFactor     float64                          `yaml:"utilization_factor,omitempty"`
+	SemanticSummary       CompactSemanticSummaryConfig     `yaml:"semantic_summary,omitempty"`
 	ContextProfiles       map[string]CompactContextProfile `yaml:"context_profiles,omitempty"`
 }
 
@@ -156,6 +160,13 @@ type CompactContextProfile struct {
 	InputCharThreshold    int `yaml:"input_char_threshold,omitempty"`
 	KeepRecentToolResults int `yaml:"keep_recent_tool_results,omitempty"`
 	HysteresisDeltaChars  int `yaml:"hysteresis_delta_chars,omitempty"`
+	KeepRecentMessages    int `yaml:"keep_recent_messages,omitempty"`
+}
+
+type CompactSemanticSummaryConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	MaxInputChars int  `yaml:"max_input_chars,omitempty"`
+	TimeoutSec    int  `yaml:"timeout_sec,omitempty"`
 }
 
 type ProviderAutoResumeConfig struct {
@@ -333,9 +344,13 @@ func Default() *Config {
 			},
 			ShellEnvAllowlist: []string{"PATH", "HOME", "LANG", "TERM"},
 			Compact: CompactConfig{
-				InputCharThreshold:    160000,
 				KeepRecentToolResults: 3,
-				HysteresisDeltaChars:  40000,
+				UtilizationFactor:     DefaultCompactUtilizationFactor,
+				SemanticSummary: CompactSemanticSummaryConfig{
+					Enabled:       true,
+					MaxInputChars: DefaultCompactSemanticSummaryMaxInputChars,
+					TimeoutSec:    DefaultCompactSemanticSummaryTimeoutSec,
+				},
 			},
 			Ephemeral: EphemeralConfig{
 				Enabled:     true,
@@ -437,6 +452,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	for name, provider := range cfg.Providers {
 		provider.APIProvider = normalizeAPIProvider(provider.APIProvider)
 		provider.ReasoningSummary = normalizeReasoningSummary(provider.ReasoningSummary)
+		if provider.ContextWindowTokens < 0 {
+			provider.ContextWindowTokens = 0
+		}
 		normalizeProviderTimeouts(&provider)
 		normalizeProviderRetry(&provider)
 		if apiProvider, err := EffectiveAPIProvider(name, provider); err == nil && apiProvider == "openai-compatible" && provider.WireAPI == "" {
@@ -464,14 +482,20 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	cfg.Runtime.Shell.Sandbox = strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
 	cfg.Runtime.ExecPolicy.Mode = normalizeExecPolicyMode(cfg.Runtime.ExecPolicy.Mode)
-	if cfg.Runtime.Compact.InputCharThreshold <= 0 {
-		cfg.Runtime.Compact.InputCharThreshold = 160000
-	}
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
 		cfg.Runtime.Compact.KeepRecentToolResults = 3
 	}
-	if cfg.Runtime.Compact.HysteresisDeltaChars <= 0 {
-		cfg.Runtime.Compact.HysteresisDeltaChars = 40000
+	if cfg.Runtime.Compact.UtilizationFactor <= 0 || cfg.Runtime.Compact.UtilizationFactor > 1 {
+		cfg.Runtime.Compact.UtilizationFactor = DefaultCompactUtilizationFactor
+	}
+	if cfg.Runtime.Compact.KeepRecentMessages < 0 {
+		cfg.Runtime.Compact.KeepRecentMessages = 0
+	}
+	if cfg.Runtime.Compact.SemanticSummary.MaxInputChars <= 0 {
+		cfg.Runtime.Compact.SemanticSummary.MaxInputChars = DefaultCompactSemanticSummaryMaxInputChars
+	}
+	if cfg.Runtime.Compact.SemanticSummary.TimeoutSec <= 0 {
+		cfg.Runtime.Compact.SemanticSummary.TimeoutSec = DefaultCompactSemanticSummaryTimeoutSec
 	}
 	if cfg.Runtime.ProviderAutoResume.MaxAttempts <= 0 {
 		cfg.Runtime.ProviderAutoResume.MaxAttempts = defaultProviderAutoResumeMaxAttempt

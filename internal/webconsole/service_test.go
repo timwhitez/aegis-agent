@@ -9644,6 +9644,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		"provider":                "openai",
 		"base_url":                "http://example.invalid/v1",
 		"model":                   "gpt-test",
+		"context_window_tokens":   272000,
 		"reasoning_mode":          "xhigh",
 		"api_key":                 "secret-key",
 		"guardrails_mode":         "standard",
@@ -9668,6 +9669,9 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if openaiProvider["model"] != "gpt-test" {
 		t.Fatalf("expected updated model, got %#v", openaiProvider)
+	}
+	if openaiProvider["context_window_tokens"] != float64(272000) || openaiProvider["effective_context_window_tokens"] != float64(272000) {
+		t.Fatalf("expected updated context window, got %#v", openaiProvider)
 	}
 	if openaiProvider["reasoning_mode"] != "xhigh" || openaiProvider["reasoning_effort"] != "xhigh" {
 		t.Fatalf("expected xhigh reasoning mode, got %#v", openaiProvider)
@@ -9694,6 +9698,9 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(configBytes), "reasoning_effort: xhigh") {
 		t.Fatalf("expected updated reasoning effort to persist to config, got %q", string(configBytes))
+	}
+	if !strings.Contains(string(configBytes), "context_window_tokens: 272000") {
+		t.Fatalf("expected context window to persist to config, got %q", string(configBytes))
 	}
 }
 

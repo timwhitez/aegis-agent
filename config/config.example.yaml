@@ -8,6 +8,9 @@ providers:
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
+    # Optional. If omitted, go-cli-agent uses a known-model table or the
+    # 200000-token default to derive compaction thresholds.
+    # context_window_tokens: 200000
     request_timeout_sec: 300
     stream_idle_timeout_ms: 300000
     retry:
@@ -138,8 +141,18 @@ runtime:
     - LANG
     - TERM
   compact:
-    input_char_threshold: 160000
+    # 0 means derive from provider context_window_tokens / known-model / default.
+    input_char_threshold: 0
     keep_recent_tool_results: 3
+    # 0 means derive from input_char_threshold / 4.
+    hysteresis_delta_chars: 0
+    # 0 means derive proportionally from input_char_threshold.
+    keep_recent_messages: 0
+    utilization_factor: 0.85
+    semantic_summary:
+      enabled: true
+      max_input_chars: 200000
+      timeout_sec: 60
     # Optional overrides keyed by provider/model, model, or provider.
     # context_profiles:
     #   openai/gpt-5.4:

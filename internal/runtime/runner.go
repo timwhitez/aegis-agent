@@ -2600,6 +2600,9 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 	if strings.TrimSpace(opts.BaseURL) != "" {
 		cfg.BaseURL = opts.BaseURL
 	}
+	if opts.ContextWindowTokens > 0 {
+		cfg.ContextWindowTokens = opts.ContextWindowTokens
+	}
 	cfg.Temperature = opts.Temperature
 	cfg.TopP = opts.TopP
 	if opts.MaxOutputTokens > 0 {
@@ -2640,22 +2643,23 @@ func stringsTrim(value string) string {
 func providerOptionsFromConfig(name string, cfg config.Provider) session.ProviderOptions {
 	apiProvider, _ := config.EffectiveAPIProvider(name, cfg)
 	return session.ProviderOptions{
-		APIProvider:      apiProvider,
-		BaseURL:          strings.TrimSpace(cfg.BaseURL),
-		Temperature:      cfg.Temperature,
-		TopP:             cfg.TopP,
-		MaxOutputTokens:  cfg.MaxOutputTokens,
-		ReasoningEffort:  strings.TrimSpace(cfg.ReasoningEffort),
-		ReasoningSummary: strings.TrimSpace(cfg.ReasoningSummary),
-		TextVerbosity:    strings.TrimSpace(cfg.TextVerbosity),
-		ThinkingBudget:   cfg.ThinkingBudget,
-		IncludeThoughts:  cfg.IncludeThoughts,
-		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, cfg.PromptCache),
-		Store:            defaultStoreForAPIProvider(apiProvider, cfg.Store),
-		SendMetadata:     cfg.SendMetadata,
-		RawSidecar:       cfg.RawSidecar,
-		RetryPolicy:      providerRetryPolicy(cfg),
-		TimeoutPolicy:    providerTimeoutPolicy(cfg),
+		APIProvider:         apiProvider,
+		BaseURL:             strings.TrimSpace(cfg.BaseURL),
+		ContextWindowTokens: config.ResolveContextWindowTokens(cfg.Model, cfg.ContextWindowTokens),
+		Temperature:         cfg.Temperature,
+		TopP:                cfg.TopP,
+		MaxOutputTokens:     cfg.MaxOutputTokens,
+		ReasoningEffort:     strings.TrimSpace(cfg.ReasoningEffort),
+		ReasoningSummary:    strings.TrimSpace(cfg.ReasoningSummary),
+		TextVerbosity:       strings.TrimSpace(cfg.TextVerbosity),
+		ThinkingBudget:      cfg.ThinkingBudget,
+		IncludeThoughts:     cfg.IncludeThoughts,
+		PromptCache:         defaultPromptCacheForAPIProvider(apiProvider, cfg.PromptCache),
+		Store:               defaultStoreForAPIProvider(apiProvider, cfg.Store),
+		SendMetadata:        cfg.SendMetadata,
+		RawSidecar:          cfg.RawSidecar,
+		RetryPolicy:         providerRetryPolicy(cfg),
+		TimeoutPolicy:       providerTimeoutPolicy(cfg),
 	}
 }
 
@@ -2702,6 +2706,9 @@ func mergeProviderOptions(defaults, override session.ProviderOptions) session.Pr
 	}
 	if strings.TrimSpace(override.BaseURL) != "" {
 		out.BaseURL = strings.TrimSpace(override.BaseURL)
+	}
+	if override.ContextWindowTokens > 0 {
+		out.ContextWindowTokens = override.ContextWindowTokens
 	}
 	if override.Temperature != nil {
 		out.Temperature = override.Temperature
@@ -2756,6 +2763,7 @@ func preserveDurableProviderOptionDefaults(merged, current session.ProviderOptio
 		merged.TopP = nil
 	}
 	merged.MaxOutputTokens = current.MaxOutputTokens
+	merged.ContextWindowTokens = current.ContextWindowTokens
 	merged.ReasoningEffort = strings.TrimSpace(current.ReasoningEffort)
 	merged.ReasoningSummary = strings.TrimSpace(current.ReasoningSummary)
 	merged.TextVerbosity = strings.TrimSpace(current.TextVerbosity)

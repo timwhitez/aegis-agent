@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,8 @@ type compactor struct {
 	store *session.Store
 }
 
+type semanticSummaryFunc func(context.Context, []session.Message, int) (string, error)
+
 const compactionReferencePrefix = "[Conversation compacted]\nThis compacted summary is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth.\n"
 const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Continue from the latest user instruction and durable task state.\n"
 
@@ -38,12 +41,16 @@ func (c *compactor) BuildWithPolicy(sessionID, workdir string, state session.Sta
 }
 
 func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars int, emit func(events.Event) error) ([]session.Message, int, bool, error) {
+	return c.build(context.Background(), sessionID, workdir, state, messages, todo, tasks, profile, lastCompactionInputChars, 0, nil, emit)
+}
+
+func (c *compactor) build(ctx context.Context, sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, lastCompactionInputChars, systemPromptChars int, summarize semanticSummaryFunc, emit func(events.Event) error) ([]session.Message, int, bool, error) {
 	profile = normalizeCompactionProfile(profile)
 	sourceMessages := cloneMessages(messages)
 	cloned := cloneMessages(sourceMessages)
 	cloned = deduplicateToolResults(cloned)
 	compactOldToolContext(cloned, profile.KeepRecentToolResults)
-	size := estimateChars(cloned)
+	size := estimateChars(cloned) + systemPromptChars
 	if size <= profile.InputCharThreshold {
 		return cloned, size, false, nil
 	}
@@ -53,7 +60,7 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 			return nil, size, false, err
 		}
 		compactText, _ := json.MarshalIndent(summary, "", "  ")
-		recent := recentMessagesForCompaction(cloned, 6)
+		recent := recentMessagesWithinBudget(cloned, profile.KeepRecentMessages, profile.HysteresisDeltaChars)
 		if emit != nil {
 			data, err := c.compactReusedEventData(sessionID, workdir, size, lastCompactionInputChars, profile, todo, tasks, summarySource)
 			if err != nil {
@@ -86,6 +93,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
 		"context_profile":        profile,
+		"threshold_source":       profile.ThresholdSource,
+		"context_window_tokens":  profile.ContextWindowTokens,
+		"keep_recent_messages":   profile.KeepRecentMessages,
 		"project_memory_present": projectMemory.PresentPaths(),
 		"project_memory_missing": projectMemory.MissingPaths(),
 		"todo_count":             len(todo),
@@ -114,6 +124,21 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		return nil, size, false, fmt.Errorf("load feature_list.json for compaction: %w", err)
 	}
 
+	recent := recentMessagesForCompaction(cloned, profile.KeepRecentMessages)
+	semanticSummaryStatus := "disabled"
+	semanticSummaryText := ""
+	if summarize != nil {
+		dropped := droppedMessagesForSemanticSummary(cloned, recent)
+		if len(dropped) == 0 {
+			semanticSummaryStatus = "skipped"
+		} else if text, err := summarize(ctx, dropped, profile.HysteresisDeltaChars); err == nil && strings.TrimSpace(text) != "" {
+			semanticSummaryStatus = "ok"
+			semanticSummaryText = strings.TrimSpace(text)
+		} else {
+			semanticSummaryStatus = "failed"
+		}
+	}
+
 	summary := map[string]any{
 		"completed_items":          collectCompletedItems(todo, tasks),
 		"artifact_memory":          artifactMemory,
@@ -139,6 +164,9 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		"recent_failure_or_pause":  recentFailureOrPause(state),
 		"transcript":               transcriptPath,
 	}
+	if semanticSummaryText != "" {
+		summary["semantic_summary"] = semanticSummaryText
+	}
 	if goal != nil {
 		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
 	}
@@ -148,25 +176,28 @@ func (c *compactor) BuildWithProfile(sessionID, workdir string, state session.St
 		return nil, size, false, err
 	}
 	compactText, _ := json.MarshalIndent(summary, "", "  ")
-	recent := recentMessagesForCompaction(cloned, 6)
 	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.finished", "compact", map[string]any{
-		"summary_path":           summaryPath,
-		"input_chars":            size,
-		"reason":                 "input_char_threshold_exceeded",
-		"context_profile":        profile,
-		"recent_message_count":   len(recent),
-		"project_memory_present": projectMemory.PresentPaths(),
-		"project_memory_missing": projectMemory.MissingPaths(),
-		"todo_count":             len(todo),
-		"ready_task_count":       len(readyTasks),
-		"blocked_task_count":     len(blockedTasks),
-		"completed_task_count":   taskSummary.Completed,
-		"cancelled_task_count":   taskSummary.Cancelled,
-		"done_task_count":        taskSummary.Done,
-		"artifact_memory_count":  len(artifactMemory),
-		"high_value_proof_count": len(highValueProofs),
-		"proof_read_budget":      proofBudget,
-		"goal_present":           goal != nil,
+		"summary_path":            summaryPath,
+		"input_chars":             size,
+		"reason":                  "input_char_threshold_exceeded",
+		"context_profile":         profile,
+		"threshold_source":        profile.ThresholdSource,
+		"context_window_tokens":   profile.ContextWindowTokens,
+		"recent_message_count":    len(recent),
+		"keep_recent_messages":    profile.KeepRecentMessages,
+		"semantic_summary_status": semanticSummaryStatus,
+		"project_memory_present":  projectMemory.PresentPaths(),
+		"project_memory_missing":  projectMemory.MissingPaths(),
+		"todo_count":              len(todo),
+		"ready_task_count":        len(readyTasks),
+		"blocked_task_count":      len(blockedTasks),
+		"completed_task_count":    taskSummary.Completed,
+		"cancelled_task_count":    taskSummary.Cancelled,
+		"done_task_count":         taskSummary.Done,
+		"artifact_memory_count":   len(artifactMemory),
+		"high_value_proof_count":  len(highValueProofs),
+		"proof_read_budget":       proofBudget,
+		"goal_present":            goal != nil,
 	})); err != nil {
 		return nil, size, false, fmt.Errorf("record compact.finished event: %w", err)
 	}
@@ -186,13 +217,13 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 	return emit(evt)
 }
 
-func fallbackCompactionDeferredView(messages []session.Message, profile compactionContextProfile, compactErr error) ([]session.Message, int) {
+func fallbackCompactionDeferredView(messages []session.Message, profile compactionContextProfile, compactErr error, systemPromptChars int) ([]session.Message, int) {
 	profile = normalizeCompactionProfile(profile)
 	cloned := cloneMessages(messages)
 	cloned = deduplicateToolResults(cloned)
 	compactOldToolContext(cloned, 0)
-	inputChars := estimateChars(cloned)
-	recent := recentMessagesForCompaction(cloned, 6)
+	inputChars := estimateChars(cloned) + systemPromptChars
+	recent := recentMessagesForCompaction(cloned, profile.KeepRecentMessages)
 	deferred := session.NewMessage("user", compactionDeferredPrefix+"Deferred reason: "+compactErr.Error())
 	deferred.Meta = map[string]any{
 		"source": "compaction_deferred",
@@ -282,6 +313,9 @@ func (c *compactor) compactReusedEventData(sessionID, workdir string, size, last
 		"hysteresis_delta_chars":      profile.HysteresisDeltaChars,
 		"reason":                      "within_compaction_hysteresis",
 		"context_profile":             profile,
+		"threshold_source":            profile.ThresholdSource,
+		"context_window_tokens":       profile.ContextWindowTokens,
+		"keep_recent_messages":        profile.KeepRecentMessages,
 		"summary_source":              summarySource,
 		"project_memory_present":      projectMemory.PresentPaths(),
 		"project_memory_missing":      projectMemory.MissingPaths(),
@@ -375,6 +409,92 @@ func recentMessagesForCompaction(messages []session.Message, minCount int) []ses
 		}
 	}
 	return out
+}
+
+func recentMessagesWithinBudget(messages []session.Message, minCount, budgetChars int) []session.Message {
+	if budgetChars <= 0 {
+		return recentMessagesForCompaction(messages, minCount)
+	}
+	if len(messages) <= minCount {
+		return messages
+	}
+
+	keep := make([]bool, len(messages))
+	pendingToolCalls := map[string]struct{}{}
+	recentKept := 0
+	usedChars := 0
+	if idx := latestExternalInstructionIndex(messages); idx >= 0 {
+		keep[idx] = true
+		usedChars += estimateChars([]session.Message{messages[idx]})
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		mustKeep := keep[i] || recentKept < minCount || usedChars < budgetChars || assistantMatchesPendingToolCall(msg, pendingToolCalls)
+		if !mustKeep {
+			continue
+		}
+		if !keep[i] {
+			usedChars += estimateChars([]session.Message{msg})
+		}
+		keep[i] = true
+		recentKept++
+
+		if msg.Role == "tool" {
+			for _, result := range msg.ToolResults {
+				if strings.TrimSpace(result.ToolCallID) != "" {
+					pendingToolCalls[result.ToolCallID] = struct{}{}
+				}
+			}
+		}
+		if msg.Role == "assistant" {
+			for _, callID := range assistantToolCallIDs(msg) {
+				delete(pendingToolCalls, callID)
+			}
+		}
+	}
+
+	out := make([]session.Message, 0, len(messages))
+	for i, msg := range messages {
+		if keep[i] {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+func droppedMessagesForSemanticSummary(messages, retained []session.Message) []session.Message {
+	retainedKeys := map[string]int{}
+	for _, msg := range retained {
+		retainedKeys[messageSemanticKey(msg)]++
+	}
+	out := make([]session.Message, 0, len(messages))
+	for _, msg := range messages {
+		key := messageSemanticKey(msg)
+		if retainedKeys[key] > 0 {
+			retainedKeys[key]--
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func messageSemanticKey(msg session.Message) string {
+	if strings.TrimSpace(msg.ID) != "" {
+		return "id:" + strings.TrimSpace(msg.ID)
+	}
+	data, _ := json.Marshal(msg)
+	return "json:" + string(data)
+}
+
+func semanticSummaryInputText(messages []session.Message, maxChars int) string {
+	data, _ := json.Marshal(messages)
+	text := string(data)
+	if maxChars <= 0 || len(text) <= maxChars {
+		return text
+	}
+	return prefixAtRuneBoundary(text, maxChars) + "\n[...truncated for semantic summary input...]"
 }
 
 func compactGoalSnapshot(goal session.SessionGoal) map[string]any {

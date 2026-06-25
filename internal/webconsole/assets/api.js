@@ -173,6 +173,7 @@ function saveConfig(payload) {
     api_provider: payload.apiProvider,
     base_url: payload.baseURL,
     model: payload.model,
+    context_window_tokens: payload.contextWindowTokens,
     reasoning_mode: payload.reasoningMode,
     reasoning_summary: payload.reasoningSummary,
     role_providers: payload.roleProviders,
@@ -186,6 +187,7 @@ function testConfig(payload) {
     api_provider: payload.apiProvider,
     base_url: payload.baseURL,
     model: payload.model,
+    context_window_tokens: payload.contextWindowTokens,
     reasoning_mode: payload.reasoningMode,
     reasoning_summary: payload.reasoningSummary,
     api_key: payload.apiKey

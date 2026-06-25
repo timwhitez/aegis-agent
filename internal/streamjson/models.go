@@ -9,11 +9,12 @@ import (
 )
 
 type Model struct {
-	ID       string         `json:"id"`
-	Label    string         `json:"label"`
-	Provider string         `json:"provider,omitempty"`
-	Default  bool           `json:"default"`
-	Thinking *ModelThinking `json:"thinking,omitempty"`
+	ID            string         `json:"id"`
+	Label         string         `json:"label"`
+	Provider      string         `json:"provider,omitempty"`
+	Default       bool           `json:"default"`
+	ContextWindow int            `json:"context_window,omitempty"`
+	Thinking      *ModelThinking `json:"thinking,omitempty"`
 }
 
 type ModelThinking struct {
@@ -48,10 +49,11 @@ func ModelsFromConfig(cfg *config.Config) ([]Model, error) {
 			return nil, err
 		}
 		model := Model{
-			ID:       name + "/" + modelID,
-			Label:    name + ": " + modelID,
-			Provider: protocolProviderName(apiProvider),
-			Default:  name == cfg.DefaultProvider,
+			ID:            name + "/" + modelID,
+			Label:         name + ": " + modelID,
+			Provider:      protocolProviderName(apiProvider),
+			Default:       name == cfg.DefaultProvider,
+			ContextWindow: config.ResolveContextWindowTokens(modelID, providerCfg.ContextWindowTokens),
 		}
 		if levels := supportedThinkingLevels(apiProvider); len(levels) > 0 {
 			model.Thinking = &ModelThinking{

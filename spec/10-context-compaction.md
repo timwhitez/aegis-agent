@@ -43,10 +43,11 @@ v1 只做最小但完整的三层压缩。
 
 当准备发送给 provider 的上下文中，旧工具结果数量过多时：
 
-- 只保留最近 `N` 个完整 tool result
-- 更老的 tool result 在 provider 输入视图中替换为简短占位摘要
+- 只保留最近 `keep_recent_tool_results` 个完整 tool result
+- 更老的 tool result 在 provider 输入视图中替换为简短占位摘要（head/tail + 原始长度）
 - 原始 `messages.jsonl` 不做覆盖
 - 若某条保留的 `tool_result` 依赖更早的 assistant `tool_call` / provider call id，则必须把对应依赖链一起保留，不能只机械裁掉“最后 N 条”
+- 这一层无论总规模是否超阈值都会执行：始终对超出 `keep_recent_tool_results` 的旧大输出做 head/tail 截断，是最廉价的稳定裁剪
 
 示例：
 
@@ -63,9 +64,9 @@ v1 只做最小但完整的三层压缩。
 3. provider 输入视图改为：
    - 系统说明
    - compact summary
-   - 最近若干条原始消息
+   - 最近 `keep_recent_messages` 条原始消息（成比例于阈值规模，不再固定 6 条；含 tool-call 依赖链）
 
-compact summary 至少保留：
+compact summary 至少保留（确定性结构化抽取，始终生成）：
 
 - 已完成事项
 - 当前工作状态
@@ -77,6 +78,15 @@ compact summary 至少保留：
 - 当前 ready / blocked tasks 摘要
 - 未完成问题
 - 最近一次失败或暂停点
+
+### 4.4 可选语义摘要层
+
+确定性结构化抽取是 baseline，始终生成。在其之上，runtime 默认开启一层 provider 语义摘要（`runtime.compact.semantic_summary.enabled`，默认 `true`），用于补回被裁掉的中段消息里的推理 / 决策 / 试错叙事：
+
+- 输入**只**包含被丢弃的中段消息（不含将要保留的最近尾部、不含完整 transcript），按 `semantic_summary.max_input_chars` 截断，避免重复携带完整历史导致的 `context canceled` / 双份上下文问题。
+- 使用独立的 `semantic_summary.timeout_sec` 超时与自己的请求预算，单次 `RunTurn`，不带工具、不递归触发压缩。
+- 成功时写入 `summary["semantic_summary"]`，compact event 标记 `semantic_summary_status = "ok"`。
+- 失败 / 超时 / 关闭时**绝不**使压缩失败：省略该字段、回退到确定性 baseline，并把状态标记为 `failed` / `skipped` / `disabled`。
 
 ## 5. 关键设计约束
 
@@ -122,8 +132,10 @@ compaction 只影响：
 并记录：
 
 - 触发原因
-- 估算输入规模
-- 保留的 recent messages 数量
+- 估算输入规模（含 system prompt 字符）
+- 阈值来源（`threshold_source`：`explicit` / `context_window` / `context_profiles.<key>`）、`context_window_tokens`、`utilization_factor`
+- 保留的 recent messages 数量（`keep_recent_messages`）
+- 语义摘要状态（`semantic_summary_status`：`ok` / `failed` / `skipped` / `disabled`）
 - 生成的 artifact 路径
 - 是否复用了上一次 compaction 水位
 - 当前 project-memory present / missing 状态
@@ -132,16 +144,44 @@ compaction 只影响：
 
 ## 6. 触发条件
 
+### 6.0 Context Window 与阈值推导
+
+压缩字符阈值默认由模型的 **context window（token 容量）** 自动推导，而不是写死一个字符数：
+
+- 每个 provider 配置可设 `context_window_tokens`（用户自定义）。
+- 未配置时按内置 known-model 表解析（例如 `gpt-5.5 = 300000`）。
+- 仍未命中时使用默认 `200000` tokens。
+- 字符阈值 = `tokens × 4 × utilization_factor`，其中 `4` 是 v1 `chars ≈ tokens` 近似，`utilization_factor` 默认 `0.85`（留余量给输出与估算误差）。
+  - 默认 200k → `200000 × 4 × 0.85 = 680000` 字符。
+  - gpt-5.5 300k → `300000 × 4 × 0.85 = 1020000` 字符。
+
+阈值优先级（高 → 低）：
+
+1. `runtime.compact.context_profiles` 命中的显式 `input_char_threshold`
+2. `runtime.compact.input_char_threshold`（顶层显式，正数即视为显式选择）
+3. 由 `context_window_tokens` / known-model 表 / 200000 默认推导
+4. 最终兜底字符阈值
+
+effective context window 在 session 创建时解析并写入 session metadata（`provider_options.context_window_tokens`），保证 `continue` 不因配置漂移而改变运行中的窗口。
+
 配置项：
 
 - `runtime.compact.input_char_threshold`
+  - 默认 `0`（表示按 context window 自动推导）；正数表示显式覆盖。
 - `runtime.compact.keep_recent_tool_results`
 - `runtime.compact.hysteresis_delta_chars`
+  - 默认 `0`（表示按 `threshold / 4` 自动推导）。
+- `runtime.compact.keep_recent_messages`
+  - 默认 `0`（表示按阈值规模成比例推导，不再固定保留 6 条）。
+- `runtime.compact.utilization_factor`
+  - 默认 `0.85`，取值范围 `(0, 1]`。
 - `runtime.compact.context_profiles`
   - 可选，按 `provider/model`、`model` 或 `provider` 覆盖上述阈值。
-  - 未配置命中时继续使用默认字符阈值，不引入 provider 原生 token 计数或 replay 依赖。
+  - 未配置命中时继续使用 context-window 推导的字符阈值，不引入 provider 原生 token 计数或 replay 依赖。
 
-v1 先用字符数做近似估算，不做 provider 精确 token 计数。provider/model profile 只决定本地 compactor 使用哪组阈值，并写入 summary / compact event 作为诊断事实。超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，附加当前最近消息尾部，并只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。
+v1 仍用字符数做近似估算，不做 provider 精确 token 计数；context window 只用于推导本地字符阈值，并写入 summary / compact event 作为诊断事实（`threshold_source`、`context_window_tokens`、`utilization_factor`、`keep_recent_messages`）。估算输入规模时还会计入本轮组装的 system prompt 字符数，避免 skills / goal / plan 注入很大时低估真实 provider 输入。
+
+超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
 
 ## 6.1 Provider View 裁剪与指令边界
 

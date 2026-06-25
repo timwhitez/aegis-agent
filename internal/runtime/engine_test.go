@@ -852,6 +852,7 @@ func TestEngineDefersCompactionFailureAndContinuesProviderCall(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.Compact.InputCharThreshold = 32
 	cfg.Runtime.Compact.KeepRecentToolResults = 1
+	cfg.Runtime.Compact.SemanticSummary.Enabled = false
 	cfg.Runtime.MaxTurnsHard = 2
 	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
 	oldPrompt := "old prompt " + strings.Repeat("A", 1200)

@@ -288,6 +288,9 @@ session:
 			if model["provider"] != "openai" || model["default"] != true {
 				t.Fatalf("unexpected local model: %#v", model)
 			}
+			if model["context_window"] != float64(200000) {
+				t.Fatalf("unexpected context window in local model: %#v", model)
+			}
 		}
 	}
 	if !found {

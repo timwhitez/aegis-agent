@@ -48,7 +48,7 @@
 
 skill 语义必须跟 Multica workspace shared skills 对齐：成员创建、从 URL 导入、或从本地运行时复制后的 skills 由 Multica 按 agent 当前配置注入到任务工作区 `skills/`，随后 gocli 通过 `./skills` 自动发现。不要把 `~/.codex/skills` 放进 gocli task config；本地运行时 skills 在复制进 Multica workspace 前是私有来源，不是所有 gocli agent 的默认共享上下文。
 
-`gpt-5.5` 的上下文与默认压缩必须按部署机 Codex 元数据对齐。当前远端 Codex `debug models` 对 `gpt-5.5` 返回 `context_window=272000`、`effective_context_window_percent=95`；go-cli-agent v1 compactor 使用字符数近似，因此 Multica gocli 全局配置应给 `runtime.compact.context_profiles.openai/gpt-5.5` 设置 `input_char_threshold: 1033600`（`272000 * 0.95 * 4`）和 `hysteresis_delta_chars: 258400`，不要沿用通用 `160000` 字符默认。
+`gpt-5.5` 的上下文与默认压缩现在由 go-cli-agent 内置 known-model 表驱动：`gpt-5.5` 默认 context window 为 `300000` tokens，compactor 自动推导字符阈值 `300000 * 4 * 0.85 = 1020000`，不再沿用通用 `160000` 字符默认。若需与部署机 Codex 元数据精确对齐（远端 Codex `debug models` 对 `gpt-5.5` 返回 `context_window=272000`、`effective_context_window_percent=95`，即 `272000 * 0.95 * 4 = 1033600`），仍可用最高优先级的显式覆盖：给 `runtime.compact.context_profiles.openai/gpt-5.5` 设置 `input_char_threshold: 1033600`、`hysteresis_delta_chars: 258400`，或直接给该 provider 配置 `context_window_tokens: 272000`。
 
 ## 开发 Phase
 

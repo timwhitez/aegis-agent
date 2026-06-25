@@ -3981,19 +3981,21 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	for name, p := range cfg.Providers {
 		effectiveAPIProvider, _ := config.EffectiveAPIProvider(name, p)
 		provs[name] = map[string]any{
-			"api_provider":            strings.TrimSpace(p.APIProvider),
-			"effective_api_provider":  effectiveAPIProvider,
-			"base_url":                p.BaseURL,
-			"model":                   p.Model,
-			"has_key":                 cfg.APIKey(name) != "",
-			"reasoning_mode":          providerReasoningMode(name, p),
-			"reasoning_modes":         providerReasoningModes(name, p),
-			"reasoning_summary":       providerReasoningSummary(p),
-			"reasoning_summary_modes": providerReasoningSummaryModes(name, p),
-			"reasoning_effort":        strings.TrimSpace(p.ReasoningEffort),
-			"thinking_budget":         p.ThinkingBudget,
-			"include_thoughts":        p.IncludeThoughts,
-			"max_output_tokens":       p.MaxOutputTokens,
+			"api_provider":                    strings.TrimSpace(p.APIProvider),
+			"effective_api_provider":          effectiveAPIProvider,
+			"base_url":                        p.BaseURL,
+			"model":                           p.Model,
+			"context_window_tokens":           p.ContextWindowTokens,
+			"effective_context_window_tokens": config.ResolveContextWindowTokens(p.Model, p.ContextWindowTokens),
+			"has_key":                         cfg.APIKey(name) != "",
+			"reasoning_mode":                  providerReasoningMode(name, p),
+			"reasoning_modes":                 providerReasoningModes(name, p),
+			"reasoning_summary":               providerReasoningSummary(p),
+			"reasoning_summary_modes":         providerReasoningSummaryModes(name, p),
+			"reasoning_effort":                strings.TrimSpace(p.ReasoningEffort),
+			"thinking_budget":                 p.ThinkingBudget,
+			"include_thoughts":                p.IncludeThoughts,
+			"max_output_tokens":               p.MaxOutputTokens,
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -4083,6 +4085,13 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Model != nil {
 			p.Model = strings.TrimSpace(*req.Model)
+		}
+		if req.ContextWindowTokens != nil {
+			if *req.ContextWindowTokens < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be non-negative"))
+				return
+			}
+			p.ContextWindowTokens = *req.ContextWindowTokens
 		}
 		if req.APIProvider != nil {
 			p.APIProvider = strings.TrimSpace(*req.APIProvider)
@@ -4234,6 +4243,7 @@ func configRequestHasProviderScopedFields(req UpdateConfigRequest) bool {
 	return req.APIProvider != nil ||
 		req.BaseURL != nil ||
 		req.Model != nil ||
+		req.ContextWindowTokens != nil ||
 		(req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey) ||
 		(req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "") ||
 		(req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "")
@@ -4580,6 +4590,13 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Model != nil {
 		p.Model = strings.TrimSpace(*req.Model)
 	}
+	if req.ContextWindowTokens != nil {
+		if *req.ContextWindowTokens < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be non-negative"))
+			return
+		}
+		p.ContextWindowTokens = *req.ContextWindowTokens
+	}
 	if req.APIProvider != nil {
 		p.APIProvider = strings.TrimSpace(*req.APIProvider)
 	}
@@ -4625,26 +4642,28 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, TestConfigResponse{
-		Success:                    true,
-		Provider:                   result.Provider,
-		APIProvider:                strings.TrimSpace(p.APIProvider),
-		EffectiveAPIProvider:       effectiveAPIProvider,
-		Model:                      result.Model,
-		ReasoningMode:              providerReasoningMode(providerName, p),
-		ReasoningSummary:           providerReasoningSummary(p),
-		StopReason:                 result.StopReason,
-		FinishMessage:              result.FinishMessage,
-		ReasoningEffort:            strings.TrimSpace(p.ReasoningEffort),
-		ReasoningSummaryObserved:   result.ReasoningSummaryObserved,
-		ReasoningEncryptedObserved: result.ReasoningEncryptedObserved,
-		ReasoningTokens:            result.ReasoningTokens,
-		ThinkingBudget:             p.ThinkingBudget,
-		ThinkingVisibleObserved:    result.ThinkingVisibleObserved,
-		ThinkingReplayObserved:     result.ThinkingReplayObserved,
-		ThinkingDetail:             result.ThinkingDetail,
-		ThinkingStrategy:           result.ThinkingStrategy,
-		MaxOutputTokens:            p.MaxOutputTokens,
-		IncludeThoughts:            p.IncludeThoughts,
+		Success:                      true,
+		Provider:                     result.Provider,
+		APIProvider:                  strings.TrimSpace(p.APIProvider),
+		EffectiveAPIProvider:         effectiveAPIProvider,
+		Model:                        result.Model,
+		ContextWindowTokens:          p.ContextWindowTokens,
+		EffectiveContextWindowTokens: config.ResolveContextWindowTokens(p.Model, p.ContextWindowTokens),
+		ReasoningMode:                providerReasoningMode(providerName, p),
+		ReasoningSummary:             providerReasoningSummary(p),
+		StopReason:                   result.StopReason,
+		FinishMessage:                result.FinishMessage,
+		ReasoningEffort:              strings.TrimSpace(p.ReasoningEffort),
+		ReasoningSummaryObserved:     result.ReasoningSummaryObserved,
+		ReasoningEncryptedObserved:   result.ReasoningEncryptedObserved,
+		ReasoningTokens:              result.ReasoningTokens,
+		ThinkingBudget:               p.ThinkingBudget,
+		ThinkingVisibleObserved:      result.ThinkingVisibleObserved,
+		ThinkingReplayObserved:       result.ThinkingReplayObserved,
+		ThinkingDetail:               result.ThinkingDetail,
+		ThinkingStrategy:             result.ThinkingStrategy,
+		MaxOutputTokens:              p.MaxOutputTokens,
+		IncludeThoughts:              p.IncludeThoughts,
 	})
 }
 

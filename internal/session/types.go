@@ -58,22 +58,23 @@ type ProviderTimeoutPolicy struct {
 }
 
 type ProviderOptions struct {
-	APIProvider      string                 `json:"api_provider,omitempty"`
-	BaseURL          string                 `json:"base_url,omitempty"`
-	Temperature      *float64               `json:"temperature,omitempty"`
-	TopP             *float64               `json:"top_p,omitempty"`
-	MaxOutputTokens  int                    `json:"max_output_tokens,omitempty"`
-	ReasoningEffort  string                 `json:"reasoning_effort,omitempty"`
-	ReasoningSummary string                 `json:"reasoning_summary,omitempty"`
-	TextVerbosity    string                 `json:"text_verbosity,omitempty"`
-	ThinkingBudget   int                    `json:"thinking_budget,omitempty"`
-	IncludeThoughts  *bool                  `json:"include_thoughts,omitempty"`
-	PromptCache      *bool                  `json:"prompt_cache,omitempty"`
-	Store            *bool                  `json:"store,omitempty"`
-	SendMetadata     *bool                  `json:"send_metadata,omitempty"`
-	RawSidecar       *bool                  `json:"raw_sidecar,omitempty"`
-	RetryPolicy      *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
-	TimeoutPolicy    *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
+	APIProvider         string                 `json:"api_provider,omitempty"`
+	BaseURL             string                 `json:"base_url,omitempty"`
+	ContextWindowTokens int                    `json:"context_window_tokens,omitempty"`
+	Temperature         *float64               `json:"temperature,omitempty"`
+	TopP                *float64               `json:"top_p,omitempty"`
+	MaxOutputTokens     int                    `json:"max_output_tokens,omitempty"`
+	ReasoningEffort     string                 `json:"reasoning_effort,omitempty"`
+	ReasoningSummary    string                 `json:"reasoning_summary,omitempty"`
+	TextVerbosity       string                 `json:"text_verbosity,omitempty"`
+	ThinkingBudget      int                    `json:"thinking_budget,omitempty"`
+	IncludeThoughts     *bool                  `json:"include_thoughts,omitempty"`
+	PromptCache         *bool                  `json:"prompt_cache,omitempty"`
+	Store               *bool                  `json:"store,omitempty"`
+	SendMetadata        *bool                  `json:"send_metadata,omitempty"`
+	RawSidecar          *bool                  `json:"raw_sidecar,omitempty"`
+	RetryPolicy         *ProviderRetryPolicy   `json:"retry_policy,omitempty"`
+	TimeoutPolicy       *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
 }
 
 type SessionMetadata struct {

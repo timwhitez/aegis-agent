@@ -37,7 +37,7 @@
 | Multica 只改 `server/pkg/agent` | daemon 不会自动发现/register `gocli` | 增补 `server/internal/daemon/config.go`、`daemon.go`、`execenv/*` 修改 |
 | stdin control/cancel 作为 MVP | Multica 现有 backends 用 context/process cancellation，不需要 stdin control | MVP stdin 只读一条 user prompt，然后关闭 |
 | `MULTICA_GOCLI_ARGS --config ...` 同时影响模型发现 | Multica `ListModels` 当前只接收 executable path，不接收 execution args | 非默认 go-cli-agent config 用 daemon 环境 `GO_CLI_AGENT_CONFIG` 对齐 `models --json` 和 `exec` |
-| `gpt-5.5` 仍用 go-cli-agent 160k 字符默认压缩 | 远端 Codex `debug models` 的 `gpt-5.5` 默认窗口是 `context_window=272000`、`effective_context_window_percent=95` | go-cli-agent v1 compactor 是字符近似；Multica gocli 部署用 `openai/gpt-5.5` context profile 设置 `input_char_threshold=1033600`、`hysteresis_delta_chars=258400` |
+| `gpt-5.5` 仍用 go-cli-agent 160k 字符默认压缩 | 远端 Codex `debug models` 的 `gpt-5.5` 默认窗口是 `context_window=272000`、`effective_context_window_percent=95` | go-cli-agent 内置 known-model 表令 `gpt-5.5` 默认 context window=300000，自动推导 `input_char_threshold=1020000`（`300000*4*0.85`）；如需与 Codex 精确对齐用最高优先级覆盖 `context_profiles.openai/gpt-5.5.input_char_threshold=1033600`、`hysteresis_delta_chars=258400`，或 `context_window_tokens=272000` |
 | gocli 直接扫描 Codex 全局 skills | Multica workspace skills 才是任务共享事实源；本地运行时 skills 在复制/导入前是私有来源 | gocli task config 只扫描 `./skills`；Multica execenv 按 agent 当前 skill 集动态写入 `{workDir}/skills` |
 
 ## 目录结构

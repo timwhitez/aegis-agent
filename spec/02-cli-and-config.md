@@ -384,9 +384,15 @@ runtime:
     - LANG
     - TERM
   compact:
-    input_char_threshold: 160000
+    input_char_threshold: 0
     keep_recent_tool_results: 3
-    hysteresis_delta_chars: 40000
+    hysteresis_delta_chars: 0
+    keep_recent_messages: 0
+    utilization_factor: 0.85
+    semantic_summary:
+      enabled: true
+      max_input_chars: 200000
+      timeout_sec: 60
   multi_agent:
     enabled: true
     max_depth: 4
@@ -407,6 +413,11 @@ hooks:
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
 - `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
+- Settings 页面还可暴露 provider `context_window_tokens` 数值输入，保存时持久化回当前生效的 config 文件
+- `runtime.compact.input_char_threshold` 默认 `0`，表示按模型 context window 自动推导字符阈值（`context_window_tokens × 4 × utilization_factor`）；显式正数即覆盖。`hysteresis_delta_chars`、`keep_recent_messages` 默认 `0` 表示自动推导（分别为 `threshold / 4` 与按阈值规模成比例的保留消息数），显式正数覆盖
+- 阈值优先级：`runtime.compact.context_profiles` 命中的 `input_char_threshold` > 顶层显式 `input_char_threshold` > 由 `context_window_tokens` / known-model / 200000 推导
+- `runtime.compact.utilization_factor` 默认 `0.85`，取值 `(0, 1]`
+- `runtime.compact.semantic_summary.enabled` 默认 `true`：对被裁掉的中段消息做一次有界、独立超时的 provider 语义摘要补充确定性结构化摘要；失败 / 超时不会使压缩失败，回退到确定性 baseline
 
 ## 8. Provider 配置字段
 
@@ -416,6 +427,7 @@ hooks:
 - `api_provider`：协议 / adapter family，例如 `openai-compatible`、`anthropic-compatible`、`google`；Provider map key 只是 Provider Profile 名称
 - `base_url`
 - `model`
+- `context_window_tokens`：可选，模型的上下文窗口 token 容量；用于自动推导压缩字符阈值（见下方 compact 说明）。未配置时按内置 known-model 表解析（例如 `gpt-5.5 = 300000`），仍未命中时默认 `200000`
 - `timeout_sec`
 - `request_timeout_sec`
 - `stream_idle_timeout_ms`

@@ -4663,6 +4663,9 @@ func validateProviderOptions(options ProviderOptions) error {
 	if options.MaxOutputTokens < 0 {
 		return errors.New("provider_options.max_output_tokens must be non-negative")
 	}
+	if options.ContextWindowTokens < 0 {
+		return errors.New("provider_options.context_window_tokens must be non-negative")
+	}
 	if options.ThinkingBudget < 0 {
 		return errors.New("provider_options.thinking_budget must be non-negative")
 	}

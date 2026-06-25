@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -257,6 +258,139 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 }
 
+func TestCompactorIncludesSemanticSummaryWhenProviderSummarySucceeds(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "middle decision: use context windows"),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
+		session.NewMessage("user", "latest instruction"),
+	}
+	var sawDropped bool
+	var emitted []events.Event
+	profile := compactionContextProfile{
+		Source:                "test",
+		InputCharThreshold:    32,
+		KeepRecentToolResults: 1,
+		HysteresisDeltaChars:  8,
+		KeepRecentMessages:    1,
+	}
+	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(_ context.Context, dropped []session.Message, budget int) (string, error) {
+		sawDropped = len(dropped) > 0 && budget > 0
+		return "semantic middle summary", nil
+	}, func(evt events.Event) error {
+		emitted = append(emitted, evt)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !didCompact || len(view) == 0 {
+		t.Fatalf("expected compaction, didCompact=%v view=%#v", didCompact, view)
+	}
+	if !sawDropped {
+		t.Fatal("expected semantic summarizer to receive dropped messages and budget")
+	}
+	if !strings.Contains(view[0].Text, `"semantic_summary": "semantic middle summary"`) {
+		t.Fatalf("expected semantic summary in compacted view, got %q", view[0].Text)
+	}
+	if len(emitted) != 2 || emitted[1].Data["semantic_summary_status"] != "ok" {
+		t.Fatalf("expected ok semantic summary event, got %#v", emitted)
+	}
+}
+
+func TestCompactorFallsBackWhenSemanticSummaryFails(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", "middle decision"),
+		session.NewAssistantMessage(strings.Repeat("A", 512), "", nil),
+		session.NewMessage("user", "latest instruction"),
+	}
+	var emitted []events.Event
+	profile := compactionContextProfile{
+		Source:                "test",
+		InputCharThreshold:    32,
+		KeepRecentToolResults: 1,
+		HysteresisDeltaChars:  8,
+		KeepRecentMessages:    1,
+	}
+	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(context.Context, []session.Message, int) (string, error) {
+		return "", errors.New("summary unavailable")
+	}, func(evt events.Event) error {
+		emitted = append(emitted, evt)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("build should not fail on semantic summary error: %v", err)
+	}
+	if !didCompact || len(view) == 0 {
+		t.Fatalf("expected compaction, didCompact=%v view=%#v", didCompact, view)
+	}
+	if strings.Contains(view[0].Text, "semantic_summary") {
+		t.Fatalf("semantic summary should be omitted on failure, got %q", view[0].Text)
+	}
+	if len(emitted) != 2 || emitted[1].Data["semantic_summary_status"] != "failed" {
+		t.Fatalf("expected failed semantic summary event, got %#v", emitted)
+	}
+}
+
+func TestCompactorCountsSystemPromptCharsForThreshold(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{session.NewMessage("user", "small request")}
+	profile := compactionProfileForPolicy(1024, 1, 0)
+	view, inputChars, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 2048, nil, func(events.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !didCompact {
+		t.Fatalf("expected system prompt chars to trigger compaction, input=%d view=%#v", inputChars, view)
+	}
+}
+
 func TestCompactorReportsEventEmitErrors(t *testing.T) {
 	newSession := func(t *testing.T) (*session.Store, session.SessionMetadata, session.State, []session.Message) {
 		t.Helper()
@@ -374,7 +508,7 @@ func TestFallbackCompactionDeferredViewDoesNotRetainFullHistory(t *testing.T) {
 		session.NewMessage("user", "recent user four"),
 		session.NewMessage("user", "latest user instruction"),
 	}
-	view, _ := fallbackCompactionDeferredView(messages, compactionProfileForPolicy(32, 1, 0), errors.New("write summary failed"))
+	view, _ := fallbackCompactionDeferredView(messages, compactionProfileForPolicy(32, 1, 0), errors.New("write summary failed"), 0)
 	if len(view) == 0 || view[0].Meta["source"] != "compaction_deferred" {
 		t.Fatalf("expected leading deferred message, got %#v", view)
 	}
@@ -570,6 +704,9 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	if strings.Contains(view[0].Text, "Continue the large audit") {
 		t.Fatalf("expected reused summary prefix to stay stable, got %q", view[0].Text)
 	}
+	if len(view) < 2 || !strings.Contains(view[len(view)-1].Text, "A") {
+		t.Fatalf("expected hysteresis reuse to carry recent tail messages, got %#v", view)
+	}
 	if len(emitted) != 1 || emitted[0].Type != "compact.reused" {
 		t.Fatalf("expected compact.reused event only, got %#v", emitted)
 	}
@@ -747,6 +884,59 @@ func TestCompactionProfileFromConfigUsesProviderModelOverride(t *testing.T) {
 	}
 	if profile.Source != "runtime.compact.context_profiles.openai/gpt-test" {
 		t.Fatalf("unexpected profile source: %#v", profile)
+	}
+	if profile.ThresholdSource != "context_profiles.openai/gpt-test" {
+		t.Fatalf("unexpected threshold source: %#v", profile)
+	}
+}
+
+func TestCompactionProfileFromConfigDerivesFromContextWindow(t *testing.T) {
+	meta := session.SessionMetadata{
+		Provider: "openai",
+		Model:    "gpt-5.5",
+	}
+	profile := compactionProfileFromConfig(meta, config.CompactConfig{
+		KeepRecentToolResults: 3,
+		UtilizationFactor:     0.85,
+	})
+	if profile.ContextWindowTokens != 300000 {
+		t.Fatalf("expected gpt-5.5 known context window, got %#v", profile)
+	}
+	if profile.InputCharThreshold != 1020000 {
+		t.Fatalf("expected derived threshold 1020000, got %#v", profile)
+	}
+	if profile.HysteresisDeltaChars != 255000 {
+		t.Fatalf("expected derived hysteresis, got %#v", profile)
+	}
+	if profile.KeepRecentMessages <= 6 {
+		t.Fatalf("expected proportional recent message window, got %#v", profile)
+	}
+	if profile.ThresholdSource != "context_window" {
+		t.Fatalf("expected context_window threshold source, got %#v", profile)
+	}
+}
+
+func TestCompactionProfileFromConfigExplicitThresholdWins(t *testing.T) {
+	meta := session.SessionMetadata{
+		Provider: "openai",
+		Model:    "gpt-5.5",
+		ProviderOptions: session.ProviderOptions{
+			ContextWindowTokens: 272000,
+		},
+	}
+	profile := compactionProfileFromConfig(meta, config.CompactConfig{
+		InputCharThreshold:    12345,
+		KeepRecentToolResults: 3,
+		UtilizationFactor:     0.85,
+	})
+	if profile.InputCharThreshold != 12345 {
+		t.Fatalf("expected explicit threshold to win, got %#v", profile)
+	}
+	if profile.ContextWindowTokens != 272000 {
+		t.Fatalf("expected provider context window to be recorded, got %#v", profile)
+	}
+	if profile.ThresholdSource != "explicit" {
+		t.Fatalf("expected explicit threshold source, got %#v", profile)
 	}
 }
 

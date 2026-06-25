@@ -146,6 +146,11 @@ async function renderSettings() {
             <input id="settings-model" class="settings-input" type="text">
           </div>
           <div class="field">
+            <label class="field-label">Context Window Tokens</label>
+            <input id="settings-context-window" class="settings-input" type="number" min="0" step="1" placeholder="Auto">
+            <p class="view-subtitle settings-help">0 uses the known-model table or the 200000-token default.</p>
+          </div>
+          <div class="field">
             <label class="field-label">Reasoning Mode</label>
             <select id="settings-reasoning-mode" class="settings-input"></select>
             <p id="settings-reasoning-help" class="view-subtitle settings-help"></p>
@@ -194,6 +199,7 @@ async function renderSettings() {
     const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
     const baseURLInput = document.getElementById('settings-baseurl');
     const modelInput = document.getElementById('settings-model');
+    const contextWindowInput = document.getElementById('settings-context-window');
     const reasoningModeSelect = document.getElementById('settings-reasoning-mode');
     const reasoningHelp = document.getElementById('settings-reasoning-help');
     const reasoningSummarySelect = document.getElementById('settings-reasoning-summary');
@@ -267,6 +273,7 @@ async function renderSettings() {
       }
       baseURLInput.value = provider.base_url || '';
       modelInput.value = provider.model || '';
+      contextWindowInput.value = provider.context_window_tokens ? String(provider.context_window_tokens) : '';
       apiProviderSelect.value = provider.api_provider || '';
       apiKeyInput.value = provider.has_key ? maskedKey : '';
       apiKeyInput.dataset.originalHasKey = provider.has_key ? 'true' : 'false';
@@ -324,6 +331,17 @@ async function renderSettings() {
       });
       return out;
     };
+    const currentContextWindowTokens = () => {
+      const raw = contextWindowInput.value.trim();
+      if (raw === '') {
+        return 0;
+      }
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error('Context window tokens must be a non-negative integer.');
+      }
+      return parsed;
+    };
     const buildConfigPayload = () => ({
       guardrailsMode: guardrailsSelect.value,
       maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
@@ -332,6 +350,7 @@ async function renderSettings() {
       apiProvider: apiProviderSelect.value,
       baseURL: baseURLInput.value,
       model: modelInput.value,
+      contextWindowTokens: currentContextWindowTokens(),
       reasoningMode: reasoningModeSelect.value,
       reasoningSummary: reasoningSummarySelect.value,
       roleProviders: collectRoleProviders(),

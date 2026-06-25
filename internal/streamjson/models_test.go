@@ -26,6 +26,9 @@ func TestModelsFromConfigUsesProviderRouteIDs(t *testing.T) {
 			if model.Thinking == nil || len(model.Thinking.SupportedLevels) != 4 || model.Thinking.DefaultLevel != "medium" {
 				t.Fatalf("expected thinking catalog, got %#v", model.Thinking)
 			}
+			if model.ContextWindow != config.DefaultContextWindowTokens {
+				t.Fatalf("expected default context window, got %#v", model)
+			}
 			var hasXHigh bool
 			for _, level := range model.Thinking.SupportedLevels {
 				if level.Value == "xhigh" {
@@ -61,4 +64,26 @@ func TestModelsFromConfigUsesConfiguredThinkingDefault(t *testing.T) {
 		}
 	}
 	t.Fatalf("openai model not found in %#v", models)
+}
+
+func TestModelsFromConfigUsesConfiguredContextWindow(t *testing.T) {
+	cfg := config.Default()
+	openai := cfg.Providers["openai"]
+	openai.Model = "gpt-5.5"
+	openai.ContextWindowTokens = 272000
+	cfg.Providers["openai"] = openai
+
+	models, err := ModelsFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	for _, model := range models {
+		if model.ID == "openai/gpt-5.5" {
+			if model.ContextWindow != 272000 {
+				t.Fatalf("expected configured context window, got %#v", model)
+			}
+			return
+		}
+	}
+	t.Fatalf("openai gpt-5.5 model not found in %#v", models)
 }
