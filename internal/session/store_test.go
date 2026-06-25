@@ -311,6 +311,146 @@ func TestAppendEventRejectsMalformedExistingLog(t *testing.T) {
 	}
 }
 
+func TestAppendEventRepairsTrailingPartialExistingLog(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := events.New(meta.ID, "first.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, first); err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	path := filepath.Join(store.SessionDir(meta.ID), "events.jsonl")
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open events: %v", err)
+	}
+	if _, err := file.Write([]byte(`{"id":"partial-event"`)); err != nil {
+		_ = file.Close()
+		t.Fatalf("write partial event: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close events: %v", err)
+	}
+
+	later := events.New(meta.ID, "later.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, later); err != nil {
+		t.Fatalf("append after trailing partial repair: %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events after repair: %v", err)
+	}
+	if len(loaded) != 3 {
+		t.Fatalf("expected first, repair, and later events, got %#v", loaded)
+	}
+	if loaded[0].ID != first.ID || loaded[1].Type != "store.jsonl.repaired" || loaded[2].ID != later.ID {
+		t.Fatalf("unexpected repaired event order: %#v", loaded)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if strings.Contains(string(raw), "partial-event") {
+		t.Fatalf("partial event fragment remained after repair: %q", string(raw))
+	}
+}
+
+func TestAppendEventRejectsDuplicateFromValidationCache(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	event := events.New(meta.ID, "first.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, event); err != nil {
+		t.Fatalf("append first event: %v", err)
+	}
+	if err := store.AppendEvent(meta.ID, event); err == nil || !strings.Contains(err.Error(), "duplicate event id") {
+		t.Fatalf("expected duplicate event rejection, got %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != event.ID {
+		t.Fatalf("duplicate append changed durable log: %#v", loaded)
+	}
+}
+
+func TestAppendEventNormalizesValidTrailingRecordWithoutNewline(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	first := events.New(meta.ID, "first.event", "test", nil)
+	raw, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first event: %v", err)
+	}
+	path := filepath.Join(store.SessionDir(meta.ID), "events.jsonl")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write event without trailing newline: %v", err)
+	}
+
+	later := events.New(meta.ID, "later.event", "test", nil)
+	if err := store.AppendEvent(meta.ID, later); err != nil {
+		t.Fatalf("append after valid unterminated line: %v", err)
+	}
+	loaded, err := store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(loaded) != 2 || loaded[0].ID != first.ID || loaded[1].ID != later.ID {
+		t.Fatalf("unexpected events after newline normalization: %#v", loaded)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if got := strings.Count(string(raw), "\n"); got != 2 {
+		t.Fatalf("expected normalized JSONL to contain two lines, got %d: %q", got, string(raw))
+	}
+}
+
 func TestRestoreEventsReplacesDurableLogAndRejectsMalformedFacts(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

@@ -28,6 +28,12 @@ type Store struct {
 	dirMode  fs.FileMode
 	fileMode fs.FileMode
 	mu       sync.Mutex
+	// jsonlValidated tracks the byte offset through which this Store instance
+	// has already validated append-only JSONL files. It is guarded by mu.
+	jsonlValidated map[string]int64
+	// eventIDs caches known event ids for events.jsonl files after validation.
+	// It is guarded by mu and invalidated when an events log is rewritten.
+	eventIDs map[string]map[string]struct{}
 
 	// Set only by package tests to force deterministic Plan Mode artifact failures.
 	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
@@ -54,9 +60,11 @@ func NewStore(root string) *Store {
 func NewStoreWithDirMode(root string, dirMode fs.FileMode) *Store {
 	dirMode = normalizeDirMode(dirMode)
 	return &Store{
-		root:     root,
-		dirMode:  dirMode,
-		fileMode: deriveFileMode(dirMode),
+		root:           root,
+		dirMode:        dirMode,
+		fileMode:       deriveFileMode(dirMode),
+		jsonlValidated: make(map[string]int64),
+		eventIDs:       make(map[string]map[string]struct{}),
 	}
 }
 
@@ -347,12 +355,10 @@ func (s *Store) AppendMessage(sessionID string, message Message) error {
 	if err != nil {
 		return err
 	}
-	if err := readJSONLVisit(path, func(existing Message) error {
-		return validateMessage(existing)
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := appendJSONLRecordsChecked(s, path, []Message{message}, validateMessage, nil); err != nil {
 		return fmt.Errorf("load messages %s: validate messages.jsonl: %w", path, err)
 	}
-	return s.appendJSONL(path, message)
+	return nil
 }
 
 func (s *Store) RemoveLastMessageIfID(sessionID, messageID string) error {
@@ -707,13 +713,8 @@ func (s *Store) AppendProviderAttempt(sessionID string, attempt ProviderAttempt)
 	if err != nil {
 		return err
 	}
-	if err := readJSONLVisit(path, func(existing ProviderAttempt) error {
-		return validateProviderAttempt(existing)
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if _, err := appendJSONLRecordsChecked(s, path, []ProviderAttempt{attempt}, validateProviderAttempt, nil); err != nil {
 		return fmt.Errorf("validate provider-attempts.jsonl: %w", err)
-	}
-	if err := s.appendJSONL(path, attempt); err != nil {
-		return fmt.Errorf("append provider attempt %s: %w", path, err)
 	}
 	return nil
 }
@@ -948,22 +949,39 @@ func (s *Store) AppendEvent(sessionID string, event events.Event) error {
 	if err != nil {
 		return err
 	}
-	seen := map[string]struct{}{event.ID: {}}
-	if err := readJSONLVisit(path, func(existing events.Event) error {
+	newIDs := map[string]struct{}{event.ID: {}}
+	if known := s.eventIDs[path]; known != nil {
+		if _, ok := known[event.ID]; ok {
+			return fmt.Errorf("validate events.jsonl: duplicate event id: %s", event.ID)
+		}
+	}
+	scannedIDs := map[string]struct{}{}
+	appendedIDs := map[string]struct{}{event.ID: {}}
+	if _, err := appendJSONLRecordsChecked(s, path, []events.Event{event}, func(existing events.Event) error {
 		if err := validateEvent(sessionID, existing); err != nil {
 			return err
 		}
-		if _, ok := seen[existing.ID]; ok {
+		if _, ok := newIDs[existing.ID]; ok {
 			return fmt.Errorf("duplicate event id: %s", existing.ID)
 		}
-		seen[existing.ID] = struct{}{}
+		if _, ok := scannedIDs[existing.ID]; ok {
+			return fmt.Errorf("duplicate event id: %s", existing.ID)
+		}
+		scannedIDs[existing.ID] = struct{}{}
 		return nil
-	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+	}, func(repair jsonlRepair) (events.Event, bool) {
+		evt := events.New(sessionID, "store.jsonl.repaired", "store", map[string]any{
+			"file":             filepath.Base(repair.Path),
+			"reason":           repair.Reason,
+			"truncated_bytes":  repair.TruncatedBytes,
+			"truncated_offset": repair.TruncatedOffset,
+		})
+		appendedIDs[evt.ID] = struct{}{}
+		return evt, true
+	}); err != nil {
 		return fmt.Errorf("validate events.jsonl: %w", err)
 	}
-	if err := s.appendJSONL(path, event); err != nil {
-		return fmt.Errorf("append event %s: %w", path, err)
-	}
+	s.rememberEventIDs(path, scannedIDs, appendedIDs)
 	return nil
 }
 
@@ -980,27 +998,47 @@ func (s *Store) AppendEvents(sessionID string, items []events.Event) error {
 	if err != nil {
 		return err
 	}
-	seen := make(map[string]struct{}, len(items))
+	newIDs := make(map[string]struct{}, len(items))
 	for _, item := range items {
-		seen[item.ID] = struct{}{}
+		newIDs[item.ID] = struct{}{}
 	}
-	if err := readJSONLVisit(path, func(existing events.Event) error {
+	if known := s.eventIDs[path]; known != nil {
+		for _, item := range items {
+			if _, ok := known[item.ID]; ok {
+				return fmt.Errorf("validate events.jsonl: duplicate event id: %s", item.ID)
+			}
+		}
+	}
+	scannedIDs := map[string]struct{}{}
+	appendedIDs := make(map[string]struct{}, len(items)+1)
+	for _, item := range items {
+		appendedIDs[item.ID] = struct{}{}
+	}
+	if _, err := appendJSONLRecordsChecked(s, path, items, func(existing events.Event) error {
 		if err := validateEvent(sessionID, existing); err != nil {
 			return err
 		}
-		if _, ok := seen[existing.ID]; ok {
+		if _, ok := newIDs[existing.ID]; ok {
 			return fmt.Errorf("duplicate event id: %s", existing.ID)
 		}
-		seen[existing.ID] = struct{}{}
-		return nil
-	}); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("validate events.jsonl: %w", err)
+		if _, ok := scannedIDs[existing.ID]; ok {
+			return fmt.Errorf("duplicate event id: %s", existing.ID)
 		}
+		scannedIDs[existing.ID] = struct{}{}
+		return nil
+	}, func(repair jsonlRepair) (events.Event, bool) {
+		evt := events.New(sessionID, "store.jsonl.repaired", "store", map[string]any{
+			"file":             filepath.Base(repair.Path),
+			"reason":           repair.Reason,
+			"truncated_bytes":  repair.TruncatedBytes,
+			"truncated_offset": repair.TruncatedOffset,
+		})
+		appendedIDs[evt.ID] = struct{}{}
+		return evt, true
+	}); err != nil {
+		return fmt.Errorf("validate events.jsonl: %w", err)
 	}
-	if err := s.appendEventsJSONL(path, items); err != nil {
-		return fmt.Errorf("append events %s: %w", path, err)
-	}
+	s.rememberEventIDs(path, scannedIDs, appendedIDs)
 	return nil
 }
 
@@ -3109,7 +3147,11 @@ func (s *Store) writeJSONL(path string, payload any) error {
 	default:
 		return fmt.Errorf("unsupported jsonl payload %T", payload)
 	}
-	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+	if err := fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode); err != nil {
+		return err
+	}
+	delete(s.jsonlValidated, path)
+	return nil
 }
 
 func (s *Store) writeEventsJSONL(path string, payload []events.Event) error {
@@ -3123,11 +3165,240 @@ func (s *Store) writeEventsJSONL(path string, payload []events.Event) error {
 			return err
 		}
 	}
-	return fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode)
+	if err := fileutil.AtomicWriteFileNoSymlink(path, data.Bytes(), s.fileMode); err != nil {
+		return err
+	}
+	delete(s.jsonlValidated, path)
+	delete(s.eventIDs, path)
+	return nil
+}
+
+func (s *Store) rememberEventIDs(path string, groups ...map[string]struct{}) {
+	if s.eventIDs == nil {
+		s.eventIDs = make(map[string]map[string]struct{})
+	}
+	known := s.eventIDs[path]
+	if known == nil {
+		known = map[string]struct{}{}
+		s.eventIDs[path] = known
+	}
+	for _, group := range groups {
+		for id := range group {
+			known[id] = struct{}{}
+		}
+	}
+}
+
+type jsonlRepair struct {
+	Path            string
+	Reason          string
+	TruncatedOffset int64
+	TruncatedBytes  int64
+}
+
+type trailingPartialJSONLError struct {
+	path        string
+	lineStart   int64
+	lineEnd     int64
+	lastGoodEnd int64
+	err         error
+}
+
+func (e *trailingPartialJSONLError) Error() string {
+	return fmt.Sprintf("trailing partial JSONL record in %s at byte %d: %v", e.path, e.lineStart, e.err)
+}
+
+func (e *trailingPartialJSONLError) Unwrap() error {
+	return e.err
+}
+
+func appendJSONLRecordsChecked[T any](s *Store, path string, payload []T, validateExisting func(T) error, repairRecord func(jsonlRepair) (T, bool)) (*jsonlRepair, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
+	if err := s.ensureDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	file, err := openReadWriteAppendNoSymlink(path, s.fileMode)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	chmodBestEffort(path, s.fileMode)
+	if err := lockFileExclusive(file); err != nil {
+		return nil, err
+	}
+	defer unlockFileBestEffort(file)
+
+	repair, err := prepareJSONLAppend(s, file, path, validateExisting)
+	if err != nil {
+		return nil, err
+	}
+	records := payload
+	if repair != nil && repairRecord != nil {
+		if item, ok := repairRecord(*repair); ok {
+			if validateExisting != nil {
+				if err := validateExisting(item); err != nil {
+					return repair, err
+				}
+			}
+			records = make([]T, 0, len(payload)+1)
+			records = append(records, item)
+			records = append(records, payload...)
+		}
+	}
+	data, err := encodeJSONLRecords(records)
+	if err != nil {
+		return repair, err
+	}
+	n, err := file.Write(data)
+	if err != nil {
+		delete(s.jsonlValidated, path)
+		return repair, err
+	}
+	if n != len(data) {
+		delete(s.jsonlValidated, path)
+		return repair, io.ErrShortWrite
+	}
+	if end, err := file.Seek(0, io.SeekEnd); err == nil {
+		s.jsonlValidated[path] = end
+	}
+	return repair, nil
+}
+
+func encodeJSONLRecords[T any](records []T) ([]byte, error) {
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, item := range records {
+		if err := enc.Encode(item); err != nil {
+			return nil, err
+		}
+	}
+	return data.Bytes(), nil
+}
+
+func prepareJSONLAppend[T any](s *Store, file *os.File, path string, validate func(T) error) (*jsonlRepair, error) {
+	if s.jsonlValidated == nil {
+		s.jsonlValidated = make(map[string]int64)
+	}
+	start := s.jsonlValidated[path]
+	const attempts = 4
+	for attempt := 0; attempt < attempts; attempt++ {
+		end, err := validateJSONLRangeForAppend(file, path, start, validate)
+		if err == nil {
+			s.jsonlValidated[path] = end
+			return nil, nil
+		}
+		var partial *trailingPartialJSONLError
+		if !errors.As(err, &partial) {
+			delete(s.jsonlValidated, path)
+			return nil, err
+		}
+		if attempt < attempts-1 {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+		if err := file.Truncate(partial.lastGoodEnd); err != nil {
+			delete(s.jsonlValidated, path)
+			return nil, err
+		}
+		if _, err := file.Seek(0, io.SeekEnd); err != nil {
+			delete(s.jsonlValidated, path)
+			return nil, err
+		}
+		repair := &jsonlRepair{
+			Path:            path,
+			Reason:          "trailing partial JSONL record",
+			TruncatedOffset: partial.lastGoodEnd,
+			TruncatedBytes:  partial.lineEnd - partial.lastGoodEnd,
+		}
+		s.jsonlValidated[path] = partial.lastGoodEnd
+		return repair, nil
+	}
+	return nil, errors.New("unreachable JSONL append preparation state")
+}
+
+func validateJSONLRangeForAppend[T any](file *os.File, path string, start int64, validate func(T) error) (int64, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return 0, nil
+	}
+	if start < 0 || start > size || !jsonlOffsetAtRecordBoundary(file, start) {
+		start = 0
+	}
+	reader := bufio.NewReader(io.NewSectionReader(file, start, size-start))
+	offset := start
+	lastGoodEnd := start
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			return lastGoodEnd, nil
+		}
+		if len(line) > int(fileutil.MaxRegularFileReadBytes) {
+			return 0, fmt.Errorf("session JSONL record exceeds maximum readable size: %s (> %d bytes)", path, fileutil.MaxRegularFileReadBytes)
+		}
+		lineStart := offset
+		lineEnd := offset + int64(len(line))
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			var item T
+			if err := json.Unmarshal(trimmed, &item); err != nil {
+				if errors.Is(readErr, io.EOF) && isUnexpectedEndJSONError(err) {
+					return 0, &trailingPartialJSONLError{
+						path:        path,
+						lineStart:   lineStart,
+						lineEnd:     lineEnd,
+						lastGoodEnd: lastGoodEnd,
+						err:         err,
+					}
+				}
+				return 0, err
+			}
+			if validate != nil {
+				if err := validate(item); err != nil {
+					return 0, err
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			if _, err := file.Write([]byte{'\n'}); err != nil {
+				return 0, err
+			}
+			return size + 1, nil
+		}
+		if readErr != nil {
+			return 0, readErr
+		}
+		offset = lineEnd
+		lastGoodEnd = lineEnd
+	}
+}
+
+func jsonlOffsetAtRecordBoundary(file *os.File, offset int64) bool {
+	if offset == 0 {
+		return true
+	}
+	var previous [1]byte
+	if _, err := file.ReadAt(previous[:], offset-1); err != nil {
+		return false
+	}
+	return previous[0] == '\n'
+}
+
+func isUnexpectedEndJSONError(err error) bool {
+	return strings.Contains(err.Error(), "unexpected end of JSON input")
 }
 
 func openAppendNoSymlink(path string, mode fs.FileMode) (*os.File, error) {
 	return openNoSymlink(path, unix.O_APPEND|unix.O_CREAT|unix.O_WRONLY, mode)
+}
+
+func openReadWriteAppendNoSymlink(path string, mode fs.FileMode) (*os.File, error) {
+	return openNoSymlink(path, unix.O_APPEND|unix.O_CREAT|unix.O_RDWR, mode)
 }
 
 func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
@@ -3137,6 +3408,14 @@ func openNoSymlink(path string, flags int, mode fs.FileMode) (*os.File, error) {
 		}
 	}
 	return fileutil.OpenFileNoSymlink(path, flags, os.FileMode(mode))
+}
+
+func lockFileExclusive(file *os.File) error {
+	return unix.Flock(int(file.Fd()), unix.LOCK_EX)
+}
+
+func unlockFileBestEffort(file *os.File) {
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
