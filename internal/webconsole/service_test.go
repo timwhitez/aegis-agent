@@ -10560,6 +10560,115 @@ func TestServiceSessionMessagesPagination(t *testing.T) {
 	}
 }
 
+func TestServiceSessionDetailAndMessagesUseBoundedDisplayPayloads(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := testSessionMetadata(t, "session_large_display_payload")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	large := strings.Repeat("large-payload-", webToolOutputMaxBytes)
+	args, err := json.Marshal(map[string]any{"content": large, "nested": map[string]any{"value": large}})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	call := session.ToolCall{
+		ID:        "call_large_payload",
+		Name:      "write_file",
+		Arguments: json.RawMessage(args),
+	}
+	assistant := session.NewAssistantMessage(large, large, []session.ToolCall{call})
+	if err := svc.store.AppendMessage(meta.ID, assistant); err != nil {
+		t.Fatalf("append assistant: %v", err)
+	}
+	if err := svc.store.AppendMessage(meta.ID, session.NewToolMessage([]session.ToolResult{{
+		ToolCallID:    call.ID,
+		Name:          "write_file",
+		LLMOutput:     large,
+		DisplayOutput: large,
+		Metadata:      map[string]any{"stdout": large, "items": []any{large}},
+	}})); err != nil {
+		t.Fatalf("append tool: %v", err)
+	}
+	if err := svc.store.AppendEvent(meta.ID, events.New(meta.ID, "tool.after", "tool_execute", map[string]any{
+		"display_output": large,
+		"nested":         map[string]any{"value": large},
+	})); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_large_payload",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		Prompt:          large,
+		Mode:            session.ModeExec,
+		SessionID:       meta.ID,
+		SessionStatus:   session.StatusCompleted,
+		Background:      true,
+		FinalText:       large,
+	}); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"?limit=10", &detail)
+	encodedDetail, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal detail: %v", err)
+	}
+	if len(encodedDetail) > 220*1024 {
+		t.Fatalf("bounded detail response is too large: %d bytes", len(encodedDetail))
+	}
+	if !strings.Contains(detail.Messages[0].Text, "webconsole truncated") {
+		t.Fatalf("assistant text was not truncated")
+	}
+	if len(detail.Messages[0].ToolCalls[0].Arguments) > webToolArgumentsMaxBytes+4096 || !strings.Contains(string(detail.Messages[0].ToolCalls[0].Arguments), "webconsole truncated") {
+		t.Fatalf("tool arguments were not bounded: %d bytes", len(detail.Messages[0].ToolCalls[0].Arguments))
+	}
+	if got := detail.Messages[1].ToolResults[0].DisplayOutput; len(got) >= len(large) || !strings.Contains(got, "webconsole truncated") {
+		t.Fatalf("tool result output was not truncated")
+	}
+	if got, _ := detail.Events[0].Data["display_output"].(string); len(got) >= len(large) || !strings.Contains(got, "webconsole truncated") {
+		t.Fatalf("event output was not truncated")
+	}
+	if got := detail.Children.Jobs[0].FinalText; len(got) >= len(large) || !strings.Contains(got, "webconsole truncated") {
+		t.Fatalf("child job final text was not truncated")
+	}
+
+	var page MessagesResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/messages?limit=10", &page)
+	if got := page.Messages[1].ToolResults[0].LLMOutput; len(got) >= len(large) || !strings.Contains(got, "webconsole truncated") {
+		t.Fatalf("messages page output was not truncated")
+	}
+
+	var jobs []session.QueueJob
+	postGetJSON(t, ts.URL+"/api/queue/jobs?limit=10", &jobs)
+	if len(jobs) != 1 || len(jobs[0].Prompt) >= len(large) || !strings.Contains(jobs[0].Prompt, "webconsole truncated") {
+		t.Fatalf("queue list was not bounded: %#v", jobs)
+	}
+
+	stored, err := svc.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load stored messages: %v", err)
+	}
+	if stored[1].ToolResults[0].DisplayOutput != large {
+		t.Fatalf("bounded Web response must not mutate durable messages")
+	}
+}
+
 func TestServiceSessionFileChangesDurableFromFullHistory(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

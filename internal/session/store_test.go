@@ -566,7 +566,7 @@ func TestStoreLoadMessagesTailAndBeforeKeepBoundedWindows(t *testing.T) {
 	}
 }
 
-func TestStoreLoadMessagesTailStillValidatesFullHistory(t *testing.T) {
+func TestStoreLoadMessagesTailValidatesBoundedWindow(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)
 	meta := SessionMetadata{
@@ -601,11 +601,56 @@ func TestStoreLoadMessagesTailStillValidatesFullHistory(t *testing.T) {
 		t.Fatalf("close messages: %v", err)
 	}
 
-	if _, _, err := store.LoadMessagesTail(meta.ID, 1); err == nil || !strings.Contains(err.Error(), "invalid message role") {
-		t.Fatalf("expected tail load to validate historical malformed record, got %v", err)
+	tail, hasMore, err := store.LoadMessagesTail(meta.ID, 1)
+	if err != nil {
+		t.Fatalf("tail load should only validate the bounded display window: %v", err)
+	}
+	if !hasMore || len(tail) != 1 || tail[0].ID != validTail.ID {
+		t.Fatalf("unexpected tail hasMore=%v messages=%#v", hasMore, tail)
 	}
 	if _, _, err := store.LoadMessagesBefore(meta.ID, validTail.ID, 1); err == nil || !strings.Contains(err.Error(), "invalid message role") {
 		t.Fatalf("expected before load to validate historical malformed record, got %v", err)
+	}
+	if _, err := store.LoadMessages(meta.ID); err == nil || !strings.Contains(err.Error(), "invalid message role") {
+		t.Fatalf("expected full load to validate historical malformed record, got %v", err)
+	}
+}
+
+func TestStoreLoadMessagesTailHandlesLargeTailRecords(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first := NewMessage("user", "first")
+	large := NewMessage("assistant", strings.Repeat("x", 96*1024))
+	last := NewMessage("user", "last")
+	for _, msg := range []Message{first, large, last} {
+		if err := store.AppendMessage(meta.ID, msg); err != nil {
+			t.Fatalf("append message: %v", err)
+		}
+	}
+
+	tail, hasMore, err := store.LoadMessagesTail(meta.ID, 2)
+	if err != nil {
+		t.Fatalf("load tail: %v", err)
+	}
+	if !hasMore || len(tail) != 2 || tail[0].ID != large.ID || tail[1].ID != last.ID {
+		t.Fatalf("unexpected large tail hasMore=%v messages=%#v", hasMore, tail)
+	}
+	if tail[0].Text != large.Text {
+		t.Fatalf("large tail record was not preserved")
 	}
 }
 

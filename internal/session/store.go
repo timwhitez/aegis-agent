@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -4062,27 +4063,113 @@ func readJSONLTail[T any](path string, limit int, validate func(T) error) ([]T, 
 		})
 		return out, false, err
 	}
-	out := make([]T, 0, limit)
-	count := 0
-	err := readJSONLVisit(path, func(item T) error {
-		if validate != nil {
-			if err := validate(item); err != nil {
-				return err
-			}
-		}
-		count++
-		if len(out) < limit {
-			out = append(out, item)
-			return nil
-		}
-		copy(out, out[1:])
-		out[len(out)-1] = item
-		return nil
-	})
+	lines, hasMore, err := readJSONLTailLines(path, limit)
 	if err != nil {
 		return nil, false, err
 	}
-	return out, count > limit, nil
+	out := make([]T, 0, len(lines))
+	for _, line := range lines {
+		var item T
+		if err := json.Unmarshal(line, &item); err != nil {
+			return nil, false, err
+		}
+		if validate != nil {
+			if err := validate(item); err != nil {
+				return nil, false, err
+			}
+		}
+		out = append(out, item)
+	}
+	return out, hasMore, nil
+}
+
+func readJSONLTailLines(path string, limit int) ([][]byte, bool, error) {
+	if limit <= 0 {
+		return nil, false, nil
+	}
+	if err := rejectSymlinkPathAncestors(path); err != nil {
+		return nil, false, err
+	}
+	file, err := openNoSymlink(path, unix.O_RDONLY, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return [][]byte{}, false, nil
+	}
+	const chunkSize int64 = 64 * 1024
+	var suffix []byte
+	offset := size
+	nonEmptyLines := 0
+	for offset > 0 && nonEmptyLines <= limit {
+		readSize := chunkSize
+		if offset < readSize {
+			readSize = offset
+		}
+		offset -= readSize
+		chunk := make([]byte, int(readSize))
+		n, err := file.ReadAt(chunk, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, false, err
+		}
+		chunk = chunk[:n]
+		next := make([]byte, 0, len(chunk)+len(suffix))
+		next = append(next, chunk...)
+		next = append(next, suffix...)
+		suffix = next
+		nonEmptyLines = countNonEmptyJSONLLines(suffix)
+	}
+	dropFirst := false
+	if offset > 0 {
+		var previous [1]byte
+		if _, err := file.ReadAt(previous[:], offset-1); err != nil && !errors.Is(err, io.EOF) {
+			return nil, false, err
+		}
+		dropFirst = previous[0] != '\n'
+	}
+	lines := splitNonEmptyJSONLLines(suffix, dropFirst)
+	hasMore := offset > 0 || len(lines) > limit
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	for _, line := range lines {
+		if len(line) > int(fileutil.MaxRegularFileReadBytes) {
+			return nil, false, fmt.Errorf("session JSONL record exceeds maximum readable size: %s (> %d bytes)", path, fileutil.MaxRegularFileReadBytes)
+		}
+	}
+	return lines, hasMore, nil
+}
+
+func countNonEmptyJSONLLines(data []byte) int {
+	count := 0
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func splitNonEmptyJSONLLines(data []byte, dropFirst bool) [][]byte {
+	parts := bytes.Split(data, []byte{'\n'})
+	if dropFirst && len(parts) > 0 {
+		parts = parts[1:]
+	}
+	lines := make([][]byte, 0, len(parts))
+	for _, part := range parts {
+		line := bytes.TrimSpace(part)
+		if len(line) == 0 {
+			continue
+		}
+		lines = append(lines, append([]byte(nil), line...))
+	}
+	return lines
 }
 
 func readJSONLBefore[T any](path, beforeID string, limit int, idOf func(T) string, validate func(T) error) ([]T, bool, error) {

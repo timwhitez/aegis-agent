@@ -588,7 +588,7 @@ func (s *Service) overview() (OverviewResponse, error) {
 	if len(resp.Feed) > 16 {
 		resp.Feed = resp.Feed[:16]
 	}
-	return resp, nil
+	return webSafeOverviewResponse(resp), nil
 }
 
 func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -601,7 +601,7 @@ func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []session.SessionSummary{}
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, http.StatusOK, webSafeSessionSummaries(items))
 }
 
 func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -620,13 +620,13 @@ func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		totalPages = (total + pageSize - 1) / pageSize
 	}
-	writeJSON(w, http.StatusOK, HistoryResponse{
+	writeJSON(w, http.StatusOK, webSafeHistoryResponse(HistoryResponse{
 		Items:      items,
 		Total:      total,
 		Page:       page,
 		PageSize:   pageSize,
 		TotalPages: totalPages,
-	})
+	}))
 }
 
 func paginationOffset(page, pageSize int) int {
@@ -1333,7 +1333,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		timeline = []TimelineEntry{}
 	}
 	activeOwner := s.activeHandleOwner(sessionID, state.Status, ownerEvents)
-	return SessionDetailResponse{
+	return webSafeSessionDetailResponse(SessionDetailResponse{
 		Metadata:                meta,
 		State:                   state,
 		Goal:                    goalPtr,
@@ -1355,7 +1355,7 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 		Timeline:                timeline,
 		ActiveHandle:            activeOwner.OwnedByCurrentProcess,
 		ActiveHandleOwner:       activeOwner,
-	}, nil
+	}), nil
 }
 
 func (s *Service) handleSessionFileChanges(w http.ResponseWriter, sessionID string) {
@@ -1381,6 +1381,8 @@ func (s *Service) handleChildren(w http.ResponseWriter, sessionID string, limit 
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	resp.Sessions = webSafeSessionSummaries(resp.Sessions)
+	resp.Jobs = webSafeQueueJobs(resp.Jobs)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -2262,10 +2264,10 @@ func (s *Service) handleSessionMessages(w http.ResponseWriter, sessionID string,
 		page = []session.Message{}
 	}
 
-	writeJSON(w, http.StatusOK, MessagesResponse{
+	writeJSON(w, http.StatusOK, webSafeMessagesResponse(MessagesResponse{
 		Messages: page,
 		HasMore:  hasMore,
-	})
+	}))
 }
 
 func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
@@ -2872,7 +2874,7 @@ func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	if jobs == nil {
 		jobs = []session.QueueJob{}
 	}
-	writeJSON(w, http.StatusOK, jobs)
+	writeJSON(w, http.StatusOK, webSafeQueueJobs(jobs))
 }
 
 func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
@@ -2896,7 +2898,7 @@ func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, job)
+	writeJSON(w, http.StatusOK, webSafeQueueJob(job))
 }
 
 func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
@@ -7706,11 +7708,22 @@ func (s *Service) sessionFileChanges(sessionID, workdir string) ([]FileChangeSum
 	if len(durable) > 0 {
 		return durable, nil
 	}
+	if s.messagesFileExceeds(sessionID, webFileChangeBackfillMaxBytes) {
+		return []FileChangeSummary{}, nil
+	}
 	backfilled, err := s.backfillSessionFileChanges(sessionID, workdir)
 	if err != nil {
 		return nil, err
 	}
 	return backfilled, nil
+}
+
+func (s *Service) messagesFileExceeds(sessionID string, maxBytes int64) bool {
+	if maxBytes <= 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(s.store.SessionDir(sessionID), "messages.jsonl"))
+	return err == nil && info != nil && info.Size() > maxBytes
 }
 
 // backfillSessionFileChanges recomputes the file-change record from the full
