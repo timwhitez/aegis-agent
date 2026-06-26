@@ -551,10 +551,12 @@ function renderMessage(message) {
   const visualRole = backgroundResults ? 'assistant background-results' : role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
   const actor = actorNameForMessage(message);
   const icon = backgroundResults ? 'git-branch' : iconForRole(role);
-  const thinkingHTML = message.thinking ? renderThinkingBlock(message.thinking) : '';
-  const textHTML = message.text ? renderMessageText(message) : '';
+  const hasThinking = String(message.thinking || '').trim().length > 0;
+  const hasText = String(message.text || '').trim().length > 0;
+  const thinkingHTML = hasThinking ? renderThinkingBlock(message.thinking) : '';
+  const textHTML = hasText ? renderMessageText(message) : '';
   const finalToolResult = primaryFinalFinishResult(message);
-  const finalToolResultHTML = !message.text && finalToolResult ? renderFinalToolResultBubble(finalToolResult) : '';
+  const finalToolResultHTML = !hasText && finalToolResult ? renderFinalToolResultBubble(finalToolResult) : '';
   const toolLaneHTML = renderToolLane(message, { finalTextRendered: Boolean(finalToolResultHTML) });
 
   return `

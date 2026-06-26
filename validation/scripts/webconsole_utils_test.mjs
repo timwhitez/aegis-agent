@@ -1461,6 +1461,45 @@ test('Goal tool lane renders compact status cards instead of full objective JSON
   });
 });
 
+test('assistant tool-only messages do not render blank text bubbles', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    const html = renderMessage({
+      id: 'msg_tool_only_blank_text',
+      role: 'assistant',
+      text: String.fromCharCode(10, 32, 32, 9),
+      thinking: '  ',
+      created_at: '2026-06-26T01:02:03Z',
+      tool_calls: [{
+        id: 'call_edit_blank_text',
+        name: 'edit_file',
+        arguments: { path: 'rancher/reports/progress.md' }
+      }],
+      tool_results: [{
+        tool_call_id: 'call_edit_blank_text',
+        name: 'edit_file',
+        display_output: 'edited rancher/reports/progress.md',
+        is_error: false
+      }]
+    });
+    return {
+      hasToolLane: html.includes('tool-lane') && html.includes('Tool Lane'),
+      hasToolName: html.includes('edit_file'),
+      hasMessageBubble: html.includes('class="message-bubble'),
+      hasThinkingBlock: html.includes('thinking-block')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    hasToolLane: true,
+    hasToolName: true,
+    hasMessageBubble: false,
+    hasThinkingBlock: false
+  });
+});
+
 test('live event relay buffer is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
 
