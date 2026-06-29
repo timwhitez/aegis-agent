@@ -66,7 +66,7 @@ func (b *Bus) Publish(evt Event) {
 }
 
 func newID(prefix string) string {
-	buf := make([]byte, 4)
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return prefix + "-fallback"
 	}

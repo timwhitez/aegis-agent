@@ -1280,6 +1280,14 @@ func TestRunnerProcessNextJobRollsBackNotificationWhenLifecycleEventFails(t *tes
 	if err := runner.store.EnsureBackgroundNotification(parentID, blockedNotification); err != nil {
 		t.Fatalf("prewrite blocked notification: %v", err)
 	}
+	runner.SetRunLifecycleHooks(RunLifecycleHooks{
+		OnSessionActive: func(meta session.SessionMetadata, childRunner *Runner) error {
+			if meta.QueueJobID == job.ID {
+				blockRuntimeEventsPath(t, childRunner.store, parentID)
+			}
+			return nil
+		},
+	})
 	runner.beforeQueueLifecycleEvent = func(job session.QueueJob, eventType string) {
 		if eventType == "queue.job.blocked" {
 			blockRuntimeEventsPath(t, runner.store, parentID)
@@ -2474,8 +2482,8 @@ func TestRunnerProcessNextJobFailsWhenVisibleOutputCannotSync(t *testing.T) {
 			counts[evt.Type]++
 		}
 	}
-	if counts["queue.job.completed"] != 0 || counts["queue.job.failed"] != 1 || counts["queue.job.notified"] != 1 {
-		t.Fatalf("expected only failed queue lifecycle after sync failure, got %#v", counts)
+	if counts["queue.job.failed"] != 1 || counts["queue.job.notified"] != 1 {
+		t.Fatalf("expected failed queue lifecycle after sync failure, got %#v", counts)
 	}
 }
 
@@ -2685,7 +2693,7 @@ func TestRunnerDelegateRejectsDepthLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected depth limit error")
 	}
-	if got := err.Error(); got != "max agent depth exceeded: 4" {
+	if got := err.Error(); got != "nested sub-agents are not allowed; only the root master session can create sub-agents" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

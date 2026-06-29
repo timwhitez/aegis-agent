@@ -6051,9 +6051,6 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 	if strings.TrimSpace(next.SessionStatus) != "" && existing.SessionStatus != next.SessionStatus {
 		return true
 	}
-	if strings.TrimSpace(next.Status) == QueueStatusFailed && strings.TrimSpace(next.LastError) != "" {
-		return true
-	}
 	if strings.TrimSpace(next.RequestedWorkdir) != "" && existing.RequestedWorkdir != next.RequestedWorkdir {
 		return true
 	}
@@ -6089,7 +6086,7 @@ func backgroundNotificationMergeKey(notification BackgroundNotification) string 
 }
 
 func newRecordID(prefix string) string {
-	buf := make([]byte, 4)
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return prefix + "-fallback"
 	}

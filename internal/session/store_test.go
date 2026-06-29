@@ -570,7 +570,8 @@ func TestStoreAppendMessageRejectsReplacedParent(t *testing.T) {
 	swapped := false
 	beforeOpenNoSymlink = func(openPath string, flags int) error {
 		if swapped ||
-			flags&unix.O_WRONLY == 0 ||
+			flags&unix.O_APPEND == 0 ||
+			flags&(unix.O_WRONLY|unix.O_RDWR) == 0 ||
 			filepath.Clean(openPath) != filepath.Join(sessionDir, "messages.jsonl") {
 			return nil
 		}
@@ -4566,6 +4567,113 @@ func TestEnsureBackgroundNotificationRefreshesChangedQueueFacts(t *testing.T) {
 	}
 }
 
+func TestEnsureBackgroundNotificationDoesNotRedeliverUnchangedFailedFacts(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	failed := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_same_error",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_same_error",
+		SessionStatus: StatusFailed,
+		LastError:     "record tool.before event: duplicate event id",
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, failed); err != nil {
+		t.Fatalf("ensure failed notification: %v", err)
+	}
+	loaded, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load failed notification: %v", err)
+	}
+	loaded[0].DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.UpdateBackgroundNotifications(meta.ID, loaded); err != nil {
+		t.Fatalf("accept failed notification: %v", err)
+	}
+	if err := store.EnsureBackgroundNotification(meta.ID, failed); err != nil {
+		t.Fatalf("ensure same failed notification: %v", err)
+	}
+
+	loaded, err = store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("reload failed notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one failed notification, got %#v", loaded)
+	}
+	if loaded[0].DeliveryStatus != BackgroundNotificationAccepted {
+		t.Fatalf("unchanged failed notification should not be redelivered, got %#v", loaded[0])
+	}
+}
+
+func TestEnsureBackgroundNotificationRedeliversChangedFailedFacts(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	failed := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_new_error",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_new_error",
+		SessionStatus: StatusFailed,
+		LastError:     "first error",
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, failed); err != nil {
+		t.Fatalf("ensure failed notification: %v", err)
+	}
+	loaded, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load failed notification: %v", err)
+	}
+	loaded[0].DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.UpdateBackgroundNotifications(meta.ID, loaded); err != nil {
+		t.Fatalf("accept failed notification: %v", err)
+	}
+	changed := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_failed_new_error",
+		Status:        QueueStatusFailed,
+		SessionID:     "child_background_failed_new_error",
+		SessionStatus: StatusFailed,
+		LastError:     "second error",
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, changed); err != nil {
+		t.Fatalf("ensure changed failed notification: %v", err)
+	}
+
+	loaded, err = store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("reload failed notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one failed notification, got %#v", loaded)
+	}
+	if loaded[0].LastError != "second error" || loaded[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("changed failed notification should be redelivered, got %#v", loaded[0])
+	}
+}
+
 func TestUpdateBackgroundNotificationsPreservesConcurrentFactRefresh(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	storeA := NewStore(root)
@@ -7842,7 +7950,7 @@ func TestLoadJobRollsBackBackgroundNotificationWhenLifecycleEventFails(t *testin
 	restore := beforeOpenNoSymlink
 	blocked := false
 	beforeOpenNoSymlink = func(openPath string, flags int) error {
-		if blocked || flags&unix.O_WRONLY == 0 || filepath.Clean(openPath) != eventsPath {
+		if blocked || flags&unix.O_APPEND == 0 || flags&(unix.O_WRONLY|unix.O_RDWR) == 0 || filepath.Clean(openPath) != eventsPath {
 			return nil
 		}
 		blocked = true
@@ -8011,7 +8119,7 @@ func TestLoadJobRollsBackBlockedParentStateWhenLifecycleEventFails(t *testing.T)
 	restore := beforeOpenNoSymlink
 	blocked := false
 	beforeOpenNoSymlink = func(openPath string, flags int) error {
-		if blocked || flags&unix.O_WRONLY == 0 || filepath.Clean(openPath) != eventsPath {
+		if blocked || flags&unix.O_APPEND == 0 || flags&(unix.O_WRONLY|unix.O_RDWR) == 0 || filepath.Clean(openPath) != eventsPath {
 			return nil
 		}
 		blocked = true
