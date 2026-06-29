@@ -5567,12 +5567,12 @@ func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
 		{
 			name:    "rewrite existing text",
 			payload: `{"todos":[{"content":"Inspect current implementation again","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
-			want:    "cannot rewrite existing todo 1 content",
+			want:    "cannot reword existing todo 1",
 		},
 		{
 			name:    "change priority",
 			payload: `{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"low"},{"content":"Patch todo semantics","status":"pending","priority":"high"}]}`,
-			want:    "cannot rewrite existing todo 1 priority",
+			want:    "cannot change existing todo 1 priority",
 		},
 		{
 			name:    "terminal status regression",

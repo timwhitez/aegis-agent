@@ -194,9 +194,11 @@ task 满足以下条件时视为 blocked：
 
 - 输入仍是完整 `todo.json` 快照，但语义是 append/progress ledger，不是任意重写计划
 - 已存在 todo 必须按原顺序保留，不允许删除、改写 content、改写 priority 或重排
+- 需要改写措辞、调整范围或重设优先级时，不能编辑已存在条目，而是在末尾 append 一个新 todo
 - `pending` 可推进到 `in_progress | completed | cancelled`；`in_progress` 可推进到 `completed | cancelled`；`completed` / `cancelled` 是终态，不可回退或改写
 - 新增 todo 只能追加到列表末尾，初始状态只能是 `pending` 或 `in_progress`，不能直接新增为 `completed` / `cancelled`
 - 校验最多一个 `in_progress`
+- 校验失败时返回 directive recovery 错误（提示 `todo_read` 后重发完整快照、或改用 append），帮助模型自纠而不是反复触发同一错误
 - 写 `todo.updated` 事件
 - 当 normalized todo snapshot（content/status/priority/order）未变化时，返回 `noop=true` / `changed=false`，保留原 `todo.json` 的 `updated_at`，避免把自动更新时间戳误当成进展
 - `todo_write` 只记录执行进度，不执行任务、不验证任务，也不能作为 `finish` 或交付物完成的证据

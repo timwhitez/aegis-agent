@@ -2599,13 +2599,13 @@ func defRequestUserInput() Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Update the session todo progress ledger for non-trivial multi-step work. Use it to append newly discovered concrete steps or advance existing items after doing the corresponding work; skip trivial one-step or purely conversational tasks. Existing todo text/order/priority must be preserved, completed or cancelled items must remain in the list unchanged, and new items must start as pending or in_progress rather than completed. This tool tracks progress only; it does not perform or verify the work.",
+		Description: "Update the session todo progress ledger for non-trivial multi-step work; skip trivial one-step or purely conversational tasks. This is an append/advance-only ledger, not a plan you rewrite: always resubmit the FULL current list (call todo_read first if unsure of the exact text/order), keeping every existing item in its original position. The ONLY edit allowed to an existing item is advancing its status (pending->in_progress->completed/cancelled). Existing content text, priority, and order must be preserved exactly: do not reword, reorder, insert, or delete existing items. To reword, re-scope, reprioritize, or split an item, append a NEW item to the end instead of editing the existing one. New items must start as pending or in_progress, and completed/cancelled items stay in the list unchanged. This tool only records progress; it does not perform or verify the work.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"todos": map[string]any{
 					"type":        "array",
-					"description": "Full current snapshot of the session todo list. Include all existing items in their original order; only append new items or advance existing statuses.",
+					"description": "Full current snapshot of the session todo list, resubmitted every call. Repeat all existing items verbatim in their original order (same content text and priority); only advance their status or append new items at the end. Never reword, reorder, or drop an existing item — append a new item instead.",
 					"items":       todoItemSchema(),
 				},
 			},
@@ -2815,30 +2815,30 @@ func validateTodoSnapshot(todos []session.TodoItem) error {
 		}
 	}
 	if inProgress > 1 {
-		return errors.New("todo_write allows at most one in_progress item")
+		return errors.New("todo_write allows at most one in_progress item; keep a single active item and leave the rest pending")
 	}
 	return nil
 }
 
 func validateTodoProgressUpdate(existing, next []session.TodoItem) error {
 	if len(next) < len(existing) {
-		return fmt.Errorf("todo_write must preserve existing todo items: got %d items, existing list has %d", len(next), len(existing))
+		return fmt.Errorf("todo_write must preserve existing todo items: got %d items, existing list has %d. Call todo_read, resubmit every existing item unchanged in its original order, then append or advance from there", len(next), len(existing))
 	}
 	for i, old := range existing {
 		updated := next[i]
 		if old.Content != updated.Content {
-			return fmt.Errorf("todo_write cannot rewrite existing todo %d content; append a new todo instead", i+1)
+			return fmt.Errorf("todo_write cannot reword existing todo %d (%q); keep its content text unchanged and, if it needs new wording or scope, append a new todo at the end instead", i+1, old.Content)
 		}
 		if old.Priority != updated.Priority {
-			return fmt.Errorf("todo_write cannot rewrite existing todo %d priority", i+1)
+			return fmt.Errorf("todo_write cannot change existing todo %d priority (%q->%q); keep the original priority and append a new todo if the plan changed", i+1, old.Priority, updated.Priority)
 		}
 		if !validTodoStatusTransition(old.Status, updated.Status) {
-			return fmt.Errorf("todo_write cannot change existing todo %d status from %s to %s", i+1, old.Status, updated.Status)
+			return fmt.Errorf("todo_write cannot change existing todo %d status from %s to %s; allowed transitions are pending->in_progress->completed/cancelled and terminal states cannot be reopened", i+1, old.Status, updated.Status)
 		}
 	}
 	for i := len(existing); i < len(next); i++ {
 		if next[i].Status == "completed" || next[i].Status == "cancelled" {
-			return fmt.Errorf("todo_write cannot add new todo %d directly as %s; add it as pending or in_progress, then mark done after the work", i+1, next[i].Status)
+			return fmt.Errorf("todo_write cannot add new todo %d directly as %s; add it as pending or in_progress, then mark it done after the work", i+1, next[i].Status)
 		}
 	}
 	return nil
