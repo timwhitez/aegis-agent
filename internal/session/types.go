@@ -32,6 +32,9 @@ const (
 
 	BackgroundNotificationPending  = "pending"
 	BackgroundNotificationAccepted = "accepted"
+
+	BackgroundSourceQueue                = "queue"
+	BackgroundSourceCoordinationDeadlock = "coordination_deadlock"
 )
 
 type IsolationInfo struct {

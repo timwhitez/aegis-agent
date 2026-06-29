@@ -22,6 +22,9 @@ import (
 	"go-cli-agent/internal/tools"
 )
 
+// timeNow is overridable in tests to exercise wall-clock budgets deterministically.
+var timeNow = func() time.Time { return time.Now() }
+
 type Engine struct {
 	cfg       *config.Config
 	store     *session.Store
@@ -159,9 +162,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
 	hardTurnLimitEnabled := hardTurnLimit > 0
 	runStartTurn := state.Turn
+	childBudget := e.childBudgetContext(meta)
 	for turn := state.Turn; ; turn++ {
 		usingResolutionTurn := false
 		runTurn := turn - runStartTurn
+		if reason, exceeded := childBudget.exceeded(turn); exceeded {
+			return e.pauseChildBudget(ctx, meta, state, reason, hookManager)
+		}
 		if hardTurnLimitEnabled && runTurn >= hardTurnLimit {
 			if !allowResolutionTurn {
 				state.Status = session.StatusFailed
@@ -1149,6 +1156,9 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager) (int, error) {
 	ticker := time.NewTicker(e.backgroundWaitPollInterval())
 	defer ticker.Stop()
+	waitStart := timeNow()
+	waitTimeout := e.backgroundWaitTimeout()
+	deadlockChecked := false
 	for {
 		ready, err := e.backgroundNotificationReady(meta.ID)
 		if err != nil {
@@ -1156,6 +1166,31 @@ func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.Sessi
 		}
 		if ready {
 			return e.drainBackground(ctx, meta, hookManager)
+		}
+		// Deadlock wake: if the parent is parked on child work that can no longer
+		// make progress (all unresolved jobs blocked with a dead/absent owner),
+		// surface that as a pending background notification so the model is woken
+		// to decide (re-prompt, stop, or continue) instead of waiting forever.
+		// Done once per wait entry; the injected notification ends the wait on the
+		// next loop via the ready check.
+		if !deadlockChecked {
+			deadlockChecked = true
+			injected, err := e.injectCoordinationDeadlockWake(meta)
+			if err != nil {
+				return 0, err
+			}
+			if injected {
+				continue
+			}
+		}
+		if waitTimeout > 0 && timeNow().Sub(waitStart) >= waitTimeout {
+			if err := e.appendEvent(meta.ID, "session.background.wait_timeout", "background_wait", map[string]any{
+				"waited_sec":  int(timeNow().Sub(waitStart).Seconds()),
+				"timeout_sec": int(waitTimeout.Seconds()),
+			}); err != nil {
+				return 0, fmt.Errorf("record session.background.wait_timeout event: %w", err)
+			}
+			return 0, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -1165,12 +1200,70 @@ func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.Sessi
 	}
 }
 
+func (e *Engine) backgroundWaitTimeout() time.Duration {
+	sec := e.cfg.Runtime.Queue.BackgroundWaitTimeoutSec
+	if sec <= 0 {
+		return 0
+	}
+	return time.Duration(sec) * time.Second
+}
+
 func (e *Engine) backgroundWaitPollInterval() time.Duration {
 	poll := time.Duration(e.cfg.Runtime.Queue.PollIntervalMS) * time.Millisecond
 	if poll <= 0 {
 		return time.Second
 	}
 	return poll
+}
+
+// injectCoordinationDeadlockWake checks whether the parent is parked on child
+// work that can no longer progress and, if so, records a deadlock event plus a
+// pending background notification. The notification is what actually wakes the
+// model: on the next wait loop the ready-check drains it into context as a
+// <background-agent-results> message describing the stalled work and the model's
+// options (agent_prompt to converge, agent_stop to drop queued work, or continue
+// itself). It is injected at most once while a wake is pending to avoid spamming.
+func (e *Engine) injectCoordinationDeadlockWake(meta session.SessionMetadata) (bool, error) {
+	reason, deadlocked, err := coordinationDeadlockReason(e.store, meta.ID)
+	if err != nil {
+		return false, err
+	}
+	if !deadlocked {
+		return false, nil
+	}
+	pending, err := e.deadlockWakePending(meta.ID)
+	if err != nil {
+		return false, err
+	}
+	if pending {
+		return false, nil
+	}
+	if err := e.appendEvent(meta.ID, "parent.coordination.deadlock", "background_wait", map[string]any{
+		"reason": reason,
+	}); err != nil {
+		return false, fmt.Errorf("record parent.coordination.deadlock event: %w", err)
+	}
+	notification := session.NewCoordinationDeadlockNotification(meta.ID, reason)
+	if err := e.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		return false, fmt.Errorf("append coordination deadlock notification: %w", err)
+	}
+	return true, nil
+}
+
+// deadlockWakePending reports whether a coordination-deadlock wake notification
+// is already pending delivery, so we do not enqueue duplicates each loop.
+func (e *Engine) deadlockWakePending(sessionID string) (bool, error) {
+	notifications, err := e.store.LoadBackgroundNotifications(sessionID)
+	if err != nil {
+		return false, err
+	}
+	for _, notification := range notifications {
+		if notification.Source == session.BackgroundSourceCoordinationDeadlock &&
+			notification.DeliveryStatus == session.BackgroundNotificationPending {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) backgroundNotificationReady(sessionID string) (bool, error) {
@@ -1326,6 +1419,75 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
 	return result, nil
+}
+
+// childBudgetTracker bounds a single child/background run so it cannot loop
+// indefinitely. It is only active for sessions that have a parent (i.e. spawned
+// child / background queue work); root master sessions are never budget-limited
+// here and continue to rely on max_turns_hard (default off).
+type childBudgetTracker struct {
+	active       bool
+	maxTurns     int
+	runStartTurn int
+	deadline     time.Time
+}
+
+// exceeded reports whether the given absolute turn counter has crossed either
+// the wall-clock or per-run turn budget. The returned reason is a stable,
+// machine-readable token recorded as the pause reason.
+func (b childBudgetTracker) exceeded(turn int) (string, bool) {
+	if !b.active {
+		return "", false
+	}
+	if b.maxTurns > 0 && turn-b.runStartTurn >= b.maxTurns {
+		return "child_budget_turns_exceeded", true
+	}
+	if !b.deadline.IsZero() && timeNow().After(b.deadline) {
+		return "child_budget_wallclock_exceeded", true
+	}
+	return "", false
+}
+
+// childBudgetContext builds the per-run budget tracker. Wall-clock is measured
+// from the session creation time when parseable so that the budget bounds the
+// whole child lifetime across resumes, not just the current process run.
+func (e *Engine) childBudgetContext(meta session.SessionMetadata) childBudgetTracker {
+	if strings.TrimSpace(meta.ParentSessionID) == "" {
+		return childBudgetTracker{}
+	}
+	budget := e.cfg.Runtime.ChildBudget
+	tracker := childBudgetTracker{
+		active:       budget.MaxWallClockSec > 0 || budget.MaxTurns > 0,
+		maxTurns:     budget.MaxTurns,
+		runStartTurn: 0,
+	}
+	if budget.MaxWallClockSec > 0 {
+		start := timeNow()
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(meta.CreatedAt)); err == nil {
+			start = parsed
+		}
+		tracker.deadline = start.Add(time.Duration(budget.MaxWallClockSec) * time.Second)
+	}
+	return tracker
+}
+
+// pauseChildBudget pauses an over-budget child as a resumable stop and records
+// the reason. The linked queue job reconciles to blocked and a parent
+// background notification is written, so the master model can decide whether to
+// re-prompt the child to converge, stop it, or continue itself. This is liveness
+// recovery, not a workflow decision: the runtime never resolves the work itself.
+func (e *Engine) pauseChildBudget(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager) (RunResult, error) {
+	if err := e.appendEvent(meta.ID, "session.child_budget.exceeded", "interrupt", map[string]any{
+		"reason":             reason,
+		"max_turns":          e.cfg.Runtime.ChildBudget.MaxTurns,
+		"max_wall_clock_sec": e.cfg.Runtime.ChildBudget.MaxWallClockSec,
+		"turn":               state.Turn,
+		"parent_session_id":  meta.ParentSessionID,
+		"queue_job_id":       meta.QueueJobID,
+	}); err != nil {
+		return RunResult{}, fmt.Errorf("record session.child_budget.exceeded event: %w", err)
+	}
+	return e.pause(ctx, meta, state, reason, hookManager)
 }
 
 func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager) (RunResult, error) {

@@ -222,6 +222,35 @@ parent-linked queue job 只能由 root master session 创建。`depth > 0` 或�
 - 普通任务失败不应直接结束长跑 worker，worker 应继续轮询后续 job
 - 只有 claim / 落盘等 queue 基础设施错误才让 worker 返回错误
 
+### 5.6 孤儿 job 回收（liveness reaper）
+
+job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有者。持有进程异常退出（例如 web 服务重启）后，留在 `running/` 或 `blocked/` 的 job 不会自动前进，会让其 parent 永久停留在 wait-all 协同里。runtime 必须提供周期性回收：
+
+- 扫描 `running/` 与 `blocked/`，识别孤儿 job：`process_start_id` 非当前进程且持有进程已不存在（`/proc` 探测），或心跳超过 `lease_stale_after`（默认 `15m` / `runtime.queue.lease_stale_after_sec`）。
+- 回收策略为混合（仅做 liveness 恢复，绝不替模型决定 workflow）：
+  - 关联 child session 已 `completed` / `failed` → 结算为对应 queue 终态，释放 parent coordination gate。
+  - 尚未创建 child session（claim 后崩溃）→ 清除 lease 重新入队 `queued/`，由后续 worker 重跑。
+  - 关联 child session 仍可恢复（`paused` / `awaiting_input` / 进行中但持有者已死）→ 标记 `blocked` 并确保 parent 存在 pending background notification，交模型决策。
+- 回收由 `web` 进程的后台循环驱动（`runtime.queue.reaper_interval_ms`，默认 `60s`，`<= 0` 关闭）。回收 job 后，`web` 还要对僵尸 `running` session（`status=running` 但无存活 owner）执行 stale-owner reconcile，转为 `paused` 可续。
+- 持有者存活判定必须保守：无法判定（无 `/proc`、stat 异常）时视为存活，避免误回收健康 job。
+
+### 5.7 父任务死锁检测与唤醒
+
+当 parent 因 `agent_wait` / `resume_parent` 停车（`background_wait`）等待后台结果时，如果其全部 unresolved 工作都无法再自行前进，parent 会无限等待。runtime 必须检测并唤醒：
+
+- 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死，或终态但仍挂在 unresolved），同时每个 unresolved child session 都为非 `running` 的非终态。
+- 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
+- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入。
+- 兜底超时：`runtime.queue.background_wait_timeout_sec`（默认 `0` 不超时）为等待墙钟上界，超时写 `session.background.wait_timeout` 并回到 `awaiting_input`。
+
+### 5.8 child / background 会话兜底预算
+
+为防止单个委派会话无限 loop（只烧 token 不产出），runtime 对 child / background（有 `parent_session_id`）会话施加兜底预算：
+
+- `runtime.child_budget.max_wall_clock_sec`（默认 `7200`）与 `max_turns`（默认 `1500`），任一维度 `0` 表示禁用；墙钟从会话 `created_at` 计（跨恢复累计）。
+- root master session 不受此预算约束，仍沿用 `runtime.max_turns_hard`（默认 `-1` 关闭）。
+- 超限时 child 以可恢复方式 `paused`（reason `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded`），并记录 `session.child_budget.exceeded` 事件；其 linked queue job 随之 reconcile 为 `blocked` 并写 parent notification，由模型决定续跑/收敛/停止。runtime 不直接判失败，也不替模型决定后续 workflow。
+
 ## 6. 与 delegation 的关系
 
 - `agent_spawn background=true` 必须复用同一套 queue job 模型

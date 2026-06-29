@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -244,4 +246,63 @@ func removeString(items []string, item string) []string {
 		}
 	}
 	return out
+}
+
+// coordinationDeadlockReason inspects a parent's coordination record and reports
+// a non-empty reason when the parent is parked on unresolved work that can no
+// longer make progress on its own. This happens when every unresolved queue job
+// is blocked with a dead/absent owner and every unresolved child session is in a
+// non-terminal state with no live owner — i.e. nothing will ever wake the
+// parent. It is the cross-restart safety net behind the queue reaper: detection
+// here only wakes the model with facts; it never resolves the work itself.
+func coordinationDeadlockReason(store *session.Store, parentSessionID string) (string, bool, error) {
+	coordination, err := store.LoadParentCoordination(parentSessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if coordination.ParentSessionID == "" || !coordination.Parked {
+		return "", false, nil
+	}
+	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
+		return "", false, nil
+	}
+	stalledJobs := make([]string, 0, len(coordination.UnresolvedQueueJobs))
+	for _, jobID := range coordination.UnresolvedQueueJobs {
+		job, err := store.LoadJob(jobID)
+		if err != nil {
+			// A job that cannot be loaded is treated as still potentially
+			// progressing so we never wake on a transient read error.
+			return "", false, nil
+		}
+		if session.QueueJobCanProgress(job) {
+			return "", false, nil
+		}
+		stalledJobs = append(stalledJobs, jobID)
+	}
+	stalledChildren := make([]string, 0, len(coordination.UnresolvedChildSessions))
+	for _, childID := range coordination.UnresolvedChildSessions {
+		state, err := store.LoadState(childID)
+		if err != nil {
+			return "", false, nil
+		}
+		// A child still running may be progressing in another process; only a
+		// non-terminal, non-running child counts as stalled here.
+		if state.Status == session.StatusRunning {
+			return "", false, nil
+		}
+		stalledChildren = append(stalledChildren, childID)
+	}
+	reason := fmt.Sprintf("parent coordination deadlock: no unresolved child work can progress (stalled jobs: %s; stalled child sessions: %s)",
+		joinCoordinationItems(stalledJobs), joinCoordinationItems(stalledChildren))
+	return reason, true, nil
+}
+
+func joinCoordinationItems(items []string) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
 }

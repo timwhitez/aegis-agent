@@ -1329,10 +1329,16 @@ func (s *Store) AppendBackgroundNotification(sessionID string, notification Back
 		return err
 	}
 	return s.withFileLock(lockPath, func() error {
-		seenQueueJobs := map[string]struct{}{notification.QueueJobID: {}}
+		seenQueueJobs := map[string]struct{}{}
+		if strings.TrimSpace(notification.QueueJobID) != "" {
+			seenQueueJobs[notification.QueueJobID] = struct{}{}
+		}
 		if err := readJSONLVisit(path, func(existing BackgroundNotification) error {
 			if err := validateBackgroundNotification(existing); err != nil {
 				return err
+			}
+			if strings.TrimSpace(existing.QueueJobID) == "" {
+				return nil
 			}
 			if _, exists := seenQueueJobs[existing.QueueJobID]; exists {
 				return fmt.Errorf("duplicate background notification queue_job_id: %s", existing.QueueJobID)
@@ -3056,6 +3062,23 @@ func NewBackgroundNotification(job QueueJob) BackgroundNotification {
 		LastError:        job.LastError,
 		ResumeParent:     job.ResumeParent,
 		DeliveryStatus:   BackgroundNotificationPending,
+	}
+}
+
+// NewCoordinationDeadlockNotification builds a pending background notification
+// that wakes a parked parent when its outstanding child work can no longer make
+// progress on its own. It carries no queue job id (it is a runtime liveness
+// signal, not a job result); the guidance text lands in the parent context via
+// the normal background drain so the model can decide how to proceed.
+func NewCoordinationDeadlockNotification(parentSessionID, reason string) BackgroundNotification {
+	return BackgroundNotification{
+		ID:             newRecordID("bg"),
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+		Source:         BackgroundSourceCoordinationDeadlock,
+		SessionID:      parentSessionID,
+		Status:         "coordination_deadlock",
+		FinalText:      reason + ". No background child work can advance on its own. Decide how to proceed: re-prompt running or resumable child work to converge with agent_prompt, stop queued/blocked work that is no longer needed with agent_stop, or continue the remaining audit yourself in this session.",
+		DeliveryStatus: BackgroundNotificationPending,
 	}
 }
 
@@ -4871,6 +4894,12 @@ func validateBackgroundNotifications(notifications []BackgroundNotification) err
 		if err := validateBackgroundNotification(notification); err != nil {
 			return fmt.Errorf("background notification %d: %w", i+1, err)
 		}
+		// Job-less notifications (e.g. coordination-deadlock liveness signals) are
+		// not deduplicated by queue_job_id; they are bounded by their own injection
+		// guard instead.
+		if strings.TrimSpace(notification.QueueJobID) == "" {
+			continue
+		}
 		if _, exists := seenQueueJobs[notification.QueueJobID]; exists {
 			return fmt.Errorf("duplicate background notification queue_job_id: %s", notification.QueueJobID)
 		}
@@ -4890,7 +4919,25 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 		return fmt.Errorf("background notification created_at must be RFC3339Nano: %w", err)
 	}
 	switch notification.Source {
-	case "queue":
+	case BackgroundSourceQueue:
+	case BackgroundSourceCoordinationDeadlock:
+		// Coordination-deadlock notifications are runtime liveness signals, not
+		// queue job results: they carry no queue_job_id and a sentinel status.
+		// They only require an identifiable parent session and pending delivery.
+		if strings.TrimSpace(notification.SessionID) != "" {
+			if err := validateStoreID("background notification session", notification.SessionID); err != nil {
+				return err
+			}
+		}
+		if notification.Status != "coordination_deadlock" {
+			return fmt.Errorf("coordination deadlock notification status must be coordination_deadlock, got %q", notification.Status)
+		}
+		switch notification.DeliveryStatus {
+		case BackgroundNotificationPending, BackgroundNotificationAccepted:
+		default:
+			return fmt.Errorf("invalid background notification delivery_status %q", notification.DeliveryStatus)
+		}
+		return nil
 	default:
 		if strings.TrimSpace(notification.Source) == "" {
 			return errors.New("background notification source is required")

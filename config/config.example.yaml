@@ -170,6 +170,24 @@ runtime:
   queue:
     poll_interval_ms: 1000
     auto_worker: true
+    # Background queue liveness recovery. The reaper reclaims jobs whose owning
+    # worker process has died (e.g. after a service restart) or whose lease
+    # heartbeat has gone stale, so a parent never waits forever on a child whose
+    # worker is gone. reaper_interval_ms <= 0 disables the sweep.
+    reaper_interval_ms: 60000
+    lease_stale_after_sec: 900
+    # Upper bound on how long a parked parent waits for background child results
+    # before recording a wait-timeout and returning to awaiting_input. 0 disables
+    # the timeout (deadlock detection still wakes the parent on stalled work).
+    background_wait_timeout_sec: 0
+  # Bounds child / background (delegated) sessions so a single run cannot loop
+  # indefinitely. Root master sessions are not limited here (they use
+  # max_turns_hard, default off). On breach the child is paused (resumable ->
+  # queue blocked) and the parent is notified to decide next steps. 0 disables a
+  # dimension.
+  child_budget:
+    max_wall_clock_sec: 7200
+    max_turns: 1500
 
 output:
   format: text

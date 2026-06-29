@@ -103,6 +103,41 @@ func TestDefaultDisablesHardTurnLimitAndUsesFiveMinuteTimeouts(t *testing.T) {
 	}
 }
 
+func TestDefaultChildBudgetAndQueueReaper(t *testing.T) {
+	cfg := Default()
+	if cfg.Runtime.ChildBudget.MaxWallClockSec != 7200 {
+		t.Fatalf("expected default child wall-clock budget 7200, got %d", cfg.Runtime.ChildBudget.MaxWallClockSec)
+	}
+	if cfg.Runtime.ChildBudget.MaxTurns != 1500 {
+		t.Fatalf("expected default child turn budget 1500, got %d", cfg.Runtime.ChildBudget.MaxTurns)
+	}
+	if cfg.Runtime.Queue.ReaperIntervalMS != 60000 {
+		t.Fatalf("expected default reaper interval 60000ms, got %d", cfg.Runtime.Queue.ReaperIntervalMS)
+	}
+	if cfg.Runtime.Queue.LeaseStaleAfterSec != 900 {
+		t.Fatalf("expected default lease stale after 900s, got %d", cfg.Runtime.Queue.LeaseStaleAfterSec)
+	}
+	if cfg.Runtime.Queue.BackgroundWaitTimeoutSec != 0 {
+		t.Fatalf("expected default background wait timeout disabled (0), got %d", cfg.Runtime.Queue.BackgroundWaitTimeoutSec)
+	}
+}
+
+func TestNormalizeClampsNegativeChildBudgetAndQueueReaper(t *testing.T) {
+	cfg := Default()
+	cfg.Runtime.ChildBudget.MaxWallClockSec = -5
+	cfg.Runtime.ChildBudget.MaxTurns = -5
+	cfg.Runtime.Queue.ReaperIntervalMS = -5
+	cfg.Runtime.Queue.LeaseStaleAfterSec = -5
+	cfg.Runtime.Queue.BackgroundWaitTimeoutSec = -5
+	normalizeConfig(cfg, "/tmp/work")
+	if cfg.Runtime.ChildBudget.MaxWallClockSec != 0 || cfg.Runtime.ChildBudget.MaxTurns != 0 {
+		t.Fatalf("expected negative child budgets clamped to 0, got %#v", cfg.Runtime.ChildBudget)
+	}
+	if cfg.Runtime.Queue.ReaperIntervalMS != 0 || cfg.Runtime.Queue.LeaseStaleAfterSec != 0 || cfg.Runtime.Queue.BackgroundWaitTimeoutSec != 0 {
+		t.Fatalf("expected negative queue reaper values clamped to 0, got %#v", cfg.Runtime.Queue)
+	}
+}
+
 func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 	cfg := &Config{
 		Providers: map[string]Provider{

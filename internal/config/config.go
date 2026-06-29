@@ -109,6 +109,7 @@ type RuntimeConfig struct {
 	MultiAgent         MultiAgentConfig         `yaml:"multi_agent"`
 	Isolation          IsolationConfig          `yaml:"isolation"`
 	Queue              QueueConfig              `yaml:"queue"`
+	ChildBudget        ChildBudgetConfig        `yaml:"child_budget"`
 	Shell              ShellConfig              `yaml:"shell"`
 	ExecPolicy         ExecPolicyConfig         `yaml:"exec_policy"`
 	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
@@ -134,8 +135,21 @@ type IsolationConfig struct {
 }
 
 type QueueConfig struct {
-	PollIntervalMS int  `yaml:"poll_interval_ms"`
-	AutoWorker     bool `yaml:"auto_worker"`
+	PollIntervalMS           int  `yaml:"poll_interval_ms"`
+	AutoWorker               bool `yaml:"auto_worker"`
+	ReaperIntervalMS         int  `yaml:"reaper_interval_ms"`
+	LeaseStaleAfterSec       int  `yaml:"lease_stale_after_sec"`
+	BackgroundWaitTimeoutSec int  `yaml:"background_wait_timeout_sec"`
+}
+
+// ChildBudgetConfig bounds child/background sessions so a single delegated run
+// cannot loop indefinitely. It does not apply to root master sessions. A
+// non-positive value disables that dimension. When a child exceeds a budget it
+// is paused (resumable -> queue blocked) and the parent is notified, rather than
+// failed, so the model can decide whether to converge, re-prompt, or stop it.
+type ChildBudgetConfig struct {
+	MaxWallClockSec int `yaml:"max_wall_clock_sec"`
+	MaxTurns        int `yaml:"max_turns"`
 }
 
 type ShellConfig struct {
@@ -336,8 +350,15 @@ func Default() *Config {
 				RootDir:     defaultIsolationRootDir(),
 			},
 			Queue: QueueConfig{
-				PollIntervalMS: 1000,
-				AutoWorker:     true,
+				PollIntervalMS:           1000,
+				AutoWorker:               true,
+				ReaperIntervalMS:         60000,
+				LeaseStaleAfterSec:       900,
+				BackgroundWaitTimeoutSec: 0,
+			},
+			ChildBudget: ChildBudgetConfig{
+				MaxWallClockSec: 7200,
+				MaxTurns:        1500,
 			},
 			ExecPolicy: ExecPolicyConfig{
 				Mode: "warn",
@@ -479,6 +500,21 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.Queue.PollIntervalMS <= 0 {
 		cfg.Runtime.Queue.PollIntervalMS = 1000
+	}
+	if cfg.Runtime.Queue.ReaperIntervalMS < 0 {
+		cfg.Runtime.Queue.ReaperIntervalMS = 0
+	}
+	if cfg.Runtime.Queue.LeaseStaleAfterSec < 0 {
+		cfg.Runtime.Queue.LeaseStaleAfterSec = 0
+	}
+	if cfg.Runtime.Queue.BackgroundWaitTimeoutSec < 0 {
+		cfg.Runtime.Queue.BackgroundWaitTimeoutSec = 0
+	}
+	if cfg.Runtime.ChildBudget.MaxWallClockSec < 0 {
+		cfg.Runtime.ChildBudget.MaxWallClockSec = 0
+	}
+	if cfg.Runtime.ChildBudget.MaxTurns < 0 {
+		cfg.Runtime.ChildBudget.MaxTurns = 0
 	}
 	cfg.Runtime.Shell.Sandbox = strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
 	cfg.Runtime.ExecPolicy.Mode = normalizeExecPolicyMode(cfg.Runtime.ExecPolicy.Mode)

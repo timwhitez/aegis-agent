@@ -396,6 +396,15 @@ runtime:
   multi_agent:
     enabled: true
     max_depth: 4
+  queue:
+    poll_interval_ms: 1000
+    auto_worker: true
+    reaper_interval_ms: 60000
+    lease_stale_after_sec: 900
+    background_wait_timeout_sec: 0
+  child_budget:
+    max_wall_clock_sec: 7200
+    max_turns: 1500
 
 hooks:
   default_timeout_sec: 300
@@ -411,6 +420,9 @@ hooks:
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_wait` / `agent_stop` / `agent_prompt` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
+- `runtime.queue.reaper_interval_ms` 默认 `60000`：后台 queue liveness 回收周期。reaper 扫描 `running/` 与 `blocked/`，回收拥有进程已死（如服务重启）或心跳超 `lease_stale_after_sec`（默认 `900`）的孤儿 job——子会话已终态的结算为对应终态、未建会话的重新入队、其余转 `blocked` 并向 parent 写 pending notification；`<= 0` 关闭该回收。`web` 进程同时对僵尸 `running` 会话做 stale-owner reconcile（转 `paused`）
+- `runtime.queue.background_wait_timeout_sec` 默认 `0`（不超时）：parked parent 等待后台 child 结果的墙钟上界，超时记录 `session.background.wait_timeout` 并回到 `awaiting_input`；与死锁检测互补——当 unresolved 工作全部不可推进时，runtime 会写入 `parent.coordination.deadlock` 事件并注入一条 `coordination_deadlock` background notification 唤醒模型决策（`agent_prompt` 收敛 / `agent_stop` 停弃 / 自行继续），而不是无声死等
+- `runtime.child_budget.max_wall_clock_sec`（默认 `7200`）/ `max_turns`（默认 `1500`）：仅作用于 child / background（有 parent 的）会话的兜底预算，防止单个委派会话无限 loop；root master session 不受此限（沿用 `max_turns_hard`）。任一维度 `0` 表示禁用。超限时 child 以可恢复方式 `paused`（→ queue `blocked`）并通知 parent，由模型决定续跑/收敛/停止，runtime 不替模型决定也不直接判失败
 - `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary 和 `max_turns_hard` 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 - Settings 页面还可暴露 provider `context_window_tokens` 数值输入，保存时持久化回当前生效的 config 文件

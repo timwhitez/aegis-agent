@@ -142,6 +142,9 @@ type Service struct {
 	pendingStarts   map[int]context.CancelFunc
 
 	launchWG sync.WaitGroup
+
+	reaperCancel context.CancelFunc
+	reaperDone   chan struct{}
 }
 
 type launchHandle struct {
@@ -334,10 +337,12 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		unsetProcessEnv: os.Unsetenv,
 	}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
+	svc.startQueueReaper()
 	return svc, nil
 }
 
 func (s *Service) Close() {
+	s.stopQueueReaper()
 	s.workers.Close()
 	s.mu.Lock()
 	handles := make([]*launchHandle, 0, len(s.handles))

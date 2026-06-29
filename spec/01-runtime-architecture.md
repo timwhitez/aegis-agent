@@ -229,6 +229,9 @@
 - reconcile running job 时只做文件事实可证明的收敛：已完成/失败的 linked session 可修复为完成/失败；recent heartbeat 且未结算的 job 保持 running；stale 且找不到 linked session 的 job 可标记 failed 并记录 orphan/stale error
 - 当 parent session 被显式 stop 时，未 claim 的 parent-linked queued job 应转为 `blocked` 并标记 `stop_reason=parent_stop`，已 linked 且因 parent stop 暂停的 child session 对应 job 也应收敛为 `blocked` / `stop_reason=parent_stop`；这类 job 不阻断删除，但仍保留在 parent coordination 的 unresolved 集合中
 - parent 继续运行后，模型可用 `agent_prompt` 主动恢复这些 parent-stopped 子任务：有 linked child session 的 job 通过 child `continue` 恢复，尚未 claim 的 pre-claim job 重新进入 queued，由 worker 后续领取；runtime 不应自动无条件恢复所有 paused child，避免误启动用户单独暂停的子任务
+- 周期性回收孤儿 job（liveness reaper）：持有进程已死（`process_start_id`/`worker_pid` 经 `/proc` 探测不存在）或心跳超 `lease_stale_after` 的 `running`/`blocked` job 必须被回收，否则其 parent 会永久 parked。回收按混合策略——linked child 终态→结算终态、未建会话→重新入队、其余→`blocked` 并写 parent notification——只做 liveness 恢复，不替模型决定 workflow。`web` 进程同时把无存活 owner 的僵尸 `running` session reconcile 为 `paused`
+- child / background（有 `parent_session_id`）会话受兜底预算约束（`runtime.child_budget.max_wall_clock_sec` / `max_turns`，`0` 关闭），超限以可恢复 `paused` 收敛（→ job `blocked`）并通知 parent；root master session 不受此限。这是可度量停止条件，不是固定 workflow guard
+- parent 在 `background_wait` 等待时，若 unresolved 工作全部不可推进，runtime 写 `parent.coordination.deadlock` 事件并注入 `coordination_deadlock` background notification 唤醒模型决策；`runtime.queue.background_wait_timeout_sec` 提供墙钟兜底。两者都只把事实交还模型，不自动解决 unresolved 工作
 
 ### 2.19 TerminalDashboard
 
