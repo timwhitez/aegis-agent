@@ -198,7 +198,7 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 
 若 job 带有 `resume_parent=true`，这是 parent agent 自己选择停车等待的事实。活跃 parent run 可以在 `agent_spawn(background=true, resume_parent=true)` 的 tool result 落盘后进入 `awaiting_input` / `background_wait`，保持 auto worker 存活；worker 写入任一 pending background notification 后，parent 在同一 harness 流程中自动接纳 `<background-agent-results>` 并继续下一次 provider turn。该能力不能由 runtime 自动替 parent 决定，只能由模型显式选择。parent 恢复后由模型判断是否继续等待其他 child、提示 child 收敛或停止不再需要的 queued job。
 
-当 parent coordination 仍存在 unresolved child session 或 queue job 时，parent 的普通 `run` 自然停顿不能直接退出到普通 `awaiting_input`。runtime 应提醒模型先选择 `agent_wait` 停车等待，或通过 `agent_stop` 停止尚未被 worker claim 的 queued job；对于已经 running / blocked 的 child work，模型可以用 `agent_prompt` 向 child 发送收敛/交付 prompt，再通过 `agent_wait` 等待结果，或用 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理。该 unresolved-work reminder 必须按同一 children/jobs 事实去重；同一 unresolved set 已提醒过时，`run` 模式应回到可继续的 `awaiting_input`，而不是反复向 transcript 写入同一 harness reminder。`finish` 同样由 parent coordination gate 阻断 unresolved work，即使 `wait_mode=wait-any` 已经收到一个完成结果，也不能带着其他未结束 child/job 退出。
+当 parent coordination 仍存在 unresolved child session 或 queue job 时，parent 的普通 `run` 自然停顿不能直接退出到普通 `awaiting_input`。runtime 应提醒模型先选择 `agent_wait` 停车等待，或通过 `agent_stop` 停止尚未被 worker claim 的 queued job；对于已经 running / blocked 的 child work，模型可以用 `agent_prompt` 向 child 发送收敛/交付 prompt，再通过 `agent_wait` 等待结果，或用 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理。该 unresolved-work reminder 必须按排序后的 children/jobs 语义事实去重；同一 unresolved set 已提醒过时，`run` 模式可以放行一轮不重复刷字的自愈 turn，若仍无进展再回到可继续的 `awaiting_input`。`exec` / `init` 只有在 unresolved work 已确认不可自行推进时才可因重复 unresolved 失败；仍有 queued/running/live-owner work 时应保持可恢复状态。`finish` 同样由 parent coordination gate 阻断 unresolved work，即使 `wait_mode=wait-any` 已经收到一个完成结果，也不能带着其他未结束 child/job 退出。
 
 parent-linked queue job 只能由 root master session 创建。`depth > 0` 或存在 `parent_session_id` 的 child session 不允许再提交 parent-linked background queue job，避免 nested sub-agent 的等待状态分散到多层 parent coordination。
 
@@ -240,7 +240,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 - 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死、终态但仍挂在 unresolved、或 unresolved job 文件已缺失），同时每个 unresolved child session 都为非 `running` 的非终态或文件已缺失。
 - 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
-- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 或人工 / Web `continue` 旧 parked/failed parent session 时不再重复写入同一 liveness notification，也不能静默重新停车，而是向 parent transcript 写入需要 master 介入的 reminder 并继续 parent loop。该 master-intervention reminder 也必须按同一 deadlock reason 去重；已提醒过但事实未变化时，runtime 不应刷屏。
+- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 或人工 / Web `continue` 旧 parked/failed parent session 时不再重复写入同一 liveness notification，也不能静默重新停车，而是向 parent transcript 写入需要 master 介入的 reminder 并继续 parent loop。该 master-intervention reminder 也必须按排序后的 stalled children/jobs 语义事实去重；已提醒过但事实未变化时，runtime 不应刷屏。实现上去重应使用轻量持久索引或尾部有界扫描，避免在 parent loop 热路径对长 `messages.jsonl` 做每次全量扫描；历史无 signature 的 reminder 可用 bounded tail 文本匹配兼容。
 - 兜底超时：`runtime.queue.background_wait_timeout_sec`（默认 `0` 不超时）为等待墙钟上界，超时写 `session.background.wait_timeout` 并回到 `awaiting_input`。
 
 ### 5.8 child / background 会话兜底预算

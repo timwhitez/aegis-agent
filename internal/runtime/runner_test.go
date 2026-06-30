@@ -2544,13 +2544,14 @@ func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminde
 	if err := addParentQueueJob(runner.store, meta.ID, job.ID, parentWaitAll); err != nil {
 		t.Fatalf("add parent queue job: %v", err)
 	}
-	reason, deadlocked, err := coordinationDeadlockReason(runner.store, meta.ID)
+	deadlock, err := coordinationDeadlockState(runner.store, meta.ID)
 	if err != nil {
 		t.Fatalf("deadlock reason: %v", err)
 	}
-	if !deadlocked {
+	if !deadlock.Deadlocked {
 		t.Fatal("expected parent coordination to be deadlocked")
 	}
+	reason := deadlock.Reason
 	notification := session.NewCoordinationDeadlockNotification(meta.ID, reason)
 	notification.DeliveryStatus = session.BackgroundNotificationAccepted
 	if err := runner.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
@@ -2568,7 +2569,7 @@ func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminde
 	}
 	if seedExistingReminder {
 		prompt := backgroundWaitNeedsInterventionPrompt(reason)
-		if _, err := runner.engine.appendHarnessReminderWithSignature(meta, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt)); err != nil {
+		if _, err := runner.engine.appendHarnessReminderWithSignature(meta, "prepare", prompt, "background_wait_needs_intervention", deadlock.Signature); err != nil {
 			t.Fatalf("seed existing intervention reminder: %v", err)
 		}
 	}

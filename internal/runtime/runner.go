@@ -1011,7 +1011,7 @@ func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata)
 	if ready {
 		return nil
 	}
-	injected, alreadyDelivered, reason, err := r.engine.injectCoordinationDeadlockWake(meta)
+	injected, alreadyDelivered, reason, signature, err := r.engine.injectCoordinationDeadlockWake(meta)
 	if err != nil {
 		return err
 	}
@@ -1024,7 +1024,10 @@ func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata)
 		return fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
 	}
 	prompt := backgroundWaitNeedsInterventionPrompt(reason)
-	_, err = r.engine.appendHarnessReminderOnce(meta, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt))
+	if strings.TrimSpace(signature) == "" {
+		signature = harnessReminderTextSignature(prompt)
+	}
+	_, err = r.engine.appendHarnessReminderOnce(meta, "prepare", prompt, "background_wait_needs_intervention", signature)
 	return err
 }
 

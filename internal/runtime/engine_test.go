@@ -237,10 +237,11 @@ func TestEngineDoesNotRepeatUnresolvedBackgroundReminder(t *testing.T) {
 		t.Fatalf("save parent coordination: %v", err)
 	}
 	turns := 0
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+	doneCandidate := func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		turns++
 		return provider.TurnResult{Text: "I will stop now", StopReason: "done_candidate"}, nil
-	})
+	}
+	fake := provider.NewFake(doneCandidate, doneCandidate, doneCandidate)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
@@ -249,8 +250,8 @@ func TestEngineDoesNotRepeatUnresolvedBackgroundReminder(t *testing.T) {
 	if result.Status != session.StatusAwaitingInput {
 		t.Fatalf("expected awaiting_input after duplicate unresolved reminder, got %#v", result)
 	}
-	if turns != 1 {
-		t.Fatalf("expected unresolved reminder to avoid repeated provider turns, got %d", turns)
+	if turns != 3 {
+		t.Fatalf("expected one extra provider turn without a duplicate unresolved reminder, got %d", turns)
 	}
 	messages, err := engine.store.LoadMessages(meta.ID)
 	if err != nil {
@@ -267,6 +268,94 @@ func TestEngineDoesNotRepeatUnresolvedBackgroundReminder(t *testing.T) {
 	}
 	if reminders != 1 {
 		t.Fatalf("expected one unresolved background reminder, got %d in %#v", reminders, messages)
+	}
+}
+
+func TestEngineUnresolvedBackgroundReminderDedupUsesIndexBeyondTail(t *testing.T) {
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	signature := harnessReminderSemanticSignature("background_work_unresolved", []string{"child_index"}, []string{"job_index"})
+	appended, err := engine.appendHarnessReminderOnce(meta, "turn_decide", "first unresolved prompt", "background_work_unresolved", signature)
+	if err != nil {
+		t.Fatalf("append first reminder: %v", err)
+	}
+	if !appended {
+		t.Fatal("expected first reminder to append")
+	}
+	for i := 0; i < harnessReminderFallbackTailLimit+5; i++ {
+		if err := engine.store.AppendMessage(meta.ID, session.NewMessage("assistant", fmt.Sprintf("filler %03d", i))); err != nil {
+			t.Fatalf("append filler %d: %v", i, err)
+		}
+	}
+	appended, err = engine.appendHarnessReminderOnce(meta, "turn_decide", "different wording for same unresolved facts", "background_work_unresolved", signature)
+	if err != nil {
+		t.Fatalf("append duplicate reminder: %v", err)
+	}
+	if appended {
+		t.Fatal("expected indexed signature to suppress duplicate beyond tail window")
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	reminders := 0
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "background_work_unresolved" {
+			reminders++
+		}
+	}
+	if reminders != 1 {
+		t.Fatalf("expected one indexed reminder, got %d", reminders)
+	}
+}
+
+func TestEngineExecDuplicateUnresolvedBackgroundProgressableReturnsAwaitingInput(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_progressable_exec",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusQueued,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		Prompt:          "continue child work",
+		Mode:            session.ModeExec,
+		Background:      true,
+	}
+	if err := engine.store.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+	if err := addParentQueueJob(engine.store, meta.ID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	unresolved, err := engine.unresolvedBackgroundExitState(meta.ID)
+	if err != nil {
+		t.Fatalf("load unresolved state: %v", err)
+	}
+	if !unresolved.CanProgress {
+		t.Fatalf("expected queued job to be progressable: %#v", unresolved)
+	}
+	if _, err := engine.appendHarnessReminderWithSignature(meta, "turn_decide", unresolved.Reminder, "background_work_unresolved", unresolved.Signature); err != nil {
+		t.Fatalf("seed existing reminder: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "still waiting", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected progressable duplicate unresolved work to stay recoverable, got %#v", result)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Status != session.StatusAwaitingInput || loadedState.IncompleteReason == "unresolved_background_work" {
+		t.Fatalf("expected awaiting_input without unresolved failure, got %#v", loadedState)
 	}
 }
 

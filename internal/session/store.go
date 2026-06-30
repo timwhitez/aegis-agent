@@ -43,10 +43,24 @@ type Store struct {
 	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
 }
 
+type harnessReminderIndex struct {
+	SchemaVersion int                          `json:"schema_version"`
+	UpdatedAt     string                       `json:"updated_at,omitempty"`
+	Entries       []harnessReminderIndexRecord `json:"entries,omitempty"`
+}
+
+type harnessReminderIndexRecord struct {
+	Kind      string `json:"kind"`
+	Signature string `json:"signature"`
+	MessageID string `json:"message_id,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
 const QueueRunningStaleAfter = 15 * time.Minute
 
 const queueRunningStaleAfter = QueueRunningStaleAfter
 const invalidStoreIDPathSegment = ".invalid-id"
+const harnessReminderIndexSchemaVersion = 1
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
@@ -438,6 +452,52 @@ func (s *Store) VisitMessages(sessionID string, visit func(Message) error) error
 		}
 		return visit(message)
 	})
+}
+
+func (s *Store) HarnessReminderRecorded(sessionID, kind, signature string) (bool, error) {
+	kind = strings.TrimSpace(kind)
+	signature = strings.TrimSpace(signature)
+	if kind == "" || signature == "" {
+		return false, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, _, exists, err := s.loadHarnessReminderIndexLocked(sessionID)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	return harnessReminderIndexHas(index, kind, signature), nil
+}
+
+func (s *Store) RecordHarnessReminder(sessionID, kind, signature, messageID string) error {
+	kind = strings.TrimSpace(kind)
+	signature = strings.TrimSpace(signature)
+	if kind == "" || signature == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index, path, _, err := s.loadHarnessReminderIndexLocked(sessionID)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if index.SchemaVersion == 0 {
+		index.SchemaVersion = harnessReminderIndexSchemaVersion
+	}
+	if !harnessReminderIndexHas(index, kind, signature) {
+		index.Entries = append(index.Entries, harnessReminderIndexRecord{
+			Kind:      kind,
+			Signature: signature,
+			MessageID: strings.TrimSpace(messageID),
+			CreatedAt: now,
+		})
+	}
+	index.UpdatedAt = now
+	return s.writeJSONFile(path, index)
 }
 
 func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
@@ -2768,13 +2828,82 @@ func (s *Store) deleteJobLocked(jobID string) error {
 	if err := validateStoreID("queue job", jobID); err != nil {
 		return err
 	}
+	var coordinationErr error
+	if job, err := s.loadQueueJobForCoordinationLocked(jobID); err == nil {
+		if err := s.removeDeletedJobFromParentCoordinationLocked(job); err != nil {
+			coordinationErr = err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		// Malformed queue files are still deletable for recovery. If we cannot
+		// trust their parent metadata, fall back to raw file cleanup below.
+	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, jobID)
 		if err := fileutil.RemoveFileNoSymlink(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 	}
-	return nil
+	return coordinationErr
+}
+
+func (s *Store) loadQueueJobForCoordinationLocked(jobID string) (QueueJob, error) {
+	copies, err := s.loadQueueJobCopiesStable(jobID)
+	if err != nil {
+		return QueueJob{}, err
+	}
+	if len(copies) == 0 {
+		return QueueJob{}, os.ErrNotExist
+	}
+	return canonicalQueueJobCopy(copies).job, nil
+}
+
+func (s *Store) removeDeletedJobFromParentCoordinationLocked(job QueueJob) error {
+	parentSessionID := strings.TrimSpace(job.ParentSessionID)
+	jobID := strings.TrimSpace(job.ID)
+	if parentSessionID == "" || jobID == "" {
+		return nil
+	}
+	path, err := s.sessionPath(parentSessionID, "parent-coordination.json")
+	if err != nil {
+		return err
+	}
+	lockPath, err := s.sessionPath(parentSessionID, "parent-coordination.lock")
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return s.withFileLock(lockPath, func() error {
+		var coordination ParentCoordination
+		if err := readJSONFile(path, &coordination); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if strings.TrimSpace(coordination.ParentSessionID) == "" {
+			return nil
+		}
+		if err := normalizeParentCoordinationWaitMode(&coordination); err != nil {
+			return fmt.Errorf("validate parent-coordination.json: %w", err)
+		}
+		if err := validateParentCoordination(parentSessionID, coordination); err != nil {
+			return fmt.Errorf("validate parent-coordination.json: %w", err)
+		}
+		coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, jobID)
+		coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, jobID)
+		coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, jobID)
+		coordination.Parked = shouldParkParentCoordination(coordination)
+		coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := normalizeAndValidateParentCoordination(parentSessionID, &coordination); err != nil {
+			return fmt.Errorf("validate parent-coordination.json: %w", err)
+		}
+		return s.writeJSONFile(path, coordination)
+	})
 }
 
 func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
@@ -3092,6 +3221,71 @@ func (s *Store) writeJSONFile(path string, payload any) error {
 	}
 	data = append(data, '\n')
 	return s.writeBytesFile(path, data)
+}
+
+func (s *Store) loadHarnessReminderIndexLocked(sessionID string) (harnessReminderIndex, string, bool, error) {
+	path, err := s.sessionPath(sessionID, "control", "harness_reminders.json")
+	if err != nil {
+		return harnessReminderIndex{}, "", false, err
+	}
+	var index harnessReminderIndex
+	if err := readJSONFile(path, &index); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return harnessReminderIndex{SchemaVersion: harnessReminderIndexSchemaVersion}, path, false, nil
+		}
+		return harnessReminderIndex{}, path, false, fmt.Errorf("load harness reminder index: %w", err)
+	}
+	if err := validateHarnessReminderIndex(index); err != nil {
+		return harnessReminderIndex{}, path, true, err
+	}
+	return index, path, true, nil
+}
+
+func validateHarnessReminderIndex(index harnessReminderIndex) error {
+	if index.SchemaVersion != harnessReminderIndexSchemaVersion {
+		return fmt.Errorf("validate harness reminder index: unsupported schema_version %d", index.SchemaVersion)
+	}
+	seen := make(map[string]struct{}, len(index.Entries))
+	for i, entry := range index.Entries {
+		kind := strings.TrimSpace(entry.Kind)
+		signature := strings.TrimSpace(entry.Signature)
+		if kind == "" {
+			return fmt.Errorf("validate harness reminder index: entries[%d].kind is required", i)
+		}
+		if signature == "" {
+			return fmt.Errorf("validate harness reminder index: entries[%d].signature is required", i)
+		}
+		key := harnessReminderIndexKey(kind, signature)
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("validate harness reminder index: duplicate entry for kind %q signature %q", kind, signature)
+		}
+		seen[key] = struct{}{}
+		if entry.CreatedAt != "" {
+			if _, err := time.Parse(time.RFC3339Nano, entry.CreatedAt); err != nil {
+				return fmt.Errorf("validate harness reminder index: entries[%d].created_at must be RFC3339Nano: %w", i, err)
+			}
+		}
+	}
+	if index.UpdatedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, index.UpdatedAt); err != nil {
+			return fmt.Errorf("validate harness reminder index: updated_at must be RFC3339Nano: %w", err)
+		}
+	}
+	return nil
+}
+
+func harnessReminderIndexHas(index harnessReminderIndex, kind, signature string) bool {
+	key := harnessReminderIndexKey(kind, signature)
+	for _, entry := range index.Entries {
+		if harnessReminderIndexKey(entry.Kind, entry.Signature) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func harnessReminderIndexKey(kind, signature string) string {
+	return strings.TrimSpace(kind) + "\x00" + strings.TrimSpace(signature)
 }
 
 func (s *Store) writeBytesFile(path string, data []byte) error {

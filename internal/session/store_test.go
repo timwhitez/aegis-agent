@@ -5782,6 +5782,63 @@ func TestDeleteJobRejectsSymlinkedQueueStatusDirectory(t *testing.T) {
 	}
 }
 
+func TestDeleteJobRemovesParentCoordinationBeforeQueueFile(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_delete_coordination",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusQueued,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		Prompt:          "queued child",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+	if err := store.SaveParentCoordination(meta.ID, ParentCoordination{
+		SchemaVersion:       1,
+		ParentSessionID:     meta.ID,
+		WaitMode:            "wait-all",
+		UnresolvedQueueJobs: []string{job.ID},
+		Parked:              true,
+		UpdatedAt:           now,
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+
+	if err := store.DeleteJob(job.ID); err != nil {
+		t.Fatalf("delete job: %v", err)
+	}
+	if _, err := store.LoadJob(job.ID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected queue job file removed, got %v", err)
+	}
+	coordination, err := store.LoadParentCoordination(meta.ID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if len(coordination.UnresolvedQueueJobs) != 0 || coordination.Parked {
+		t.Fatalf("expected deleted job removed from parent coordination, got %#v", coordination)
+	}
+}
+
 func TestQueueJobFactsRejectMalformedParentRootTopology(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)

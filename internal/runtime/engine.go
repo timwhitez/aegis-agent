@@ -158,6 +158,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	doneCandidates := 0
+	duplicateUnresolvedBackgroundTurns := 0
 	allowResolutionTurn := false
 	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
 	hardTurnLimitEnabled := hardTurnLimit > 0
@@ -208,6 +209,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if acceptedBackgroundAtTurnStart > 0 {
 			doneCandidates = 0
+			duplicateUnresolvedBackgroundTurns = 0
 		}
 
 		acceptedAtTurnStart, stopAfterSteer, err := e.drainSteer(ctx, meta, hookManager)
@@ -216,6 +218,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if acceptedAtTurnStart > 0 {
 			doneCandidates = 0
+			duplicateUnresolvedBackgroundTurns = 0
 		}
 		if stopAfterSteer {
 			return e.pause(ctx, meta, state, "manual_stop", hookManager)
@@ -973,7 +976,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						return RunResult{}, fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
 					}
 					prompt := backgroundWaitNeedsInterventionPrompt(decision.Reason)
-					appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt))
+					signature := decision.Signature
+					if strings.TrimSpace(signature) == "" {
+						signature = harnessReminderTextSignature(prompt)
+					}
+					appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", prompt, "background_wait_needs_intervention", signature)
 					if err != nil {
 						return RunResult{}, err
 					}
@@ -999,31 +1006,40 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		switch meta.Mode {
 		case session.ModeRun:
-			if reminder, err := e.unresolvedBackgroundExitReminder(meta.ID); err != nil || reminder != "" {
+			if unresolved, err := e.unresolvedBackgroundExitState(meta.ID); err != nil || unresolved.Reminder != "" {
 				if err != nil {
 					return RunResult{}, err
 				}
-				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", reminder, "background_work_unresolved", harnessReminderTextSignature(reminder))
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", unresolved.Reminder, "background_work_unresolved", unresolved.Signature)
 				if err != nil {
 					return RunResult{}, err
 				}
 				if !appended {
+					if duplicateUnresolvedBackgroundTurns == 0 {
+						duplicateUnresolvedBackgroundTurns++
+						doneCandidates = 0
+						continue
+					}
 					return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 				}
+				duplicateUnresolvedBackgroundTurns = 0
 				doneCandidates = 0
 				continue
 			}
 			return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 		case session.ModeExec, session.ModeInit:
-			if reminder, err := e.unresolvedBackgroundExitReminder(meta.ID); err != nil || reminder != "" {
+			if unresolved, err := e.unresolvedBackgroundExitState(meta.ID); err != nil || unresolved.Reminder != "" {
 				if err != nil {
 					return RunResult{}, err
 				}
-				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", reminder, "background_work_unresolved", harnessReminderTextSignature(reminder))
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", unresolved.Reminder, "background_work_unresolved", unresolved.Signature)
 				if err != nil {
 					return RunResult{}, err
 				}
 				if !appended {
+					if unresolved.CanProgress {
+						return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
+					}
 					state.Status = session.StatusFailed
 					state.Phase = "turn_decide"
 					state.IncompleteReason = "unresolved_background_work"
@@ -1148,6 +1164,7 @@ func isBackgroundWaitResult(result session.ToolResult) bool {
 type backgroundWaitDecision struct {
 	AlreadyDeliveredDeadlock bool
 	Reason                   string
+	Signature                string
 }
 
 func (e *Engine) beforeAwaitingBackground(meta session.SessionMetadata) (backgroundWaitDecision, error) {
@@ -1158,28 +1175,44 @@ func (e *Engine) beforeAwaitingBackground(meta session.SessionMetadata) (backgro
 	if ready {
 		return backgroundWaitDecision{}, nil
 	}
-	_, alreadyDelivered, reason, err := e.injectCoordinationDeadlockWake(meta)
+	_, alreadyDelivered, reason, signature, err := e.injectCoordinationDeadlockWake(meta)
 	if err != nil {
 		return backgroundWaitDecision{}, err
 	}
 	if alreadyDelivered {
-		return backgroundWaitDecision{AlreadyDeliveredDeadlock: true, Reason: reason}, nil
+		return backgroundWaitDecision{AlreadyDeliveredDeadlock: true, Reason: reason, Signature: signature}, nil
 	}
 	return backgroundWaitDecision{}, nil
 }
 
-func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, error) {
+type unresolvedBackgroundExitState struct {
+	Reminder    string
+	Signature   string
+	CanProgress bool
+}
+
+func (e *Engine) unresolvedBackgroundExitState(sessionID string) (unresolvedBackgroundExitState, error) {
 	coordination, err := e.store.LoadParentCoordination(sessionID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
+			return unresolvedBackgroundExitState{}, nil
 		}
-		return "", fmt.Errorf("load parent coordination before awaiting input: %w", err)
+		return unresolvedBackgroundExitState{}, fmt.Errorf("load parent coordination before awaiting input: %w", err)
 	}
 	if coordination.ParentSessionID == "" || (len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0) {
-		return "", nil
+		return unresolvedBackgroundExitState{}, nil
 	}
-	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+	children := normalizedReminderItems(coordination.UnresolvedChildSessions)
+	jobs := normalizedReminderItems(coordination.UnresolvedQueueJobs)
+	canProgress, err := parentCoordinationUnresolvedCanProgress(e.store, coordination)
+	if err != nil {
+		return unresolvedBackgroundExitState{}, err
+	}
+	return unresolvedBackgroundExitState{
+		Reminder:    fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(children), joinPromptItems(jobs)),
+		Signature:   harnessReminderSemanticSignature("background_work_unresolved", children, jobs),
+		CanProgress: canProgress,
+	}, nil
 }
 
 func backgroundWaitNeedsInterventionPrompt(reason string) string {
@@ -1245,7 +1278,7 @@ func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.Sessi
 		// next loop via the ready check.
 		if !deadlockChecked {
 			deadlockChecked = true
-			injected, alreadyDelivered, reason, err := e.injectCoordinationDeadlockWake(meta)
+			injected, alreadyDelivered, reason, _, err := e.injectCoordinationDeadlockWake(meta)
 			if err != nil {
 				return 0, err
 			}
@@ -1303,34 +1336,34 @@ func (e *Engine) backgroundWaitPollInterval() time.Duration {
 // itself). It is injected at most once for the same deadlock reason; after the
 // wake has been accepted, another identical agent_wait returns to awaiting input
 // instead of blocking forever or appending duplicate liveness notifications.
-func (e *Engine) injectCoordinationDeadlockWake(meta session.SessionMetadata) (bool, bool, string, error) {
-	reason, deadlocked, err := coordinationDeadlockReason(e.store, meta.ID)
+func (e *Engine) injectCoordinationDeadlockWake(meta session.SessionMetadata) (bool, bool, string, string, error) {
+	info, err := coordinationDeadlockState(e.store, meta.ID)
 	if err != nil {
-		return false, false, "", err
+		return false, false, "", "", err
 	}
-	if !deadlocked {
-		return false, false, "", nil
+	if !info.Deadlocked {
+		return false, false, "", "", nil
 	}
-	pending, delivered, err := e.deadlockWakeDeliveryState(meta.ID, reason)
+	pending, delivered, err := e.deadlockWakeDeliveryState(meta.ID, info.Reason)
 	if err != nil {
-		return false, false, reason, err
+		return false, false, info.Reason, info.Signature, err
 	}
 	if pending {
-		return false, false, reason, nil
+		return false, false, info.Reason, info.Signature, nil
 	}
 	if delivered {
-		return false, true, reason, nil
+		return false, true, info.Reason, info.Signature, nil
 	}
 	if err := e.appendEvent(meta.ID, "parent.coordination.deadlock", "background_wait", map[string]any{
-		"reason": reason,
+		"reason": info.Reason,
 	}); err != nil {
-		return false, false, reason, fmt.Errorf("record parent.coordination.deadlock event: %w", err)
+		return false, false, info.Reason, info.Signature, fmt.Errorf("record parent.coordination.deadlock event: %w", err)
 	}
-	notification := session.NewCoordinationDeadlockNotification(meta.ID, reason)
+	notification := session.NewCoordinationDeadlockNotification(meta.ID, info.Reason)
 	if err := e.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
-		return false, false, reason, fmt.Errorf("append coordination deadlock notification: %w", err)
+		return false, false, info.Reason, info.Signature, fmt.Errorf("append coordination deadlock notification: %w", err)
 	}
-	return true, false, reason, nil
+	return true, false, info.Reason, info.Signature, nil
 }
 
 // deadlockWakeDeliveryState reports whether a coordination-deadlock wake is
@@ -1845,26 +1878,7 @@ func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messag
 }
 
 func (e *Engine) appendHarnessReminder(meta session.SessionMetadata, phase, text, kind string) (session.Message, error) {
-	msg := session.NewMessage("user", text)
-	msg.Meta = map[string]any{
-		"source": "harness_reminder",
-		"kind":   kind,
-	}
-	if err := e.store.AppendMessage(meta.ID, msg); err != nil {
-		return session.Message{}, err
-	}
-	if err := e.appendEvent(meta.ID, "user.message", phase, map[string]any{
-		"text":   text,
-		"mode":   meta.Mode,
-		"source": "harness_reminder",
-		"kind":   kind,
-	}); err != nil {
-		if rollbackErr := e.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
-			return session.Message{}, fmt.Errorf("record user.message event after rolling back harness reminder failed with %v: %w", rollbackErr, err)
-		}
-		return session.Message{}, fmt.Errorf("record user.message event: %w", err)
-	}
-	return msg, nil
+	return e.appendHarnessReminderWithSignature(meta, phase, text, kind, "")
 }
 
 func (e *Engine) appendHarnessReminderOnce(meta session.SessionMetadata, phase, text, kind, signature string) (bool, error) {
@@ -1882,13 +1896,14 @@ func (e *Engine) appendHarnessReminderOnce(meta session.SessionMetadata, phase, 
 }
 
 func (e *Engine) appendHarnessReminderWithSignature(meta session.SessionMetadata, phase, text, kind, signature string) (session.Message, error) {
+	signature = strings.TrimSpace(signature)
 	msg := session.NewMessage("user", text)
 	msg.Meta = map[string]any{
 		"source": "harness_reminder",
 		"kind":   kind,
 	}
-	if strings.TrimSpace(signature) != "" {
-		msg.Meta[harnessReminderSignatureKey] = strings.TrimSpace(signature)
+	if signature != "" {
+		msg.Meta[harnessReminderSignatureKey] = signature
 	}
 	if err := e.store.AppendMessage(meta.ID, msg); err != nil {
 		return session.Message{}, err
@@ -1899,14 +1914,19 @@ func (e *Engine) appendHarnessReminderWithSignature(meta session.SessionMetadata
 		"source": "harness_reminder",
 		"kind":   kind,
 	}
-	if strings.TrimSpace(signature) != "" {
-		data[harnessReminderSignatureKey] = strings.TrimSpace(signature)
+	if signature != "" {
+		data[harnessReminderSignatureKey] = signature
 	}
 	if err := e.appendEvent(meta.ID, "user.message", phase, data); err != nil {
 		if rollbackErr := e.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
 			return session.Message{}, fmt.Errorf("record user.message event after rolling back harness reminder failed with %v: %w", rollbackErr, err)
 		}
 		return session.Message{}, fmt.Errorf("record user.message event: %w", err)
+	}
+	if signature != "" {
+		if err := e.store.RecordHarnessReminder(meta.ID, kind, signature, msg.ID); err != nil {
+			return session.Message{}, fmt.Errorf("record harness reminder index: %w", err)
+		}
 	}
 	return msg, nil
 }

@@ -16,6 +16,14 @@ const (
 	parentWaitAny = "wait-any"
 )
 
+type coordinationDeadlockInfo struct {
+	Reason          string
+	Signature       string
+	Deadlocked      bool
+	StalledJobs     []string
+	StalledChildren []string
+}
+
 func normalizeParentWaitMode(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "any", "wait-any", "wait_any":
@@ -256,18 +264,26 @@ func removeString(items []string, item string) []string {
 // parent. It is the cross-restart safety net behind the queue reaper: detection
 // here only wakes the model with facts; it never resolves the work itself.
 func coordinationDeadlockReason(store *session.Store, parentSessionID string) (string, bool, error) {
+	info, err := coordinationDeadlockState(store, parentSessionID)
+	if err != nil {
+		return "", false, err
+	}
+	return info.Reason, info.Deadlocked, nil
+}
+
+func coordinationDeadlockState(store *session.Store, parentSessionID string) (coordinationDeadlockInfo, error) {
 	coordination, err := store.LoadParentCoordination(parentSessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return "", false, nil
+			return coordinationDeadlockInfo{}, nil
 		}
-		return "", false, err
+		return coordinationDeadlockInfo{}, err
 	}
 	if coordination.ParentSessionID == "" || !coordination.Parked {
-		return "", false, nil
+		return coordinationDeadlockInfo{}, nil
 	}
 	if len(coordination.UnresolvedChildSessions) == 0 && len(coordination.UnresolvedQueueJobs) == 0 {
-		return "", false, nil
+		return coordinationDeadlockInfo{}, nil
 	}
 	stalledJobs := make([]string, 0, len(coordination.UnresolvedQueueJobs))
 	for _, jobID := range coordination.UnresolvedQueueJobs {
@@ -280,10 +296,10 @@ func coordinationDeadlockReason(store *session.Store, parentSessionID string) (s
 			// A job that fails to load for reasons other than absence is treated
 			// as still potentially progressing so we never wake on a transient
 			// read or validation error.
-			return "", false, nil
+			return coordinationDeadlockInfo{}, nil
 		}
 		if session.QueueJobCanProgress(job) {
-			return "", false, nil
+			return coordinationDeadlockInfo{}, nil
 		}
 		stalledJobs = append(stalledJobs, jobID)
 	}
@@ -295,18 +311,54 @@ func coordinationDeadlockReason(store *session.Store, parentSessionID string) (s
 				stalledChildren = append(stalledChildren, childID)
 				continue
 			}
-			return "", false, nil
+			return coordinationDeadlockInfo{}, nil
 		}
 		// A child still running may be progressing in another process; only a
 		// non-terminal, non-running child counts as stalled here.
 		if state.Status == session.StatusRunning {
-			return "", false, nil
+			return coordinationDeadlockInfo{}, nil
 		}
 		stalledChildren = append(stalledChildren, childID)
 	}
+	stalledJobs = normalizedReminderItems(stalledJobs)
+	stalledChildren = normalizedReminderItems(stalledChildren)
 	reason := fmt.Sprintf("parent coordination deadlock: no unresolved child work can progress (stalled jobs: %s; stalled child sessions: %s)",
 		joinCoordinationItems(stalledJobs), joinCoordinationItems(stalledChildren))
-	return reason, true, nil
+	return coordinationDeadlockInfo{
+		Reason:          reason,
+		Signature:       harnessReminderSemanticSignature("background_wait_needs_intervention", stalledChildren, stalledJobs),
+		Deadlocked:      true,
+		StalledJobs:     stalledJobs,
+		StalledChildren: stalledChildren,
+	}, nil
+}
+
+func parentCoordinationUnresolvedCanProgress(store *session.Store, coordination session.ParentCoordination) (bool, error) {
+	for _, jobID := range coordination.UnresolvedQueueJobs {
+		job, err := store.LoadJob(jobID)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return true, nil
+		}
+		if session.QueueJobCanProgress(job) {
+			return true, nil
+		}
+	}
+	for _, childID := range coordination.UnresolvedChildSessions {
+		state, err := store.LoadState(childID)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return true, nil
+		}
+		if state.Status == session.StatusRunning {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func joinCoordinationItems(items []string) string {

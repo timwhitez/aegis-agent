@@ -205,7 +205,7 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 		t.Fatalf("expected deadlock detected, got deadlocked=%v reason=%q", deadlocked, reason)
 	}
 
-	injected, alreadyDelivered, _, err := engine.injectCoordinationDeadlockWake(parent)
+	injected, alreadyDelivered, _, _, err := engine.injectCoordinationDeadlockWake(parent)
 	if err != nil {
 		t.Fatalf("inject wake: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 		t.Fatalf("expected pending coordination-deadlock notification, got %#v", notifications)
 	}
 	// Idempotent: a second inject while one is pending must not duplicate.
-	injectedAgain, deliveredAgain, _, err := engine.injectCoordinationDeadlockWake(parent)
+	injectedAgain, deliveredAgain, _, _, err := engine.injectCoordinationDeadlockWake(parent)
 	if err != nil {
 		t.Fatalf("second inject: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 	if err := engine.store.UpdateBackgroundNotifications(parent.ID, notifications); err != nil {
 		t.Fatalf("accept deadlock notification: %v", err)
 	}
-	injectedAfterAccept, deliveredAfterAccept, _, err := engine.injectCoordinationDeadlockWake(parent)
+	injectedAfterAccept, deliveredAfterAccept, _, _, err := engine.injectCoordinationDeadlockWake(parent)
 	if err != nil {
 		t.Fatalf("inject after accepted wake: %v", err)
 	}
@@ -311,13 +311,14 @@ func TestEngineBeforeAwaitingBackgroundAlreadyDeliveredDeadlockNeedsIntervention
 	if err := addParentQueueJob(engine.store, parent.ID, job.ID, parentWaitAll); err != nil {
 		t.Fatalf("seed coordination: %v", err)
 	}
-	reason, deadlocked, err := coordinationDeadlockReason(engine.store, parent.ID)
+	deadlock, err := coordinationDeadlockState(engine.store, parent.ID)
 	if err != nil {
 		t.Fatalf("deadlock reason: %v", err)
 	}
-	if !deadlocked {
+	if !deadlock.Deadlocked {
 		t.Fatal("expected seeded coordination to be deadlocked")
 	}
+	reason := deadlock.Reason
 	accepted := session.NewCoordinationDeadlockNotification(parent.ID, reason)
 	accepted.DeliveryStatus = session.BackgroundNotificationAccepted
 	if err := engine.store.AppendBackgroundNotification(parent.ID, accepted); err != nil {
@@ -410,13 +411,14 @@ func TestEngineBackgroundWaitInterventionReminderIsNotRepeated(t *testing.T) {
 	if err := addParentQueueJob(engine.store, parent.ID, job.ID, parentWaitAll); err != nil {
 		t.Fatalf("seed coordination: %v", err)
 	}
-	reason, deadlocked, err := coordinationDeadlockReason(engine.store, parent.ID)
+	deadlock, err := coordinationDeadlockState(engine.store, parent.ID)
 	if err != nil {
 		t.Fatalf("deadlock reason: %v", err)
 	}
-	if !deadlocked {
+	if !deadlock.Deadlocked {
 		t.Fatal("expected seeded coordination to be deadlocked")
 	}
+	reason := deadlock.Reason
 	accepted := session.NewCoordinationDeadlockNotification(parent.ID, reason)
 	accepted.DeliveryStatus = session.BackgroundNotificationAccepted
 	if err := engine.store.AppendBackgroundNotification(parent.ID, accepted); err != nil {
@@ -433,7 +435,7 @@ func TestEngineBackgroundWaitInterventionReminderIsNotRepeated(t *testing.T) {
 		t.Fatalf("accept notifications: %v", err)
 	}
 	prompt := backgroundWaitNeedsInterventionPrompt(reason)
-	if _, err := engine.appendHarnessReminderWithSignature(parent, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt)); err != nil {
+	if _, err := engine.appendHarnessReminderWithSignature(parent, "prepare", prompt, "background_wait_needs_intervention", deadlock.Signature); err != nil {
 		t.Fatalf("seed intervention reminder: %v", err)
 	}
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
@@ -480,6 +482,49 @@ func TestCoordinationDeadlockReasonTreatsMissingUnresolvedJobAsStalled(t *testin
 	}
 	if !deadlocked || !strings.Contains(reason, "job_missing_unresolved") {
 		t.Fatalf("expected missing unresolved job to be reported as stalled, deadlocked=%v reason=%q", deadlocked, reason)
+	}
+}
+
+func TestCoordinationDeadlockSignatureStableAcrossUnresolvedOrder(t *testing.T) {
+	engine, parent, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	if _, _, err := engine.store.MutateParentCoordination(parent.ID, func(coordination *session.ParentCoordination) error {
+		*coordination = session.ParentCoordination{
+			SchemaVersion:           1,
+			ParentSessionID:         parent.ID,
+			WaitMode:                parentWaitAll,
+			UnresolvedQueueJobs:     []string{"job_b", "job_a"},
+			UnresolvedChildSessions: []string{"child_b", "child_a"},
+			Parked:                  true,
+			UpdatedAt:               time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed coordination: %v", err)
+	}
+	first, err := coordinationDeadlockState(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("deadlock state: %v", err)
+	}
+	if !first.Deadlocked {
+		t.Fatal("expected missing unresolved work to be deadlocked")
+	}
+	if strings.Index(first.Reason, "job_a") > strings.Index(first.Reason, "job_b") ||
+		strings.Index(first.Reason, "child_a") > strings.Index(first.Reason, "child_b") {
+		t.Fatalf("expected sorted deadlock reason, got %q", first.Reason)
+	}
+	if _, _, err := engine.store.MutateParentCoordination(parent.ID, func(coordination *session.ParentCoordination) error {
+		coordination.UnresolvedQueueJobs = []string{"job_a", "job_b"}
+		coordination.UnresolvedChildSessions = []string{"child_a", "child_b"}
+		return nil
+	}); err != nil {
+		t.Fatalf("reorder coordination: %v", err)
+	}
+	second, err := coordinationDeadlockState(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("deadlock state after reorder: %v", err)
+	}
+	if first.Signature == "" || first.Signature != second.Signature {
+		t.Fatalf("expected stable semantic signature, first=%q second=%q", first.Signature, second.Signature)
 	}
 }
 
