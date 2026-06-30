@@ -1470,6 +1470,29 @@ func TestCheckpointResumeHintInjectsForParentCoordination(t *testing.T) {
 	if len(messages) == 0 || !strings.Contains(messages[len(messages)-1].Text, "resolve parent child or queue wait state") {
 		t.Fatalf("expected parent coordination hint in last message, got %#v", messages)
 	}
+	injected, warnings, messageID, err = appendCheckpointResumeHint(store, meta, meta.Provider, meta.Model)
+	if err != nil {
+		t.Fatalf("repeat checkpoint hint: %v", err)
+	}
+	if injected || len(warnings) != 0 || messageID != "" {
+		t.Fatalf("expected duplicate parent coordination checkpoint hint to be suppressed, injected=%t warnings=%#v messageID=%q", injected, warnings, messageID)
+	}
+	messagesAfter, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages after duplicate hint: %v", err)
+	}
+	checkpointHints := 0
+	for _, msg := range messagesAfter {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			checkpointHints++
+			if _, ok := msg.Meta[harnessReminderSignatureKey].(string); !ok {
+				t.Fatalf("expected signed checkpoint hint, got %#v", msg.Meta)
+			}
+		}
+	}
+	if checkpointHints != 1 {
+		t.Fatalf("expected one checkpoint hint after duplicate suppression, got %d in %#v", checkpointHints, messagesAfter)
+	}
 }
 
 func TestCheckpointResumeHintReportsCorruptContractSnapshot(t *testing.T) {

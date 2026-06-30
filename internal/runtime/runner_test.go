@@ -2418,14 +2418,17 @@ func TestRunnerBackgroundContinueSkipsCheckpointResumeHint(t *testing.T) {
 
 func TestRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t *testing.T) {
 	t.Run("awaiting background wait", func(t *testing.T) {
-		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusAwaitingInput, Phase: "background_wait", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusAwaitingInput, Phase: "background_wait", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}, false)
 	})
 	t.Run("failed after provider retry", func(t *testing.T) {
-		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "openai: invalid api key", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "openai: invalid api key", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}, false)
+	})
+	t.Run("existing reminder is not repeated", func(t *testing.T) {
+		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "openai: invalid api key", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}, true)
 	})
 }
 
-func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t *testing.T, parentState session.State) {
+func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t *testing.T, parentState session.State, seedExistingReminder bool) {
 	t.Helper()
 	var seenMessages []map[string]any
 	providerCalls := 0
@@ -2562,6 +2565,12 @@ func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminde
 	}
 	if err := runner.store.UpdateBackgroundNotifications(meta.ID, notificationsBefore); err != nil {
 		t.Fatalf("accept existing notifications: %v", err)
+	}
+	if seedExistingReminder {
+		prompt := backgroundWaitNeedsInterventionPrompt(reason)
+		if _, err := runner.engine.appendHarnessReminderWithSignature(meta, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt)); err != nil {
+			t.Fatalf("seed existing intervention reminder: %v", err)
+		}
 	}
 
 	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID})

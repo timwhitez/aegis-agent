@@ -367,6 +367,108 @@ func TestEngineBeforeAwaitingBackgroundAlreadyDeliveredDeadlockNeedsIntervention
 	}
 }
 
+func TestEngineBackgroundWaitInterventionReminderIsNotRepeated(t *testing.T) {
+	engine, parent, _, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_repeated_intervention",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parent.ID,
+		RootSessionID:    parent.ID,
+		QueueJobID:       "job_repeated_intervention",
+		Depth:            1,
+	}
+	if err := engine.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parent.ID,
+		RootSessionID:   parent.ID,
+		Prompt:          "audit",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		WorkerPID:       999999,
+		ProcessStartID:  "999999:" + now,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := engine.store.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+	if err := addParentQueueJob(engine.store, parent.ID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("seed coordination: %v", err)
+	}
+	reason, deadlocked, err := coordinationDeadlockReason(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("deadlock reason: %v", err)
+	}
+	if !deadlocked {
+		t.Fatal("expected seeded coordination to be deadlocked")
+	}
+	accepted := session.NewCoordinationDeadlockNotification(parent.ID, reason)
+	accepted.DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := engine.store.AppendBackgroundNotification(parent.ID, accepted); err != nil {
+		t.Fatalf("append accepted deadlock notification: %v", err)
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(parent.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	for i := range notifications {
+		notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
+	}
+	if err := engine.store.UpdateBackgroundNotifications(parent.ID, notifications); err != nil {
+		t.Fatalf("accept notifications: %v", err)
+	}
+	prompt := backgroundWaitNeedsInterventionPrompt(reason)
+	if _, err := engine.appendHarnessReminderWithSignature(parent, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt)); err != nil {
+		t.Fatalf("seed intervention reminder: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_wait_again",
+				Name:      "agent_wait",
+				Arguments: json.RawMessage(`{}`),
+			}},
+			StopReason: "tool_use",
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), parent, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: now}, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected duplicate intervention to return awaiting input, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(parent.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	interventions := 0
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "background_wait_needs_intervention" {
+			interventions++
+		}
+	}
+	if interventions != 1 {
+		t.Fatalf("expected one intervention reminder, got %d in %#v", interventions, messages)
+	}
+}
+
 func TestCoordinationDeadlockReasonTreatsMissingUnresolvedJobAsStalled(t *testing.T) {
 	engine, parent, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	if err := addParentQueueJob(engine.store, parent.ID, "job_missing_unresolved", parentWaitAll); err != nil {

@@ -1023,7 +1023,8 @@ func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata)
 	}); err != nil {
 		return fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
 	}
-	_, err = r.engine.appendHarnessReminder(meta, "prepare", backgroundWaitNeedsInterventionPrompt(reason), "background_wait_needs_intervention")
+	prompt := backgroundWaitNeedsInterventionPrompt(reason)
+	_, err = r.engine.appendHarnessReminderOnce(meta, "prepare", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt))
 	return err
 }
 

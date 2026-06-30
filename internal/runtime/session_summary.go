@@ -681,9 +681,17 @@ func appendCheckpointResumeHint(store *session.Store, meta session.SessionMetada
 	text += "."
 	msg := session.NewMessage("user", text)
 	msg.Meta = map[string]any{
-		"source":         "harness_reminder",
-		"kind":           "longrun_checkpoint",
-		"drift_warnings": append([]string(nil), warnings...),
+		"source":                    "harness_reminder",
+		"kind":                      "longrun_checkpoint",
+		"drift_warnings":            append([]string(nil), warnings...),
+		harnessReminderSignatureKey: harnessReminderTextSignature(text),
+	}
+	exists, err := harnessReminderExists(store, meta.ID, "longrun_checkpoint", harnessReminderTextSignature(text), text)
+	if err != nil {
+		return false, warnings, "", err
+	}
+	if exists {
+		return false, warnings, "", nil
 	}
 	return true, warnings, msg.ID, store.AppendMessage(meta.ID, msg)
 }

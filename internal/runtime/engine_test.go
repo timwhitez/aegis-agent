@@ -218,6 +218,58 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	}
 }
 
+func TestEngineDoesNotRepeatUnresolvedBackgroundReminder(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate but do not repeat the same reminder")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, _, err := engine.store.MutateParentCoordination(meta.ID, func(coordination *session.ParentCoordination) error {
+		*coordination = session.ParentCoordination{
+			SchemaVersion:       1,
+			ParentSessionID:     meta.ID,
+			WaitMode:            "wait-all",
+			UnresolvedQueueJobs: []string{"job_repeat_unresolved"},
+			Parked:              true,
+			UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("save parent coordination: %v", err)
+	}
+	turns := 0
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		turns++
+		return provider.TurnResult{Text: "I will stop now", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input after duplicate unresolved reminder, got %#v", result)
+	}
+	if turns != 1 {
+		t.Fatalf("expected unresolved reminder to avoid repeated provider turns, got %d", turns)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	reminders := 0
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "background_work_unresolved" {
+			reminders++
+			if _, ok := msg.Meta[harnessReminderSignatureKey].(string); !ok {
+				t.Fatalf("expected signed background reminder, got %#v", msg.Meta)
+			}
+		}
+	}
+	if reminders != 1 {
+		t.Fatalf("expected one unresolved background reminder, got %d in %#v", reminders, messages)
+	}
+}
+
 func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	engine.cfg.Runtime.Queue.PollIntervalMS = 1

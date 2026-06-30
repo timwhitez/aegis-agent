@@ -972,8 +972,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}); err != nil {
 						return RunResult{}, fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
 					}
-					if _, err := e.appendHarnessReminder(meta, "turn_decide", backgroundWaitNeedsInterventionPrompt(decision.Reason), "background_wait_needs_intervention"); err != nil {
+					prompt := backgroundWaitNeedsInterventionPrompt(decision.Reason)
+					appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", prompt, "background_wait_needs_intervention", harnessReminderTextSignature(prompt))
+					if err != nil {
 						return RunResult{}, err
+					}
+					if !appended {
+						return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 					}
 					allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 					continue
@@ -998,8 +1003,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err != nil {
 					return RunResult{}, err
 				}
-				if _, err := e.appendHarnessReminder(meta, "turn_decide", reminder, "background_work_unresolved"); err != nil {
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", reminder, "background_work_unresolved", harnessReminderTextSignature(reminder))
+				if err != nil {
 					return RunResult{}, err
+				}
+				if !appended {
+					return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 				}
 				doneCandidates = 0
 				continue
@@ -1010,8 +1019,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if err != nil {
 					return RunResult{}, err
 				}
-				if _, err := e.appendHarnessReminder(meta, "turn_decide", reminder, "background_work_unresolved"); err != nil {
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", reminder, "background_work_unresolved", harnessReminderTextSignature(reminder))
+				if err != nil {
 					return RunResult{}, err
+				}
+				if !appended {
+					state.Status = session.StatusFailed
+					state.Phase = "turn_decide"
+					state.IncompleteReason = "unresolved_background_work"
+					state.LastError = "unresolved_background_work: child or background work is still unresolved"
+					if err := e.store.SaveState(meta.ID, state); err != nil {
+						return RunResult{}, err
+					}
+					if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"reason": state.IncompleteReason}); err != nil {
+						return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.IncompleteReason, err)
+					}
+					return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
 				}
 				doneCandidates = 0
 				continue
@@ -1836,6 +1859,50 @@ func (e *Engine) appendHarnessReminder(meta session.SessionMetadata, phase, text
 		"source": "harness_reminder",
 		"kind":   kind,
 	}); err != nil {
+		if rollbackErr := e.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
+			return session.Message{}, fmt.Errorf("record user.message event after rolling back harness reminder failed with %v: %w", rollbackErr, err)
+		}
+		return session.Message{}, fmt.Errorf("record user.message event: %w", err)
+	}
+	return msg, nil
+}
+
+func (e *Engine) appendHarnessReminderOnce(meta session.SessionMetadata, phase, text, kind, signature string) (bool, error) {
+	exists, err := harnessReminderExists(e.store, meta.ID, kind, signature, text)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return false, nil
+	}
+	if _, err := e.appendHarnessReminderWithSignature(meta, phase, text, kind, signature); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (e *Engine) appendHarnessReminderWithSignature(meta session.SessionMetadata, phase, text, kind, signature string) (session.Message, error) {
+	msg := session.NewMessage("user", text)
+	msg.Meta = map[string]any{
+		"source": "harness_reminder",
+		"kind":   kind,
+	}
+	if strings.TrimSpace(signature) != "" {
+		msg.Meta[harnessReminderSignatureKey] = strings.TrimSpace(signature)
+	}
+	if err := e.store.AppendMessage(meta.ID, msg); err != nil {
+		return session.Message{}, err
+	}
+	data := map[string]any{
+		"text":   text,
+		"mode":   meta.Mode,
+		"source": "harness_reminder",
+		"kind":   kind,
+	}
+	if strings.TrimSpace(signature) != "" {
+		data[harnessReminderSignatureKey] = strings.TrimSpace(signature)
+	}
+	if err := e.appendEvent(meta.ID, "user.message", phase, data); err != nil {
 		if rollbackErr := e.store.RemoveLastMessageIfID(meta.ID, msg.ID); rollbackErr != nil {
 			return session.Message{}, fmt.Errorf("record user.message event after rolling back harness reminder failed with %v: %w", rollbackErr, err)
 		}

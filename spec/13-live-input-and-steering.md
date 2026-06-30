@@ -78,6 +78,8 @@
 
 ## 5. Runner 行为
 
+- Continue 恢复时可注入 long-run checkpoint resume note，但同一 note 文本已经作为 harness reminder 写入 transcript 后不得重复注入；checkpoint facts 或 drift warnings 变化时才允许新的 resume note。
+
 active `run` / `exec` 进程启动后，需要额外启动一个 control watcher：
 
 - 轮询 `control/steer.jsonl`
