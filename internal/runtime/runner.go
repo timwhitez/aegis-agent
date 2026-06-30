@@ -979,6 +979,11 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			}
 		}
 	}
+	if source != continueSourceBackground {
+		if err := r.prepareBackgroundWaitContinuation(meta); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+	}
 	if stringsTrim(req.Message) != "" {
 		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
@@ -996,6 +1001,30 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata) error {
+	ready, err := r.engine.backgroundNotificationReady(meta.ID)
+	if err != nil {
+		return err
+	}
+	if ready {
+		return nil
+	}
+	injected, alreadyDelivered, reason, err := r.engine.injectCoordinationDeadlockWake(meta)
+	if err != nil {
+		return err
+	}
+	if injected || !alreadyDelivered {
+		return nil
+	}
+	if err := r.appendEvent(meta.ID, "session.background.deadlock_already_notified", "prepare", map[string]any{
+		"reason": reason,
+	}); err != nil {
+		return fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
+	}
+	_, err = r.engine.appendHarnessReminder(meta, "prepare", backgroundWaitNeedsInterventionPrompt(reason), "background_wait_needs_intervention")
+	return err
 }
 
 func planModeDraftForContinue(sessionID string, req ContinueRequest, source string) (*session.PlanModeDraft, error) {

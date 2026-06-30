@@ -962,6 +962,22 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				return e.awaitingPlanCancelled(ctx, meta, state, hookManager)
 			}
 			if backgroundWait {
+				decision, err := e.beforeAwaitingBackground(meta)
+				if err != nil {
+					return RunResult{}, err
+				}
+				if decision.AlreadyDeliveredDeadlock {
+					if err := e.appendEvent(meta.ID, "session.background.deadlock_already_notified", "tool_execute", map[string]any{
+						"reason": decision.Reason,
+					}); err != nil {
+						return RunResult{}, fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
+					}
+					if _, err := e.appendHarnessReminder(meta, "turn_decide", backgroundWaitNeedsInterventionPrompt(decision.Reason), "background_wait_needs_intervention"); err != nil {
+						return RunResult{}, err
+					}
+					allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
+					continue
+				}
 				return e.awaitingBackground(ctx, meta, state, hookManager)
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
@@ -1106,6 +1122,29 @@ func isBackgroundWaitResult(result session.ToolResult) bool {
 	return wait
 }
 
+type backgroundWaitDecision struct {
+	AlreadyDeliveredDeadlock bool
+	Reason                   string
+}
+
+func (e *Engine) beforeAwaitingBackground(meta session.SessionMetadata) (backgroundWaitDecision, error) {
+	ready, err := e.backgroundNotificationReady(meta.ID)
+	if err != nil {
+		return backgroundWaitDecision{}, err
+	}
+	if ready {
+		return backgroundWaitDecision{}, nil
+	}
+	_, alreadyDelivered, reason, err := e.injectCoordinationDeadlockWake(meta)
+	if err != nil {
+		return backgroundWaitDecision{}, err
+	}
+	if alreadyDelivered {
+		return backgroundWaitDecision{AlreadyDeliveredDeadlock: true, Reason: reason}, nil
+	}
+	return backgroundWaitDecision{}, nil
+}
+
 func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, error) {
 	coordination, err := e.store.LoadParentCoordination(sessionID)
 	if err != nil {
@@ -1118,6 +1157,14 @@ func (e *Engine) unresolvedBackgroundExitReminder(sessionID string) (string, err
 		return "", nil
 	}
 	return fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(coordination.UnresolvedChildSessions), joinPromptItems(coordination.UnresolvedQueueJobs)), nil
+}
+
+func backgroundWaitNeedsInterventionPrompt(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unresolved child work has already produced a liveness notification and no pending background result remains"
+	}
+	return "Harness reminder: agent_wait cannot make progress because the same blocked child/background deadlock was already reported and there is no pending background result to consume. The master agent must intervene now: inspect agent_list/agent_status, use agent_prompt to continue or redirect a blocked child, use agent_stop for queued work that has not started, or continue with an explicit unresolved-work handoff if no runtime control can resolve it. Deadlock detail: " + reason
 }
 
 func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {

@@ -160,6 +160,7 @@ child session 使用独立工作目录执行。当前支持：
 - parent agent 显式选择暂时停车等待 background child work
 - runtime 将 parent 进入 `awaiting_input` / `background_wait`，等待任一 pending background notification 后自动接纳结果并继续 parent loop
 - parent 恢复后由模型基于注入的 `<background-agent-results>`、`agent_status` / `agent_list` 和 parent coordination 判断是否继续 `agent_wait`、提示其他 child 收敛或停止不需要的 queued job
+- 如果同一 deadlock / liveness notification 已经被 parent 接纳且当前没有新的 pending background result，后续 `agent_wait` 不能再次静默停车；人工 / Web `continue` 旧 parked 或因 provider 错误转为 failed 的 parent session 时也应先复用同一判定。runtime 应把“等待不会再推进，需要 master 介入”的 reminder 写回 parent transcript，并继续 parent loop，让模型显式选择 `agent_prompt` / `agent_status` / `agent_list` / `agent_stop` 或 handoff
 - 该工具不取消、不停止 child work；若 child work 不再需要，parent 必须先通过可用控制面解决该 work，再退出
 
 #### `agent_stop`
@@ -187,8 +188,9 @@ child session 使用独立工作目录执行。当前支持：
 
 行为：
 
-- parent agent 可以向当前 parent 名下的 running child session 或已启动 background child job 发送一条 durable steer prompt
+- parent agent 可以向当前 parent 名下的 running child session 或已启动 / blocked 且可恢复的 background child job 发送一条 durable steer prompt
 - prompt 通过 child session 的 `control/steer.jsonl` 进入现有 Live Steer 流程，最终以普通 user message 进入 child transcript，而不是引入第二套控制状态
+- 对 running child，`agent_prompt` 走 steer；对已 linked child 且 child session 为 `paused` / `awaiting_input` / `failed`、queue job 为 `blocked` 的可恢复 work，`agent_prompt` 可显式 continue 该 child 并把 prompt 作为 parent intervention 追加进去
 - `interrupt` 默认 `false`，普通 parent prompt 只作为 durable steer 进入 child，避免抢占仍在自主探索的 sub-agent
 - 当 parent 明确发现 child 长时间重复 discovery、重复 read/grep/load_skill、范围漂移或需要立即交付当前证据时，可以显式传 `interrupt=true` 请求 best-effort 抢占
 - 该工具不会创建、取消、停止或标记 child work 完成；parent 仍需用 `agent_status` / `agent_list` / `agent_wait` 回收结果，或用 `agent_stop` 停止尚未启动且不再需要的 queued job

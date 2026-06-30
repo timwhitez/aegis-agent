@@ -2416,6 +2416,222 @@ func TestRunnerBackgroundContinueSkipsCheckpointResumeHint(t *testing.T) {
 	}
 }
 
+func TestRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t *testing.T) {
+	t.Run("awaiting background wait", func(t *testing.T) {
+		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusAwaitingInput, Phase: "background_wait", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	})
+	t.Run("failed after provider retry", func(t *testing.T) {
+		testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "openai: invalid api key", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	})
+}
+
+func testRunnerContinueFromDeliveredBackgroundDeadlockInjectsInterventionReminder(t *testing.T, parentState session.State) {
+	t.Helper()
+	var seenMessages []map[string]any
+	providerCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		providerCalls++
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		if input, ok := body["input"].([]any); ok {
+			for _, raw := range input {
+				if msg, ok := raw.(map[string]any); ok {
+					seenMessages = append(seenMessages, msg)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if providerCalls == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"resp_deadlock_intervene",
+				"status":"completed",
+				"output":[{"type":"function_call","call_id":"call_prompt_child","name":"agent_prompt","arguments":"{\"queue_job_id\":\"job_delivered_deadlock_continue\",\"message\":\"Use current evidence and finish.\"}"}],
+				"usage":{"input_tokens":1,"output_tokens":1}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_deadlock_continue",
+			"status":"completed",
+			"output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"continued\"}"}],
+			"usage":{"input_tokens":1,"output_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	runner := NewRunner(cfg)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeRun),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	if parentState.UpdatedAt == "" {
+		parentState.UpdatedAt = now
+	}
+	if err := runner.store.Create(meta, parentState); err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "parent task")); err != nil {
+		t.Fatalf("append parent message: %v", err)
+	}
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_delivered_deadlock_continue",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  meta.ID,
+		RootSessionID:    meta.ID,
+		QueueJobID:       "job_delivered_deadlock_continue",
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		Prompt:          "child work",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		WorkerPID:       999999,
+		ProcessStartID:  "999999:" + now,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save blocked job: %v", err)
+	}
+	if err := addParentQueueJob(runner.store, meta.ID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	reason, deadlocked, err := coordinationDeadlockReason(runner.store, meta.ID)
+	if err != nil {
+		t.Fatalf("deadlock reason: %v", err)
+	}
+	if !deadlocked {
+		t.Fatal("expected parent coordination to be deadlocked")
+	}
+	notification := session.NewCoordinationDeadlockNotification(meta.ID, reason)
+	notification.DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := runner.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
+		t.Fatalf("append accepted notification: %v", err)
+	}
+	notificationsBefore, err := runner.store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load notifications before continue: %v", err)
+	}
+	for i := range notificationsBefore {
+		notificationsBefore[i].DeliveryStatus = session.BackgroundNotificationAccepted
+	}
+	if err := runner.store.UpdateBackgroundNotifications(meta.ID, notificationsBefore); err != nil {
+		t.Fatalf("accept existing notifications: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID})
+	if err != nil {
+		t.Fatalf("continue: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result, got %#v", result)
+	}
+	messages, err := runner.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	interventionMessages := 0
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["source"] == "harness_reminder" && msg.Meta["kind"] == "background_wait_needs_intervention" {
+			interventionMessages++
+			if !strings.Contains(msg.Text, job.ID) || !strings.Contains(msg.Text, "agent_wait cannot make progress") {
+				t.Fatalf("unexpected intervention reminder text: %q", msg.Text)
+			}
+		}
+	}
+	if interventionMessages != 1 {
+		t.Fatalf("expected one intervention reminder, got %d in %#v", interventionMessages, messages)
+	}
+	messageText := func(msg map[string]any) string {
+		switch content := msg["content"].(type) {
+		case string:
+			return content
+		case []any:
+			var b strings.Builder
+			for _, rawBlock := range content {
+				block, ok := rawBlock.(map[string]any)
+				if !ok {
+					continue
+				}
+				if text, ok := block["text"].(string); ok {
+					b.WriteString(text)
+				}
+			}
+			return b.String()
+		default:
+			return ""
+		}
+	}
+	providerSawReminder := false
+	for _, msg := range seenMessages {
+		text := messageText(msg)
+		if strings.Contains(text, "agent_wait cannot make progress") && strings.Contains(text, job.ID) {
+			providerSawReminder = true
+		}
+	}
+	if !providerSawReminder {
+		t.Fatalf("expected provider request to include intervention reminder, got %#v", seenMessages)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	deadlockCount := 0
+	for _, item := range notifications {
+		if item.Source == session.BackgroundSourceCoordinationDeadlock {
+			deadlockCount++
+		}
+	}
+	if deadlockCount != 1 {
+		t.Fatalf("expected no duplicate deadlock notification, got %#v", notifications)
+	}
+}
+
 func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"

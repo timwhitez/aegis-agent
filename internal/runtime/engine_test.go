@@ -237,6 +237,23 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save parent coordination: %v", err)
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, jobID := range []string{"job_waited", "job_finished_first"} {
+		if err := engine.store.SaveJob(session.QueueJob{
+			SchemaVersion:   1,
+			ID:              jobID,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			Status:          session.QueueStatusQueued,
+			ParentSessionID: meta.ID,
+			RootSessionID:   meta.ID,
+			Prompt:          "child work",
+			Mode:            session.ModeExec,
+			Background:      true,
+		}); err != nil {
+			t.Fatalf("save queued job %s: %v", jobID, err)
+		}
+	}
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
 	go func() {

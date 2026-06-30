@@ -238,9 +238,9 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 当 parent 因 `agent_wait` / `resume_parent` 停车（`background_wait`）等待后台结果时，如果其全部 unresolved 工作都无法再自行前进，parent 会无限等待。runtime 必须检测并唤醒：
 
-- 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死，或终态但仍挂在 unresolved），同时每个 unresolved child session 都为非 `running` 的非终态。
+- 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死、终态但仍挂在 unresolved、或 unresolved job 文件已缺失），同时每个 unresolved child session 都为非 `running` 的非终态或文件已缺失。
 - 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
-- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 不再重复写入同一 liveness notification，而是回到可继续/可人工介入的 `awaiting_input`。
+- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 或人工 / Web `continue` 旧 parked/failed parent session 时不再重复写入同一 liveness notification，也不能静默重新停车，而是向 parent transcript 写入需要 master 介入的 reminder 并继续 parent loop。
 - 兜底超时：`runtime.queue.background_wait_timeout_sec`（默认 `0` 不超时）为等待墙钟上界，超时写 `session.background.wait_timeout` 并回到 `awaiting_input`。
 
 ### 5.8 child / background 会话兜底预算

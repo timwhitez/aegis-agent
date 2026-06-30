@@ -597,6 +597,85 @@ func TestRunnerPromptAgentContinuesParentStoppedQueueChild(t *testing.T) {
 	}
 }
 
+func TestRunnerPromptAgentContinuesBlockedPausedQueueChild(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_blocked_continue",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       "job_blocked_continue",
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "child_budget_turns_exceeded", UpdatedAt: now}); err != nil {
+		t.Fatalf("create paused child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "finish child",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save blocked child job: %v", err)
+	}
+	if err := addParentQueueJob(runner.store, parentID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+
+	result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		QueueJobID:      job.ID,
+		Message:         "Use current evidence and call finish.",
+	})
+	if err != nil {
+		t.Fatalf("prompt blocked queue child: %v", err)
+	}
+	if !result.Accepted || result.Behavior != "continued_blocked_child" || result.SessionID != child.ID || result.QueueJobID != job.ID {
+		t.Fatalf("unexpected prompt result: %#v", result)
+	}
+	state, err := runner.store.LoadState(child.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if state.Status != session.StatusCompleted {
+		t.Fatalf("expected blocked child continue to complete, got %#v", state)
+	}
+	loadedJob, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load continued job: %v", err)
+	}
+	if loadedJob.Status != session.QueueStatusCompleted || loadedJob.SessionStatus != session.StatusCompleted {
+		t.Fatalf("expected blocked child job to complete, got %#v", loadedJob)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if containsString(coordination.UnresolvedQueueJobs, job.ID) || coordination.Parked {
+		t.Fatalf("expected parent coordination resolved after child continue, got %#v", coordination)
+	}
+}
+
 func TestRunnerPromptAgentRejectsOutsideParent(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

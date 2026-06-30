@@ -428,8 +428,9 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		return tools.AgentPromptResult{}, err
 	}
 	if state.Status != session.StatusRunning {
-		if !childPromptCanContinueParentStopped(r.store, childSessionID, queueJobID, state) {
-			return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
+		behavior, ok := childPromptContinueBehavior(r.store, childSessionID, queueJobID, state)
+		if !ok {
+			return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a blocked or parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
 		}
 		childRunner := NewRunner(r.cfg)
 		childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
@@ -444,7 +445,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		if err := r.appendEvent(parentMeta.ID, "session.child.prompted", "delegate", map[string]any{
 			"session_id":   childSessionID,
 			"queue_job_id": queueJobID,
-			"behavior":     "continued_parent_stopped_child",
+			"behavior":     behavior,
 			"status":       result.Status,
 		}); err != nil {
 			return tools.AgentPromptResult{}, err
@@ -455,7 +456,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 			SessionID:  childSessionID,
 			QueueJobID: queueJobID,
 			Accepted:   true,
-			Behavior:   "continued_parent_stopped_child",
+			Behavior:   behavior,
 		}, nil
 	}
 	interrupt := false
@@ -494,20 +495,32 @@ func isParentStoppedPreClaimJob(job session.QueueJob) bool {
 		strings.TrimSpace(job.SessionID) == ""
 }
 
-func childPromptCanContinueParentStopped(store *session.Store, childSessionID, queueJobID string, state session.State) bool {
+func childPromptContinueBehavior(store *session.Store, childSessionID, queueJobID string, state session.State) (string, bool) {
 	switch state.Status {
 	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
 	default:
-		return false
+		return "", false
 	}
 	if strings.TrimSpace(queueJobID) != "" {
 		job, err := store.LoadJob(queueJobID)
 		if err != nil {
-			return false
+			return "", false
 		}
-		return job.StopReason == session.QueueStopReasonParentStop && strings.TrimSpace(job.SessionID) == childSessionID
+		if strings.TrimSpace(job.SessionID) != childSessionID {
+			return "", false
+		}
+		if job.StopReason == session.QueueStopReasonParentStop {
+			return "continued_parent_stopped_child", true
+		}
+		if job.Status == session.QueueStatusBlocked {
+			return "continued_blocked_child", true
+		}
+		return "", false
 	}
-	return state.Status == session.StatusPaused && state.PauseReason == "manual_stop"
+	if state.Status == session.StatusPaused && state.PauseReason == "manual_stop" {
+		return "continued_parent_stopped_child", true
+	}
+	return "", false
 }
 
 func (r *Runner) resolvePromptTarget(parentSessionID string, req tools.AgentPromptRequest) (string, string, error) {

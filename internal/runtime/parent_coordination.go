@@ -273,8 +273,13 @@ func coordinationDeadlockReason(store *session.Store, parentSessionID string) (s
 	for _, jobID := range coordination.UnresolvedQueueJobs {
 		job, err := store.LoadJob(jobID)
 		if err != nil {
-			// A job that cannot be loaded is treated as still potentially
-			// progressing so we never wake on a transient read error.
+			if errors.Is(err, fs.ErrNotExist) {
+				stalledJobs = append(stalledJobs, jobID)
+				continue
+			}
+			// A job that fails to load for reasons other than absence is treated
+			// as still potentially progressing so we never wake on a transient
+			// read or validation error.
 			return "", false, nil
 		}
 		if session.QueueJobCanProgress(job) {
@@ -286,6 +291,10 @@ func coordinationDeadlockReason(store *session.Store, parentSessionID string) (s
 	for _, childID := range coordination.UnresolvedChildSessions {
 		state, err := store.LoadState(childID)
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				stalledChildren = append(stalledChildren, childID)
+				continue
+			}
 			return "", false, nil
 		}
 		// A child still running may be progressing in another process; only a

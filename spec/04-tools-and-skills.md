@@ -269,6 +269,7 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
 - parent agent 主动停车等待 background child work 的 durable result，并由 harness 在任一后台结果到达后自动恢复 parent
 - `queue_job_id` 为兼容旧调用的可选字段；它不限制唤醒目标，恢复后由 parent agent 判断是否继续等待其他 child
+- 如果已交付过相同 deadlock / liveness 通知且没有新的 pending background result，`agent_wait` 返回控制给 parent loop 并写入需要 master 介入的 reminder，不能把 parent 再次静默停在 `background_wait`
 - child session 不允许再创建 sub-agent；只有 root master session 可以使用 `agent_spawn` 派生 child work
 
 ### 4.21 `agent_stop`
@@ -281,8 +282,8 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
-- 向当前 parent 名下的 running child session 或已启动 background child job 追加 durable steer prompt
-- 用于 scope 收窄、补充证据要求、请求进度或 handoff、重定向 child；不创建、不取消、不完成 child work
+- 向当前 parent 名下的 running child session 或已启动 / blocked 且可恢复的 background child job 追加 durable steer prompt
+- 用于 scope 收窄、补充证据要求、请求进度或 handoff、重定向 child；对 running child 走 steer，对 linked blocked child 可显式 continue；不创建、不取消、不标记 child work 完成
 - `interrupt` 默认 `false`，避免普通 child steer 抢占正在自主探索的 sub-agent；只有明确需要抢占当前 provider/tool 边界时才显式传 `interrupt=true`
 
 ### 4.23 `agent_status`

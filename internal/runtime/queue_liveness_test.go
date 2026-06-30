@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,6 +264,120 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 	}
 	if !hasEventType(eventsList, "session.background.deadlock_already_notified") {
 		t.Fatalf("expected session.background.deadlock_already_notified event")
+	}
+}
+
+func TestEngineBeforeAwaitingBackgroundAlreadyDeliveredDeadlockNeedsIntervention(t *testing.T) {
+	engine, parent, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_already_delivered_deadlock",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parent.ID,
+		RootSessionID:    parent.ID,
+		QueueJobID:       "job_already_delivered_deadlock",
+		Depth:            1,
+	}
+	if err := engine.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", UpdatedAt: now}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parent.ID,
+		RootSessionID:   parent.ID,
+		AgentRole:       "generator",
+		Prompt:          "audit",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		WorkerPID:       999999,
+		ProcessStartID:  "999999:" + now,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := engine.store.SaveJob(job); err != nil {
+		t.Fatalf("save job: %v", err)
+	}
+	if err := addParentQueueJob(engine.store, parent.ID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("seed coordination: %v", err)
+	}
+	reason, deadlocked, err := coordinationDeadlockReason(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("deadlock reason: %v", err)
+	}
+	if !deadlocked {
+		t.Fatal("expected seeded coordination to be deadlocked")
+	}
+	accepted := session.NewCoordinationDeadlockNotification(parent.ID, reason)
+	accepted.DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := engine.store.AppendBackgroundNotification(parent.ID, accepted); err != nil {
+		t.Fatalf("append accepted deadlock notification: %v", err)
+	}
+	notificationsBefore, err := engine.store.LoadBackgroundNotifications(parent.ID)
+	if err != nil {
+		t.Fatalf("load notifications before decision: %v", err)
+	}
+	for i := range notificationsBefore {
+		notificationsBefore[i].DeliveryStatus = session.BackgroundNotificationAccepted
+	}
+	if err := engine.store.UpdateBackgroundNotifications(parent.ID, notificationsBefore); err != nil {
+		t.Fatalf("accept existing notifications: %v", err)
+	}
+
+	decision, err := engine.beforeAwaitingBackground(parent)
+	if err != nil {
+		t.Fatalf("before background wait: %v", err)
+	}
+	if !decision.AlreadyDeliveredDeadlock || decision.Reason != reason {
+		t.Fatalf("expected already-delivered deadlock intervention decision, got %#v want reason %q", decision, reason)
+	}
+	if prompt := backgroundWaitNeedsInterventionPrompt(decision.Reason); !strings.Contains(prompt, "agent_wait cannot make progress") || !strings.Contains(prompt, job.ID) {
+		t.Fatalf("expected intervention prompt to include wait guidance and job id, got %q", prompt)
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(parent.ID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	if len(notifications) != len(notificationsBefore) {
+		t.Fatalf("expected no duplicate deadlock notification, got %#v", notifications)
+	}
+	for _, notification := range notifications {
+		if notification.DeliveryStatus != session.BackgroundNotificationAccepted {
+			t.Fatalf("expected all notifications to remain accepted, got %#v", notifications)
+		}
+	}
+	deadlockCount := 0
+	for _, notification := range notifications {
+		if notification.Source == session.BackgroundSourceCoordinationDeadlock {
+			deadlockCount++
+		}
+	}
+	if deadlockCount != 1 {
+		t.Fatalf("expected no duplicate deadlock notification, got %#v", notifications)
+	}
+}
+
+func TestCoordinationDeadlockReasonTreatsMissingUnresolvedJobAsStalled(t *testing.T) {
+	engine, parent, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	if err := addParentQueueJob(engine.store, parent.ID, "job_missing_unresolved", parentWaitAll); err != nil {
+		t.Fatalf("seed coordination: %v", err)
+	}
+	reason, deadlocked, err := coordinationDeadlockReason(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("deadlock reason: %v", err)
+	}
+	if !deadlocked || !strings.Contains(reason, "job_missing_unresolved") {
+		t.Fatalf("expected missing unresolved job to be reported as stalled, deadlocked=%v reason=%q", deadlocked, reason)
 	}
 }
 
