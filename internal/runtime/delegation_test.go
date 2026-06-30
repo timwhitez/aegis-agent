@@ -77,15 +77,17 @@ func TestAgentListReturnsLinkedWorkBeyondDefaultListLimit(t *testing.T) {
 	runner := NewRunner(cfg)
 	parentID := createParentSession(t, runner.store, t.TempDir())
 	base := time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC)
+	childWorkdir := t.TempDir()
+	const linkedWorkCount = 101
 
-	for i := 0; i < 105; i++ {
+	for i := 0; i < linkedWorkCount; i++ {
 		childID := fmt.Sprintf("agent_list_child_%03d", i)
 		createdAt := base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
 		meta := session.SessionMetadata{
 			SchemaVersion:    1,
 			ID:               childID,
 			CreatedAt:        createdAt,
-			Workdir:          t.TempDir(),
+			Workdir:          childWorkdir,
 			Mode:             session.ModeExec,
 			Provider:         "openai-compatible",
 			Model:            "gpt-5.4",
@@ -135,11 +137,11 @@ func TestAgentListReturnsLinkedWorkBeyondDefaultListLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agent list: %v", err)
 	}
-	if len(result.Sessions) != 105 || len(result.Jobs) != 105 {
+	if len(result.Sessions) != linkedWorkCount || len(result.Jobs) != linkedWorkCount {
 		t.Fatalf("expected all linked work, got children=%d jobs=%d", len(result.Sessions), len(result.Jobs))
 	}
-	if result.Sessions[104].ID != "agent_list_child_104" || result.Jobs[104].ID != "agent_list_job_104" {
-		t.Fatalf("expected final linked work beyond default cap, got child=%s job=%s", result.Sessions[104].ID, result.Jobs[104].ID)
+	if result.Sessions[100].ID != "agent_list_child_100" || result.Jobs[100].ID != "agent_list_job_100" {
+		t.Fatalf("expected final linked work beyond default cap, got child=%s job=%s", result.Sessions[100].ID, result.Jobs[100].ID)
 	}
 }
 
@@ -1617,11 +1619,11 @@ func TestRunnerProcessNextJobRollsBackNotificationWhenParentCoordinationFails(t 
 
 func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
 	cfg := testRuntimeConfig(t)
-	cfg.Runtime.Queue.PollIntervalMS = 20
+	cfg.Runtime.Queue.PollIntervalMS = 1
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 		_, _ = io.ReadAll(r.Body)
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"id":"resp_heartbeat",
@@ -1663,20 +1665,20 @@ func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
 			firstHeartbeat = loaded.HeartbeatAt
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	if firstHeartbeat == "" {
 		t.Fatal("expected initial running heartbeat")
 	}
 	heartbeatUpdated := false
-	deadline = time.Now().Add(time.Second)
+	deadline = time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		loaded, err := runner.store.LoadJob(job.ID)
 		if err == nil && loaded.HeartbeatAt != "" && loaded.HeartbeatAt != firstHeartbeat {
 			heartbeatUpdated = true
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !heartbeatUpdated {
 		t.Fatal("expected queue heartbeat to refresh while job runs")
@@ -1684,7 +1686,7 @@ func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("queue worker did not finish")
 	}
 	if processErr != nil || !ok || processed.Status != session.QueueStatusCompleted {

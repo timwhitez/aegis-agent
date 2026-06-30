@@ -240,7 +240,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 - 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死，或终态但仍挂在 unresolved），同时每个 unresolved child session 都为非 `running` 的非终态。
 - 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
-- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入。
+- 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 不再重复写入同一 liveness notification，而是回到可继续/可人工介入的 `awaiting_input`。
 - 兜底超时：`runtime.queue.background_wait_timeout_sec`（默认 `0` 不超时）为等待墙钟上界，超时写 `session.background.wait_timeout` 并回到 `awaiting_input`。
 
 ### 5.8 child / background 会话兜底预算

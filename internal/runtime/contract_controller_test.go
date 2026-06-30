@@ -703,7 +703,8 @@ func TestLongRunCheckpointKeepsWaitAnyBlockedWithRemainingUnresolvedWork(t *test
 func TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	base := time.Date(2026, 5, 31, 9, 45, 0, 0, time.UTC)
-	for i := 0; i < 105; i++ {
+	const queueJobCount = 101
+	for i := 0; i < queueJobCount; i++ {
 		job := session.QueueJob{
 			SchemaVersion:   1,
 			ID:              fmt.Sprintf("job_checkpoint_all_%03d", i),
@@ -727,10 +728,10 @@ func TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("load checkpoint: %v", err)
 	}
-	if len(checkpoint.UnresolvedQueueJobs) != 105 {
+	if len(checkpoint.UnresolvedQueueJobs) != queueJobCount {
 		t.Fatalf("expected all unresolved queue jobs in checkpoint, got %d: %#v", len(checkpoint.UnresolvedQueueJobs), checkpoint.UnresolvedQueueJobs)
 	}
-	if !containsString(checkpoint.UnresolvedQueueJobs, "job_checkpoint_all_104") {
+	if !containsString(checkpoint.UnresolvedQueueJobs, "job_checkpoint_all_100") {
 		t.Fatalf("expected queue job beyond default list limit in checkpoint, got %#v", checkpoint.UnresolvedQueueJobs)
 	}
 	if checkpoint.ParentWaitState != "waiting" {
@@ -741,13 +742,16 @@ func TestLongRunCheckpointIncludesQueueJobsBeyondDefaultListLimit(t *testing.T) 
 func TestLongRunCheckpointIncludesChildSessionsBeyondDefaultListLimit(t *testing.T) {
 	store, meta := newRuntimeTestSession(t)
 	base := time.Date(2026, 5, 31, 10, 5, 0, 0, time.UTC)
-	for i := 0; i < 105; i++ {
+	childWorkdir := t.TempDir()
+	requestedWorkdir := t.TempDir()
+	const childSessionCount = 101
+	for i := 0; i < childSessionCount; i++ {
 		child := session.SessionMetadata{
 			SchemaVersion:    1,
 			ID:               fmt.Sprintf("child_checkpoint_all_%03d", i),
 			CreatedAt:        base.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
-			Workdir:          t.TempDir(),
-			RequestedWorkdir: t.TempDir(),
+			Workdir:          childWorkdir,
+			RequestedWorkdir: requestedWorkdir,
 			Mode:             session.ModeExec,
 			Provider:         "openai",
 			Model:            "gpt-5.4",
@@ -772,10 +776,10 @@ func TestLongRunCheckpointIncludesChildSessionsBeyondDefaultListLimit(t *testing
 	if err != nil {
 		t.Fatalf("load checkpoint: %v", err)
 	}
-	if len(checkpoint.UnresolvedChildSessions) != 105 {
+	if len(checkpoint.UnresolvedChildSessions) != childSessionCount {
 		t.Fatalf("expected all unresolved child sessions in checkpoint, got %d: %#v", len(checkpoint.UnresolvedChildSessions), checkpoint.UnresolvedChildSessions)
 	}
-	if !containsString(checkpoint.UnresolvedChildSessions, "child_checkpoint_all_104") {
+	if !containsString(checkpoint.UnresolvedChildSessions, "child_checkpoint_all_100") {
 		t.Fatalf("expected child beyond default list limit in checkpoint, got %#v", checkpoint.UnresolvedChildSessions)
 	}
 	if checkpoint.ParentWaitState != "waiting" {

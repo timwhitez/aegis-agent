@@ -1506,6 +1506,9 @@ func (s *Store) LoadBackgroundNotificationsTail(sessionID string, limit int) ([]
 		if err := validateBackgroundNotification(notification); err != nil {
 			return err
 		}
+		if strings.TrimSpace(notification.QueueJobID) == "" {
+			return nil
+		}
 		if _, exists := seenQueueJobs[notification.QueueJobID]; exists {
 			return fmt.Errorf("duplicate background notification queue_job_id: %s", notification.QueueJobID)
 		}

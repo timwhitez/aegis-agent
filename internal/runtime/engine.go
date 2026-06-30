@@ -1175,12 +1175,20 @@ func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.Sessi
 		// next loop via the ready check.
 		if !deadlockChecked {
 			deadlockChecked = true
-			injected, err := e.injectCoordinationDeadlockWake(meta)
+			injected, alreadyDelivered, reason, err := e.injectCoordinationDeadlockWake(meta)
 			if err != nil {
 				return 0, err
 			}
 			if injected {
 				continue
+			}
+			if alreadyDelivered {
+				if err := e.appendEvent(meta.ID, "session.background.deadlock_already_notified", "background_wait", map[string]any{
+					"reason": reason,
+				}); err != nil {
+					return 0, fmt.Errorf("record session.background.deadlock_already_notified event: %w", err)
+				}
+				return 0, nil
 			}
 		}
 		if waitTimeout > 0 && timeNow().Sub(waitStart) >= waitTimeout {
@@ -1222,48 +1230,72 @@ func (e *Engine) backgroundWaitPollInterval() time.Duration {
 // model: on the next wait loop the ready-check drains it into context as a
 // <background-agent-results> message describing the stalled work and the model's
 // options (agent_prompt to converge, agent_stop to drop queued work, or continue
-// itself). It is injected at most once while a wake is pending to avoid spamming.
-func (e *Engine) injectCoordinationDeadlockWake(meta session.SessionMetadata) (bool, error) {
+// itself). It is injected at most once for the same deadlock reason; after the
+// wake has been accepted, another identical agent_wait returns to awaiting input
+// instead of blocking forever or appending duplicate liveness notifications.
+func (e *Engine) injectCoordinationDeadlockWake(meta session.SessionMetadata) (bool, bool, string, error) {
 	reason, deadlocked, err := coordinationDeadlockReason(e.store, meta.ID)
 	if err != nil {
-		return false, err
+		return false, false, "", err
 	}
 	if !deadlocked {
-		return false, nil
+		return false, false, "", nil
 	}
-	pending, err := e.deadlockWakePending(meta.ID)
+	pending, delivered, err := e.deadlockWakeDeliveryState(meta.ID, reason)
 	if err != nil {
-		return false, err
+		return false, false, reason, err
 	}
 	if pending {
-		return false, nil
+		return false, false, reason, nil
+	}
+	if delivered {
+		return false, true, reason, nil
 	}
 	if err := e.appendEvent(meta.ID, "parent.coordination.deadlock", "background_wait", map[string]any{
 		"reason": reason,
 	}); err != nil {
-		return false, fmt.Errorf("record parent.coordination.deadlock event: %w", err)
+		return false, false, reason, fmt.Errorf("record parent.coordination.deadlock event: %w", err)
 	}
 	notification := session.NewCoordinationDeadlockNotification(meta.ID, reason)
 	if err := e.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
-		return false, fmt.Errorf("append coordination deadlock notification: %w", err)
+		return false, false, reason, fmt.Errorf("append coordination deadlock notification: %w", err)
 	}
-	return true, nil
+	return true, false, reason, nil
 }
 
-// deadlockWakePending reports whether a coordination-deadlock wake notification
-// is already pending delivery, so we do not enqueue duplicates each loop.
-func (e *Engine) deadlockWakePending(sessionID string) (bool, error) {
+// deadlockWakeDeliveryState reports whether a coordination-deadlock wake is
+// already pending delivery, or whether the same deadlock reason has already been
+// delivered to the parent context. Pending wakes are not reason-filtered because
+// they will be drained immediately; delivered wakes are reason-filtered so a
+// changed unresolved-work set can still wake the model with fresh facts.
+func (e *Engine) deadlockWakeDeliveryState(sessionID, reason string) (bool, bool, error) {
 	notifications, err := e.store.LoadBackgroundNotifications(sessionID)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
+	delivered := false
 	for _, notification := range notifications {
-		if notification.Source == session.BackgroundSourceCoordinationDeadlock &&
-			notification.DeliveryStatus == session.BackgroundNotificationPending {
-			return true, nil
+		if notification.Source != session.BackgroundSourceCoordinationDeadlock {
+			continue
+		}
+		if notification.DeliveryStatus == session.BackgroundNotificationPending {
+			return true, false, nil
+		}
+		if notification.DeliveryStatus == session.BackgroundNotificationAccepted &&
+			coordinationDeadlockNotificationMatchesReason(notification, reason) {
+			delivered = true
 		}
 	}
-	return false, nil
+	return false, delivered, nil
+}
+
+func coordinationDeadlockNotificationMatchesReason(notification session.BackgroundNotification, reason string) bool {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return false
+	}
+	text := strings.TrimSpace(notification.FinalText)
+	return text == reason || strings.HasPrefix(text, reason+".")
 }
 
 func (e *Engine) backgroundNotificationReady(sessionID string) (bool, error) {

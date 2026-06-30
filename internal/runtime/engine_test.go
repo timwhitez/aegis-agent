@@ -66,6 +66,7 @@ func TestEngineAwaitingInputReportsEventAppendError(t *testing.T) {
 
 func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine.cfg.Runtime.Queue.PollIntervalMS = 1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate and wait")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -144,6 +145,7 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 
 func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine.cfg.Runtime.Queue.PollIntervalMS = 1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate but do not lose child")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -218,6 +220,7 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 
 func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine.cfg.Runtime.Queue.PollIntervalMS = 1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate and wait for whichever child finishes first")); err != nil {
 		t.Fatalf("append: %v", err)
 	}

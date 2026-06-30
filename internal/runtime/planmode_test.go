@@ -2736,6 +2736,7 @@ func TestApproveLinkedMissionPlanRetryReportsCorruptGoalHistory(t *testing.T) {
 
 func TestApproveLinkedPlanModeBlocksUncoveredMissionValidation(t *testing.T) {
 	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
 	runner := NewRunner(cfg)
 	sessionID := session.NewSessionID()
 	now := time.Now().UTC().Format(time.RFC3339Nano)

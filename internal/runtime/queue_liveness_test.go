@@ -168,7 +168,7 @@ func TestEngineRootSessionIgnoresChildBudget(t *testing.T) {
 }
 
 func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
-	engine, parent, _, _, _, _ := newTestEngine(t, session.ModeRun)
+	engine, parent, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	// Blocked job whose owner process is dead -> cannot progress.
 	job := session.QueueJob{
@@ -204,12 +204,12 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 		t.Fatalf("expected deadlock detected, got deadlocked=%v reason=%q", deadlocked, reason)
 	}
 
-	injected, err := engine.injectCoordinationDeadlockWake(parent)
+	injected, alreadyDelivered, _, err := engine.injectCoordinationDeadlockWake(parent)
 	if err != nil {
 		t.Fatalf("inject wake: %v", err)
 	}
-	if !injected {
-		t.Fatalf("expected deadlock wake injected")
+	if !injected || alreadyDelivered {
+		t.Fatalf("expected deadlock wake injected, injected=%v alreadyDelivered=%v", injected, alreadyDelivered)
 	}
 	notifications, err := engine.store.LoadBackgroundNotifications(parent.ID)
 	if err != nil {
@@ -225,12 +225,44 @@ func TestCoordinationDeadlockReasonDetectsStalledJobs(t *testing.T) {
 		t.Fatalf("expected pending coordination-deadlock notification, got %#v", notifications)
 	}
 	// Idempotent: a second inject while one is pending must not duplicate.
-	injectedAgain, err := engine.injectCoordinationDeadlockWake(parent)
+	injectedAgain, deliveredAgain, _, err := engine.injectCoordinationDeadlockWake(parent)
 	if err != nil {
 		t.Fatalf("second inject: %v", err)
 	}
-	if injectedAgain {
-		t.Fatalf("expected no duplicate wake while one is pending")
+	if injectedAgain || deliveredAgain {
+		t.Fatalf("expected no duplicate wake while one is pending, injected=%v delivered=%v", injectedAgain, deliveredAgain)
+	}
+	notifications[0].DeliveryStatus = session.BackgroundNotificationAccepted
+	if err := engine.store.UpdateBackgroundNotifications(parent.ID, notifications); err != nil {
+		t.Fatalf("accept deadlock notification: %v", err)
+	}
+	injectedAfterAccept, deliveredAfterAccept, _, err := engine.injectCoordinationDeadlockWake(parent)
+	if err != nil {
+		t.Fatalf("inject after accepted wake: %v", err)
+	}
+	if injectedAfterAccept || !deliveredAfterAccept {
+		t.Fatalf("expected accepted wake to suppress duplicate, injected=%v delivered=%v", injectedAfterAccept, deliveredAfterAccept)
+	}
+	count, err := engine.waitForBackgroundResult(context.Background(), parent, hookManager)
+	if err != nil {
+		t.Fatalf("wait after accepted deadlock wake: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected wait to return without draining duplicate notifications, got %d", count)
+	}
+	notifications, err = engine.store.LoadBackgroundNotifications(parent.ID)
+	if err != nil {
+		t.Fatalf("reload notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted {
+		t.Fatalf("expected exactly one accepted deadlock notification, got %#v", notifications)
+	}
+	eventsList, err := loadEvents(engine.store, parent.ID)
+	if err != nil {
+		t.Fatalf("events: %v", err)
+	}
+	if !hasEventType(eventsList, "session.background.deadlock_already_notified") {
+		t.Fatalf("expected session.background.deadlock_already_notified event")
 	}
 }
 
@@ -277,16 +309,28 @@ func TestCoordinationDeadlockReasonNoCoordinationFile(t *testing.T) {
 	}
 }
 
-
 func TestBackgroundWaitTimeoutReturnsAndRecordsEvent(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
-	cfg.Runtime.Queue.PollIntervalMS = 10
+	cfg.Runtime.Queue.PollIntervalMS = 1
 	cfg.Runtime.Queue.BackgroundWaitTimeoutSec = 1
 	engine, parent, _, _, hookManager, _ := newTestEngineWithConfig(t, cfg, session.ModeRun)
 
 	// No pending background notifications and no deadlock coordination -> the wait
 	// must time out instead of blocking forever, and record a wait_timeout event.
+	originalTimeNow := timeNow
+	base := time.Now()
+	calls := 0
+	timeNow = func() time.Time {
+		calls++
+		if calls == 1 {
+			return base
+		}
+		return base.Add(2 * time.Second)
+	}
+	defer func() {
+		timeNow = originalTimeNow
+	}()
 	start := time.Now()
 	count, err := engine.waitForBackgroundResult(context.Background(), parent, hookManager)
 	if err != nil {

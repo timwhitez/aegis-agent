@@ -5082,6 +5082,64 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 	}
 }
 
+func TestLoadBackgroundNotificationsTailAllowsJoblessNotifications(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	queueResult := NewBackgroundNotification(QueueJob{
+		ID:            "job_background_tail",
+		Status:        QueueStatusCompleted,
+		SessionID:     "child_background_tail",
+		SessionStatus: StatusCompleted,
+	})
+	if err := store.AppendBackgroundNotification(meta.ID, queueResult); err != nil {
+		t.Fatalf("append queue notification: %v", err)
+	}
+	firstDeadlock := NewCoordinationDeadlockNotification(meta.ID, "parent coordination deadlock: first")
+	firstDeadlock.DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.AppendBackgroundNotification(meta.ID, firstDeadlock); err != nil {
+		t.Fatalf("append first jobless notification: %v", err)
+	}
+	secondDeadlock := NewCoordinationDeadlockNotification(meta.ID, "parent coordination deadlock: second")
+	secondDeadlock.DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.AppendBackgroundNotification(meta.ID, secondDeadlock); err != nil {
+		t.Fatalf("append second jobless notification: %v", err)
+	}
+
+	tail, hasMore, err := store.LoadBackgroundNotificationsTail(meta.ID, 10)
+	if err != nil {
+		t.Fatalf("load background tail: %v", err)
+	}
+	if hasMore {
+		t.Fatalf("did not expect tail truncation")
+	}
+	if len(tail) != 3 {
+		t.Fatalf("expected all notifications in tail, got %#v", tail)
+	}
+	jobless := 0
+	for _, notification := range tail {
+		if notification.QueueJobID == "" {
+			jobless++
+		}
+	}
+	if jobless != 2 {
+		t.Fatalf("expected two jobless notifications, got %d in %#v", jobless, tail)
+	}
+}
+
 func TestAppendSteerRequestRejectsSymlinkLockFile(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStore(root)
