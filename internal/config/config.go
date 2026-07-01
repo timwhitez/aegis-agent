@@ -115,6 +115,7 @@ type RuntimeConfig struct {
 	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig            `yaml:"compact"`
 	Ephemeral          EphemeralConfig          `yaml:"ephemeral"`
+	Degeneration       DegenerationConfig       `yaml:"degeneration"`
 	RalphLoop          RalphLoopConfig          `yaml:"ralph_loop"`
 	PreCompletion      PreCompletionConfig      `yaml:"pre_completion"`
 }
@@ -191,6 +192,13 @@ type ProviderAutoResumeConfig struct {
 type EphemeralConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	ArtifactDir string `yaml:"artifact_dir"`
+}
+
+type DegenerationConfig struct {
+	Enabled          bool `yaml:"enabled"`
+	ReminderAfter    int  `yaml:"reminder_after"`
+	GiveUpAfter      int  `yaml:"give_up_after"`
+	DetectLowQuality bool `yaml:"detect_low_quality"`
 }
 
 type RalphLoopConfig struct {
@@ -377,6 +385,11 @@ func Default() *Config {
 				Enabled:     true,
 				ArtifactDir: ".artifacts/tool-outputs",
 			},
+			Degeneration: DegenerationConfig{
+				Enabled:       true,
+				ReminderAfter: 2,
+				GiveUpAfter:   4,
+			},
 			RalphLoop: RalphLoopConfig{
 				Enabled:       false,
 				MaxIterations: 5,
@@ -535,6 +548,12 @@ func normalizeConfig(cfg *Config, cwd string) {
 	}
 	if cfg.Runtime.ProviderAutoResume.MaxAttempts <= 0 {
 		cfg.Runtime.ProviderAutoResume.MaxAttempts = defaultProviderAutoResumeMaxAttempt
+	}
+	if cfg.Runtime.Degeneration.ReminderAfter <= 0 {
+		cfg.Runtime.Degeneration.ReminderAfter = 2
+	}
+	if cfg.Runtime.Degeneration.GiveUpAfter <= cfg.Runtime.Degeneration.ReminderAfter {
+		cfg.Runtime.Degeneration.GiveUpAfter = cfg.Runtime.Degeneration.ReminderAfter + 2
 	}
 	if cfg.Hooks.DefaultTimeoutSec <= 0 {
 		cfg.Hooks.DefaultTimeoutSec = 300

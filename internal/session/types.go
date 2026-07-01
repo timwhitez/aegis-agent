@@ -249,6 +249,7 @@ type State struct {
 	CurrentTask                  string   `json:"current_task,omitempty"`
 	LastError                    string   `json:"last_error,omitempty"`
 	IncompleteReason             string   `json:"incomplete_reason,omitempty"`
+	IdleReason                   string   `json:"idle_reason,omitempty"`
 	LastAssistantExcerpt         string   `json:"last_assistant_excerpt,omitempty"`
 	PauseReason                  string   `json:"pause_reason,omitempty"`
 	PendingSteerCount            int      `json:"pending_steer_count,omitempty"`

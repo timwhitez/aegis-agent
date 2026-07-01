@@ -39,16 +39,17 @@ type Definition struct {
 }
 
 type ExecContext struct {
-	SessionID          string
-	ToolCallID         string
-	Workdir            string
-	Store              *session.Store
-	Config             *config.Config
-	Catalog            *skills.Catalog
-	Emit               func(string, map[string]any)
-	EmitRequired       func(string, map[string]any) error
-	EmitBatchRequired  func([]ToolEvent) error
-	PlanInputResponder PlanInputResponder
+	SessionID             string
+	ToolCallID            string
+	Workdir               string
+	EphemeralArtifactRoot string
+	Store                 *session.Store
+	Config                *config.Config
+	Catalog               *skills.Catalog
+	Emit                  func(string, map[string]any)
+	EmitRequired          func(string, map[string]any) error
+	EmitBatchRequired     func([]ToolEvent) error
+	PlanInputResponder    PlanInputResponder
 }
 
 type ToolEvent struct {
@@ -804,13 +805,13 @@ func commandWorkdirSandboxSource(dir *os.File, fallback string) (string, []*os.F
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a known text file with 1-based offset and limit. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for workspace discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
+		Description: "Read a known text file with 1-based offset and limit. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. A session ephemeral tool-output artifact path shown by a prior tool result is readable explicitly, but discovery tools still skip those artifacts. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for workspace discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Workspace-relative file path to read, or a registered skill bundle file path such as skills/<skill-name>/references/file.md.",
+					"description": "Workspace-relative file path to read, a registered skill bundle file path such as skills/<skill-name>/references/file.md, or an explicit session ephemeral artifact path returned by a prior tool result.",
 				},
 				"offset": map[string]any{
 					"type":        "integer",
@@ -1423,6 +1424,13 @@ func resolveShellWorkdir(execCtx ExecContext, input string) (string, string, str
 }
 
 func resolveReadFilePath(execCtx ExecContext, input string) (string, string, string, string, error) {
+	if artifactPath, artifactBase, ok, err := resolveSessionEphemeralArtifactFile(execCtx, input); ok || err != nil {
+		if err != nil {
+			return "", "", "", "", err
+		}
+		return artifactPath, artifactBase, "session_ephemeral_artifact", "", nil
+	}
+
 	workspacePath, workspaceErr := ResolveWorkspacePath(execCtx.Workdir, input)
 	if workspaceErr == nil {
 		if _, err := os.Stat(workspacePath); err == nil {
@@ -1443,6 +1451,36 @@ func resolveReadFilePath(execCtx ExecContext, input string) (string, string, str
 		return "", "", "", "", workspaceErr
 	}
 	return workspacePath, execCtx.Workdir, "workspace", "", nil
+}
+
+func resolveSessionEphemeralArtifactFile(execCtx ExecContext, input string) (string, string, bool, error) {
+	root := strings.TrimSpace(execCtx.EphemeralArtifactRoot)
+	if root == "" {
+		return "", "", false, nil
+	}
+	targetInput := strings.TrimSpace(input)
+	if targetInput == "" || !filepath.IsAbs(targetInput) {
+		return "", "", false, nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", false, err
+	}
+	rootResolved, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", false, nil
+		}
+		return "", "", false, err
+	}
+	targetResolved, err := resolveWithExistingParent(filepath.Clean(targetInput))
+	if err != nil {
+		return "", "", false, err
+	}
+	if !isWithin(rootResolved, targetResolved) {
+		return "", "", false, nil
+	}
+	return targetResolved, rootResolved, true, nil
 }
 
 func resolveRegisteredSkillFile(catalog *skills.Catalog, input string) (string, string, string, error) {

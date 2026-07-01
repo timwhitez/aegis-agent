@@ -150,6 +150,8 @@ type RunResult struct {
 	LastError string
 }
 
+const modelDegenerationNoProgressReason = "model_degeneration_no_progress"
+
 func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, adapter provider.Adapter, catalog *skills.Catalog, registry *tools.Registry, hookManager *hooks.Manager) (RunResult, error) {
 	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
 		return e.appendEvent(meta.ID, eventType, state.Phase, data)
@@ -158,6 +160,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	doneCandidates := 0
+	consecutiveNoToolCandidates := 0
 	duplicateUnresolvedBackgroundTurns := 0
 	allowResolutionTurn := false
 	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
@@ -192,6 +195,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		state.Turn = turn + 1
 		state.Status = session.StatusRunning
 		state.Phase = "prepare"
+		state.IdleReason = ""
+		if state.IncompleteReason == modelDegenerationNoProgressReason {
+			state.IncompleteReason = ""
+		}
 		if err := e.store.SaveState(meta.ID, state); err != nil {
 			return RunResult{}, err
 		}
@@ -209,6 +216,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if acceptedBackgroundAtTurnStart > 0 {
 			doneCandidates = 0
+			consecutiveNoToolCandidates = 0
 			duplicateUnresolvedBackgroundTurns = 0
 		}
 
@@ -218,6 +226,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if acceptedAtTurnStart > 0 {
 			doneCandidates = 0
+			consecutiveNoToolCandidates = 0
 			duplicateUnresolvedBackgroundTurns = 0
 		}
 		if stopAfterSteer {
@@ -620,6 +629,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			if acceptedBackgroundAfterProvider > 0 {
 				doneCandidates = 0
+				consecutiveNoToolCandidates = 0
 				continue
 			}
 			acceptedAfterProvider, stopAfterSteer, err := e.drainSteer(ctx, meta, hookManager)
@@ -631,12 +641,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			if acceptedAfterProvider > 0 {
 				doneCandidates = 0
+				consecutiveNoToolCandidates = 0
 				continue
 			}
 		}
 
 		if len(result.ToolCalls) > 0 {
 			doneCandidates = 0
+			consecutiveNoToolCandidates = 0
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
 			planModeTerminal := ""
 			backgroundWait := false
@@ -760,13 +772,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						planInputResponder = responder
 					}
 					toolResult, toolErr = registry.Execute(toolCtx, call.Name, tools.ExecContext{
-						SessionID:          meta.ID,
-						ToolCallID:         call.ID,
-						Workdir:            meta.Workdir,
-						Store:              e.store,
-						Config:             e.cfg,
-						Catalog:            catalog,
-						PlanInputResponder: planInputResponder,
+						SessionID:             meta.ID,
+						ToolCallID:            call.ID,
+						Workdir:               meta.Workdir,
+						EphemeralArtifactRoot: e.ephemeralArtifactRoot(meta.ID),
+						Store:                 e.store,
+						Config:                e.cfg,
+						Catalog:               catalog,
+						PlanInputResponder:    planInputResponder,
 						Emit: func(eventType string, data map[string]any) {
 							e.emit(meta.ID, eventType, "tool_execute", data)
 						},
@@ -900,8 +913,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if count > toolDef.EphemeralWindow {
 							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, turn)
 							if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
+								lineCount := countTextLines(toolResult.LLMOutput)
 								toolResult.LLMOutput = fmt.Sprintf(
-									"[Output saved to %s; this internal artifact is not readable via read_file. If you need to inspect it later, rerun the command and redirect output to a normal workspace file such as reports/validation.txt.]",
+									"[Full output saved to %s (%d lines). Read it with read_file(path=%q, offset=1, limit=120) and page via offset; or rerun the command redirecting to a workspace file under reports/. Do NOT keep re-issuing the same search.]",
+									artifactPath,
+									lineCount,
 									artifactPath,
 								)
 								if toolResult.Metadata == nil {
@@ -1003,7 +1019,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if budgetWrapUpTurn {
 			return e.awaitingBudgetWrapUp(ctx, meta, state, hookManager)
 		}
-
+		if strings.TrimSpace(result.StopReason) == "done_candidate" {
+			consecutiveNoToolCandidates++
+		} else {
+			consecutiveNoToolCandidates = 0
+		}
 		switch meta.Mode {
 		case session.ModeRun:
 			if unresolved, err := e.unresolvedBackgroundExitState(meta.ID); err != nil || unresolved.Reminder != "" {
@@ -1026,7 +1046,28 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				doneCandidates = 0
 				continue
 			}
-			return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
+			if e.cfg.Runtime.Degeneration.Enabled && consecutiveNoToolCandidates >= e.cfg.Runtime.Degeneration.GiveUpAfter {
+				return e.awaitingInputIdleParked(ctx, meta, state, result.Text, hookManager, idleParkedOptions{
+					Reason:                      modelDegenerationNoProgressReason,
+					LastStopReason:              result.StopReason,
+					ConsecutiveNoToolCandidates: consecutiveNoToolCandidates,
+					IncompleteReason:            modelDegenerationNoProgressReason,
+				})
+			}
+			if e.cfg.Runtime.Degeneration.Enabled && consecutiveNoToolCandidates >= e.cfg.Runtime.Degeneration.ReminderAfter {
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", degenerationRecoveryPrompt(consecutiveNoToolCandidates), "degeneration_recovery_required", "model_degeneration_no_progress")
+				if err != nil {
+					return RunResult{}, err
+				}
+				if appended || consecutiveNoToolCandidates < e.cfg.Runtime.Degeneration.GiveUpAfter {
+					continue
+				}
+			}
+			return e.awaitingInputIdleParked(ctx, meta, state, result.Text, hookManager, idleParkedOptions{
+				Reason:                      "done_candidate_no_tool_calls",
+				LastStopReason:              result.StopReason,
+				ConsecutiveNoToolCandidates: consecutiveNoToolCandidates,
+			})
 		case session.ModeExec, session.ModeInit:
 			if unresolved, err := e.unresolvedBackgroundExitState(meta.ID); err != nil || unresolved.Reminder != "" {
 				if err != nil {
@@ -1054,6 +1095,34 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				doneCandidates = 0
 				continue
+			}
+			if e.cfg.Runtime.Degeneration.Enabled && consecutiveNoToolCandidates >= e.cfg.Runtime.Degeneration.GiveUpAfter {
+				state.Status = session.StatusFailed
+				state.Phase = "turn_decide"
+				state.IncompleteReason = modelDegenerationNoProgressReason
+				state.LastError = modelDegenerationNoProgressReason + ": consecutive done_candidate turns produced text but no valid tool call"
+				if err := e.store.SaveState(meta.ID, state); err != nil {
+					return RunResult{}, err
+				}
+				if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{
+					"reason":                         state.IncompleteReason,
+					"last_stop_reason":               result.StopReason,
+					"consecutive_no_tool_candidates": consecutiveNoToolCandidates,
+				}); err != nil {
+					return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.IncompleteReason, err)
+				}
+				_ = writeSessionSummary(e.store, meta.ID)
+				_ = writeLongRunCheckpoint(e.store, meta.ID)
+				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
+			}
+			if e.cfg.Runtime.Degeneration.Enabled && consecutiveNoToolCandidates >= e.cfg.Runtime.Degeneration.ReminderAfter {
+				appended, err := e.appendHarnessReminderOnce(meta, "turn_decide", degenerationRecoveryPrompt(consecutiveNoToolCandidates), "degeneration_recovery_required", "model_degeneration_no_progress")
+				if err != nil {
+					return RunResult{}, err
+				}
+				if appended || consecutiveNoToolCandidates < e.cfg.Runtime.Degeneration.GiveUpAfter {
+					continue
+				}
 			}
 			if doneCandidates == 0 {
 				doneCandidates++
@@ -1100,13 +1169,16 @@ func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, p
 }
 
 func (e *Engine) ephemeralArtifactPath(sessionID, toolName string, turn int) string {
+	base := e.ephemeralArtifactRoot(sessionID)
+	return filepath.Join(base, fmt.Sprintf("%s-turn%d.txt", toolName, turn))
+}
+
+func (e *Engine) ephemeralArtifactRoot(sessionID string) string {
 	base := strings.TrimSpace(e.cfg.Runtime.Ephemeral.ArtifactDir)
 	if base == "" || filepath.Clean(base) == filepath.Clean(".artifacts/tool-outputs") {
-		base = filepath.Join(e.store.SessionDir(sessionID), "artifacts", "tool-outputs")
-	} else {
-		base = filepath.Join(base, sessionID)
+		return filepath.Join(e.store.SessionDir(sessionID), "artifacts", "tool-outputs")
 	}
-	return filepath.Join(base, fmt.Sprintf("%s-turn%d.txt", toolName, turn))
+	return filepath.Join(base, sessionID)
 }
 
 // recordFileChanges folds the file mutations from one successful tool call into
@@ -1131,15 +1203,49 @@ func (e *Engine) recordFileChanges(meta session.SessionMetadata, toolName, callI
 	}
 }
 
+type idleParkedOptions struct {
+	Reason                      string
+	LastStopReason              string
+	ConsecutiveNoToolCandidates int
+	IncompleteReason            string
+}
+
 func (e *Engine) awaitingInput(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {
+	return e.awaitingInputWithIdleParked(ctx, meta, state, text, hookManager, nil)
+}
+
+func (e *Engine) awaitingInputIdleParked(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager, idle idleParkedOptions) (RunResult, error) {
+	return e.awaitingInputWithIdleParked(ctx, meta, state, text, hookManager, &idle)
+}
+
+func (e *Engine) awaitingInputWithIdleParked(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager, idle *idleParkedOptions) (RunResult, error) {
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "turn_decide"
 	state.LastAssistantExcerpt = truncateText(text, 500)
+	if idle != nil && strings.TrimSpace(idle.Reason) != "" {
+		state.IdleReason = strings.TrimSpace(idle.Reason)
+		if strings.TrimSpace(idle.IncompleteReason) != "" {
+			state.IncompleteReason = strings.TrimSpace(idle.IncompleteReason)
+		}
+	} else {
+		state.IdleReason = ""
+	}
 	if err := e.store.SaveState(meta.ID, state); err != nil {
 		return RunResult{}, err
+	}
+	if idle != nil && strings.TrimSpace(idle.Reason) != "" {
+		data := map[string]any{
+			"reason":                         strings.TrimSpace(idle.Reason),
+			"last_stop_reason":               strings.TrimSpace(idle.LastStopReason),
+			"consecutive_no_tool_candidates": idle.ConsecutiveNoToolCandidates,
+			"last_text_excerpt":              truncateText(text, 500),
+		}
+		if err := e.appendEvent(meta.ID, "session.idle_parked", state.Phase, data); err != nil {
+			return RunResult{}, fmt.Errorf("record session.idle_parked event: %w", err)
+		}
 	}
 	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, map[string]any{}); err != nil {
 		return RunResult{}, fmt.Errorf("record session.awaiting_input event: %w", err)
@@ -2470,6 +2576,17 @@ func providerStopFailure(stopReason string) (string, string) {
 	default:
 		return "", ""
 	}
+}
+
+func degenerationRecoveryPrompt(count int) string {
+	return fmt.Sprintf("Harness reminder: the last %d turns produced text but no valid tool call. You appear stuck. Take exactly ONE concrete action now: (a) rerun the needed command redirecting output to reports/..., then read_file it; or (b) use finish with a clear blocker if you cannot proceed. Do not narrate; emit a tool call.", count)
+}
+
+func countTextLines(text string) int {
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
 }
 
 func providerToolCallStopFailure(result provider.TurnResult) (string, string) {

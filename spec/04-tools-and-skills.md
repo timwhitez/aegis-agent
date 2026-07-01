@@ -100,6 +100,8 @@ v1 内置工具固定为：
 - 路径必须限制在工作区内
 - 例外：已注册 skill bundle 文件属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径读取；不得把这些路径误解析成 `workspace/skills/...`
 - skill 文件读取必须校验 symlink escape，且不赋予写入权限
+- 例外：session 私有的 ephemeral tool-output artifact 允许用工具结果返回的显式路径只读读取；该路径必须落在当前 session 的 ephemeral artifact root 内，仍要拒绝 symlink escape，并继续套用 120 行 `offset` / `limit` 分页窗口
+- workspace 内 `.artifacts` 这类内部生成物仍默认拒绝读取；`glob` / `grep` / `grep_files` discovery 也必须跳过 session ephemeral artifacts，避免把临时大输出重新作为候选噪音回灌
 - 默认支持 `offset` / `limit`
 - v1 采用小窗口读取，默认与最大返回窗口都限制为 120 行
 - 读取前必须拒绝超大 regular file；当前共享文件读取上限为 16 MiB，避免 `offset` / `limit` 窗口化之前先把异常大文件完整读入内存

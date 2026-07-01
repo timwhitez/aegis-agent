@@ -3595,6 +3595,68 @@ func TestGeneratedArtifactsAreHiddenFromFileDiscovery(t *testing.T) {
 	}
 }
 
+func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	artifactRoot := filepath.Join(store.SessionDir(meta.ID), "artifacts", "tool-outputs")
+	if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
+		t.Fatalf("mkdir artifact root: %v", err)
+	}
+	lines := make([]string, 0, 180)
+	for i := 1; i <= 180; i++ {
+		lines = append(lines, fmt.Sprintf("artifact line %03d", i))
+	}
+	artifactPath := filepath.Join(artifactRoot, "grep_files-turn4.txt")
+	if err := os.WriteFile(artifactPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID:             meta.ID,
+		Workdir:               meta.Workdir,
+		EphemeralArtifactRoot: artifactRoot,
+		Store:                 store,
+		Config:                cfg,
+	}
+
+	result, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(fmt.Sprintf(`{
+		"path":%q,
+		"limit":240
+	}`, artifactPath)))
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected artifact read to succeed, got %#v", result)
+	}
+	if result.Metadata["path_source"] != "session_ephemeral_artifact" {
+		t.Fatalf("expected session artifact source, got %#v", result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, "artifact line 120") || strings.Contains(result.DisplayOutput, "artifact line 121") {
+		t.Fatalf("expected capped artifact window, got %q", result.DisplayOutput)
+	}
+	if !strings.Contains(result.DisplayOutput, "requested_limit=240 capped_to=120") {
+		t.Fatalf("expected capped read annotation, got %q", result.DisplayOutput)
+	}
+}
+
 func TestReadFileBlocksSymlinkedArtifactsAlias(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

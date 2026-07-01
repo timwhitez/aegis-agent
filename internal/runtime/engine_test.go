@@ -3111,8 +3111,165 @@ func TestEngineExecModeRequiresFinish(t *testing.T) {
 	}
 }
 
+func TestEngineRunDoneCandidateRecordsIdleParked(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "pause naturally")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "waiting for input", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IdleReason != "done_candidate_no_tool_calls" {
+		t.Fatalf("expected idle reason, got %#v", loaded)
+	}
+	if loaded.IncompleteReason != "" {
+		t.Fatalf("normal idle park must not set incomplete reason, got %#v", loaded)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	idleEvent, ok := findEventByType(events, "session.idle_parked")
+	if !ok {
+		t.Fatalf("expected session.idle_parked event, got %#v", events)
+	}
+	if idleEvent.Data["reason"] != "done_candidate_no_tool_calls" || idleEvent.Data["last_stop_reason"] != "done_candidate" {
+		t.Fatalf("unexpected idle event data: %#v", idleEvent.Data)
+	}
+}
+
+func TestEngineDegenerationInjectsRecoveryReminderThenFailsExec(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Degeneration.ReminderAfter = 2
+	cfg.Runtime.Degeneration.GiveUpAfter = 4
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "keep going")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "I will call a tool now.", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "Ok, calling it.", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "Still about to call.", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "No tool yet.", StopReason: "done_candidate"}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed || !strings.Contains(result.LastError, modelDegenerationNoProgressReason) {
+		t.Fatalf("expected degeneration failure, got %#v", result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != modelDegenerationNoProgressReason {
+		t.Fatalf("expected degeneration incomplete reason, got %#v", loaded)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	reminders := 0
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if msg.Meta["kind"] == "degeneration_recovery_required" {
+			reminders++
+			if !strings.Contains(msg.Text, "Do not narrate; emit a tool call.") {
+				t.Fatalf("unexpected degeneration reminder text: %q", msg.Text)
+			}
+		}
+	}
+	if reminders != 1 {
+		t.Fatalf("expected exactly one degeneration reminder, got %d messages=%#v", reminders, messages)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	failedEvent, ok := findEventByType(events, "session.failed")
+	if !ok {
+		t.Fatalf("expected session.failed event, got %#v", events)
+	}
+	if failedEvent.Data["reason"] != modelDegenerationNoProgressReason {
+		t.Fatalf("unexpected failure event: %#v", failedEvent.Data)
+	}
+}
+
+func TestEngineDegenerationCounterResetsOnToolCall(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.Degeneration.ReminderAfter = 2
+	cfg.Runtime.Degeneration.GiveUpAfter = 3
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	writeEvidenceFile(t, meta.Workdir, "evidence.txt", "ok\n")
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "inspect then finish")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "I will inspect.", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"evidence.txt"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "I have evidence.", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	for _, msg := range messages {
+		if msg.Role == "user" && msg.Meta["kind"] == "degeneration_recovery_required" {
+			t.Fatalf("tool call should reset degeneration counter, got reminder %#v", msg)
+		}
+	}
+}
+
 func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.Degeneration.Enabled = false
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -3344,13 +3501,13 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 				continue
 			}
 			found = true
-			if !strings.Contains(toolResult.LLMOutput, "not readable via read_file") {
-				t.Fatalf("expected explicit read_file warning, got %q", toolResult.LLMOutput)
+			if !strings.Contains(toolResult.LLMOutput, "Read it with read_file") {
+				t.Fatalf("expected explicit read_file guidance, got %q", toolResult.LLMOutput)
 			}
-			if !strings.Contains(toolResult.LLMOutput, "reports/validation.txt") {
+			if !strings.Contains(toolResult.LLMOutput, "redirecting to a workspace file under reports/") {
 				t.Fatalf("expected workspace redirect guidance, got %q", toolResult.LLMOutput)
 			}
-			if strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
+			if strings.Contains(toolResult.LLMOutput, "not readable via read_file") || strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
 				t.Fatalf("expected old misleading guidance to be removed, got %q", toolResult.LLMOutput)
 			}
 			wantPrefix := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "tool-outputs")

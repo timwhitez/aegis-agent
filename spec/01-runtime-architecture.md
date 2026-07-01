@@ -402,6 +402,7 @@ while true:
 8. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
 9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
 10. 落盘最终 tool result
+11. 对标记为 ephemeral 的工具输出，超过工具窗口后可把完整 `llm_output` 写入 session 私有 `artifacts/tool-outputs/`，并在 tool result 中返回一个可由 `read_file(path=..., offset=..., limit=120)` 显式分页读取的指针；`grep` / `grep_files` / `glob` 仍不得把该目录作为 discovery 输入
 
 ### 5.6 turn_decide
 
@@ -410,8 +411,9 @@ while true:
 - 如果模型调用了 `finish` 工具，必须先通过 `CompletionController` 的 finish gates；通过后 session 完成
 - 如果有普通 tool calls，则进入下一轮
 - 如果没有 tool calls：
-  - `run` 模式下将 session 置为 `awaiting_input`
+  - `run` 模式下将 session 置为 `awaiting_input`，并写 `session.idle_parked` 事件说明停靠原因、最近 stop reason、连续 no-tool candidate 计数和末尾文本摘要
   - `exec` 模式下视为 `done_candidate`，注入 reminder 后再给模型一次机会
+  - 若连续多个 `done_candidate` turn 都只有文本、没有 valid tool call，且未接纳 steer/background/finish，则 runtime 可按 `runtime.degeneration` 配置注入 `degeneration_recovery_required` harness reminder；继续无进展时，`run` 模式以 `model_degeneration_no_progress` 停靠到 `awaiting_input`，`exec/init` 模式以同一 reason 失败
 - 如果上下文取消，则进入 `paused`
 
 ## 6. Completion Policy
@@ -425,6 +427,7 @@ while true:
 - `finish` 表示整个 session 已完成
 - 无 tool calls 且无 `finish` 时，不强行判定完成
 - session 进入 `awaiting_input`
+- 进入 `awaiting_input` 前应写 `session.idle_parked` 事件；普通自然停靠使用非失败 `idle_reason=done_candidate_no_tool_calls`，连续退化停靠使用 `idle_reason=model_degeneration_no_progress` 并记录 `incomplete_reason`
 - 用户后续可用 `continue --message` 补充提示
 - 若运行中收到 steer 输入，默认在最近安全边界直接并入，不必先进入 `awaiting_input`
 
@@ -437,6 +440,7 @@ while true:
 - runtime 会插入一次 harness reminder
 - 若最新 interrupt steer 已明确要求立即交付，runtime 可插入专门的 completion reminder，并对继续的只读探索或 bookkeeping detour 加 guard，直到出现交付动作或新的外部指令
 - 二次仍无 `finish` 时记为 `failed`，并在 state 中写入 `incomplete_no_finish`
+- 若连续 `done_candidate` 空转先达到 `runtime.degeneration.give_up_after`，则使用更具体的 `model_degeneration_no_progress` 失败原因；这不改变普通 `exec` 必须显式 `finish` 的完成策略，只让模型退化循环有可诊断 reason
 
 ## 7. Session 状态机
 
