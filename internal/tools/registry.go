@@ -1017,7 +1017,7 @@ func defEditFile() Definition {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Generated, cache, and internal artifact directories are skipped.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1027,12 +1027,17 @@ func defGlob() Definition {
 					"type":        "string",
 					"description": "Glob pattern such as **/*.go or spec/*.md, evaluated inside the workspace.",
 				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": fmt.Sprintf("Optional maximum number of matching paths to return. Defaults to %d and is capped at %d.", defaultGrepFilesLimit, maxGrepFilesLimit),
+				},
 			},
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
 				Pattern string `json:"pattern"`
+				Limit   int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("glob", err), nil
@@ -1040,7 +1045,9 @@ func defGlob() Definition {
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("glob", err), nil
 			}
+			limit := normalizeGrepFilesLimit(input.Limit)
 			var matches []string
+			truncated := false
 			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
 				if path != "." {
 					if _, err := ResolveWorkspacePath(execCtx.Workdir, path); err != nil {
@@ -1058,14 +1065,24 @@ func defGlob() Definition {
 						return nil
 					}
 					matches = append(matches, path)
+					// Collect one past the limit so an exact-limit result is not
+					// mislabeled as truncated; only a genuine overflow trips the notice.
+					if len(matches) > limit {
+						truncated = true
+						matches = matches[:limit]
+						return errGrepLimitReached
+					}
 				}
 				return nil
-			}); err != nil {
+			}); err != nil && !errors.Is(err, errGrepLimitReached) {
 				return errorResult("glob", err), nil
 			}
 			output := strings.Join(matches, "\n")
 			if output == "" {
 				output = "(no matches)"
+			}
+			if truncated {
+				output += fmt.Sprintf("\n[Truncated at limit=%d matches; narrow the pattern or raise limit to see more.]", limit)
 			}
 			return session.ToolResult{Name: "glob", LLMOutput: output, DisplayOutput: output}, nil
 		},

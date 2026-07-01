@@ -514,6 +514,7 @@ header {
 /* Markdown Styling */
 .prose {
   color: var(--text-main);
+  overflow-wrap: anywhere;
 }
 .prose p { margin-bottom: 16px; font-size: 14px; }
 .prose p:last-child { margin-bottom: 0; }
@@ -1580,8 +1581,8 @@ textarea {
 
 .message.user .message-bubble-plaintext {
   white-space: pre-wrap;
-  overflow-wrap: normal;
-  word-break: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message.assistant .message-bubble,

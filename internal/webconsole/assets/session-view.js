@@ -405,7 +405,7 @@ function goalStatusLabel(goal) {
   if (!goal) {
     return 'Goal off';
   }
-  return `${humanizeStatus(goal.mode || 'goal')} ${humanizeStatus(goal.status || 'active')}`;
+  return `Goal ${humanizeStatus(goal.status || 'active')}`;
 }
 
 function goalRuntimeFacts(detail) {
@@ -444,7 +444,6 @@ function renderSessionGoalLine(detail) {
   }
   const goal = facts.goal;
   const pieces = [
-    goal.mode ? `mode ${goal.mode}` : '',
     facts.runStatus ? `session ${humanizeStatus(facts.runStatus)}` : '',
     facts.runPhase ? phaseHeadline(facts.runPhase) : '',
     `tokens ${formatBudget(goal.tokens_used, goal.token_budget)}`,
@@ -2044,7 +2043,7 @@ function renderSessionRail() {
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="session-rail-id">${escapeHTML(shortId(item.id))}</span>
           <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
-          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · ${escapeHTML(item.goal_mode || 'goal')}:${escapeHTML(item.goal_status)}` : ''}</span>
+          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · goal:${escapeHTML(item.goal_status)}` : ''}</span>
         </button>
       `).join('') : emptyHTML}
     </div>

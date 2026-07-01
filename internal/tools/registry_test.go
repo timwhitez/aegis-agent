@@ -3904,6 +3904,71 @@ func TestGlobRejectsEmptyPattern(t *testing.T) {
 	}
 }
 
+func TestGlobHonorsLimitAndReportsTruncation(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(workdir, fmt.Sprintf("match-%d.txt", i)), []byte("x"), 0o600); err != nil {
+			t.Fatalf("write match file: %v", err)
+		}
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	limited, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"pattern":"*.txt","limit":2}`))
+	if err != nil {
+		t.Fatalf("glob with limit: %v", err)
+	}
+	if limited.IsError {
+		t.Fatalf("expected glob to accept limit argument, got error result %#v", limited)
+	}
+	matchLines := 0
+	for _, line := range strings.Split(limited.DisplayOutput, "\n") {
+		if strings.HasSuffix(line, ".txt") {
+			matchLines++
+		}
+	}
+	if matchLines != 2 {
+		t.Fatalf("expected 2 matches under limit, got %d in %q", matchLines, limited.DisplayOutput)
+	}
+	if !strings.Contains(limited.DisplayOutput, "Truncated at limit=2") {
+		t.Fatalf("expected truncation notice, got %q", limited.DisplayOutput)
+	}
+
+	full, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"pattern":"*.txt"}`))
+	if err != nil {
+		t.Fatalf("glob without limit: %v", err)
+	}
+	if strings.Contains(full.DisplayOutput, "Truncated") {
+		t.Fatalf("did not expect truncation for full result, got %q", full.DisplayOutput)
+	}
+
+	exact, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"pattern":"*.txt","limit":5}`))
+	if err != nil {
+		t.Fatalf("glob at exact limit: %v", err)
+	}
+	if strings.Contains(exact.DisplayOutput, "Truncated") {
+		t.Fatalf("did not expect truncation when matches equal limit, got %q", exact.DisplayOutput)
+	}
+}
+
 func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
