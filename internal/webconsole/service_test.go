@@ -7261,16 +7261,18 @@ func TestServiceStopParentStopsRunningQueueChildHandle(t *testing.T) {
 			childState.Status == session.StatusPaused &&
 			childState.PauseReason == "manual_stop" &&
 			current.Status == session.QueueStatusBlocked &&
-			current.SessionStatus == session.StatusPaused
+			current.SessionStatus == session.StatusPaused &&
+			!svc.hasActiveHandle(childID)
 	}, func() string {
 		childState, childErr := svc.store.LoadState(childID)
 		current, jobErr := svc.store.LoadJob(job.ID)
 		payload := map[string]any{
-			"child_state": childState,
-			"child_err":   childErr,
-			"job":         current,
-			"job_err":     jobErr,
-			"workers":     svc.workers.Snapshot(),
+			"child_state":   childState,
+			"child_err":     childErr,
+			"job":           current,
+			"job_err":       jobErr,
+			"active_handle": svc.hasActiveHandle(childID),
+			"workers":       svc.workers.Snapshot(),
 		}
 		data, marshalErr := json.Marshal(payload)
 		if marshalErr != nil {
@@ -7286,6 +7288,9 @@ func TestServiceStopParentStopsRunningQueueChildHandle(t *testing.T) {
 	if !strings.Contains(current.LastError, "child session is resumable: paused") {
 		t.Fatalf("expected blocked queue job to explain resumable paused child, got %#v", current)
 	}
+	// Handle release is asynchronous: parent stop only interrupts the running
+	// child, and its handle is deleted when the child run loop later exits. The
+	// waitFor above already gates on release, so this restates the invariant.
 	if svc.hasActiveHandle(childID) {
 		t.Fatalf("expected child active handle to be released after stop")
 	}
