@@ -46,7 +46,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 		if mode == session.ModeExec {
 			builder.WriteString("In exec mode, you must use the finish tool when the task is complete.\n")
 		} else {
-			builder.WriteString("In run mode, natural pause is allowed, but use finish when the task is clearly complete.\n")
+			builder.WriteString("In run mode, do not stop just because you produced text without a tool call; keep working until you use finish or the harness enters an explicit wait state.\n")
 		}
 	}
 	if role, guidance := roleGuidance(agentRole, agentName); role != "" {

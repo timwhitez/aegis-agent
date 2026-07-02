@@ -1845,7 +1845,10 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 		_, _ = w.Write([]byte(`{
 			"id":"resp_planmode_retry",
 			"status":"completed",
-			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"approval retry continued"}]}],
+			"output":[
+				{"type":"function_call","call_id":"call_update_goal","name":"update_goal","arguments":"{\"status\":\"complete\",\"completion_summary\":\"plan approval retry completed\",\"evidence\":[\"plan approval retry\"]}"},
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"approval retry continued\"}"}
+			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
 	}))
@@ -1935,8 +1938,8 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 	if err != nil {
 		t.Fatalf("retry plan approval: result=%#v err=%v", retried, err)
 	}
-	if retried.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected retry to continue into awaiting input, got %#v", retried)
+	if retried.Status != session.StatusCompleted {
+		t.Fatalf("expected retry to complete after update_goal plus finish, got %#v", retried)
 	}
 	if calls := providerCalls.Load(); calls != 1 {
 		t.Fatalf("expected provider to run exactly once after retry, got %d", calls)
@@ -1965,7 +1968,7 @@ func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t 
 		_, _ = w.Write([]byte(`{
 			"id":"resp_planmode_revision_retry",
 			"status":"completed",
-			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"revision retry continued"}]}],
+			"output":[{"type":"function_call","call_id":"call_submit_plan","name":"submit_plan","arguments":"{\"title\":\"Revised Plan\",\"summary\":\"Updated after revision retry\",\"plan_markdown\":\"# Plan\\n\\nDo it with a narrower implementation.\\n\\n# Verification\\n\\n- manual\",\"verification\":[\"manual\"]}"}],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
 	}))
@@ -2045,7 +2048,7 @@ func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t 
 		t.Fatalf("retry plan revision: result=%#v err=%v", retried, err)
 	}
 	if retried.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected retry to continue into awaiting input, got %#v", retried)
+		t.Fatalf("expected retry to stop at plan approval after submit_plan, got %#v", retried)
 	}
 	if calls := providerCalls.Load(); calls != 1 {
 		t.Fatalf("expected provider to run exactly once after retry, got %d", calls)
@@ -2069,8 +2072,8 @@ func TestRevisePlanModeRetryAfterRevisionMessageFailureAppendsRevisionMessage(t 
 	if err != nil {
 		t.Fatalf("load messages after duplicate continuation: %v", err)
 	}
-	if count := countPlanModeRevisionMessages(messages); count != 1 {
-		t.Fatalf("recorded revision should not be reclassified on repeated planning continuation, got %d messages=%#v", count, messages)
+	if count := countPlanModeRevisionMessages(messages); count != 2 {
+		t.Fatalf("expected a second revision message after resubmitting the revised plan, got %d messages=%#v", count, messages)
 	}
 }
 

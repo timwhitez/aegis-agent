@@ -116,7 +116,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 
 - 前台交互执行
 - 允许 `Esc` 暂停
-- 若无显式 `finish` 且模型自然停顿，则进入 `awaiting_input`
+- 若无显式 `finish`，runtime 默认继续 loop；只有显式暂停、Plan Mode/预算/后台等待或退化停靠时才进入 `awaiting_input`
 
 高频参数：
 

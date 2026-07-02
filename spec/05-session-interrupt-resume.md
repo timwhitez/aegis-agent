@@ -127,8 +127,8 @@ session 系统保证下面四件事同时成立：
 
 表示：
 
-- 本次 `run` 已自然停顿
-- 模型未显式 `finish`
+- session 进入了显式可恢复等待/停靠状态
+- 例如手动暂停、Plan Mode gate、budget wrap-up、background wait，或退化停靠
 - 用户后续可补充 prompt 后继续
 
 它不是错误状态，也不是完成状态。
@@ -171,17 +171,12 @@ session 系统保证下面四件事同时成立：
 
 ## 8. 自然停顿语义
 
-在 `run` 模式中，若模型本轮：
-
-- 没有继续调用工具
-- 且没有调用 `finish`
-
-则：
+在 `run` 模式中，若模型本轮没有继续调用工具，且也没有调用 `finish`：
 
 1. 写入最终 assistant 消息
-2. 将 state 改为 `awaiting_input`
-3. 写入 `session.awaiting_input`
-4. CLI 输出下一步 `continue` 用法
+2. 将该 turn 视为 `done_candidate`
+3. runtime 继续 agent loop，并可按需插入“若任务完成请显式调用 `finish`”的 harness reminder
+4. 只有显式等待/停靠场景（如 pause、Plan Mode、budget wrap-up、background wait、degeneration park）才会把 state 改为 `awaiting_input`
 
 ## 9. 恢复语义
 

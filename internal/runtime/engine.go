@@ -1063,11 +1063,20 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					continue
 				}
 			}
-			return e.awaitingInputIdleParked(ctx, meta, state, result.Text, hookManager, idleParkedOptions{
-				Reason:                      "done_candidate_no_tool_calls",
-				LastStopReason:              result.StopReason,
-				ConsecutiveNoToolCandidates: consecutiveNoToolCandidates,
-			})
+			pauseAfterDeferredFinish, err := e.shouldAwaitInputAfterDeferredFinish(meta.ID)
+			if err != nil {
+				return RunResult{}, err
+			}
+			if pauseAfterDeferredFinish {
+				return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
+			}
+			if doneCandidates == 0 {
+				doneCandidates = 1
+				if _, err := e.appendHarnessReminder(meta, "turn_decide", "Harness reminder: if the task is complete, call the finish tool explicitly.", "finish_required"); err != nil {
+					return RunResult{}, err
+				}
+			}
+			continue
 		case session.ModeExec, session.ModeInit:
 			if unresolved, err := e.unresolvedBackgroundExitState(meta.ID); err != nil || unresolved.Reminder != "" {
 				if err != nil {
@@ -1125,35 +1134,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 			}
 			if doneCandidates == 0 {
-				doneCandidates++
+				doneCandidates = 1
 				if _, err := e.appendHarnessReminder(meta, "turn_decide", "Harness reminder: if the task is complete, call the finish tool explicitly.", "finish_required"); err != nil {
 					return RunResult{}, err
 				}
-				continue
 			}
-			if doneCandidates == 1 {
-				doneCandidates++
-				continue
-			}
-			state.Status = session.StatusFailed
-			state.IncompleteReason = "incomplete_no_finish"
-			state.LastError = "incomplete_no_finish: task ended without explicit finish"
-			if err := e.store.SaveState(meta.ID, state); err != nil {
-				return RunResult{}, err
-			}
-			if err := e.appendEvent(meta.ID, "session.failed", "turn_decide", map[string]any{"reason": state.IncompleteReason}); err != nil {
-				return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.IncompleteReason, err)
-			}
-			result := RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}
-			if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
-				return result, err
-			}
-			_ = writeSessionSummary(e.store, meta.ID)
-			_ = writeLongRunCheckpoint(e.store, meta.ID)
-			if e.cfg.Runtime.RalphLoop.Enabled {
-				return e.runner.AutoContinue(ctx, meta.ID)
-			}
-			return result, nil
+			continue
 		}
 	}
 }
@@ -1985,6 +1971,31 @@ func (e *Engine) maybeAppendHarnessReminder(meta session.SessionMetadata, messag
 
 func (e *Engine) appendHarnessReminder(meta session.SessionMetadata, phase, text, kind string) (session.Message, error) {
 	return e.appendHarnessReminderWithSignature(meta, phase, text, kind, "")
+}
+
+func (e *Engine) shouldAwaitInputAfterDeferredFinish(sessionID string) (bool, error) {
+	messages, err := e.store.LoadMessages(sessionID)
+	if err != nil {
+		return false, err
+	}
+	directive := latestInterruptSteerDirective(messages)
+	if !directive.Active || !directive.DeferFinish || directive.Index+1 >= len(messages) {
+		return false, nil
+	}
+	for _, msg := range messages[directive.Index+1:] {
+		if msg.Role != "tool" {
+			continue
+		}
+		for _, result := range msg.ToolResults {
+			if result.Name != "finish" || !result.IsError || result.Metadata == nil {
+				continue
+			}
+			if guard, _ := result.Metadata["guard"].(string); guard == "steer_deferred_finish" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (e *Engine) appendHarnessReminderOnce(meta session.SessionMetadata, phase, text, kind, signature string) (bool, error) {

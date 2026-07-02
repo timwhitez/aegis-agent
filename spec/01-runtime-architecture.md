@@ -411,8 +411,8 @@ while true:
 - 如果模型调用了 `finish` 工具，必须先通过 `CompletionController` 的 finish gates；通过后 session 完成
 - 如果有普通 tool calls，则进入下一轮
 - 如果没有 tool calls：
-  - `run` 模式下将 session 置为 `awaiting_input`，并写 `session.idle_parked` 事件说明停靠原因、最近 stop reason、连续 no-tool candidate 计数和末尾文本摘要
-  - `exec` 模式下视为 `done_candidate`，注入 reminder 后再给模型一次机会
+  - 统一视为 `done_candidate`，继续下一轮 provider turn；普通“无 tool / 无 finish”不能直接结束 loop
+  - runtime 可注入 finish-oriented harness reminder，明确任务若已完成必须显式调用 `finish`
   - 若连续多个 `done_candidate` turn 都只有文本、没有 valid tool call，且未接纳 steer/background/finish，则 runtime 可按 `runtime.degeneration` 配置注入 `degeneration_recovery_required` harness reminder；继续无进展时，`run` 模式以 `model_degeneration_no_progress` 停靠到 `awaiting_input`，`exec/init` 模式以同一 reason 失败
 - 如果上下文取消，则进入 `paused`
 
@@ -425,9 +425,9 @@ while true:
 用于 `run`
 
 - `finish` 表示整个 session 已完成
-- 无 tool calls 且无 `finish` 时，不强行判定完成
-- session 进入 `awaiting_input`
-- 进入 `awaiting_input` 前应写 `session.idle_parked` 事件；普通自然停靠使用非失败 `idle_reason=done_candidate_no_tool_calls`，连续退化停靠使用 `idle_reason=model_degeneration_no_progress` 并记录 `incomplete_reason`
+- 无 tool calls 且无 `finish` 时，不强行判定完成，也不因单次 `done_candidate` 直接停到 `awaiting_input`
+- 普通 `done_candidate` turn 应继续 loop；只有显式等待/停靠场景（例如 pause、plan gate、budget wrap-up、background wait、degeneration park）才进入 `awaiting_input`
+- 进入 `awaiting_input` 前若属于退化停靠，应写 `session.idle_parked` 事件并记录 `idle_reason=model_degeneration_no_progress` 与可选 `incomplete_reason`
 - 用户后续可用 `continue --message` 补充提示
 - 若运行中收到 steer 输入，默认在最近安全边界直接并入，不必先进入 `awaiting_input`
 
@@ -436,11 +436,10 @@ while true:
 用于 `exec`
 
 - 默认要求显式 `finish`
-- 一次“无工具调用且无 finish”只算 `done_candidate`
-- runtime 会插入一次 harness reminder
+- “无工具调用且无 `finish`”只算 `done_candidate`，runtime 继续 loop，不把它当作成功或自然结束
+- runtime 可插入一次 harness reminder，要求任务完成时显式调用 `finish`
 - 若最新 interrupt steer 已明确要求立即交付，runtime 可插入专门的 completion reminder，并对继续的只读探索或 bookkeeping detour 加 guard，直到出现交付动作或新的外部指令
-- 二次仍无 `finish` 时记为 `failed`，并在 state 中写入 `incomplete_no_finish`
-- 若连续 `done_candidate` 空转先达到 `runtime.degeneration.give_up_after`，则使用更具体的 `model_degeneration_no_progress` 失败原因；这不改变普通 `exec` 必须显式 `finish` 的完成策略，只让模型退化循环有可诊断 reason
+- 若连续 `done_candidate` 空转达到 `runtime.degeneration.give_up_after`，则使用 `model_degeneration_no_progress` 失败原因；`exec` 的成功条件仍然只有显式 `finish`
 
 ## 7. Session 状态机
 

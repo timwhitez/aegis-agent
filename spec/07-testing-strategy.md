@@ -55,9 +55,8 @@
 - 单轮纯文本任务
 - 带工具调用任务
 - `finish` 结束
-- `run` 模式进入 `awaiting_input`
-- `exec` 模式 reminder 回路
-- `exec` 二次仍未 `finish` -> `failed` + `incomplete_no_finish`
+- `run` / `exec` 在 plain `done_candidate` 后继续 loop，直到显式 `finish` 或触发其它停止条件
+- `exec` 模式 reminder + degeneration 回路
 - running session `steer` -> 下一安全边界接纳
 - running session `steer --interrupt` -> provider cancel / tool defer
 - cancel -> `paused`

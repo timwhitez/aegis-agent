@@ -20,24 +20,38 @@ import (
 	"go-cli-agent/internal/tools"
 )
 
-func TestEngineRunModeStopsAtAwaitingInput(t *testing.T) {
+func TestEngineRunModeContinuesUntilFinish(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
-	})
+	callCount := 0
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{Text: "still working", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			callCount++
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected loop to continue into a second provider turn, got %d calls", callCount)
 	}
 }
 
-func TestEngineAwaitingInputReportsEventAppendError(t *testing.T) {
+func TestEngineRunModeDoesNotEmitAwaitingInputForPlainDoneCandidate(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -48,19 +62,24 @@ func TestEngineAwaitingInputReportsEventAppendError(t *testing.T) {
 			blockPathAsDir(t, eventsPath, "events")
 		}
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "still working", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
-	if err == nil {
-		t.Fatalf("expected session.awaiting_input event append error, got result=%#v", result)
+	if err != nil {
+		t.Fatalf("run: %v", err)
 	}
-	if !strings.Contains(err.Error(), "events.jsonl") {
-		t.Fatalf("expected events append error with path context, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "session.awaiting_input") {
-		t.Fatalf("expected awaiting_input event context, got %v", err)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
 	}
 }
 
@@ -456,9 +475,9 @@ func TestEnginePreservesLoadedSkillStateAcrossNextTurn(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	turns := 0
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		turns++
-		if turns == 1 {
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
 			return provider.TurnResult{
 				ToolCalls: []provider.ToolCall{{
 					ID:        "call_load_skill",
@@ -467,15 +486,25 @@ func TestEnginePreservesLoadedSkillStateAcrossNextTurn(t *testing.T) {
 				}},
 				StopReason: "tool_use",
 			}, nil
-		}
-		return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
-	})
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
+			return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			turns++
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %#v", result)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
 	}
 	loaded, err := engine.store.LoadState(meta.ID)
 	if err != nil {
@@ -491,24 +520,32 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{
-			Text:               "done_candidate",
-			Thinking:           "reasoning summary",
-			StopReason:         "done_candidate",
-			ProviderResponseID: "resp_test_1",
-			RawProvider: map[string]any{
-				"provider_stop_reason": "completed",
-				"status":               "completed",
-			},
-			Usage: provider.Usage{
-				InputTokens:              12,
-				OutputTokens:             4,
-				CacheCreationInputTokens: 5,
-				CacheReadInputTokens:     9,
-			},
-		}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				Text:               "done_candidate",
+				Thinking:           "reasoning summary",
+				StopReason:         "done_candidate",
+				ProviderResponseID: "resp_test_1",
+				RawProvider: map[string]any{
+					"provider_stop_reason": "completed",
+					"status":               "completed",
+				},
+				Usage: provider.Usage{
+					InputTokens:              12,
+					OutputTokens:             4,
+					CacheCreationInputTokens: 5,
+					CacheReadInputTokens:     9,
+				},
+			}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -516,11 +553,21 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("messages: %v", err)
 	}
-	if len(messages) == 0 || messages[len(messages)-1].Role != "assistant" {
+	var assistant *session.Message
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		if messages[i].Meta["provider_response_id"] == "resp_test_1" {
+			assistant = &messages[i]
+			break
+		}
+	}
+	if assistant == nil {
 		t.Fatalf("expected assistant message, got %#v", messages)
 	}
-	if messages[len(messages)-1].Meta["provider_response_id"] != "resp_test_1" {
-		t.Fatalf("expected provider response id in assistant metadata, got %#v", messages[len(messages)-1].Meta)
+	if assistant.Meta["provider_response_id"] != "resp_test_1" {
+		t.Fatalf("expected provider response id in assistant metadata, got %#v", assistant.Meta)
 	}
 	events, err := loadEvents(engine.store, meta.ID)
 	if err != nil {
@@ -554,7 +601,7 @@ func TestEnginePersistsProviderTurnMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provider attempts: %v", err)
 	}
-	if len(attempts) != 1 || attempts[0].CacheCreationInputTokens != 5 || attempts[0].CacheReadInputTokens != 9 {
+	if len(attempts) < 1 || attempts[0].CacheCreationInputTokens != 5 || attempts[0].CacheReadInputTokens != 9 {
 		t.Fatalf("expected cache counters in provider attempts, got %#v", attempts)
 	}
 	summary, err := os.ReadFile(filepath.Join(engine.store.SessionDir(meta.ID), "session.md"))
@@ -575,9 +622,17 @@ func TestEngineClearsStaleLastErrorAfterProviderSuccess(t *testing.T) {
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "ready", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 
 	if _, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager); err != nil {
 		t.Fatalf("run: %v", err)
@@ -1047,35 +1102,47 @@ func TestEngineDefersCompactionFailureAndContinuesProviderCall(t *testing.T) {
 		t.Fatalf("block compactions path: %v", err)
 	}
 
-	providerCalled := false
-	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-		providerCalled = true
-		if len(req.Messages) == 0 || req.Messages[0].Meta["source"] != "compaction_deferred" {
-			t.Fatalf("expected deferred compaction lead message, got %#v", req.Messages)
-		}
-		serialized, err := json.Marshal(req.Messages)
-		if err != nil {
-			t.Fatalf("marshal request messages: %v", err)
-		}
-		text := string(serialized)
-		if strings.Contains(text, strings.Repeat("A", 1000)) || strings.Contains(text, strings.Repeat("B", 1000)) {
-			t.Fatalf("provider view should not include full old history after deferred compaction: %s", text)
-		}
-		if !strings.Contains(text, "latest instruction") {
-			t.Fatalf("provider view should include latest instruction: %s", text)
-		}
-		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
-	})
+	providerCalls := 0
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			providerCalls++
+			if len(req.Messages) == 0 || req.Messages[0].Meta["source"] != "compaction_deferred" {
+				t.Fatalf("expected deferred compaction lead message, got %#v", req.Messages)
+			}
+			serialized, err := json.Marshal(req.Messages)
+			if err != nil {
+				t.Fatalf("marshal request messages: %v", err)
+			}
+			text := string(serialized)
+			if strings.Contains(text, strings.Repeat("A", 1000)) || strings.Contains(text, strings.Repeat("B", 1000)) {
+				t.Fatalf("provider view should not include full old history after deferred compaction: %s", text)
+			}
+			if !strings.Contains(text, "latest instruction") {
+				t.Fatalf("provider view should include latest instruction: %s", text)
+			}
+			return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			providerCalls++
+			if len(req.Messages) == 0 || req.Messages[0].Meta["source"] != "compaction_deferred" {
+				t.Fatalf("expected deferred compaction lead message on continued turn, got %#v", req.Messages)
+			}
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run should continue after compaction failure: %v", err)
 	}
-	if !providerCalled {
-		t.Fatal("expected provider call after deferred compaction")
+	if providerCalls != 2 {
+		t.Fatalf("expected deferred-compaction run to continue until finish, got %d provider calls", providerCalls)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input after provider done candidate, got %#v", result)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed after provider continued to finish, got %#v", result)
 	}
 	eventsList, err := loadEvents(engine.store, meta.ID)
 	if err != nil {
@@ -3064,7 +3131,7 @@ func TestEngineHardTurnLimitReportsFailedEventAppendError(t *testing.T) {
 	}
 }
 
-func TestEngineExecModeRequiresFinish(t *testing.T) {
+func TestEngineExecModeContinuesUntilFinish(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -3076,20 +3143,26 @@ func TestEngineExecModeRequiresFinish(t *testing.T) {
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 			return provider.TurnResult{Text: "second", StopReason: "done_candidate"}, nil
 		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
 	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusFailed {
-		t.Fatalf("expected failed, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
 	}
 	loaded, err := engine.store.LoadState(meta.ID)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if loaded.IncompleteReason != "incomplete_no_finish" {
-		t.Fatalf("expected incomplete_no_finish, got %q", loaded.IncompleteReason)
+	if loaded.IncompleteReason != "" {
+		t.Fatalf("expected no incomplete reason, got %#v", loaded)
 	}
 	messages, err := engine.store.LoadMessages(meta.ID)
 	if err != nil {
@@ -3111,42 +3184,46 @@ func TestEngineExecModeRequiresFinish(t *testing.T) {
 	}
 }
 
-func TestEngineRunDoneCandidateRecordsIdleParked(t *testing.T) {
+func TestEngineRunDoneCandidateContinuesWithoutIdlePark(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "pause naturally")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "waiting for input", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "waiting for finish", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %#v", result)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %#v", result)
 	}
 	loaded, err := engine.store.LoadState(meta.ID)
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if loaded.IdleReason != "done_candidate_no_tool_calls" {
+	if loaded.IdleReason != "" {
 		t.Fatalf("expected idle reason, got %#v", loaded)
 	}
 	if loaded.IncompleteReason != "" {
-		t.Fatalf("normal idle park must not set incomplete reason, got %#v", loaded)
+		t.Fatalf("plain done_candidate should not set incomplete reason, got %#v", loaded)
 	}
 	events, err := engine.store.LoadEvents(meta.ID)
 	if err != nil {
 		t.Fatalf("load events: %v", err)
 	}
-	idleEvent, ok := findEventByType(events, "session.idle_parked")
-	if !ok {
-		t.Fatalf("expected session.idle_parked event, got %#v", events)
-	}
-	if idleEvent.Data["reason"] != "done_candidate_no_tool_calls" || idleEvent.Data["last_stop_reason"] != "done_candidate" {
-		t.Fatalf("unexpected idle event data: %#v", idleEvent.Data)
+	if _, ok := findEventByType(events, "session.idle_parked"); ok {
+		t.Fatalf("plain done_candidate should not idle-park, got events %#v", events)
 	}
 }
 
@@ -3267,9 +3344,10 @@ func TestEngineDegenerationCounterResetsOnToolCall(t *testing.T) {
 	}
 }
 
-func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
+func TestEngineDegenerationFailureReportsFailedEventAppendError(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
-	engine.cfg.Runtime.Degeneration.Enabled = false
+	engine.cfg.Runtime.Degeneration.ReminderAfter = 2
+	engine.cfg.Runtime.Degeneration.GiveUpAfter = 3
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -3298,8 +3376,8 @@ func TestEngineIncompleteNoFinishReportsFailedEventAppendError(t *testing.T) {
 	if !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected events append error with path context, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "incomplete_no_finish") || !strings.Contains(err.Error(), "session.failed") {
-		t.Fatalf("expected incomplete_no_finish failed event context, got %v", err)
+	if !strings.Contains(err.Error(), modelDegenerationNoProgressReason) || !strings.Contains(err.Error(), "session.failed") {
+		t.Fatalf("expected degeneration failed event context, got %v", err)
 	}
 }
 
@@ -3310,16 +3388,24 @@ func TestEngineAllowsDisablingHardTurnLimit(t *testing.T) {
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Continue working without a hard turn cap.")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "still running", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "still running", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input with disabled hard limit, got %#v", result)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed with disabled hard limit, got %#v", result)
 	}
 }
 
@@ -3474,13 +3560,19 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 				StopReason: "tool_use",
 			}, nil
 		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
 	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got status=%s last_error=%q", result.Status, result.LastError)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got status=%s last_error=%q", result.Status, result.LastError)
 	}
 
 	messages, err := engine.store.LoadMessages(meta.ID)
@@ -4343,7 +4435,10 @@ func TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage(t *t
 			if last.Role != "user" || last.Text != "switch direction" {
 				t.Fatalf("expected accepted steer message after provider cancellation, got %#v", last)
 			}
-			return provider.TurnResult{Text: "done", StopReason: "done_candidate"}, nil
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
 		},
 	)
 	go func() {
@@ -4359,8 +4454,8 @@ func TestEngineInterruptSteerCancelsProviderAndContinuesWithAcceptedMessage(t *t
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
 	}
 	events, err := loadEvents(engine.store, meta.ID)
 	if err != nil {
@@ -4509,19 +4604,27 @@ func TestEngineAcceptsBackgroundResultsBeforeProviderCall(t *testing.T) {
 	if err := engine.store.AppendBackgroundNotification(meta.ID, notification); err != nil {
 		t.Fatalf("append background notification: %v", err)
 	}
-	fake := provider.NewFake(func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-		last := req.Messages[len(req.Messages)-1]
-		if last.Role != "user" || !strings.Contains(last.Text, "<background-agent-results>") || !strings.Contains(last.Text, "child done") || !strings.Contains(last.Text, "visible_paths") || !strings.Contains(last.Text, "reports/queue-output.md") || !strings.Contains(last.Text, `"agent_role": "evaluator"`) {
-			t.Fatalf("expected background results message before provider call, got %#v", last)
-		}
-		return provider.TurnResult{Text: "ok", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			last := req.Messages[len(req.Messages)-1]
+			if last.Role != "user" || !strings.Contains(last.Text, "<background-agent-results>") || !strings.Contains(last.Text, "child done") || !strings.Contains(last.Text, "visible_paths") || !strings.Contains(last.Text, "reports/queue-output.md") || !strings.Contains(last.Text, `"agent_role": "evaluator"`) {
+				t.Fatalf("expected background results message before provider call, got %#v", last)
+			}
+			return provider.TurnResult{Text: "ok", StopReason: "done_candidate"}, nil
+		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
 	}
 	notifications, err := engine.store.LoadBackgroundNotifications(meta.ID)
 	if err != nil {
@@ -4904,13 +5007,19 @@ func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
 			}
 			return provider.TurnResult{Text: "second turn", StopReason: "done_candidate"}, nil
 		},
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
 	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
 	}
 	requests, err := engine.store.LoadSteerRequests(meta.ID)
 	if err != nil {
@@ -5274,10 +5383,10 @@ func TestEngineTriggersSessionAndAssistantHooks(t *testing.T) {
 			Command: []string{"/bin/sh", "-c", "cat >> .hook-session-start.json"},
 		},
 	}
-	cfg.Hooks.SessionAwaiting = []config.HookDefinition{
+	cfg.Hooks.SessionComplete = []config.HookDefinition{
 		{
-			Name:    "log-awaiting",
-			Command: []string{"/bin/sh", "-c", "cat >> .hook-session-awaiting.json"},
+			Name:    "log-complete",
+			Command: []string{"/bin/sh", "-c", "cat >> .hook-session-complete.json"},
 		},
 	}
 	cfg.Hooks.AssistantMessage = []config.HookDefinition{
@@ -5290,24 +5399,39 @@ func TestEngineTriggersSessionAndAssistantHooks(t *testing.T) {
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
-		return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
-	})
+	fake := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
+		},
+	)
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.FinalText != "[hook] done_candidate" {
-		t.Fatalf("expected hooked final text, got %q", result.FinalText)
+	if result.Status != session.StatusCompleted || result.FinalText != "done" {
+		t.Fatalf("expected completed finish, got %#v", result)
 	}
 	messages, err := engine.store.LoadMessages(meta.ID)
 	if err != nil {
 		t.Fatalf("messages: %v", err)
 	}
-	if got := messages[len(messages)-1].Text; got != "[hook] done_candidate" {
-		t.Fatalf("expected assistant hook to rewrite stored text, got %q", got)
+	var hookedAssistant *session.Message
+	for i := range messages {
+		if messages[i].Role == "assistant" && messages[i].Text == "[hook] done_candidate" {
+			hookedAssistant = &messages[i]
+			break
+		}
 	}
-	for _, name := range []string{".hook-session-start.json", ".hook-session-awaiting.json"} {
+	if hookedAssistant == nil {
+		t.Fatalf("expected assistant hook to rewrite stored text, got %#v", messages)
+	}
+	for _, name := range []string{".hook-session-start.json", ".hook-session-complete.json"} {
 		path := filepath.Join(meta.Workdir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -5453,7 +5577,10 @@ func TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel(t *testing.T) {
 			if last.Role != "user" || last.Text != "switch direction" {
 				t.Fatalf("expected accepted steer message on second turn, got %#v", last)
 			}
-			return provider.TurnResult{Text: "done_candidate", StopReason: "done_candidate"}, nil
+			return provider.TurnResult{
+				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+				StopReason: "tool_use",
+			}, nil
 		},
 	)
 	go func() {
@@ -5470,8 +5597,8 @@ func TestEngineMarksInterruptSteerDeferredWhenToolIgnoresCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if result.Status != session.StatusAwaitingInput {
-		t.Fatalf("expected awaiting_input, got %s", result.Status)
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed, got %s", result.Status)
 	}
 	events, err := loadEvents(engine.store, meta.ID)
 	if err != nil {
