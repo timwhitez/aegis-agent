@@ -52,6 +52,7 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"Do not guess required tool arguments, paths, or skill names",
 		"`context/...` and `.context/...` are different paths",
 		"Use `load_skill` only with exact names listed under Available skills",
+		"When the user asks for a review, lead with findings ordered by severity",
 		"## Skills",
 		"### Available skills",
 		"- repo_audit: Repository audit workflow",

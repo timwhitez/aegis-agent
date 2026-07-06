@@ -72,6 +72,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
 	builder.WriteString("- Before reporting validation success, inspect actual command results or validation artifacts; if validation failed, was partial, or was not run, say that plainly.\n")
 	builder.WriteString("- Before running project validation, identify the relevant project or build root instead of assuming the initial workdir is always the build root.\n")
+	builder.WriteString("- When the user asks for a review, lead with findings ordered by severity with file:line references; keep summaries brief and after the findings. If there are no issues, say so and note residual risk or test gaps.\n")
 	builder.WriteString("- Treat todo/task tools as a progress ledger only: preserve existing entries, append newly discovered work, and mark items complete only after the real file/code/command work is done. Updating todo/task state is never a substitute for doing or validating the task.\n")
 	builder.WriteString("- If you use child or background agents, check their final status and reconcile their durable results before final parent conclusions.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
