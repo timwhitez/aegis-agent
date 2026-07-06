@@ -61,6 +61,8 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
 	builder.WriteString("- Prefer dedicated tools for their purpose: `grep_files` or `grep` for discovery, `read_file` for known files, `write_file` or `edit_file` for file changes, and `shell` for build, test, package, git, or runtime commands.\n")
 	builder.WriteString("- Use the `shell` tool's `workdir` argument instead of embedding `cd` in commands whenever possible.\n")
+	builder.WriteString("- Do not chain shell commands with separators like `echo \"====\";`, and do not repeatedly redirect discovery output into throwaway `reports/_*.txt` files; use `grep_files`, `glob`, and `read_file`, and keep scratch output out of deliverable directories.\n")
+	builder.WriteString("- Avoid `cat`, `grep`, `sed`, and `echo` inside `shell` when `read_file`, `grep`, or `edit_file` already covers the need.\n")
 	builder.WriteString("- For unfamiliar code, use scoped discovery and read the owning files, contracts, and tests needed for the task; multi-file analysis often requires multiple targeted reads.\n")
 	builder.WriteString("- Do not read a source path from memory; locate it with `grep_files` or `glob` first, then read the owning file.\n")
 	builder.WriteString("- When several tool calls are independent in the same turn, issue them together; keep dependent operations sequential.\n")
