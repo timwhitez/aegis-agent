@@ -24,8 +24,8 @@ type compactor struct {
 
 type semanticSummaryFunc func(context.Context, []session.Message, int) (string, error)
 
-const compactionReferencePrefix = "[Conversation compacted]\nThis compacted summary is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth.\n"
-const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Continue from the latest user instruction and durable task state.\n"
+const compactionReferencePrefix = "[Conversation compacted]\nAnother model produced this compacted summary so you can continue seamlessly. It is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth. Do not restart from scratch; continue from the summarized state and latest durable task state. The newest external instruction wins over superseded earlier requests. Before finishing after compaction/resume/interruption, sanity-check that the result answers the newest external instruction.\n"
+const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Do not restart from scratch; continue from the latest external instruction and durable task state. Before finishing after compaction/resume/interruption, sanity-check that the result answers the newest external instruction.\n"
 
 func newCompactor(store *session.Store) *compactor {
 	return &compactor{store: store}
@@ -117,6 +117,14 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	}
 	artifactMemory := collectArtifactMemory(sourceMessages, workdir, 12)
 	highValueProofs := collectHighValueProofs(sourceMessages, workdir, 10)
+	completedItems := collectCompletedItems(todo, tasks)
+	keyPaths := collectKeyPaths(sourceMessages, workdir)
+	unresolvedIssues := collectUnresolvedIssues(sourceMessages, state)
+	currentGoal := currentGoalSummary(goal, sourceMessages)
+	latestExternal := latestExternalInstructionSummary(sourceMessages)
+	latestSteer := latestSteerConstraintSummary(sourceMessages)
+	openItems := collectOpenItems(todo, tasks, unresolvedIssues)
+	validatedConclusions := collectValidatedConclusions(completedItems, highValueProofs)
 
 	var featureList *session.FeatureList
 	if fl, err := c.store.LoadFeatureList(sessionID); err == nil {
@@ -141,30 +149,36 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	}
 
 	summary := map[string]any{
-		"completed_items":          collectCompletedItems(todo, tasks),
-		"artifact_memory":          artifactMemory,
-		"context_profile":          profile,
-		"current_status":           summarizeLatestMessages(sourceMessages),
-		"current_in_progress_todo": currentInProgressTodo(todo),
-		"current_in_progress_task": currentInProgressTask(tasks),
-		"high_value_proofs":        highValueProofs,
-		"feature_list":             featureList,
-		"key_paths":                collectKeyPaths(sourceMessages, workdir),
-		"loaded_skills":            state.LoadedSkills,
-		"next_step_guidance":       nextStepGuidance(),
-		"proof_read_budget":        proofBudget,
-		"project_memory_stack":     projectMemory.Summary(),
-		"tool_repetition":          summarizeToolRepetition(sourceMessages),
-		"todo":                     todo,
-		"ready_tasks":              readyTasks,
-		"blocked_tasks":            blockedTasks,
-		"completed_task_count":     taskSummary.Completed,
-		"cancelled_task_count":     taskSummary.Cancelled,
-		"done_task_count":          taskSummary.Done,
-		"unresolved_issues":        collectUnresolvedIssues(sourceMessages, state),
-		"recent_failure_or_pause":  recentFailureOrPause(state),
-		"transcript":               transcriptPath,
+		"completed_items":             completedItems,
+		"artifact_memory":             artifactMemory,
+		"context_profile":             profile,
+		"current_goal":                currentGoal,
+		"current_status":              summarizeLatestMessages(sourceMessages),
+		"current_in_progress_todo":    currentInProgressTodo(todo),
+		"current_in_progress_task":    currentInProgressTask(tasks),
+		"high_value_proofs":           highValueProofs,
+		"feature_list":                featureList,
+		"key_paths":                   keyPaths,
+		"latest_external_instruction": latestExternal,
+		"latest_steer_constraints":    latestSteer,
+		"loaded_skills":               state.LoadedSkills,
+		"next_step_guidance":          nextStepGuidance(),
+		"open_items":                  openItems,
+		"proof_read_budget":           proofBudget,
+		"project_memory_stack":        projectMemory.Summary(),
+		"tool_repetition":             summarizeToolRepetition(sourceMessages),
+		"todo":                        todo,
+		"ready_tasks":                 readyTasks,
+		"blocked_tasks":               blockedTasks,
+		"completed_task_count":        taskSummary.Completed,
+		"cancelled_task_count":        taskSummary.Cancelled,
+		"done_task_count":             taskSummary.Done,
+		"unresolved_issues":           unresolvedIssues,
+		"recent_failure_or_pause":     recentFailureOrPause(state),
+		"validated_conclusions":       validatedConclusions,
+		"transcript":                  transcriptPath,
 	}
+	summary["handoff_summary"] = compactionHandoffSummary(currentGoal, latestExternal, latestSteer, completedItems, openItems, keyPaths, validatedConclusions)
 	if semanticSummaryText != "" {
 		summary["semantic_summary"] = semanticSummaryText
 	}
@@ -266,32 +280,48 @@ func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, st
 	if err != nil {
 		return nil, fmt.Errorf("load goal.json for compaction reuse: %w", err)
 	}
+	artifactMemory := collectArtifactMemory(messages, workdir, 12)
+	highValueProofs := collectHighValueProofs(messages, workdir, 10)
+	completedItems := collectCompletedItems(todo, tasks)
+	keyPaths := collectKeyPaths(messages, workdir)
+	unresolvedIssues := collectUnresolvedIssues(messages, state)
+	currentGoal := currentGoalSummary(goal, messages)
+	latestExternal := latestExternalInstructionSummary(messages)
+	latestSteer := latestSteerConstraintSummary(messages)
+	openItems := collectOpenItems(todo, tasks, unresolvedIssues)
+	validatedConclusions := collectValidatedConclusions(completedItems, highValueProofs)
 	summary := map[string]any{
-		"completed_items":          collectCompletedItems(todo, tasks),
-		"artifact_memory":          collectArtifactMemory(messages, workdir, 12),
-		"context_profile":          profile,
-		"current_status":           summarizeLatestMessages(messages),
-		"current_in_progress_todo": currentInProgressTodo(todo),
-		"current_in_progress_task": currentInProgressTask(tasks),
-		"high_value_proofs":        collectHighValueProofs(messages, workdir, 10),
-		"key_paths":                collectKeyPaths(messages, workdir),
-		"loaded_skills":            state.LoadedSkills,
-		"next_step_guidance":       nextStepGuidance(),
-		"proof_read_budget":        proofBudget,
-		"project_memory_stack":     projectMemory.Summary(),
-		"project_memory_present":   projectMemory.PresentPaths(),
-		"project_memory_missing":   projectMemory.MissingPaths(),
-		"tool_repetition":          summarizeToolRepetition(messages),
-		"todo":                     todo,
-		"ready_tasks":              readyTasks,
-		"blocked_tasks":            blockedTasks,
-		"completed_task_count":     taskSummary.Completed,
-		"cancelled_task_count":     taskSummary.Cancelled,
-		"done_task_count":          taskSummary.Done,
-		"unresolved_issues":        collectUnresolvedIssues(messages, state),
-		"recent_failure_or_pause":  recentFailureOrPause(state),
-		"transcript":               "[previous compaction transcript reused; no prior summary artifact was available]",
+		"completed_items":             completedItems,
+		"artifact_memory":             artifactMemory,
+		"context_profile":             profile,
+		"current_goal":                currentGoal,
+		"current_status":              summarizeLatestMessages(messages),
+		"current_in_progress_todo":    currentInProgressTodo(todo),
+		"current_in_progress_task":    currentInProgressTask(tasks),
+		"high_value_proofs":           highValueProofs,
+		"key_paths":                   keyPaths,
+		"latest_external_instruction": latestExternal,
+		"latest_steer_constraints":    latestSteer,
+		"loaded_skills":               state.LoadedSkills,
+		"next_step_guidance":          nextStepGuidance(),
+		"open_items":                  openItems,
+		"proof_read_budget":           proofBudget,
+		"project_memory_stack":        projectMemory.Summary(),
+		"project_memory_present":      projectMemory.PresentPaths(),
+		"project_memory_missing":      projectMemory.MissingPaths(),
+		"tool_repetition":             summarizeToolRepetition(messages),
+		"todo":                        todo,
+		"ready_tasks":                 readyTasks,
+		"blocked_tasks":               blockedTasks,
+		"completed_task_count":        taskSummary.Completed,
+		"cancelled_task_count":        taskSummary.Cancelled,
+		"done_task_count":             taskSummary.Done,
+		"unresolved_issues":           unresolvedIssues,
+		"recent_failure_or_pause":     recentFailureOrPause(state),
+		"validated_conclusions":       validatedConclusions,
+		"transcript":                  "[previous compaction transcript reused; no prior summary artifact was available]",
 	}
+	summary["handoff_summary"] = compactionHandoffSummary(currentGoal, latestExternal, latestSteer, completedItems, openItems, keyPaths, validatedConclusions)
 	if goal != nil {
 		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
 	}
@@ -1075,6 +1105,131 @@ func currentInProgressTask(tasks []session.Task) map[string]any {
 		}
 	}
 	return nil
+}
+
+func currentGoalSummary(goal *session.SessionGoal, messages []session.Message) map[string]any {
+	if goal != nil {
+		return compactGoalSnapshot(*goal)
+	}
+	if latest := latestExternalInstructionSummary(messages); latest != nil {
+		return map[string]any{
+			"status": "not_recorded",
+			"source": "latest_external_instruction",
+			"text":   latest["text"],
+		}
+	}
+	return map[string]any{
+		"status": "not_recorded",
+	}
+}
+
+func latestExternalInstructionSummary(messages []session.Message) map[string]any {
+	idx := latestExternalInstructionIndex(messages)
+	if idx < 0 {
+		return nil
+	}
+	msg := messages[idx]
+	source, _ := msg.Meta["source"].(string)
+	if source == "" {
+		source = "user"
+	}
+	out := map[string]any{
+		"index":  idx,
+		"source": source,
+		"text":   truncateText(strings.TrimSpace(msg.Text), 800),
+	}
+	if interrupt, ok := msg.Meta["interrupt"].(bool); ok {
+		out["interrupt"] = interrupt
+	}
+	return out
+}
+
+func latestSteerConstraintSummary(messages []session.Message) map[string]any {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		source, _ := msg.Meta["source"].(string)
+		if source != "steer" {
+			continue
+		}
+		out := map[string]any{
+			"index":  i,
+			"source": source,
+			"text":   truncateText(strings.TrimSpace(msg.Text), 800),
+		}
+		if interrupt, ok := msg.Meta["interrupt"].(bool); ok {
+			out["interrupt"] = interrupt
+		}
+		return out
+	}
+	return nil
+}
+
+func collectOpenItems(todo []session.TodoItem, tasks []session.Task, unresolvedIssues []string) []string {
+	var out []string
+	for _, item := range todo {
+		switch item.Status {
+		case "pending", "in_progress":
+			out = append(out, fmt.Sprintf("todo[%s]: %s", item.Status, item.Content))
+		}
+	}
+	for _, task := range tasks {
+		switch task.Status {
+		case "pending", "in_progress":
+			out = append(out, fmt.Sprintf("task[%s]: %s", task.Status, task.Subject))
+		}
+	}
+	for _, issue := range unresolvedIssues {
+		out = append(out, "unresolved: "+issue)
+	}
+	if len(out) > 12 {
+		return out[:12]
+	}
+	return out
+}
+
+func collectValidatedConclusions(completedItems []string, highValueProofs []map[string]any) []string {
+	out := make([]string, 0, len(completedItems)+len(highValueProofs))
+	for _, item := range completedItems {
+		out = append(out, "completed: "+item)
+	}
+	for _, proof := range highValueProofs {
+		path, _ := proof["path"].(string)
+		lineWindow, _ := proof["line_window"].(string)
+		excerpt, _ := proof["excerpt"].(string)
+		if path == "" && excerpt == "" {
+			continue
+		}
+		location := path
+		if lineWindow != "" {
+			location += ":" + lineWindow
+		}
+		if location == "" {
+			out = append(out, "proof: "+truncateText(excerpt, 180))
+			continue
+		}
+		out = append(out, fmt.Sprintf("proof: %s %s", location, truncateText(excerpt, 180)))
+	}
+	return out
+}
+
+func compactionHandoffSummary(currentGoal, latestExternal, latestSteer map[string]any, completedItems, openItems, keyPaths, validatedConclusions []string) map[string]any {
+	return map[string]any{
+		"goal":                        currentGoal,
+		"done":                        completedItems,
+		"todo":                        openItems,
+		"key_paths":                   keyPaths,
+		"validated_conclusions":       validatedConclusions,
+		"latest_external_instruction": latestExternal,
+		"latest_steer_constraints":    latestSteer,
+		"continuation_guidance": []string{
+			"Continue from this summarized state instead of restarting completed work.",
+			"Apply the newest external instruction if it conflicts with older summarized requests.",
+			"Before finishing, verify the final result matches the newest external instruction.",
+		},
+	}
 }
 
 func collectKeyPaths(messages []session.Message, workdir string) []string {

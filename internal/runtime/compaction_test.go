@@ -112,6 +112,14 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 				"path": keyPath,
 			},
 		}}),
+		func() session.Message {
+			msg := session.NewMessage("user", "Newest steer: finish the compaction handoff without restarting.")
+			msg.Meta = map[string]any{
+				"source":    "steer",
+				"interrupt": true,
+			}
+			return msg
+		}(),
 		session.NewToolMessage([]session.ToolResult{{
 			Name:          "shell",
 			LLMOutput:     "Error: npm test failed",
@@ -178,7 +186,7 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 	foundLatestExternal := false
 	for _, msg := range view[1:] {
-		if msg.Role == "user" && msg.Text == "Continue the implementation." {
+		if msg.Role == "user" && msg.Text == "Newest steer: finish the compaction handoff without restarting." {
 			foundLatestExternal = true
 			break
 		}
@@ -209,6 +217,29 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 	if summary["current_in_progress_task"] == nil {
 		t.Fatalf("expected current_in_progress_task, got %#v", summary)
+	}
+	if summary["current_goal"] == nil {
+		t.Fatalf("expected current_goal handoff field, got %#v", summary)
+	}
+	latestExternal, _ := summary["latest_external_instruction"].(map[string]any)
+	if latestExternal["text"] != "Newest steer: finish the compaction handoff without restarting." || latestExternal["source"] != "steer" {
+		t.Fatalf("expected newest steer as latest external instruction, got %#v", summary["latest_external_instruction"])
+	}
+	latestSteer, _ := summary["latest_steer_constraints"].(map[string]any)
+	if latestSteer["text"] != "Newest steer: finish the compaction handoff without restarting." || latestSteer["interrupt"] != true {
+		t.Fatalf("expected latest steer constraints, got %#v", summary["latest_steer_constraints"])
+	}
+	openItems, _ := summary["open_items"].([]any)
+	if len(openItems) == 0 {
+		t.Fatalf("expected open_items, got %#v", summary["open_items"])
+	}
+	validated, _ := summary["validated_conclusions"].([]any)
+	if len(validated) == 0 {
+		t.Fatalf("expected validated_conclusions, got %#v", summary["validated_conclusions"])
+	}
+	handoff, _ := summary["handoff_summary"].(map[string]any)
+	if handoff["goal"] == nil || handoff["todo"] == nil || handoff["key_paths"] == nil || handoff["latest_external_instruction"] == nil {
+		t.Fatalf("expected structured handoff summary, got %#v", summary["handoff_summary"])
 	}
 	if summary["artifact_memory"] == nil {
 		t.Fatalf("expected artifact_memory, got %#v", summary)
@@ -889,7 +920,11 @@ func TestCompactionAddsReferencePrefix(t *testing.T) {
 	if !didCompact {
 		t.Fatal("expected compaction")
 	}
-	if !strings.Contains(view[0].Text, "not a new user instruction") || !strings.Contains(view[0].Text, "source of truth") {
+	if !strings.Contains(view[0].Text, "Another model produced this compacted summary") ||
+		!strings.Contains(view[0].Text, "Do not restart from scratch") ||
+		!strings.Contains(view[0].Text, "newest external instruction") ||
+		!strings.Contains(view[0].Text, "not a new user instruction") ||
+		!strings.Contains(view[0].Text, "source of truth") {
 		t.Fatalf("expected reference prefix, got %q", view[0].Text)
 	}
 	if !strings.Contains(view[0].Text, `"provider": "openai"`) || !strings.Contains(view[0].Text, `"model": "gpt-test"`) {
