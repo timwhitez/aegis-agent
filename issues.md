@@ -289,7 +289,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T13 [prompt · high value] Add "efficiency & noise" guidance for search/command tools
+### - [x] T13 [prompt · fixed] Add "efficiency & noise" guidance for search/command tools
 
 **Borrowed from**: Codex `# General` (system-prompt.md:131-138) — "prefer `rg`; parallelize file reads; **do not chain shell commands with separators like `echo "===";`, the output is noisy for the user**."
 
@@ -303,7 +303,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Sample whether the count of `reports/_*.txt` scratch files drops in later sessions; no unit test needed.
 
-**Status**: not done · commit: — · Priority **P2**
+**Status**: fixed · commit: b365638 · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
