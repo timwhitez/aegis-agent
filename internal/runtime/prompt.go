@@ -67,6 +67,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Do not read a source path from memory; locate it with `grep_files` or `glob` first, then read the owning file.\n")
 	builder.WriteString("- When several tool calls are independent in the same turn, issue them together; keep dependent operations sequential.\n")
 	builder.WriteString("- Do not guess required tool arguments, paths, or skill names. Inspect first, or ask if the value cannot be discovered safely.\n")
+	builder.WriteString("- Preserve user-specified delivery paths exactly, including leading dots or their absence; `context/...` and `.context/...` are different paths.\n")
 	builder.WriteString("- Create new files only for requested deliverables, tests, configs, or artifacts that are necessary to complete the task.\n")
 	builder.WriteString("- Use `load_skill` only with exact names listed under Available skills; never invent aliases or legacy skill names.\n")
 	builder.WriteString("- Before reporting validation success, inspect actual command results or validation artifacts; if validation failed, was partial, or was not run, say that plainly.\n")

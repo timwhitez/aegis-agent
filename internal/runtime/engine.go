@@ -932,16 +932,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, call.ID)
 							if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
 								lineCount := countTextLines(toolResult.LLMOutput)
+								displayArtifactPath := e.ephemeralArtifactDisplayPath(meta.ID, artifactPath)
 								toolResult.LLMOutput = fmt.Sprintf(
 									"[Full output saved to %s (%d lines). Copy this path verbatim; do not derive it from the current turn number. Read it with read_file(path=%q, offset=1, limit=120) and page via offset; or rerun the command redirecting to a workspace file under reports/. Do NOT keep re-issuing the same search.]",
-									artifactPath,
+									displayArtifactPath,
 									lineCount,
-									artifactPath,
+									displayArtifactPath,
 								)
 								if toolResult.Metadata == nil {
 									toolResult.Metadata = make(map[string]any)
 								}
-								toolResult.Metadata["ephemeral_artifact"] = artifactPath
+								toolResult.Metadata["ephemeral_artifact"] = displayArtifactPath
+								toolResult.Metadata["ephemeral_artifact_absolute"] = artifactPath
 							}
 						}
 					}
@@ -1166,6 +1168,14 @@ func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, p
 func (e *Engine) ephemeralArtifactPath(sessionID, toolName, callID string) string {
 	base := e.ephemeralArtifactRoot(sessionID)
 	return filepath.Join(base, fmt.Sprintf("%s-%s.txt", safeArtifactComponent(toolName), shortArtifactCallID(callID)))
+}
+
+func (e *Engine) ephemeralArtifactDisplayPath(sessionID, artifactPath string) string {
+	sessionDir := e.store.SessionDir(sessionID)
+	if rel, err := filepath.Rel(sessionDir, artifactPath); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(rel)
+	}
+	return artifactPath
 }
 
 func (e *Engine) ephemeralArtifactRoot(sessionID string) string {

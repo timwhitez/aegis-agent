@@ -50,6 +50,7 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"Do not read a source path from memory",
 		"issue them together; keep dependent operations sequential",
 		"Do not guess required tool arguments, paths, or skill names",
+		"`context/...` and `.context/...` are different paths",
 		"Use `load_skill` only with exact names listed under Available skills",
 		"## Skills",
 		"### Available skills",

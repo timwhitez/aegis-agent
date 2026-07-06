@@ -3685,6 +3685,7 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if artifactPath == "" {
 				continue
 			}
+			artifactAbs, _ := toolResult.Metadata["ephemeral_artifact_absolute"].(string)
 			found = true
 			if !strings.Contains(toolResult.LLMOutput, "Read it with read_file") {
 				t.Fatalf("expected explicit read_file guidance, got %q", toolResult.LLMOutput)
@@ -3698,9 +3699,12 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if strings.Contains(toolResult.LLMOutput, "not readable via read_file") || strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
 				t.Fatalf("expected old misleading guidance to be removed, got %q", toolResult.LLMOutput)
 			}
+			if filepath.IsAbs(artifactPath) || !strings.HasPrefix(filepath.ToSlash(artifactPath), "artifacts/tool-outputs/") {
+				t.Fatalf("expected model-facing ephemeral artifact path to be session-relative, got %s", artifactPath)
+			}
 			wantPrefix := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "tool-outputs")
-			if !strings.HasPrefix(artifactPath, wantPrefix+string(os.PathSeparator)) {
-				t.Fatalf("expected default ephemeral artifact under session root %s, got %s", wantPrefix, artifactPath)
+			if !strings.HasPrefix(artifactAbs, wantPrefix+string(os.PathSeparator)) {
+				t.Fatalf("expected default ephemeral artifact under session root %s, got %s", wantPrefix, artifactAbs)
 			}
 			if strings.Contains(filepath.Base(artifactPath), "turn") {
 				t.Fatalf("expected stable call-id artifact name without turn number, got %s", artifactPath)
@@ -3711,7 +3715,7 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if strings.Count(toolResult.LLMOutput, artifactPath) != 2 {
 				t.Fatalf("expected model-facing prompt path to match metadata path exactly, path=%s output=%q", artifactPath, toolResult.LLMOutput)
 			}
-			info, err := os.Stat(artifactPath)
+			info, err := os.Stat(artifactAbs)
 			if err != nil {
 				t.Fatalf("stat ephemeral artifact: %v", err)
 			}

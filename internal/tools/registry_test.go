@@ -3805,6 +3805,22 @@ func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
 	if !strings.Contains(result.DisplayOutput, "requested_limit=240 capped_to=120") {
 		t.Fatalf("expected capped read annotation, got %q", result.DisplayOutput)
 	}
+
+	relativeArtifactPath := filepath.ToSlash(filepath.Join("artifacts", "tool-outputs", filepath.Base(artifactPath)))
+	relativeResult, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(fmt.Sprintf(`{
+		"path":%q,
+		"offset":121,
+		"limit":20
+	}`, relativeArtifactPath)))
+	if err != nil {
+		t.Fatalf("read_file relative artifact: %v", err)
+	}
+	if relativeResult.IsError || relativeResult.Metadata["path_source"] != "session_ephemeral_artifact" {
+		t.Fatalf("expected relative session artifact read to succeed, got %#v", relativeResult)
+	}
+	if !strings.Contains(relativeResult.DisplayOutput, "artifact line 121") || strings.Contains(relativeResult.DisplayOutput, "artifact line 120") {
+		t.Fatalf("expected relative artifact read window, got %q", relativeResult.DisplayOutput)
+	}
 }
 
 func TestReadFileBlocksSymlinkedArtifactsAlias(t *testing.T) {

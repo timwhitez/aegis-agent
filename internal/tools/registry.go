@@ -1541,8 +1541,15 @@ func resolveSessionEphemeralArtifactFile(execCtx ExecContext, input string) (str
 		return "", "", false, nil
 	}
 	targetInput := strings.TrimSpace(input)
-	if targetInput == "" || !filepath.IsAbs(targetInput) {
+	if targetInput == "" {
 		return "", "", false, nil
+	}
+	if !filepath.IsAbs(targetInput) {
+		relativeTarget, ok := relativeSessionEphemeralArtifactTarget(root, targetInput)
+		if !ok {
+			return "", "", false, nil
+		}
+		targetInput = relativeTarget
 	}
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -1563,6 +1570,19 @@ func resolveSessionEphemeralArtifactFile(execCtx ExecContext, input string) (str
 		return "", "", false, nil
 	}
 	return targetResolved, rootResolved, true, nil
+}
+
+func relativeSessionEphemeralArtifactTarget(root, input string) (string, bool) {
+	clean := filepath.Clean(filepath.FromSlash(strings.TrimSpace(input)))
+	if filepath.IsAbs(clean) {
+		return clean, true
+	}
+	slash := filepath.ToSlash(clean)
+	if slash == "artifacts/tool-outputs" || strings.HasPrefix(slash, "artifacts/tool-outputs/") {
+		sessionDir := filepath.Dir(filepath.Dir(root))
+		return filepath.Join(sessionDir, filepath.FromSlash(slash)), true
+	}
+	return "", false
 }
 
 func resolveRegisteredSkillFile(catalog *skills.Catalog, input string) (string, string, string, error) {
