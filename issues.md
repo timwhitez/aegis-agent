@@ -208,7 +208,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T8 [LOW · prompt/reminder] finish's report-consistency guard could surface its info earlier
+### - [x] T8 [LOW · prompt/reminder · fixed] finish's report-consistency guard could surface its info earlier
 
 **Background**: `finish` errored 25% (3/12), all `Report-consistency guard: supporting docs changed after the final deliverable ...` (`internal/runtime/prompt.go` — see `reportConsistencyGuard` at `:580` and related at `:593`,`:629`). The guard itself works correctly: in `aebb86` the model recovered on its own via `read → edit_file → finish` with no infinite loop.
 
@@ -216,7 +216,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Unit test on the reminder trigger; sample whether first-attempt finish success rate improves.
 
-**Status**: not fixed · commit: — · Priority **P3**
+**Status**: fixed · commit: 45ff612 · verification: `go test ./internal/runtime -run 'TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport|TestNextHarnessReminderWarnsWhenSupportingDocsChangedAfterFinalReport' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s` · Priority **P3**
 
 ---
 
