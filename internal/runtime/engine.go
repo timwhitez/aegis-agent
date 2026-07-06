@@ -829,7 +829,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if toolErr != nil {
 					if errors.Is(toolErr, context.Canceled) {
 						interruptedErr := e.appendEvent(meta.ID, "tool.interrupted", "tool_execute", map[string]any{
-							"tool_name": call.Name,
+							"tool_name":                call.Name,
+							tools.MetadataFailureClass: tools.FailureClassInterrupted,
 						})
 						toolResult = session.ToolResult{
 							ToolCallID:    call.ID,
@@ -837,17 +838,27 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							LLMOutput:     "[Tool execution was interrupted]",
 							DisplayOutput: "[Tool execution was interrupted]",
 							IsError:       true,
+							Metadata: map[string]any{
+								tools.MetadataFailureClass: tools.FailureClassInterrupted,
+							},
 						}
+						afterErr := e.appendEvent(meta.ID, "tool.after", "tool_execute", toolAfterEventData(call.ID, call.Name, toolResult))
 						toolResults = append(toolResults, toolResult)
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool execution was interrupted before this call ran")...)
 						if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
 							if interruptedErr != nil {
 								return RunResult{}, fmt.Errorf("record interrupted tool result after tool.interrupted event failure for %s (%v): %w", call.Name, interruptedErr, err)
 							}
+							if afterErr != nil {
+								return RunResult{}, fmt.Errorf("record interrupted tool result after tool.after event failure for %s (%v): %w", call.Name, afterErr, err)
+							}
 							return RunResult{}, err
 						}
 						if interruptedErr != nil {
 							return RunResult{}, fmt.Errorf("record tool.interrupted event for %s: %w", call.Name, interruptedErr)
+						}
+						if afterErr != nil {
+							return RunResult{}, fmt.Errorf("record interrupted tool.after event for %s: %w", call.Name, afterErr)
 						}
 						if e.control.consumePause() {
 							return e.pause(ctx, meta, state, e.control.takePauseReason(), hookManager)
@@ -875,12 +886,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						}
 					}
 				}
+				failureClass := classifyToolFailure(call.Name, toolResult, toolErr)
+				if failureClass != "" {
+					setToolFailureClass(&toolResult, failureClass)
+				}
 				afterPayload := map[string]any{
 					"session_id":     meta.ID,
 					"call_id":        call.ID,
 					"tool_name":      call.Name,
 					"llm_output":     toolResult.LLMOutput,
 					"display_output": toolResult.DisplayOutput,
+				}
+				if failureClass != "" {
+					afterPayload[tools.MetadataFailureClass] = failureClass
 				}
 				updatedPayload, err := hookManager.Trigger(ctx, "tool.after", afterPayload)
 				if err != nil {
@@ -931,16 +949,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 				toolResults = append(toolResults, toolResult)
 				e.recordFileChanges(meta, call.Name, call.ID, toolArgs, toolResult)
-				eventData := map[string]any{
-					"call_id":        call.ID,
-					"tool_name":      call.Name,
-					"display_output": toolResult.DisplayOutput,
-					"is_error":       toolResult.IsError,
-				}
-				if len(toolResult.Metadata) > 0 {
-					eventData["metadata"] = toolResult.Metadata
-				}
-				if err := e.appendEvent(meta.ID, "tool.after", "tool_execute", eventData); err != nil {
+				if err := e.appendEvent(meta.ID, "tool.after", "tool_execute", toolAfterEventData(call.ID, call.Name, toolResult)); err != nil {
 					if callIndex+1 < len(result.ToolCalls) {
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after event failed before this call ran: "+err.Error())...)
 					}
@@ -2657,6 +2666,88 @@ func syntheticToolResults(calls []provider.ToolCall, output string) []session.To
 		})
 	}
 	return results
+}
+
+func classifyToolFailure(toolName string, result session.ToolResult, err error) string {
+	if !result.IsError && err == nil {
+		return ""
+	}
+	if class := toolFailureClass(result); class != "" {
+		return class
+	}
+	if errors.Is(err, context.Canceled) {
+		return tools.FailureClassInterrupted
+	}
+	if toolName == "shell" {
+		if exitCode, ok := toolMetadataInt(result.Metadata, "exit_code"); ok && exitCode != 0 {
+			return tools.FailureClassCommandNonzero
+		}
+	}
+	text := strings.ToLower(result.LLMOutput + "\n" + result.DisplayOutput)
+	switch {
+	case strings.Contains(text, "unexpected field") || strings.Contains(text, "tool input must be"):
+		return tools.FailureClassSchemaReject
+	case strings.Contains(text, "does not exist or is not accessible") || strings.Contains(text, "no such file or directory"):
+		return tools.FailureClassNotFound
+	default:
+		return tools.FailureClassHarnessError
+	}
+}
+
+func setToolFailureClass(result *session.ToolResult, class string) {
+	if result == nil || strings.TrimSpace(class) == "" {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata[tools.MetadataFailureClass] = class
+}
+
+func toolFailureClass(result session.ToolResult) string {
+	if result.Metadata == nil {
+		return ""
+	}
+	class, _ := result.Metadata[tools.MetadataFailureClass].(string)
+	return strings.TrimSpace(class)
+}
+
+func toolMetadataInt(metadata map[string]any, key string) (int, bool) {
+	if metadata == nil {
+		return 0, false
+	}
+	switch value := metadata[key].(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	case json.Number:
+		n, err := value.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func toolAfterEventData(callID, toolName string, result session.ToolResult) map[string]any {
+	eventData := map[string]any{
+		"call_id":        callID,
+		"tool_name":      toolName,
+		"display_output": result.DisplayOutput,
+		"is_error":       result.IsError,
+	}
+	if class := toolFailureClass(result); class != "" {
+		eventData[tools.MetadataFailureClass] = class
+	}
+	if len(result.Metadata) > 0 {
+		eventData["metadata"] = result.Metadata
+	}
+	return eventData
 }
 
 func providerTurnMessageMeta(result provider.TurnResult) map[string]any {

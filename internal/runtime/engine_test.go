@@ -700,6 +700,99 @@ func TestEngineToolEventsIncludeCallID(t *testing.T) {
 	}
 }
 
+func TestEngineToolAfterFailureClassifiesErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+		args     json.RawMessage
+		register func(*tools.Registry)
+		want     string
+	}{
+		{
+			name:     "schema_reject",
+			toolName: "shell",
+			args:     json.RawMessage(`{"command":"echo ok","compacted_for_context":true}`),
+			want:     tools.FailureClassSchemaReject,
+		},
+		{
+			name:     "command_nonzero_exit",
+			toolName: "shell",
+			args:     json.RawMessage(`{"command":"exit 7"}`),
+			want:     tools.FailureClassCommandNonzero,
+		},
+		{
+			name:     "not_found",
+			toolName: "read_file",
+			args:     json.RawMessage(`{"path":"missing.txt"}`),
+			want:     tools.FailureClassNotFound,
+		},
+		{
+			name:     "harness_error",
+			toolName: "broken_tool",
+			args:     json.RawMessage(`{}`),
+			register: func(registry *tools.Registry) {
+				registry.Register(tools.Definition{
+					Name:        "broken_tool",
+					Description: "returns an internal error",
+					InputSchema: map[string]any{"type": "object"},
+					Execute: func(context.Context, tools.ExecContext, json.RawMessage) (session.ToolResult, error) {
+						return session.ToolResult{}, errors.New("internal write failed")
+					},
+				})
+			},
+			want: tools.FailureClassHarnessError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+			if tt.register != nil {
+				tt.register(registry)
+			}
+			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run tool")); err != nil {
+				t.Fatalf("append: %v", err)
+			}
+			fake := provider.NewFake(
+				func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+					return provider.TurnResult{
+						ToolCalls:  []provider.ToolCall{{ID: "call_problem", Name: tt.toolName, Arguments: tt.args}},
+						StopReason: "tool_use",
+					}, nil
+				},
+				func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+					return provider.TurnResult{
+						ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
+						StopReason: "tool_use",
+					}, nil
+				},
+			)
+			result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if result.Status != session.StatusCompleted {
+				t.Fatalf("expected completed, got %s", result.Status)
+			}
+			events, err := loadEvents(engine.store, meta.ID)
+			if err != nil {
+				t.Fatalf("events: %v", err)
+			}
+			after, ok := findToolAfterEvent(events, "call_problem")
+			if !ok {
+				t.Fatalf("expected tool.after for call_problem, got %#v", events)
+			}
+			if got := after.Data[tools.MetadataFailureClass]; got != tt.want {
+				t.Fatalf("expected failure_class %q, got %#v in %#v", tt.want, got, after.Data)
+			}
+			metadata, _ := after.Data["metadata"].(map[string]any)
+			if got := metadata[tools.MetadataFailureClass]; got != tt.want {
+				t.Fatalf("expected metadata failure_class %q, got %#v in %#v", tt.want, got, after.Data)
+			}
+		})
+	}
+}
+
 func TestEngineProviderParseErrorFailsBeforeAssistantPersist(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
@@ -5088,6 +5181,17 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	if !hasEventType(events, "tool.before") || !hasEventType(events, "tool.interrupted") {
 		t.Fatalf("expected tool lifecycle events, got %#v", events)
 	}
+	after, ok := findToolAfterEvent(events, "call_1")
+	if !ok {
+		t.Fatalf("expected interrupted tool.after event, got %#v", events)
+	}
+	if got := after.Data[tools.MetadataFailureClass]; got != tools.FailureClassInterrupted {
+		t.Fatalf("expected interrupted failure_class, got %#v in %#v", got, after.Data)
+	}
+	metadata, _ := after.Data["metadata"].(map[string]any)
+	if got := metadata[tools.MetadataFailureClass]; got != tools.FailureClassInterrupted {
+		t.Fatalf("expected interrupted metadata failure_class, got %#v in %#v", got, after.Data)
+	}
 }
 
 func TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult(t *testing.T) {
@@ -5868,6 +5972,15 @@ func hasEventType(events []events.Event, eventType string) bool {
 func findEventByType(evts []events.Event, eventType string) (events.Event, bool) {
 	for _, evt := range evts {
 		if evt.Type == eventType {
+			return evt, true
+		}
+	}
+	return events.Event{}, false
+}
+
+func findToolAfterEvent(evts []events.Event, callID string) (events.Event, bool) {
+	for _, evt := range evts {
+		if evt.Type == "tool.after" && evt.Data["call_id"] == callID {
 			return evt, true
 		}
 	}

@@ -38,6 +38,15 @@ type Definition struct {
 	EphemeralWindow int
 }
 
+const (
+	MetadataFailureClass       = "failure_class"
+	FailureClassHarnessError   = "harness_error"
+	FailureClassCommandNonzero = "command_nonzero_exit"
+	FailureClassInterrupted    = "interrupted"
+	FailureClassSchemaReject   = "schema_reject"
+	FailureClassNotFound       = "not_found"
+)
+
 type ExecContext struct {
 	SessionID             string
 	ToolCallID            string
@@ -245,7 +254,9 @@ func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext
 		return session.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
 	}
 	if err := validateToolArgs(def, args); err != nil {
-		return errorResult(name, err), nil
+		result := errorResult(name, err)
+		setToolResultFailureClass(&result, FailureClassSchemaReject)
+		return result, nil
 	}
 	if execCtx.Config == nil {
 		execCtx.Config = r.cfg
@@ -4096,12 +4107,44 @@ func relativeOrAbsolute(base, path string) string {
 }
 
 func errorResult(tool string, err error) session.ToolResult {
-	return session.ToolResult{
+	result := session.ToolResult{
 		Name:          tool,
 		LLMOutput:     "Error: " + err.Error(),
 		DisplayOutput: "Error: " + err.Error(),
 		IsError:       true,
 	}
+	if class := classifyToolError(err); class != "" {
+		setToolResultFailureClass(&result, class)
+	}
+	return result
+}
+
+func classifyToolError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return FailureClassNotFound
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "does not exist or is not accessible"):
+		return FailureClassNotFound
+	case strings.Contains(message, "no such file or directory"):
+		return FailureClassNotFound
+	default:
+		return ""
+	}
+}
+
+func setToolResultFailureClass(result *session.ToolResult, class string) {
+	if result == nil || strings.TrimSpace(class) == "" {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata[MetadataFailureClass] = class
 }
 
 func pendingPlanInputErrorResult(err error, request session.PlanModeInputRequest, planMode session.PlanModeState) session.ToolResult {
