@@ -11,7 +11,20 @@ import (
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/session"
 	"go-cli-agent/internal/skills"
+	"go-cli-agent/internal/tools"
 )
+
+func readFileNotFoundResultForPromptTest(path string) session.ToolResult {
+	return session.ToolResult{
+		Name:          "read_file",
+		DisplayOutput: "Error: open " + path + ": no such file or directory",
+		IsError:       true,
+		Metadata: map[string]any{
+			"path":                     path,
+			tools.MetadataFailureClass: tools.FailureClassNotFound,
+		},
+	}
+}
 
 func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 	prompt := buildSystemPrompt(
@@ -31,6 +44,7 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"Tool names are capabilities, not workspace files or shell binaries.",
 		"Workspace boundary is the current workdir.",
 		"Prefer dedicated tools for their purpose",
+		"Do not read a source path from memory",
 		"issue them together; keep dependent operations sequential",
 		"Do not guess required tool arguments, paths, or skill names",
 		"Use `load_skill` only with exact names listed under Available skills",
@@ -797,6 +811,25 @@ func TestNextHarnessReminderSkipsConditionalSteerCompletionReminder(t *testing.T
 	})
 	if reminder.Kind == "steer_completion" || reminder.Kind == "steer_completion_escalated" {
 		t.Fatalf("expected conditional repair steer not to trigger immediate completion reminder, got %#v", reminder)
+	}
+}
+
+func TestNextHarnessReminderNudgesAfterRepeatedReadFileNotFound(t *testing.T) {
+	reminder := nextHarnessReminder("/tmp/work", session.ModeExec, []session.Message{
+		session.NewMessage("user", "Audit the Python service."),
+		session.NewToolMessage([]session.ToolResult{
+			readFileNotFoundResultForPromptTest("/tmp/work/vllm/missing_one.py"),
+			readFileNotFoundResultForPromptTest("/tmp/work/vllm/missing_two.py"),
+			readFileNotFoundResultForPromptTest("/tmp/work/vllm/missing_three.py"),
+		}),
+	})
+	if reminder.Kind != "path_discovery_needed" {
+		t.Fatalf("expected path_discovery_needed reminder, got %#v", reminder)
+	}
+	for _, want := range []string{"3 consecutive read_file not-found", "vllm", "grep_files or glob", "do not read source paths from memory"} {
+		if !strings.Contains(reminder.Text, want) {
+			t.Fatalf("expected path discovery reminder to contain %q, got %q", want, reminder.Text)
+		}
 	}
 }
 

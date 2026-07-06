@@ -62,6 +62,7 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Prefer dedicated tools for their purpose: `grep_files` or `grep` for discovery, `read_file` for known files, `write_file` or `edit_file` for file changes, and `shell` for build, test, package, git, or runtime commands.\n")
 	builder.WriteString("- Use the `shell` tool's `workdir` argument instead of embedding `cd` in commands whenever possible.\n")
 	builder.WriteString("- For unfamiliar code, use scoped discovery and read the owning files, contracts, and tests needed for the task; multi-file analysis often requires multiple targeted reads.\n")
+	builder.WriteString("- Do not read a source path from memory; locate it with `grep_files` or `glob` first, then read the owning file.\n")
 	builder.WriteString("- When several tool calls are independent in the same turn, issue them together; keep dependent operations sequential.\n")
 	builder.WriteString("- Do not guess required tool arguments, paths, or skill names. Inspect first, or ask if the value cannot be discovered safely.\n")
 	builder.WriteString("- Create new files only for requested deliverables, tests, configs, or artifacts that are necessary to complete the task.\n")
@@ -1170,6 +1171,9 @@ func nextHarnessReminder(workdir, mode string, messages []session.Message) harne
 	if reminder := artifactCompletionReminder(workdir, mode, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
+	if reminder := pathDiscoveryReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
+		return reminder
+	}
 	if reminder := largeProjectCoordinationReminder(workdir, messages); reminder.Text != "" && !shouldSuppressHarnessReminder(messages, reminder) {
 		return reminder
 	}
@@ -1209,6 +1213,76 @@ func artifactCompletionReminder(workdir, mode string, messages []session.Message
 		Kind: "artifact_written",
 		Text: "Harness reminder: " + note,
 	}
+}
+
+func pathDiscoveryReminder(workdir string, messages []session.Message) harnessReminder {
+	idx := latestExternalInstructionIndex(messages)
+	if idx < 0 {
+		return harnessReminder{}
+	}
+	prefix, count := consecutiveReadFileNotFoundPrefix(workdir, messages[idx+1:])
+	if count < 3 {
+		return harnessReminder{}
+	}
+	return harnessReminder{
+		Kind: "path_discovery_needed",
+		Text: fmt.Sprintf("Harness reminder: %d consecutive read_file not-found errors under %s suggest guessed source paths. Locate the path with grep_files or glob before reading; do not read source paths from memory.", count, prefix),
+	}
+}
+
+func consecutiveReadFileNotFoundPrefix(workdir string, messages []session.Message) (string, int) {
+	currentPrefix := ""
+	currentCount := 0
+	for _, msg := range messages {
+		if msg.Role != "tool" {
+			continue
+		}
+		for _, result := range msg.ToolResults {
+			if result.Name == "read_file" && isNotFoundResult(result) {
+				prefix := readFileNotFoundPrefix(workdir, result)
+				if prefix == "" {
+					prefix = "(unknown path)"
+				}
+				if prefix == currentPrefix {
+					currentCount++
+				} else {
+					currentPrefix = prefix
+					currentCount = 1
+				}
+				continue
+			}
+			if currentCount > 0 {
+				currentPrefix = ""
+				currentCount = 0
+			}
+		}
+	}
+	return currentPrefix, currentCount
+}
+
+func readFileNotFoundPrefix(workdir string, result session.ToolResult) string {
+	path, _ := result.Metadata["path"].(string)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		path = displayPromptPath(workdir, path)
+	}
+	path = filepath.ToSlash(filepath.Clean(path))
+	dir := filepath.ToSlash(filepath.Dir(path))
+	if dir == "." || dir == "/" {
+		return path
+	}
+	return dir
+}
+
+func isNotFoundResult(result session.ToolResult) bool {
+	if class, _ := result.Metadata[tools.MetadataFailureClass].(string); class == tools.FailureClassNotFound {
+		return true
+	}
+	text := strings.ToLower(result.DisplayOutput + "\n" + result.LLMOutput)
+	return strings.Contains(text, "does not exist or is not accessible") || strings.Contains(text, "no such file or directory")
 }
 
 func largeProjectCoordinationReminder(workdir string, messages []session.Message) harnessReminder {

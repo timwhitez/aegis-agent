@@ -3305,6 +3305,7 @@ func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
 		"read_file":   {"known text file", "Registered skill bundle", "capped at 120 lines", "use grep_files or grep first"},
 		"write_file":  {"Create or overwrite", "prefer edit_file"},
 		"edit_file":   {"Replace exact text", "after reading"},
+		"grep":        {"matching lines", "single file or directory", "use include"},
 		"grep_files":  {"default discovery step", "return only files"},
 		"finish":      {"required artifacts", "unrun/failed validation"},
 		"todo_write":  {"progress ledger", "preserved", "does not perform or verify"},
@@ -3896,6 +3897,49 @@ func TestGrepToolsReportMissingExplicitPath(t *testing.T) {
 		if strings.Contains(result.DisplayOutput, "(no matches)") {
 			t.Fatalf("expected %s missing path not to be reported as no matches, got %q", name, result.DisplayOutput)
 		}
+	}
+}
+
+func TestReadFileNotFoundSuggestsDiscoveryFirst(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "read_file", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{
+		"path":"vllm/vllm/lora/models.py"
+	}`))
+	if err != nil {
+		t.Fatalf("read_file: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected read_file not-found error, got %#v", result)
+	}
+	for _, want := range []string{"Locate the path with grep_files or glob before reading", "do not read source paths from memory"} {
+		if !strings.Contains(result.DisplayOutput, want) {
+			t.Fatalf("expected read_file not-found hint %q, got %q", want, result.DisplayOutput)
+		}
+	}
+	if got := result.Metadata[MetadataFailureClass]; got != FailureClassNotFound {
+		t.Fatalf("expected not_found failure class, got %#v", result.Metadata)
+	}
+	if got := result.Metadata["path"]; got != "vllm/vllm/lora/models.py" {
+		t.Fatalf("expected missing path metadata, got %#v", result.Metadata)
 	}
 }
 

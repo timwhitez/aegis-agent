@@ -862,14 +862,14 @@ func defReadFile() Definition {
 			}
 			path, displayBase, source, skillName, err := resolveReadFilePath(execCtx, input.Path)
 			if err != nil {
-				return errorResult("read_file", err), nil
+				return readFileErrorResult(input.Path, err), nil
 			}
 			if source == "workspace" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
-				return errorResult("read_file", err), nil
+				return readFileErrorResult(input.Path, err), nil
 			}
 			lines := strings.Split(string(data), "\n")
 			offset := max(input.Offset, 1) - 1
@@ -1157,7 +1157,7 @@ func validateGlobMatchedPath(execCtx ExecContext, root resolvedSearchRoot, path,
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
+		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1167,7 +1167,7 @@ func defGrep() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Omit to search the workspace.",
+					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -1278,7 +1278,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
+		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1290,7 +1290,7 @@ func defGrepFiles() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Omit to search the workspace.",
+					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -4137,6 +4137,24 @@ func errorResult(tool string, err error) session.ToolResult {
 		setToolResultFailureClass(&result, class)
 	}
 	return result
+}
+
+func readFileErrorResult(inputPath string, err error) session.ToolResult {
+	result := errorResult("read_file", withReadFileDiscoveryHint(err))
+	if strings.TrimSpace(inputPath) != "" {
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]any)
+		}
+		result.Metadata["path"] = inputPath
+	}
+	return result
+}
+
+func withReadFileDiscoveryHint(err error) error {
+	if classifyToolError(err) != FailureClassNotFound {
+		return err
+	}
+	return fmt.Errorf("%w. Locate the path with grep_files or glob before reading; do not read source paths from memory", err)
 }
 
 func classifyToolError(err error) string {
