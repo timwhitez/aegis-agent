@@ -93,7 +93,7 @@ The shell tool's `exit_code != 0 → IsError=true` (`registry.go:769-775`) is **
 
 ---
 
-### - [ ] T2 [already fixed · add regression test] glob's `limit` field was once absent from the schema, causing a 27.8% error rate
+### - [x] T2 [fixed · regression covered] glob's `limit` field was once absent from the schema, causing a 27.8% error rate
 
 **Background**: This is the canonical failure where a tool's description promises/implies a capability that the schema does not expose, so the model keeps hitting a wall.
 
@@ -103,7 +103,7 @@ The shell tool's `exit_code != 0 → IsError=true` (`registry.go:769-775`) is **
 
 **Remaining TODO (what this item is about)**: Add a unit test that walks every `Definition` and asserts "every tunable parameter name mentioned in the description exists in the InputSchema," to prevent the whole class at the source. Merge into the same consistency test as **T3 / T9**.
 
-**Status**: code fixed, regression test pending · commit: — · Priority **P2**
+**Status**: fixed · commit: eddeb21 · verification: `go test ./internal/tools -run 'TestToolDescriptionsMentionOnlyDeclaredParameters|TestDiscoveryToolParameterSetsStayAligned|TestBuiltinToolExecutionRejectsHarnessReplayMarkersWithTargetedHint|TestBuiltinToolExecutionRejectsUnknownTopLevelField|TestGlobAcceptsPathAndScopesResults|TestGlobHonorsLimitAndReportsTruncation' -count=1`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
@@ -220,7 +220,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T9 [MEDIUM · code · engineering quality] Tier the strict-schema rejection message + add a tool-parameter consistency test
+### - [x] T9 [MEDIUM · code · fixed] Tier the strict-schema rejection message + add a tool-parameter consistency test
 
 **Background**: `internal/tools/registry.go:301` returns the same `unexpected field %q` for every unknown field. Given T1/T2/T3, this validation is double-edged: it blocks dirty args, but for "model misled by context" or "description/schema out of sync" it gives an undifferentiated message the model struggles to self-correct from.
 
@@ -230,7 +230,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: New test passes; deliberately removing one schema field while leaving its description mention should make the test fail.
 
-**Status**: not fixed · commit: — · Priority **P2**
+**Status**: fixed · commit: eddeb21 · verification: `go test ./internal/tools -run 'TestToolDescriptionsMentionOnlyDeclaredParameters|TestDiscoveryToolParameterSetsStayAligned|TestBuiltinToolExecutionRejectsHarnessReplayMarkersWithTargetedHint|TestBuiltinToolExecutionRejectsUnknownTopLevelField|TestGlobAcceptsPathAndScopesResults|TestGlobHonorsLimitAndReportsTruncation' -count=1`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
