@@ -44,6 +44,38 @@ func TestCompactTextForContextKeepsUTF8Boundaries(t *testing.T) {
 	}
 }
 
+func TestCompactRawJSONForContextPreservesClosedToolArgumentShape(t *testing.T) {
+	raw := json.RawMessage(`{"path":"reports/final.md","content":"` + strings.Repeat("A", 1800) + `MIDDLE` + strings.Repeat("Z", 1800) + `","append":false}`)
+	compacted := compactRawJSONForContext(raw)
+	if string(compacted) == string(raw) {
+		t.Fatal("expected long string argument to be compacted")
+	}
+	for _, reserved := range []string{"compacted_for_context", "original_chars", "head_tail"} {
+		if strings.Contains(string(compacted), reserved) {
+			t.Fatalf("compacted tool arguments must not expose reserved replay marker %q: %s", reserved, string(compacted))
+		}
+	}
+	var decoded struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Append  bool   `json:"append"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(compacted)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("expected compacted arguments to keep the closed tool schema shape: %v\n%s", err, string(compacted))
+	}
+	if decoded.Path != "reports/final.md" || decoded.Append {
+		t.Fatalf("expected non-compacted fields to survive, got %#v", decoded)
+	}
+	if !strings.Contains(decoded.Content, "[Compacted previous_tool_arguments") || !strings.Contains(decoded.Content, "suffix:") {
+		t.Fatalf("expected string value to carry compaction marker, got %q", decoded.Content)
+	}
+	if strings.Contains(decoded.Content, "MIDDLE") {
+		t.Fatalf("expected middle of compacted argument string to be omitted, got %q", decoded.Content)
+	}
+}
+
 func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
@@ -1078,8 +1110,15 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 	if didCompact {
 		t.Fatal("expected micro compaction only")
 	}
-	if !strings.Contains(string(view[1].ToolCalls[0].Arguments), "compacted_for_context") || !strings.Contains(string(view[1].ToolCalls[0].Arguments), "TAIL") {
+	gotArgs := string(view[1].ToolCalls[0].Arguments)
+	if strings.Contains(gotArgs, "compacted_for_context") || strings.Contains(gotArgs, "original_chars") || strings.Contains(gotArgs, "head_tail") {
+		t.Fatalf("compacted old tool arguments should keep schema shape without reserved marker fields, got %s", gotArgs)
+	}
+	if !strings.Contains(gotArgs, `"command"`) || !strings.Contains(gotArgs, "suffix:") {
 		t.Fatalf("expected compacted old tool arguments, got %s", string(view[1].ToolCalls[0].Arguments))
+	}
+	if strings.Contains(gotArgs, "MIDDLE") {
+		t.Fatalf("expected middle of old tool arguments to be omitted, got %s", gotArgs)
 	}
 	got := view[2].ToolResults[0].LLMOutput
 	if !strings.Contains(got, "[Compacted previous_tool_result") || !strings.Contains(got, "HEAD:") || !strings.Contains(got, "TAIL:") {
@@ -1186,7 +1225,10 @@ func TestCompactionTruncatesProviderBlockToolArguments(t *testing.T) {
 				t.Fatalf("expected retained provider block assistant, got %#v", view)
 			}
 			got := string(tc.blockValue(view[1].ProviderContentBlocks[0]))
-			if !strings.Contains(got, "compacted_for_context") || !strings.Contains(got, "TAIL") {
+			if strings.Contains(got, "compacted_for_context") || strings.Contains(got, "original_chars") || strings.Contains(got, "head_tail") {
+				t.Fatalf("compacted old provider block arguments should keep schema shape without reserved marker fields, got %s", got)
+			}
+			if !strings.Contains(got, `"command"`) || !strings.Contains(got, "suffix:") {
 				t.Fatalf("expected compacted old provider block arguments, got %s", got)
 			}
 			if strings.Contains(got, "MIDDLE") {

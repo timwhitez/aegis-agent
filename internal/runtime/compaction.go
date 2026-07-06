@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -704,21 +705,73 @@ func compactRawJSONForContext(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw
 	}
-	text := string(raw)
-	compacted := compactTextForContext(text, "previous_tool_arguments")
-	if compacted == text {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
 		return raw
 	}
-	payload := map[string]any{
-		"compacted_for_context": true,
-		"original_chars":        len(text),
-		"head_tail":             compacted,
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return raw
 	}
-	data, err := json.Marshal(payload)
+	if !compactJSONStringsForContext(&value, "previous_tool_arguments") {
+		return raw
+	}
+	data, err := json.Marshal(value)
 	if err != nil {
 		return raw
 	}
 	return json.RawMessage(data)
+}
+
+func compactJSONStringsForContext(value *any, reason string) bool {
+	switch typed := (*value).(type) {
+	case string:
+		compacted := compactJSONTextValueForContext(typed, reason)
+		if compacted == typed {
+			return false
+		}
+		*value = compacted
+		return true
+	case []any:
+		changed := false
+		for i := range typed {
+			item := typed[i]
+			if compactJSONStringsForContext(&item, reason) {
+				typed[i] = item
+				changed = true
+			}
+		}
+		return changed
+	case map[string]any:
+		changed := false
+		for key := range typed {
+			item := typed[key]
+			if compactJSONStringsForContext(&item, reason) {
+				typed[key] = item
+				changed = true
+			}
+		}
+		return changed
+	default:
+		return false
+	}
+}
+
+func compactJSONTextValueForContext(text, reason string) string {
+	const headLimit = 700
+	const tailLimit = 500
+	if len(text) <= headLimit+tailLimit+200 {
+		return text
+	}
+	head := prefixAtRuneBoundary(text, headLimit)
+	tail := suffixAtRuneBoundary(text, tailLimit)
+	omitted := len(text) - len(head) - len(tail)
+	if omitted < 0 {
+		omitted = 0
+	}
+	return fmt.Sprintf("[Compacted %s: omitted %d chars between prefix and suffix]\nprefix:\n%s\nsuffix:\n%s", reason, omitted, head, tail)
 }
 
 func compactTextForContext(text, reason string) string {
