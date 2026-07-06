@@ -132,7 +132,7 @@ The shell tool's `exit_code != 0 → IsError=true` (`registry.go:769-775`) is **
 
 ---
 
-### - [ ] T4 [MEDIUM · observability · meta-improvement] Add `failure_class` to tool.after to separate harness defects / business failures / interrupts / schema rejections
+### - [x] T4 [MEDIUM · observability · fixed] Add `failure_class` to tool.after to separate harness defects / business failures / interrupts / schema rejections
 
 **Background**: Today `tool.after.is_error` is a single boolean that lumps together "command business failure," "user interrupt," "harness bug," and "schema rejection" (see "Misread clarification"). This is why numbers like shell 22% get misread, and **every automated analysis round re-steps on the same rake**. Fixing this makes all future analysis sharper — it is a meta-improvement, not a one-off.
 
@@ -150,7 +150,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Unit tests assert each branch stamps the correct `failure_class`. Re-run the analysis script over the remote historical events; shell's "true harness errors" should drop to 2 (the compacted pollution from T1).
 
-**Status**: not fixed · commit: — · Priority **P1** (once done, the statistical judgments in T5/T6/T8 all benefit)
+**Status**: fixed · commit: 4caab5b · verification: `go test ./internal/runtime -run 'TestEngineToolAfterFailureClassifiesErrors|TestEngineWritesInterruptedToolResultOnPause|TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...`; remote historical replay over 9 sessions found shell errors split as `command_nonzero_exit=11`, `interrupted=3`, `schema_reject=3` (the issue text predicted 2 schema/harness-actionable shell errors, but the historical events contain 3 compacted-argument schema rejects) · Priority **P1**
 
 ---
 
