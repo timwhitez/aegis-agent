@@ -175,7 +175,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T6 [LOW · environment · doctor/docs] Missing python deps (torch / pytest) cause the model to misjudge "validation failed"
+### - [x] T6 [LOW · environment · doctor/docs · fixed] Missing python deps (torch / pytest) cause the model to misjudge "validation failed"
 
 **Background**: On audit tasks the model tries to actually run the target project/tests, but the deployment environment lacks the dependencies. This is an environment issue, not a harness bug, but it leads the model to a false "validation failed" conclusion.
 
@@ -185,7 +185,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: `doctor` output includes an interpreter/dependency probe section.
 
-**Status**: not fixed · commit: — · Priority **P3**
+**Status**: fixed · commit: 34511a0 · verification: `go test ./internal/app -run 'TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing|TestDoctorRuntimeEnvironmentProbeReportsPythonModules' -count=1`; `go test ./internal/app -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
