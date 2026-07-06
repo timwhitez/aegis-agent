@@ -262,7 +262,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T12 [engineering discipline · deploy] The deployed binary lags behind the fix commits
+### - [x] T12 [engineering discipline · deploy · fixed] The deployed binary lags behind the fix commits
 
 **Background**: The remote binary was built 07-02 17:31, while the glob `limit` fix (T2) landed 07-01 22:15 — yet multiple 07-01/07-02 sessions still reproduced the issue, proving the **deploy did not follow the commit**. CLAUDE.md already requires "a real commit after verification passes"; this adds the missing "redeploy" step.
 
@@ -270,7 +270,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Remote `go-cli-agent version` / binary build timestamp is newer than the latest fix commit.
 
-**Status**: not fixed · commit: — · Priority **P2**
+**Status**: fixed · deployed build: a37fd86 · verification: `GOOS=linux GOARCH=amd64 GO_CLI_AGENT_BUILD_OUT=/tmp/go-cli-agent-a37fd86 ./build.sh`; local/remote sha256 `6775e344cdf635f2c12376b822f8edec2c6b96c310fc225da3247c3f98fdaf7b`; remote binary mtime `2026-07-06 19:13:30 +0800` (newer than latest fix commit); restarted exact `:3940` listener from pid `1443470` to pid `3612973`; smoke passed for `GET /api/meta`, `GET /api/overview`, and `GET /` · Priority **P2**
 
 ---
 
