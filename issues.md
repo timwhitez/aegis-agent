@@ -366,7 +366,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 ---
 
-### - [ ] T18 [prompt · low] Final-answer "conciseness + file:line clickable link" formatting rules
+### - [x] T18 [prompt · low · fixed] Final-answer "conciseness + file:line clickable link" formatting rules
 
 **Borrowed from**: Codex `## Formatting rules` / `## Final answer instructions` (system-prompt.md:356-431) — conciseness first, lists only for genuinely list-shaped content, reference real files with clickable `[label](/abs/path:line)` links, do not exceed 50-70 lines, no "Sure!"-style openers.
 
@@ -376,7 +376,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Sample final-answer length and whether clickable references appear.
 
-**Status**: not done · commit: — · Priority **P3**
+**Status**: fixed · commit: e07c293 · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
