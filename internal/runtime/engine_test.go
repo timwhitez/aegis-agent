@@ -3596,6 +3596,9 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if !strings.Contains(toolResult.LLMOutput, "Read it with read_file") {
 				t.Fatalf("expected explicit read_file guidance, got %q", toolResult.LLMOutput)
 			}
+			if !strings.Contains(toolResult.LLMOutput, "Copy this path verbatim; do not derive it from the current turn number") {
+				t.Fatalf("expected stable path copy guidance, got %q", toolResult.LLMOutput)
+			}
 			if !strings.Contains(toolResult.LLMOutput, "redirecting to a workspace file under reports/") {
 				t.Fatalf("expected workspace redirect guidance, got %q", toolResult.LLMOutput)
 			}
@@ -3605,6 +3608,15 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			wantPrefix := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "tool-outputs")
 			if !strings.HasPrefix(artifactPath, wantPrefix+string(os.PathSeparator)) {
 				t.Fatalf("expected default ephemeral artifact under session root %s, got %s", wantPrefix, artifactPath)
+			}
+			if strings.Contains(filepath.Base(artifactPath), "turn") {
+				t.Fatalf("expected stable call-id artifact name without turn number, got %s", artifactPath)
+			}
+			if !strings.Contains(filepath.Base(artifactPath), "call_") {
+				t.Fatalf("expected artifact name to include call id, got %s", artifactPath)
+			}
+			if strings.Count(toolResult.LLMOutput, artifactPath) != 2 {
+				t.Fatalf("expected model-facing prompt path to match metadata path exactly, path=%s output=%q", artifactPath, toolResult.LLMOutput)
 			}
 			info, err := os.Stat(artifactPath)
 			if err != nil {
@@ -3627,8 +3639,8 @@ func TestEngineEphemeralArtifactRejectsSymlinkTarget(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
 		t.Fatalf("write outside file: %v", err)
 	}
-	for turn := 0; turn <= 5; turn++ {
-		artifactPath := engine.ephemeralArtifactPath(meta.ID, "glob", turn)
+	for _, callID := range []string{"call_1", "call_2", "call_3", "call_4"} {
+		artifactPath := engine.ephemeralArtifactPath(meta.ID, "glob", callID)
 		if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
 			t.Fatalf("mkdir artifact dir: %v", err)
 		}

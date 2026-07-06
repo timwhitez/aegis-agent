@@ -911,11 +911,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if toolDef != nil && toolDef.Ephemeral {
 						count := countToolCalls(messages, call.Name)
 						if count > toolDef.EphemeralWindow {
-							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, turn)
+							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, call.ID)
 							if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
 								lineCount := countTextLines(toolResult.LLMOutput)
 								toolResult.LLMOutput = fmt.Sprintf(
-									"[Full output saved to %s (%d lines). Read it with read_file(path=%q, offset=1, limit=120) and page via offset; or rerun the command redirecting to a workspace file under reports/. Do NOT keep re-issuing the same search.]",
+									"[Full output saved to %s (%d lines). Copy this path verbatim; do not derive it from the current turn number. Read it with read_file(path=%q, offset=1, limit=120) and page via offset; or rerun the command redirecting to a workspace file under reports/. Do NOT keep re-issuing the same search.]",
 									artifactPath,
 									lineCount,
 									artifactPath,
@@ -1154,9 +1154,9 @@ func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, p
 	return nil
 }
 
-func (e *Engine) ephemeralArtifactPath(sessionID, toolName string, turn int) string {
+func (e *Engine) ephemeralArtifactPath(sessionID, toolName, callID string) string {
 	base := e.ephemeralArtifactRoot(sessionID)
-	return filepath.Join(base, fmt.Sprintf("%s-turn%d.txt", toolName, turn))
+	return filepath.Join(base, fmt.Sprintf("%s-%s.txt", safeArtifactComponent(toolName), shortArtifactCallID(callID)))
 }
 
 func (e *Engine) ephemeralArtifactRoot(sessionID string) string {
@@ -1165,6 +1165,41 @@ func (e *Engine) ephemeralArtifactRoot(sessionID string) string {
 		return filepath.Join(e.store.SessionDir(sessionID), "artifacts", "tool-outputs")
 	}
 	return filepath.Join(base, sessionID)
+}
+
+func shortArtifactCallID(callID string) string {
+	const maxLen = 8
+	component := safeArtifactComponent(callID)
+	if component == "" {
+		return "unknown"
+	}
+	if len(component) <= maxLen {
+		return component
+	}
+	return component[:maxLen]
+}
+
+func safeArtifactComponent(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var builder strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-' || r == '_':
+			builder.WriteRune(r)
+		default:
+			builder.WriteByte('_')
+		}
+	}
+	return strings.Trim(builder.String(), "_")
 }
 
 // recordFileChanges folds the file mutations from one successful tool call into
