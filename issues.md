@@ -154,7 +154,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T5 [MEDIUM · prompt/description · still present] read_file / grep path guessing and multi-path concatenation misuse
+### - [x] T5 [MEDIUM · prompt/description · fixed] read_file / grep path guessing and multi-path concatenation misuse
 
 **Background**: On large multi-repo audits, gpt-5.4 tends to guess file paths from memory and `read_file` them directly, instead of locating them first with a discovery tool. This is model behavior; per CLAUDE.md, "first improve descriptions and observable facts, do not hard-code a workflow."
 
@@ -171,7 +171,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Note**: Implement **together with T17** (same description-guidance surface, same failure mode).
 
-**Status**: not fixed · commit: — · Priority **P2**
+**Status**: fixed · commit: a16315c · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance|TestNextHarnessReminderNudgesAfterRepeatedReadFileNotFound' -count=1`; `go test ./internal/tools -run 'TestReadFileNotFoundSuggestsDiscoveryFirst|TestCoreToolDescriptionsGuideSelection|TestToolDescriptionsMentionOnlyDeclaredParameters' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
@@ -352,7 +352,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 ---
 
-### - [ ] T17 [prompt · medium · relates to T5] "Explore before asserting, do not guess paths" senior-engineer stance
+### - [x] T17 [prompt · medium · fixed with T5] "Explore before asserting, do not guess paths" senior-engineer stance
 
 **Borrowed from**: Codex `# General` / `instructions_template` (system-prompt.md:127-129, 489-491) — "read the codebase first, resist easy assumptions, let the shape of the existing system teach you how to move; examine first without jumping to conclusions."
 
@@ -362,7 +362,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Folded into T5's acceptance (read_file not-found rate).
 
-**Status**: not done · commit: — · Priority **P2** (merge into T5)
+**Status**: fixed with T5 · commit: a16315c · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance|TestNextHarnessReminderNudgesAfterRepeatedReadFileNotFound' -count=1`; `go test ./internal/tools -run 'TestReadFileNotFoundSuggestsDiscoveryFirst|TestCoreToolDescriptionsGuideSelection|TestToolDescriptionsMentionOnlyDeclaredParameters' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
