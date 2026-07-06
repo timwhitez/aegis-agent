@@ -107,7 +107,7 @@ The shell tool's `exit_code != 0 → IsError=true` (`registry.go:769-775`) is **
 
 ---
 
-### - [ ] T3 [MEDIUM · code · still present] glob is missing a `path` parameter — discovery-tool API asymmetry (sibling of T2)
+### - [x] T3 [MEDIUM · code · fixed] glob is missing a `path` parameter — discovery-tool API asymmetry (sibling of T2)
 
 **Background**: Of the three discovery tools `grep` / `grep_files` / `glob`, the first two accept a `path` sub-directory anchor; only `glob` does not. The model reasonably assumes glob can be scoped to a sub-directory too, and hits a wall.
 
@@ -128,7 +128,7 @@ The shell tool's `exit_code != 0 → IsError=true` (`registry.go:769-775`) is **
 
 **Acceptance criteria**: Unit test — `glob` with a `path` argument no longer errors and results are correctly scoped to the sub-directory; folded into the T2 consistency test.
 
-**Status**: not fixed · commit: — · Priority **P1**
+**Status**: fixed · commit: 2617a6b · verification: `go test ./internal/tools -run 'TestGlobAcceptsPathAndScopesResults|TestGlobHonorsLimitAndReportsTruncation|TestGlobSkipsSymlinkEscapes|TestGlobRejectsEmptyPattern' -count=1`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P1**
 
 ---
 
