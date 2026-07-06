@@ -307,7 +307,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T14 [prompt · high value] Make "newest request wins + sanity check" behavior explicit after compaction/resume
+### - [x] T14 [prompt · high value · fixed] Make "newest request wins + sanity check" behavior explicit after compaction/resume
 
 **Borrowed from**: Codex `# Working with the user` (system-prompt.md:338-354) — "if a mid-turn user message conflicts, let the **newest** one steer this turn; after resume/interrupt/compaction, do a sanity check before the final answer to confirm you are answering the newest request, not an older ghost; after compaction, do not restart from scratch, continue naturally."
 
@@ -320,11 +320,11 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Construct a post-compaction session and check whether the model repeats already-completed steps; manual sampling.
 
-**Status**: not done · commit: — · Priority **P2**
+**Status**: fixed · commit: f150daf · verification: `go test ./internal/runtime -run 'TestCompactorWritesDurableSummaryArtifact|TestCompactionAddsReferencePrefix|TestCompactorReusesSummaryWithinHysteresisWindow|TestFallbackCompactionDeferredViewDoesNotRetainFullHistory' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
-### - [ ] T15 [prompt · medium] Structure the compaction handoff summary (borrowed from the checkpoint handoff prompt)
+### - [x] T15 [prompt · medium · fixed] Structure the compaction handoff summary (borrowed from the checkpoint handoff prompt)
 
 **Borrowed from**: Codex compaction handoff prompt (compaction-memory.md:13-31) — on compaction, generate a **structured handoff** aimed at "another LLM resuming seamlessly": important context/constraints/user preferences, and the critical data/examples/references needed to continue; on resume, prefix a fixed lead-in ("another model produced this summary; build on it and avoid duplicating work").
 
@@ -334,7 +334,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Unit test asserts the summary section contains the goal/todo/key-path fields; raw log is unmodified.
 
-**Status**: not done · commit: — · Priority **P2** (highest payoff when done together with T1)
+**Status**: fixed with T14 · commit: f150daf · verification: `go test ./internal/runtime -run 'TestCompactorWritesDurableSummaryArtifact|TestCompactionAddsReferencePrefix|TestCompactorReusesSummaryWithinHysteresisWindow|TestFallbackCompactionDeferredViewDoesNotRetainFullHistory' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P2**
 
 ---
 
