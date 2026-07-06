@@ -246,7 +246,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T11 [LOW · docs/path convention] `.context` vs `context` ambiguity & remote absolute-path prefix inconsistency
+### - [x] T11 [LOW · docs/path convention · fixed] `.context` vs `context` ambiguity & remote absolute-path prefix inconsistency
 
 **Background**:
 - `20260701-140300-aebb86`: the external instruction asked for delivery to `context/security-review/...`, but the model wrote to `.context/...` (leading dot) and was corrected by the artifact-path guard. The guard worked correctly (a user-specified delivery path is a hard boundary).
@@ -258,7 +258,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Sample whether artifact paths are now relative.
 
-**Status**: not fixed · commit: — · Priority **P3**
+**Status**: fixed · commit: 1ab2a38 · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance|TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop' -count=1`; `go test ./internal/tools -run 'TestReadFileAllowsSessionEphemeralArtifactWithinWindow' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
