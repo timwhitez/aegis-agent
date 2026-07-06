@@ -2011,6 +2011,12 @@ func defGetGoal() Definition {
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			if err := requireToolSessionMetadata(execCtx); err != nil {
+				if missingSessionMetadata(err) {
+					return readOnlyEmptyStateResult("get_goal", "null", "session_metadata_missing", map[string]any{
+						"goal_present":          false,
+						"session_metadata_path": sessionMetadataFilePath(execCtx),
+					}), nil
+				}
 				return errorResult("get_goal", err), nil
 			}
 			goal, err := execCtx.Store.LoadGoal(execCtx.SessionID)
@@ -2387,6 +2393,31 @@ func requireToolSessionMetadata(execCtx ExecContext) error {
 	return err
 }
 
+func missingSessionMetadata(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+func readOnlyEmptyStateResult(toolName, output, reason string, metadata map[string]any) session.ToolResult {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["empty_state"] = true
+	metadata["reason"] = reason
+	return session.ToolResult{
+		Name:          toolName,
+		LLMOutput:     output,
+		DisplayOutput: output,
+		Metadata:      metadata,
+	}
+}
+
+func sessionMetadataFilePath(execCtx ExecContext) string {
+	if execCtx.Store == nil {
+		return ""
+	}
+	return filepath.Join(execCtx.Store.SessionDir(execCtx.SessionID), "session.json")
+}
+
 func loadToolSessionMetadata(execCtx ExecContext) (session.SessionMetadata, error) {
 	if execCtx.Store == nil {
 		return session.SessionMetadata{}, errors.New("session store is required")
@@ -2412,6 +2443,12 @@ func defGetPlanMode() Definition {
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			if err := requireToolSessionMetadata(execCtx); err != nil {
+				if missingSessionMetadata(err) {
+					return readOnlyEmptyStateResult("get_plan_mode", "null", "session_metadata_missing", map[string]any{
+						"enabled":               false,
+						"session_metadata_path": sessionMetadataFilePath(execCtx),
+					}), nil
+				}
 				return errorResult("get_plan_mode", err), nil
 			}
 			planMode, err := execCtx.Store.LoadPlanMode(execCtx.SessionID)
@@ -2816,6 +2853,12 @@ func defTodoRead() Definition {
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Execute: func(_ context.Context, execCtx ExecContext, _ json.RawMessage) (session.ToolResult, error) {
 			if err := requireToolSessionMetadata(execCtx); err != nil {
+				if missingSessionMetadata(err) {
+					return readOnlyEmptyStateResult("todo_read", "[]", "session_metadata_missing", map[string]any{
+						"count":                 0,
+						"session_metadata_path": sessionMetadataFilePath(execCtx),
+					}), nil
+				}
 				return errorResult("todo_read", err), nil
 			}
 			todo, err := execCtx.Store.LoadTodo(execCtx.SessionID)

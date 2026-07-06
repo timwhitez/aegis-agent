@@ -1482,11 +1482,18 @@ func TestGoalToolsRejectMissingSessionMetadata(t *testing.T) {
 		t.Fatalf("missing-session create_goal should not leave goal snapshot, got %v", err)
 	}
 
+	readResult, err := registry.Execute(context.Background(), "get_goal", execCtx, nil)
+	if err != nil {
+		t.Fatalf("get_goal execute: %v", err)
+	}
+	if readResult.IsError || readResult.LLMOutput != "null" || readResult.Metadata["empty_state"] != true || readResult.Metadata["goal_present"] != false {
+		t.Fatalf("expected missing-session get_goal to return semantic empty state, got %#v", readResult)
+	}
+
 	for _, tc := range []struct {
 		name string
 		raw  json.RawMessage
 	}{
-		{name: "get_goal", raw: nil},
 		{name: "record_goal_progress", raw: json.RawMessage(`{"summary":"progress should not write"}`)},
 		{name: "update_goal", raw: json.RawMessage(`{"status":"complete"}`)},
 	} {
@@ -1517,11 +1524,31 @@ func TestSessionScopedToolsRejectMissingSessionMetadata(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
+		name       string
+		wantOutput string
+		wantMeta   string
+	}{
+		{name: "get_plan_mode", wantOutput: "null", wantMeta: "enabled"},
+		{name: "todo_read", wantOutput: "[]", wantMeta: "count"},
+	} {
+		t.Run(tc.name+"_empty_state", func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), tc.name, execCtx, nil)
+			if err != nil {
+				t.Fatalf("%s execute: %v", tc.name, err)
+			}
+			if result.IsError || result.LLMOutput != tc.wantOutput || result.Metadata["empty_state"] != true {
+				t.Fatalf("expected semantic empty state for %s, got %#v", tc.name, result)
+			}
+			if _, ok := result.Metadata[tc.wantMeta]; !ok {
+				t.Fatalf("expected %s metadata %q, got %#v", tc.name, tc.wantMeta, result.Metadata)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
 		name string
 		raw  json.RawMessage
 	}{
-		{name: "get_plan_mode", raw: nil},
-		{name: "todo_read", raw: nil},
 		{name: "task_list", raw: nil},
 		{name: "feature_list_read", raw: nil},
 	} {
