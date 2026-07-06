@@ -1639,6 +1639,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	report.Checks = append(report.Checks, checkSessionPartialState(cfg.Session.Dir))
 	report.Checks = append(report.Checks, checkWorkspaceWrite(cwd))
 	report.Checks = append(report.Checks, checkWorkspaceExtensionTrust(cwd))
+	report.Checks = append(report.Checks, checkRuntimeEnvironment(ctx, cwd))
 
 	skillCatalog, skillErr := skills.Scan(cfg.Skills.Dirs)
 	skillStatus := "ok"

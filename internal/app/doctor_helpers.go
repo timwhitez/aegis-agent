@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -20,6 +21,8 @@ import (
 var hookCommandLookPath = exec.LookPath
 var sessionRootCandidateProbe = probeSessionRootCandidate
 var beforeSessionRootCandidateTempCreate func(path string) error
+var doctorRuntimeLookPath = exec.LookPath
+var doctorRuntimeCommandOutput = runDoctorRuntimeCommand
 
 type hookPoint struct {
 	name  string
@@ -91,6 +94,115 @@ func checkHookCommands(cfg *config.Config, workdir string) doctorCheck {
 		check.Details["commands"] = commands
 	}
 	return check
+}
+
+func checkRuntimeEnvironment(ctx context.Context, workdir string) doctorCheck {
+	check := doctorCheck{
+		Name:   "runtime.environment",
+		Status: "ok",
+		Details: map[string]any{
+			"workdir": workdir,
+			"goos":    runtime.GOOS,
+			"goarch":  runtime.GOARCH,
+		},
+	}
+	commandNames := []string{"go", "node", "python3", "python"}
+	commands := make([]map[string]any, 0, len(commandNames))
+	foundPython := ""
+	for _, name := range commandNames {
+		detail := map[string]any{"name": name}
+		path, err := doctorRuntimeLookPath(name)
+		if err != nil {
+			detail["present"] = false
+			detail["error"] = err.Error()
+			commands = append(commands, detail)
+			continue
+		}
+		detail["present"] = true
+		detail["path"] = path
+		if version, err := doctorCommandVersion(ctx, path); err == nil && version != "" {
+			detail["version"] = version
+		} else if err != nil {
+			detail["version_error"] = err.Error()
+		}
+		if foundPython == "" && strings.HasPrefix(name, "python") {
+			foundPython = path
+		}
+		commands = append(commands, detail)
+	}
+	check.Details["commands"] = commands
+
+	pythonDetails := map[string]any{
+		"modules_checked": []string{"pytest", "torch"},
+	}
+	if foundPython == "" {
+		check.Status = "warn"
+		pythonDetails["present"] = false
+		pythonDetails["reason"] = "python interpreter not found"
+		check.Details["python"] = pythonDetails
+		return check
+	}
+	pythonDetails["present"] = true
+	pythonDetails["executable"] = foundPython
+	modules, err := doctorPythonModuleAvailability(ctx, foundPython)
+	if err != nil {
+		check.Status = "warn"
+		pythonDetails["error"] = err.Error()
+		check.Details["python"] = pythonDetails
+		return check
+	}
+	pythonDetails["modules"] = modules
+	var missing []string
+	for _, name := range []string{"pytest", "torch"} {
+		if !modules[name] {
+			missing = append(missing, name)
+		}
+	}
+	pythonDetails["missing_modules"] = missing
+	if len(missing) > 0 {
+		check.Status = "warn"
+	}
+	check.Details["python"] = pythonDetails
+	return check
+}
+
+func doctorCommandVersion(ctx context.Context, name string) (string, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := doctorRuntimeCommandOutput(cmdCtx, name, "--version")
+	if err != nil {
+		return "", err
+	}
+	return firstNonEmptyLine(string(out)), nil
+}
+
+func doctorPythonModuleAvailability(ctx context.Context, python string) (map[string]bool, error) {
+	cmdCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	script := "import importlib.util, json\nmods=['pytest','torch']\nprint(json.dumps({m: importlib.util.find_spec(m) is not None for m in mods}, sort_keys=True))"
+	out, err := doctorRuntimeCommandOutput(cmdCtx, python, "-c", script)
+	if err != nil {
+		return nil, err
+	}
+	var modules map[string]bool
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &modules); err != nil {
+		return nil, fmt.Errorf("parse python module probe output: %w", err)
+	}
+	return modules, nil
+}
+
+func runDoctorRuntimeCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 func probeHookCommand(workdir, point string, idx int, hook config.HookDefinition, defaultTimeout int) (string, map[string]any) {

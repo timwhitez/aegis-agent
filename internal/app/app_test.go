@@ -2089,6 +2089,52 @@ func TestDoctorCommandJSONSkipsProbeWhenAPIKeyMissing(t *testing.T) {
 	if !strings.Contains(stdout.String(), `"name":"hooks.config"`) || !strings.Contains(stdout.String(), `"name":"hooks.commands"`) || !strings.Contains(stdout.String(), `"name":"session.root.strategy"`) || !strings.Contains(stdout.String(), `"name":"workspace.write"`) {
 		t.Fatalf("expected extended doctor checks, got %s", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), `"name":"runtime.environment"`) {
+		t.Fatalf("expected runtime environment probe, got %s", stdout.String())
+	}
+}
+
+func TestDoctorRuntimeEnvironmentProbeReportsPythonModules(t *testing.T) {
+	restoreLookPath := doctorRuntimeLookPath
+	restoreCommandOutput := doctorRuntimeCommandOutput
+	doctorRuntimeLookPath = func(name string) (string, error) {
+		switch name {
+		case "python3":
+			return "/usr/bin/python3", nil
+		default:
+			return "", exec.ErrNotFound
+		}
+	}
+	doctorRuntimeCommandOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if len(args) == 1 && args[0] == "--version" {
+			return []byte("Python 3.11.0\n"), nil
+		}
+		if name == "/usr/bin/python3" && len(args) >= 2 && args[0] == "-c" {
+			return []byte(`{"pytest":true,"torch":false}`), nil
+		}
+		return nil, errors.New("unexpected command")
+	}
+	defer func() {
+		doctorRuntimeLookPath = restoreLookPath
+		doctorRuntimeCommandOutput = restoreCommandOutput
+	}()
+
+	check := checkRuntimeEnvironment(context.Background(), "/tmp/work")
+	if check.Name != "runtime.environment" || check.Status != "warn" {
+		t.Fatalf("expected runtime environment warning, got %#v", check)
+	}
+	python, ok := check.Details["python"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected python details, got %#v", check.Details["python"])
+	}
+	modules, ok := python["modules"].(map[string]bool)
+	if !ok || !modules["pytest"] || modules["torch"] {
+		t.Fatalf("expected module availability map, got %#v", python["modules"])
+	}
+	missing, ok := python["missing_modules"].([]string)
+	if !ok || len(missing) != 1 || missing[0] != "torch" {
+		t.Fatalf("expected missing torch, got %#v", python["missing_modules"])
+	}
 }
 
 func TestCheckWorkspaceWriteRejectsSymlinkedWorkspace(t *testing.T) {
