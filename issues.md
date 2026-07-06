@@ -338,7 +338,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 ---
 
-### - [ ] T16 [prompt · medium] Explicit "a review request defaults to a code-review stance" guidance
+### - [x] T16 [prompt · medium · fixed] Explicit "a review request defaults to a code-review stance" guidance
 
 **Borrowed from**: Codex `## Special user requests` (system-prompt.md:309-315 / personality.md:198-204) — "when the user says `review`, default to a code-review stance: **findings first**, ordered by severity with file/line references, summary after; if nothing is found, say so and note residual risk / test gaps."
 
@@ -348,7 +348,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Sample the answer structure of non-artifact review requests.
 
-**Status**: not done · commit: — · Priority **P3**
+**Status**: fixed · commit: 0d670ba · verification: `go test ./internal/runtime -run 'TestBuildSystemPromptIncludesDirectToolGuidance' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
