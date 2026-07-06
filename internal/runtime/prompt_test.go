@@ -677,6 +677,36 @@ func TestToolGuardBlocksFinishWhenSupportingDocsChangedAfterFinalReport(t *testi
 	}
 }
 
+func TestNextHarnessReminderWarnsWhenSupportingDocsChangedAfterFinalReport(t *testing.T) {
+	workdir := t.TempDir()
+	finalPath := filepath.Join(workdir, "reports", "assessment-report.md")
+	progressPath := filepath.Join(workdir, "reports", "progress.md")
+	reminder := nextHarnessReminder(workdir, session.ModeExec, []session.Message{
+		session.NewMessage("user", "Write reports/assessment-report.md and finish."),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:     "write_file",
+			Metadata: map[string]any{"path": finalPath},
+		}}),
+		session.NewToolMessage([]session.ToolResult{{
+			Name:     "write_file",
+			Metadata: map[string]any{"path": progressPath},
+		}}),
+	})
+	if reminder.Kind != "report_consistency" {
+		t.Fatalf("expected report_consistency reminder, got %#v", reminder)
+	}
+	for _, want := range []string{
+		"supporting docs changed after the final deliverable reports/assessment-report.md",
+		"reports/progress.md",
+		"Edit or rewrite reports/assessment-report.md",
+		"Do not restart broad exploration",
+	} {
+		if !strings.Contains(reminder.Text, want) {
+			t.Fatalf("expected report consistency reminder to contain %q, got %q", want, reminder.Text)
+		}
+	}
+}
+
 func TestBuildSystemPromptDoesNotAddRetrievalPressureForReadOnlyShellInspection(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
