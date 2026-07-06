@@ -234,7 +234,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T10 [LOW · resilience · code] Read-only metadata tools should return an empty-state semantic result when the fact file is missing, not a bare IO error
+### - [x] T10 [LOW · resilience · code · fixed] Read-only metadata tools should return an empty-state semantic result when the fact file is missing, not a bare IO error
 
 **Background**: The earliest session `20260617-131601-0d4337` lacks `session.json` (likely an early version used `state.json`, and old dirs were not backfilled after the schema migration), causing `get_goal` / `todo_read` / `get_plan_mode` to each error once with `open .../session.json: file does not exist`. This is legacy debt, but it exposes a resilience gap: the model reads "no record yet" as "the tool is broken."
 
@@ -242,7 +242,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Acceptance criteria**: Unit test — with `session.json` absent, assert these three tools return empty-state rather than `is_error`.
 
-**Status**: not fixed · commit: — · Priority **P3**
+**Status**: fixed · commit: 264ef19 · verification: `go test ./internal/tools -run 'TestGoalToolsRejectMissingSessionMetadata|TestSessionScopedToolsRejectMissingSessionMetadata' -count=1`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
