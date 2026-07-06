@@ -5357,7 +5357,7 @@ func TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool(t *t
 	if len(results) != 2 {
 		t.Fatalf("expected interrupted current result plus synthetic later result, got %#v", results)
 	}
-	if results[0].ToolCallID != "call_slow" || !results[0].IsError || results[0].LLMOutput != "[Tool execution was interrupted]" {
+	if results[0].ToolCallID != "call_slow" || !results[0].IsError || results[0].LLMOutput != tools.InterruptedToolExecutionMessage || !strings.Contains(results[0].LLMOutput, "partially executed") || !strings.Contains(results[0].LLMOutput, "Verify state before re-running") {
 		t.Fatalf("unexpected interrupted current result: %#v", results[0])
 	}
 	if results[1].ToolCallID != "call_later" || !results[1].IsError || !strings.Contains(results[1].LLMOutput, "before this call ran") {

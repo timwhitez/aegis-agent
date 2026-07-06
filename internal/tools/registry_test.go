@@ -2712,7 +2712,7 @@ func TestShellToolTreatsKilledProcessAsInterrupted(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
-	if result.DisplayOutput != "[Tool execution was interrupted]" {
+	if result.DisplayOutput != InterruptedToolExecutionMessage || !strings.Contains(result.LLMOutput, "partially executed") || !strings.Contains(result.LLMOutput, "Verify state before re-running") {
 		t.Fatalf("unexpected interrupted result: %#v", result)
 	}
 }

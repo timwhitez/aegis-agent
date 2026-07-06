@@ -835,8 +835,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						toolResult = session.ToolResult{
 							ToolCallID:    call.ID,
 							Name:          call.Name,
-							LLMOutput:     "[Tool execution was interrupted]",
-							DisplayOutput: "[Tool execution was interrupted]",
+							LLMOutput:     tools.InterruptedToolExecutionMessage,
+							DisplayOutput: tools.InterruptedToolExecutionMessage,
 							IsError:       true,
 							Metadata: map[string]any{
 								tools.MetadataFailureClass: tools.FailureClassInterrupted,

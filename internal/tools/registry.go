@@ -39,12 +39,13 @@ type Definition struct {
 }
 
 const (
-	MetadataFailureClass       = "failure_class"
-	FailureClassHarnessError   = "harness_error"
-	FailureClassCommandNonzero = "command_nonzero_exit"
-	FailureClassInterrupted    = "interrupted"
-	FailureClassSchemaReject   = "schema_reject"
-	FailureClassNotFound       = "not_found"
+	MetadataFailureClass            = "failure_class"
+	FailureClassHarnessError        = "harness_error"
+	FailureClassCommandNonzero      = "command_nonzero_exit"
+	FailureClassInterrupted         = "interrupted"
+	FailureClassSchemaReject        = "schema_reject"
+	FailureClassNotFound            = "not_found"
+	InterruptedToolExecutionMessage = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
 )
 
 type ExecContext struct {
@@ -779,12 +780,12 @@ func defShell() Definition {
 					interruptErr = callCtx.Err()
 				}
 				if interruptErr != nil {
-					interruptedText := commandLLMOutput("[Tool execution was interrupted]", commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
+					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						ToolCallID:    "",
 						Name:          "shell",
 						LLMOutput:     interruptedText,
-						DisplayOutput: "[Tool execution was interrupted]",
+						DisplayOutput: InterruptedToolExecutionMessage,
 						IsError:       true,
 						Metadata:      metadata(exitCode, rawLength, truncated),
 					}, interruptErr
@@ -3835,11 +3836,11 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					interruptErr = callCtx.Err()
 				}
 				if interruptErr != nil {
-					interruptedText := commandLLMOutput("[Tool execution was interrupted]", commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
+					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						Name:          tool.Name,
 						LLMOutput:     interruptedText,
-						DisplayOutput: "[Tool execution was interrupted]",
+						DisplayOutput: InterruptedToolExecutionMessage,
 						IsError:       true,
 						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
 					}, interruptErr
