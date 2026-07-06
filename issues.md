@@ -380,7 +380,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 ---
 
-### - [ ] T19 [prompt · low] Interrupt-semantics hint: "a background process may still be running / the command may have partially executed"
+### - [x] T19 [prompt · low · fixed] Interrupt-semantics hint: "a background process may still be running / the command may have partially executed"
 
 **Borrowed from**: Codex interrupt/resume context (mode-prompts.md:336-343) — "the user interrupted the previous turn **on purpose**; any running processes may still be in the background; any aborted command **may have partially executed**."
 
@@ -390,7 +390,7 @@ Relates to T1: once compaction pollution is fixed, this guidance helps the model
 
 **Acceptance criteria**: Unit test asserts the interrupt-result text contains "partially executed / verify before re-running."
 
-**Status**: not done · commit: — · Priority **P3**
+**Status**: fixed · commit: 262700a · verification: `go test ./internal/runtime -run 'TestEngineWritesInterruptedToolResultOnPause|TestEngineToolInterruptedReportsEventAppendErrorWithReplayResult|TestEngineStopsAfterReplayCompleteToolResultsWhenRunContextCancelsTool' -count=1`; `go test ./internal/tools -run 'TestShellToolTreatsKilledProcessAsInterrupted' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go test ./internal/tools -count=1 -timeout=180s`; `go build ./...` · Priority **P3**
 
 ---
 
