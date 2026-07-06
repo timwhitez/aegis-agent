@@ -1017,7 +1017,7 @@ func defEditFile() Definition {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory; glob's pattern covers filename/include filtering. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1025,7 +1025,11 @@ func defGlob() Definition {
 			"properties": map[string]any{
 				"pattern": map[string]any{
 					"type":        "string",
-					"description": "Glob pattern such as **/*.go or spec/*.md, evaluated inside the workspace.",
+					"description": "Glob pattern such as **/*.go or spec/*.md, evaluated inside the selected path.",
+				},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Optional workspace-relative or registered skill directory to search. Omit to search the workspace.",
 				},
 				"limit": map[string]any{
 					"type":        "integer",
@@ -1037,6 +1041,7 @@ func defGlob() Definition {
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
 				Pattern string `json:"pattern"`
+				Path    string `json:"path"`
 				Limit   int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
@@ -1045,26 +1050,42 @@ func defGlob() Definition {
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("glob", err), nil
 			}
+			root, err := resolveGrepRoot(execCtx, input.Path)
+			if err != nil {
+				return errorResult("glob", err), nil
+			}
+			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, root.path) {
+				return errorResult("glob", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
+			}
+			info, err := os.Lstat(root.path)
+			if err != nil {
+				return errorResult("glob", fmt.Errorf("path %q does not exist or is not accessible: %w", input.Path, err)), nil
+			}
+			if !info.IsDir() {
+				return errorResult("glob", fmt.Errorf("path %q is not a directory", input.Path)), nil
+			}
 			limit := normalizeGrepFilesLimit(input.Limit)
 			var matches []string
 			truncated := false
-			if err := doublestar.GlobWalk(os.DirFS(execCtx.Workdir), input.Pattern, func(path string, d os.DirEntry) error {
+			if err := doublestar.GlobWalk(os.DirFS(root.path), input.Pattern, func(path string, d os.DirEntry) error {
+				fullPath := filepath.Join(root.path, path)
+				displayPath := relativeOrAbsolute(root.displayBase, fullPath)
 				if path != "." {
-					if _, err := ResolveWorkspacePath(execCtx.Workdir, path); err != nil {
+					if err := validateGlobMatchedPath(execCtx, root, path, fullPath); err != nil {
 						if d.IsDir() {
 							return fs.SkipDir
 						}
 						return nil
 					}
 				}
-				if d.IsDir() && path != "." && shouldSkipGrepDir(path) {
+				if d.IsDir() && path != "." && shouldSkipGrepDir(displayPath) {
 					return fs.SkipDir
 				}
 				if !d.IsDir() {
-					if isInternalGeneratedArtifactPath(execCtx.Workdir, filepath.Join(execCtx.Workdir, path)) {
+					if root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, fullPath) {
 						return nil
 					}
-					matches = append(matches, path)
+					matches = append(matches, displayPath)
 					// Collect one past the limit so an exact-limit result is not
 					// mislabeled as truncated; only a genuine overflow trips the notice.
 					if len(matches) > limit {
@@ -1086,6 +1107,19 @@ func defGlob() Definition {
 			}
 			return session.ToolResult{Name: "glob", LLMOutput: output, DisplayOutput: output}, nil
 		},
+	}
+}
+
+func validateGlobMatchedPath(execCtx ExecContext, root resolvedSearchRoot, path, fullPath string) error {
+	switch root.source {
+	case "workspace":
+		_, err := ResolveWorkspacePath(execCtx.Workdir, relativeOrAbsolute(execCtx.Workdir, fullPath))
+		return err
+	case "skill":
+		_, err := resolvePathUnderRoot(root.path, path)
+		return err
+	default:
+		return nil
 	}
 }
 

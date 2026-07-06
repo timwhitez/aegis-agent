@@ -3904,6 +3904,63 @@ func TestGlobRejectsEmptyPattern(t *testing.T) {
 	}
 }
 
+func TestGlobAcceptsPathAndScopesResults(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	for _, dir := range []string{"vllm", "other"} {
+		if err := os.MkdirAll(filepath.Join(workdir, dir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for path, content := range map[string]string{
+		"vllm/keep.go":   "package vllm\n",
+		"vllm/readme.md": "# vllm\n",
+		"other/keep.go":  "package other\n",
+	} {
+		if err := os.WriteFile(filepath.Join(workdir, filepath.FromSlash(path)), []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	scoped, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"path":"vllm","pattern":"*.go"}`))
+	if err != nil {
+		t.Fatalf("glob with path: %v", err)
+	}
+	if scoped.IsError {
+		t.Fatalf("expected glob to accept path argument, got %#v", scoped)
+	}
+	if !strings.Contains(scoped.DisplayOutput, "vllm/keep.go") || strings.Contains(scoped.DisplayOutput, "other/keep.go") || strings.Contains(scoped.DisplayOutput, "vllm/readme.md") {
+		t.Fatalf("expected path-scoped glob result, got %q", scoped.DisplayOutput)
+	}
+
+	dotScoped, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"path":".","pattern":"vllm/*.go"}`))
+	if err != nil {
+		t.Fatalf("glob with dot path: %v", err)
+	}
+	if dotScoped.IsError || !strings.Contains(dotScoped.DisplayOutput, "vllm/keep.go") {
+		t.Fatalf("expected path=. to match workspace-root glob semantics, got %#v", dotScoped)
+	}
+}
+
 func TestGlobHonorsLimitAndReportsTruncation(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
