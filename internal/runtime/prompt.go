@@ -75,6 +75,10 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- When the user asks for a review, lead with findings ordered by severity with file:line references; keep summaries brief and after the findings. If there are no issues, say so and note residual risk or test gaps.\n")
 	builder.WriteString("- Treat todo/task tools as a progress ledger only: preserve existing entries, append newly discovered work, and mark items complete only after the real file/code/command work is done. Updating todo/task state is never a substitute for doing or validating the task.\n")
 	builder.WriteString("- If you use child or background agents, check their final status and reconcile their durable results before final parent conclusions.\n")
+	builder.WriteString("\n## Response Style\n")
+	builder.WriteString("- Keep final answers concise and high-signal; use lists only when the answer is naturally list-shaped.\n")
+	builder.WriteString("- Reference local files with `path:line` or a Markdown link when useful, and avoid bare long recaps when artifacts or commits already carry the details.\n")
+	builder.WriteString("- Do not open with filler acknowledgements; state the outcome, validation status, and any remaining risk directly.\n")
 	if notes := runtimeBehaviorNotes(workdir, mode, messages); len(notes) > 0 {
 		builder.WriteString("\n## Runtime Notes\n")
 		for _, note := range notes {

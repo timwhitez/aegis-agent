@@ -58,6 +58,10 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"- repo_audit: Repository audit workflow",
 		"check whether a listed skill clearly matches the user request",
 		"After loading a skill, follow its instructions within the current project, user, and system constraints",
+		"## Response Style",
+		"Keep final answers concise and high-signal",
+		"Reference local files with `path:line`",
+		"Do not open with filler acknowledgements",
 		"## Skill Command Tools",
 		"- markdown_inventory: List Markdown files",
 	}
