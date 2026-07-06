@@ -309,6 +309,9 @@ func validateClosedToolObject(schema map[string]any, object map[string]json.RawM
 	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
 		for key := range object {
 			if _, known := properties[key]; !known {
+				if isHarnessReplayMarkerField(key) {
+					return fmt.Errorf("unexpected context replay marker field %q; compacted historical tool arguments are read-only context, not valid new arguments. Resend the call with real fields from this tool's schema", toolFieldPath(path, key))
+				}
 				return fmt.Errorf("unexpected field %q", toolFieldPath(path, key))
 			}
 		}
@@ -363,6 +366,15 @@ func validateClosedToolValue(schema map[string]any, raw json.RawMessage, path st
 		return nil
 	default:
 		return nil
+	}
+}
+
+func isHarnessReplayMarkerField(field string) bool {
+	switch field {
+	case "compacted_for_context", "head_tail", "original_chars":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1028,7 +1040,7 @@ func defEditFile() Definition {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory; glob's pattern covers filename/include filtering. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory, and optional include applies an additional file filter. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1042,6 +1054,10 @@ func defGlob() Definition {
 					"type":        "string",
 					"description": "Optional workspace-relative or registered skill directory to search. Omit to search the workspace.",
 				},
+				"include": map[string]any{
+					"type":        "string",
+					"description": "Optional additional glob filter for returned files, for example **/*.go or spec/*.md.",
+				},
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": fmt.Sprintf("Optional maximum number of matching paths to return. Defaults to %d and is capped at %d.", defaultGrepFilesLimit, maxGrepFilesLimit),
@@ -1053,6 +1069,7 @@ func defGlob() Definition {
 			var input struct {
 				Pattern string `json:"pattern"`
 				Path    string `json:"path"`
+				Include string `json:"include"`
 				Limit   int    `json:"limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
@@ -1094,6 +1111,9 @@ func defGlob() Definition {
 				}
 				if !d.IsDir() {
 					if root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, fullPath) {
+						return nil
+					}
+					if input.Include != "" && !pathMatchesInclude(root.displayBase, fullPath, input.Include) {
 						return nil
 					}
 					matches = append(matches, displayPath)

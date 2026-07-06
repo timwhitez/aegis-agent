@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,64 @@ func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	}
 }
 
+func TestToolDescriptionsMentionOnlyDeclaredParameters(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	parameterNames := []string{
+		"command",
+		"content",
+		"include",
+		"limit",
+		"new_text",
+		"offset",
+		"old_text",
+		"path",
+		"pattern",
+		"timeout",
+		"workdir",
+	}
+	for _, def := range registry.Definitions() {
+		properties := schemaPropertyNames(def.InputSchema)
+		for _, parameter := range parameterNames {
+			if !mentionsParameterName(def.Description, parameter) {
+				continue
+			}
+			if _, ok := properties[parameter]; !ok {
+				t.Fatalf("%s description mentions parameter %q but schema properties are %v", def.Name, parameter, sortedPropertyNames(properties))
+			}
+		}
+	}
+}
+
+func TestDiscoveryToolParameterSetsStayAligned(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	want := map[string]struct{}{
+		"pattern": {},
+		"path":    {},
+		"include": {},
+		"limit":   {},
+	}
+	for _, name := range []string{"glob", "grep", "grep_files"} {
+		def := registry.Get(name)
+		if def == nil {
+			t.Fatalf("%s definition missing", name)
+		}
+		properties := schemaPropertyNames(def.InputSchema)
+		for parameter := range want {
+			if _, ok := properties[parameter]; !ok {
+				t.Fatalf("%s missing discovery parameter %q; properties are %v", name, parameter, sortedPropertyNames(properties))
+			}
+		}
+	}
+}
+
 func TestBuiltinToolExecutionRejectsUnknownTopLevelField(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -126,6 +185,29 @@ func TestBuiltinToolExecutionRejectsUnknownTopLevelField(t *testing.T) {
 	}
 	if !result.IsError || !strings.Contains(result.DisplayOutput, `unexpected field "extra"`) {
 		t.Fatalf("expected unknown top-level field rejection, got %#v", result)
+	}
+}
+
+func TestBuiltinToolExecutionRejectsHarnessReplayMarkersWithTargetedHint(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{}, json.RawMessage(`{"compacted_for_context":true,"head_tail":"old args","original_chars":123}`))
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected replay marker rejection, got %#v", result)
+	}
+	for _, want := range []string{"context replay marker", "compacted historical tool arguments", "real fields"} {
+		if !strings.Contains(result.DisplayOutput, want) {
+			t.Fatalf("expected targeted replay marker hint %q in %q", want, result.DisplayOutput)
+		}
+	}
+	if got := result.Metadata[MetadataFailureClass]; got != FailureClassSchemaReject {
+		t.Fatalf("expected schema_reject metadata, got %#v", result.Metadata)
 	}
 }
 
@@ -217,6 +299,46 @@ func TestFinishRejectsBlankMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+func schemaPropertyNames(schema map[string]any) map[string]struct{} {
+	out := map[string]struct{}{}
+	properties, _ := schema["properties"].(map[string]any)
+	for name := range properties {
+		out[name] = struct{}{}
+	}
+	return out
+}
+
+func sortedPropertyNames(properties map[string]struct{}) []string {
+	out := make([]string, 0, len(properties))
+	for name := range properties {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mentionsParameterName(description, parameter string) bool {
+	text := strings.ToLower(description)
+	parameter = strings.ToLower(parameter)
+	markers := []string{
+		"`" + parameter + "`",
+		parameter + " parameter",
+		"optional " + parameter,
+		parameter + " filter",
+		parameter + " filters",
+		"raise " + parameter,
+		parameter + " must",
+		parameter + "=",
+		parameter + ":",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func assertObjectSchemasClosed(t *testing.T, path string, value any) {
@@ -3958,6 +4080,14 @@ func TestGlobAcceptsPathAndScopesResults(t *testing.T) {
 	}
 	if dotScoped.IsError || !strings.Contains(dotScoped.DisplayOutput, "vllm/keep.go") {
 		t.Fatalf("expected path=. to match workspace-root glob semantics, got %#v", dotScoped)
+	}
+
+	includeScoped, err := registry.Execute(context.Background(), "glob", execCtx, json.RawMessage(`{"path":".","pattern":"**/*","include":"**/*.md"}`))
+	if err != nil {
+		t.Fatalf("glob with include: %v", err)
+	}
+	if includeScoped.IsError || !strings.Contains(includeScoped.DisplayOutput, "vllm/readme.md") || strings.Contains(includeScoped.DisplayOutput, "vllm/keep.go") {
+		t.Fatalf("expected include-scoped glob result, got %#v", includeScoped)
 	}
 }
 
