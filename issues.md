@@ -189,7 +189,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 ---
 
-### - [ ] T7 [MEDIUM · code · still present] Spill-artifact read miss — the harness handed over the exact path, but the model still fabricated a turn number
+### - [x] T7 [MEDIUM · code · fixed] Spill-artifact read miss — the harness handed over the exact path, but the model still fabricated a turn number
 
 **Background**: When an ephemeral tool (shell/glob/grep) output exceeds its window, `engine.go:908-928` writes the full text to `<sessionDir>/artifacts/tool-outputs/<tool>-turn<N>.txt` and replaces the LLMOutput with a prompt: `[Full output saved to <absolute path> (N lines). Read it with read_file(path="<absolute path>", ...)]`. The naming format is `ephemeralArtifactPath` at `engine.go:1157-1159`.
 
@@ -204,7 +204,7 @@ The analysis script then filters out non-harness classes to get the true harness
 
 **Note**: Coordinates with T11 (prefer relative paths — shorter, easier for the model to copy verbatim).
 
-**Status**: not fixed · commit: — · Priority **P1**
+**Status**: fixed · commit: 3eafd32 · verification: `go test ./internal/runtime -run 'TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop|TestEngineEphemeralArtifactRejectsSymlinkTarget' -count=1`; `go test ./internal/runtime -count=1 -timeout=180s`; `go build ./...` · Priority **P1**
 
 ---
 
