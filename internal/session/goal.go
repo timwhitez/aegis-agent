@@ -1669,10 +1669,19 @@ func goalBudgetExceeded(goal SessionGoal) bool {
 	return false
 }
 
+func unknownGoalItemHint(kind string, ids []string) string {
+	if len(ids) == 0 {
+		return fmt.Sprintf("this goal has no %s items; call get_goal to inspect the goal, and omit %s_statuses (system-assigned ids only, not free-form labels)", kind, kind)
+	}
+	return fmt.Sprintf("valid %s ids are [%s]; get exact ids from get_goal (ids are system-assigned, not free-form labels)", kind, strings.Join(ids, ", "))
+}
+
 func applyGoalCriterionUpdates(items []GoalCriterion, updates []GoalItemStatusUpdate, now string) error {
 	index := make(map[string]int, len(items))
+	ids := make([]string, 0, len(items))
 	for i, item := range items {
 		index[item.ID] = i
+		ids = append(ids, item.ID)
 	}
 	for _, update := range updates {
 		id := strings.TrimSpace(update.ID)
@@ -1681,7 +1690,7 @@ func applyGoalCriterionUpdates(items []GoalCriterion, updates []GoalItemStatusUp
 		}
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("unknown criterion id: %s", id)
+			return fmt.Errorf("unknown criterion id %q: %s", id, unknownGoalItemHint("criterion", ids))
 		}
 		status := normalizeGoalEvidenceStatus(update.Status)
 		if status != "" {
@@ -1695,8 +1704,10 @@ func applyGoalCriterionUpdates(items []GoalCriterion, updates []GoalItemStatusUp
 
 func applyGoalValidationUpdates(items []GoalValidation, updates []GoalItemStatusUpdate, now string) error {
 	index := make(map[string]int, len(items))
+	ids := make([]string, 0, len(items))
 	for i, item := range items {
 		index[item.ID] = i
+		ids = append(ids, item.ID)
 	}
 	for _, update := range updates {
 		id := strings.TrimSpace(update.ID)
@@ -1705,7 +1716,7 @@ func applyGoalValidationUpdates(items []GoalValidation, updates []GoalItemStatus
 		}
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("unknown validation id: %s", id)
+			return fmt.Errorf("unknown validation id %q: %s", id, unknownGoalItemHint("validation", ids))
 		}
 		status := normalizeGoalEvidenceStatus(update.Status)
 		if status != "" {
