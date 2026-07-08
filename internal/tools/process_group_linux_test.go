@@ -54,8 +54,11 @@ func TestShellTimeoutKillsChildProcessGroup(t *testing.T) {
 	}, json.RawMessage(`{
 		"command":"sleep 30 & echo $! > child.pid; wait"
 	}`))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected deadline exceeded, got result=%#v err=%v", result, err)
+	if err != nil {
+		t.Fatalf("expected nil error for recoverable command timeout, got result=%#v err=%v", result, err)
+	}
+	if !result.IsError || result.Metadata[MetadataFailureClass] != FailureClassTimeout {
+		t.Fatalf("expected command_timeout failure class, got result=%#v", result)
 	}
 
 	pidBytes, err := os.ReadFile(filepath.Join(workdir, "child.pid"))

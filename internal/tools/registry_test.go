@@ -2196,6 +2196,66 @@ func TestEditFileRejectsEmptyOldText(t *testing.T) {
 	}
 }
 
+func TestEditFileOldTextNotFoundGivesDiagnosticHint(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	target := filepath.Join(workdir, "code.go")
+	// Real content uses a tab for indentation.
+	if err := os.WriteFile(target, []byte("func Foo() {\n\treturn 1\n}\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	// Whitespace-only drift: old_text uses spaces where the file uses a tab.
+	result, err := registry.Execute(context.Background(), "edit_file", execCtx, json.RawMessage(`{
+		"path":"code.go",
+		"old_text":"func Foo() {\n    return 1\n}",
+		"new_text":"func Foo() {\n\treturn 2\n}"
+	}`))
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "whitespace-insensitive match exists") {
+		t.Fatalf("expected whitespace-drift hint, got %#v", result)
+	}
+
+	// First line matches but the block drifted: report the line number.
+	result, err = registry.Execute(context.Background(), "edit_file", execCtx, json.RawMessage(`{
+		"path":"code.go",
+		"old_text":"func Foo() {\n\treturn 999\n}",
+		"new_text":"x"
+	}`))
+	if err != nil {
+		t.Fatalf("edit_file: %v", err)
+	}
+	if !result.IsError || !strings.Contains(result.DisplayOutput, "first line matches at line 1") {
+		t.Fatalf("expected drifted-block hint, got %#v", result)
+	}
+}
+
 func TestFileToolsRejectBlankPath(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -3658,11 +3718,20 @@ func TestShellTimeoutIsCappedByRuntimeCommandTimeout(t *testing.T) {
 		"timeout":10000
 	}`))
 	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("expected timeout error")
+	// A per-command timeout (parent ctx not cancelled) is a recoverable tool
+	// error, not a propagated interrupt: err is nil, the result is flagged with
+	// the command_timeout failure class and a timeout-specific message.
+	if err != nil {
+		t.Fatalf("expected nil error for recoverable command timeout, got %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	if !result.IsError {
+		t.Fatalf("expected timeout result to be an error, got %#v", result)
+	}
+	if got := result.Metadata[MetadataFailureClass]; got != FailureClassTimeout {
+		t.Fatalf("expected %q failure class, got %#v", FailureClassTimeout, result.Metadata)
+	}
+	if result.DisplayOutput != TimedOutToolExecutionMessage || !strings.Contains(result.LLMOutput, "timed out") {
+		t.Fatalf("expected timeout message, got %#v", result)
 	}
 	if got := result.Metadata["timeout"]; got != 1 {
 		t.Fatalf("expected capped timeout metadata, got %#v", result.Metadata)
@@ -5402,11 +5471,11 @@ func TestSkillCommandToolUsesRuntimeDefaultTimeoutWhenUnset(t *testing.T) {
 		Workdir: root,
 		Config:  cfg,
 	}, json.RawMessage(`{}`))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected runtime default timeout to interrupt skill command, got result=%#v err=%v", result, err)
+	if err != nil {
+		t.Fatalf("expected nil error for recoverable skill command timeout, got result=%#v err=%v", result, err)
 	}
-	if !result.IsError || result.Metadata["timeout"] != 1 {
-		t.Fatalf("expected structured timeout metadata from runtime default, got %#v", result)
+	if !result.IsError || result.Metadata[MetadataFailureClass] != FailureClassTimeout || result.Metadata["timeout"] != 1 {
+		t.Fatalf("expected structured command_timeout metadata from runtime default, got %#v", result)
 	}
 }
 
@@ -5479,11 +5548,14 @@ func TestSkillCommandToolTimeoutIncludesStructuredMetadata(t *testing.T) {
 		Workdir: root,
 		Config:  cfg,
 	}, json.RawMessage(`{}`))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected deadline exceeded, got result=%#v err=%v", result, err)
+	if err != nil {
+		t.Fatalf("expected nil error for recoverable skill command timeout, got result=%#v err=%v", result, err)
 	}
 	if !result.IsError {
 		t.Fatalf("expected timeout result to be an error, got %#v", result)
+	}
+	if result.Metadata[MetadataFailureClass] != FailureClassTimeout {
+		t.Fatalf("expected command_timeout failure class, got %#v", result.Metadata)
 	}
 	if result.Metadata["timeout"] != 1 || result.Metadata["exit_code"] == nil || result.Metadata["raw_length"] == nil || result.Metadata["truncated"] == nil {
 		t.Fatalf("expected structured timeout metadata, got %#v", result.Metadata)

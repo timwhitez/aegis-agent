@@ -42,10 +42,12 @@ const (
 	MetadataFailureClass            = "failure_class"
 	FailureClassHarnessError        = "harness_error"
 	FailureClassCommandNonzero      = "command_nonzero_exit"
+	FailureClassTimeout             = "command_timeout"
 	FailureClassInterrupted         = "interrupted"
 	FailureClassSchemaReject        = "schema_reject"
 	FailureClassNotFound            = "not_found"
 	InterruptedToolExecutionMessage = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
+	TimedOutToolExecutionMessage    = "[Command timed out and was terminated after the timeout window. This is a command/network timeout, not a bug in the command syntax; any spawned process may still be running. Consider an offline approach, a narrower command, or a larger timeout; verify state before re-running side-effecting commands.]"
 )
 
 type ExecContext struct {
@@ -775,11 +777,12 @@ func defShell() Definition {
 			}
 			llmText := commandLLMOutput(text, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
 			if err != nil {
-				interruptErr := ctx.Err()
-				if interruptErr == nil {
-					interruptErr = callCtx.Err()
-				}
-				if interruptErr != nil {
+				// A real interrupt cancels the parent ctx (user steer, pause,
+				// session shutdown) and must propagate. A per-command timeout
+				// only expires callCtx: it is a recoverable tool error the model
+				// can react to, so surface a timeout-specific message + class and
+				// return nil error instead of a bare "interrupted".
+				if ctx.Err() != nil {
 					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						ToolCallID:    "",
@@ -788,7 +791,19 @@ func defShell() Definition {
 						DisplayOutput: InterruptedToolExecutionMessage,
 						IsError:       true,
 						Metadata:      metadata(exitCode, rawLength, truncated),
-					}, interruptErr
+					}, ctx.Err()
+				}
+				if callCtx.Err() != nil {
+					md := metadata(exitCode, rawLength, truncated)
+					md[MetadataFailureClass] = FailureClassTimeout
+					timedOutText := commandLLMOutput(TimedOutToolExecutionMessage, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
+					return session.ToolResult{
+						Name:          "shell",
+						LLMOutput:     timedOutText,
+						DisplayOutput: TimedOutToolExecutionMessage,
+						IsError:       true,
+						Metadata:      md,
+					}, nil
 				}
 				return session.ToolResult{
 					Name:          "shell",
@@ -1019,7 +1034,7 @@ func defEditFile() Definition {
 			}
 			current := string(content)
 			if !strings.Contains(current, input.OldText) {
-				return errorResult("edit_file", errors.New("old_text not found")), nil
+				return errorResult("edit_file", errors.New(editOldTextNotFoundHint(current, input.OldText, relativeOrAbsolute(execCtx.Workdir, path)))), nil
 			}
 			updated := strings.Replace(current, input.OldText, input.NewText, 1)
 			if err := writeAtomically(path, []byte(updated), 0o600); err != nil {
@@ -1036,6 +1051,54 @@ func defEditFile() Definition {
 			}, nil
 		},
 	}
+}
+
+// editOldTextNotFoundHint builds an actionable error for edit_file when the
+// exact old_text is absent. It diagnoses the most common causes (whitespace
+// drift, text that already moved/changed) and points the model at a concrete
+// recovery step instead of a bare "old_text not found".
+func editOldTextNotFoundHint(current, oldText, displayPath string) string {
+	msg := fmt.Sprintf("old_text not found in %s", displayPath)
+
+	// Whitespace-insensitive match: strong signal that only spacing/indentation
+	// differs, so the model should re-read the region and copy exact whitespace.
+	if collapseWhitespace(oldText) != "" && strings.Contains(collapseWhitespace(current), collapseWhitespace(oldText)) {
+		return msg + ": a whitespace-insensitive match exists, so indentation, tabs-vs-spaces, or trailing whitespace differ. Re-read the region with read_file and copy the exact whitespace, or use a shorter unique anchor."
+	}
+
+	// Anchor on the first non-empty line of old_text. If that line exists
+	// verbatim, the rest drifted; report where so the model can re-read.
+	if anchor := firstNonEmptyLine(oldText); anchor != "" {
+		if lineNo := lineNumberOfExact(current, anchor); lineNo > 0 {
+			return fmt.Sprintf("%s: its first line matches at line %d but the full block does not, so the surrounding text changed since you last read it. Re-read around line %d with read_file, then retry with the current text or a shorter unique anchor.", msg, lineNo, lineNo)
+		}
+	}
+
+	return msg + ": no close match found, so the text may already be edited or in a different file. Re-read the file with read_file to get the current content, then retry with a shorter unique anchor."
+}
+
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+func firstNonEmptyLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// lineNumberOfExact returns the 1-based line number whose trimmed content equals
+// anchor, or 0 if none. Trimming keeps the anchor robust to leading indentation.
+func lineNumberOfExact(content, anchor string) int {
+	for i, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == anchor {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 func defGlob() Definition {
@@ -3831,11 +3894,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			}
 			llmText := commandLLMOutput(text, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
 			if err != nil {
-				interruptErr := ctx.Err()
-				if interruptErr == nil {
-					interruptErr = callCtx.Err()
-				}
-				if interruptErr != nil {
+				if ctx.Err() != nil {
 					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
 					return session.ToolResult{
 						Name:          tool.Name,
@@ -3843,7 +3902,19 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 						DisplayOutput: InterruptedToolExecutionMessage,
 						IsError:       true,
 						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
-					}, interruptErr
+					}, ctx.Err()
+				}
+				if callCtx.Err() != nil {
+					md := attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata)
+					md[MetadataFailureClass] = FailureClassTimeout
+					timedOutText := commandLLMOutput(TimedOutToolExecutionMessage, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
+					return session.ToolResult{
+						Name:          tool.Name,
+						LLMOutput:     timedOutText,
+						DisplayOutput: TimedOutToolExecutionMessage,
+						IsError:       true,
+						Metadata:      md,
+					}, nil
 				}
 				return session.ToolResult{
 					Name:          tool.Name,
