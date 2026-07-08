@@ -12458,6 +12458,57 @@ func TestServiceSkillListRequiresReadableSkillManifest(t *testing.T) {
 	}
 }
 
+func TestServiceSkillListParsesBlockScalarAndCRLFDescriptions(t *testing.T) {
+	cfg := testConfig(t, "")
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	cfg.Skills.Dirs = []string{skillsDir}
+
+	folded := filepath.Join(skillsDir, "humanizer")
+	if err := os.MkdirAll(folded, 0o755); err != nil {
+		t.Fatalf("mkdir folded skill: %v", err)
+	}
+	foldedMD := "---\nname: humanizer\ndescription: >-\n  Silent, always-on writing layer that removes the AI-flavored feel\n  without the user asking.\n---\n\n# Humanizer\nbody\n"
+	if err := os.WriteFile(filepath.Join(folded, "SKILL.md"), []byte(foldedMD), 0o600); err != nil {
+		t.Fatalf("write folded skill: %v", err)
+	}
+
+	crlf := filepath.Join(skillsDir, "crlf-skill")
+	if err := os.MkdirAll(crlf, 0o755); err != nil {
+		t.Fatalf("mkdir crlf skill: %v", err)
+	}
+	crlfMD := "---\r\nname: crlf-skill\r\ndescription: >-\r\n  windows authored skill\r\n  second line\r\n---\r\nbody\r\n"
+	if err := os.WriteFile(filepath.Join(crlf, "SKILL.md"), []byte(crlfMD), 0o600); err != nil {
+		t.Fatalf("write crlf skill: %v", err)
+	}
+
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var listed []map[string]any
+	postGetJSON(t, ts.URL+"/api/skills", &listed)
+
+	descByID := map[string]string{}
+	for _, item := range listed {
+		id, _ := item["id"].(string)
+		desc, _ := item["description"].(string)
+		descByID[id] = desc
+	}
+
+	wantFolded := "Silent, always-on writing layer that removes the AI-flavored feel without the user asking."
+	if got := descByID["humanizer"]; got != wantFolded {
+		t.Fatalf("folded block scalar description not surfaced:\n got %q\nwant %q", got, wantFolded)
+	}
+	wantCRLF := "windows authored skill second line"
+	if got := descByID["crlf-skill"]; got != wantCRLF {
+		t.Fatalf("crlf block scalar description not surfaced:\n got %q\nwant %q", got, wantCRLF)
+	}
+}
+
 func TestSkillUploadRejectsMalformedPackageAsBadRequest(t *testing.T) {
 	cfg := testConfig(t, "")
 	skillsDir := filepath.Join(t.TempDir(), "skills")

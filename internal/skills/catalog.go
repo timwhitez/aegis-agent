@@ -318,7 +318,39 @@ func pathWithin(root, path string) bool {
 	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel))
 }
 
+// ManifestMeta holds the SKILL.md front matter fields callers outside this
+// package need (e.g. the web console skill listing). It is produced by the
+// same YAML-aware parser the runtime catalog uses so every surface reports
+// identical metadata.
+type ManifestMeta struct {
+	Name        string
+	Description string
+	Body        string
+}
+
+// ParseManifest parses raw SKILL.md content into name/description/body using the
+// canonical front matter logic. Callers that only need listing metadata should
+// use this instead of ad-hoc line scanning, which mishandles YAML block scalars
+// (e.g. `description: >-`), quoted values, and CRLF/BOM inputs.
+func ParseManifest(data []byte) (ManifestMeta, error) {
+	meta, body, err := parseFrontmatter(string(data))
+	if err != nil {
+		return ManifestMeta{}, err
+	}
+	return ManifestMeta{
+		Name:        strings.TrimSpace(meta["name"]),
+		Description: strings.TrimSpace(meta["description"]),
+		Body:        body,
+	}, nil
+}
+
 func parseFrontmatter(text string) (map[string]string, string, error) {
+	// Normalize inputs so manifests authored on Windows or exported with a UTF-8
+	// BOM parse the same as LF/no-BOM ones; otherwise the leading `---` anchor
+	// fails to match and the entire front matter is silently dropped.
+	text = strings.TrimPrefix(text, "\ufeff")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	match := regexp.MustCompile(`(?s)^---\n(.*?)\n---\n?(.*)$`).FindStringSubmatch(text)
 	if match == nil {
 		return map[string]string{}, strings.TrimSpace(text), nil

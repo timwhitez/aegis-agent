@@ -339,6 +339,12 @@ description: Example skill for local tasks
 - `name` 默认为目录名
 - `description` 默认为首段摘要
 
+frontmatter 解析约束：
+
+- `description` / `name` 允许 YAML 块标量（`>-` folded、`|-` literal）、引号值与多行值；解析必须还原真实文本，不能把块标量指示符（如 `>-`）当成描述本身
+- 解析前需归一化 CRLF/CR 与 UTF-8 BOM，保证 Windows 编辑或带 BOM 导出的 `SKILL.md` 与 LF 版本结果一致
+- runtime catalog 与 Web 控制台 `/api/skills` 必须共用同一套 frontmatter 解析逻辑（`internal/skills.ParseManifest`），不得各自实现 naive 逐行解析，避免同一 skill 在不同界面显示不一致的描述
+
 ### 6.2 `tools/*.yaml`
 
 用于声明 skill 附带的命令型工具。字段：

@@ -32,6 +32,7 @@ import (
 	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/runtime"
 	"go-cli-agent/internal/session"
+	"go-cli-agent/internal/skills"
 	"go-cli-agent/internal/tools"
 
 	"github.com/gorilla/websocket"
@@ -4881,7 +4882,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		DisabledReason string   `json:"disabled_reason,omitempty"`
 	}
 
-	var skills []skillMeta
+	var skillList []skillMeta
 
 	cfg, err := s.configSnapshot()
 	if err != nil {
@@ -4935,20 +4936,15 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			}
 			desc := "Local skill"
 			name := entry.Name()
-			// Simple frontmatter extraction
-			lines := strings.Split(string(mdData), "\n")
-			inFront := false
-			for _, l := range lines {
-				l = strings.TrimSpace(l)
-				if l == "---" {
-					inFront = !inFront
-					continue
+			// Parse front matter with the same YAML-aware logic the runtime
+			// catalog uses so block scalars (`description: >-`), quoted values,
+			// and CRLF/BOM manifests surface identical metadata here.
+			if meta, parseErr := skills.ParseManifest(mdData); parseErr == nil {
+				if strings.TrimSpace(meta.Description) != "" {
+					desc = strings.TrimSpace(meta.Description)
 				}
-				if inFront && strings.HasPrefix(l, "description:") {
-					desc = strings.TrimSpace(strings.TrimPrefix(l, "description:"))
-				}
-				if inFront && strings.HasPrefix(l, "name:") {
-					name = strings.TrimSpace(strings.TrimPrefix(l, "name:"))
+				if strings.TrimSpace(meta.Name) != "" {
+					name = strings.TrimSpace(meta.Name)
 				}
 			}
 			readOnly := !managed
@@ -4957,7 +4953,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 				readOnly = true
 				disabledReason = "Skill id is not manageable by this WebConsole."
 			}
-			skills = append(skills, skillMeta{
+			skillList = append(skillList, skillMeta{
 				ID:             entry.Name(),
 				Name:           name,
 				Author:         "Local",
@@ -4983,7 +4979,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, candidate := range discovery.Candidates {
-		skills = append(skills, skillMeta{
+		skillList = append(skillList, skillMeta{
 			ID:             candidate.QualifiedName,
 			Name:           candidate.Name,
 			Author:         "Workspace extension",
@@ -5000,10 +4996,10 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if len(skills) == 0 {
-		skills = make([]skillMeta, 0)
+	if len(skillList) == 0 {
+		skillList = make([]skillMeta, 0)
 	}
-	writeJSON(w, http.StatusOK, skills)
+	writeJSON(w, http.StatusOK, skillList)
 }
 
 func (s *Service) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
@@ -5601,19 +5597,13 @@ func sanitizeDirName(s string) string {
 }
 
 func extractSkillNameFromMd(data []byte) string {
-	lines := strings.Split(string(data), "\n")
-	inFront := false
-	for _, l := range lines {
-		l = strings.TrimSpace(l)
-		if l == "---" {
-			inFront = !inFront
-			continue
-		}
-		if inFront && strings.HasPrefix(l, "name:") {
-			return strings.TrimSpace(strings.TrimPrefix(l, "name:"))
-		}
+	// Reuse the canonical parser so uploaded skills whose name/description use
+	// YAML block scalars or CRLF still resolve a correct target directory name.
+	meta, err := skills.ParseManifest(data)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return strings.TrimSpace(meta.Name)
 }
 
 func (s *Service) handleUploadSkill(w http.ResponseWriter, r *http.Request) {
