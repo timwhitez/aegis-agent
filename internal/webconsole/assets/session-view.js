@@ -488,7 +488,7 @@ function renderSessionActivityCard() {
       : failureSummary?.activityCopy || detail?.state?.last_error || liveActivity.copy;
   const summary = summarizeLiveCounters(counters);
   const canContinue = hasDurableSession() &&
-    ['paused', 'awaiting_input', 'failed'].includes(rawStatus) &&
+    ['paused', 'awaiting_input', 'failed', 'completed'].includes(rawStatus) &&
     !awaitingPlanApproval &&
     !awaitingPlanInput;
 

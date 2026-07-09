@@ -833,7 +833,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return RunResult{}, err
 	}
 	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
 	default:
 		return RunResult{}, errors.New("session is not resumable")
 	}
@@ -888,7 +888,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			meta.ProviderOptions = mergedProviderOptions
 		}
 	}
-	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed)
+	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
 	if err != nil {
 		return RunResult{}, err
 	}

@@ -4991,8 +4991,8 @@ func TestContinueNonResumableSessionReturnsStructuredError(t *testing.T) {
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
-	meta := testSessionMetadata(t, "session_continue_completed")
-	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+	meta := testSessionMetadata(t, "session_continue_running")
+	if err := svc.store.Create(meta, testSessionState(session.StatusRunning)); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -5002,6 +5002,45 @@ func TestContinueNonResumableSessionReturnsStructuredError(t *testing.T) {
 	if errResp.Code != errorCodeSessionNotResumable || errResp.Action == "" {
 		t.Fatalf("expected structured non-resumable error, got %#v", errResp)
 	}
+}
+
+func TestContinueCompletedSessionIsAccepted(t *testing.T) {
+	server := newFinishServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "session_continue_completed")
+	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	var resp LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{
+		"message": "补充信息后继续原任务",
+	}, http.StatusAccepted, &resp)
+	if resp.SessionID != meta.ID || resp.Status != "accepted" {
+		t.Fatalf("expected accepted continue of completed session, got %#v", resp)
+	}
+
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(meta.ID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string {
+		state, err := svc.store.LoadState(meta.ID)
+		if err != nil {
+			return err.Error()
+		}
+		return "status=" + state.Status
+	})
 }
 
 func TestInterruptNonOwnedSessionReturnsStructuredError(t *testing.T) {

@@ -17,7 +17,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 可以在创建或继续 session 时通过 Plan 开关进入 Plan Mode，并在 inspector 中审批、修订、取消或回答规划问题
 - 默认启动表单不要求也不展示 agent name / agent role；role hints 仍由 agent 内部 mission plan、child/queue 高级 API 或 CLI/API advanced payload 显式传递
 - 可以对运行中的 session 追加 steer
-- 可以对暂停或等待输入的 session 执行 continue
+- 可以对暂停、等待输入、失败或已完成的 session 执行 continue
 - 可以查看 background queue / children / task board / timeline / errors
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
@@ -460,6 +460,7 @@ Settings API：
 行为：
 
 - 异步恢复该 session
+- 可恢复状态为 `paused` / `awaiting_input` / `failed` / `completed`；`completed` session 补充 `message` 后按普通 continue 延续既有历史，只有正在 `running` 的 session 返回 not-resumable
 - 立即返回 `202`
 - 若当前 `planmode.status=awaiting_approval` 且传入普通 `message`，后端将其作为 plan revision user message，而不是执行计划
 

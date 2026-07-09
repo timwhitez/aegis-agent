@@ -1531,6 +1531,80 @@ func TestRunnerContinueUsesDurableRetryPolicyFromSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestRunnerContinueResumesCompletedSession(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[
+				{
+					"type":"function_call",
+					"call_id":"call_1",
+					"name":"finish",
+					"arguments":"{\"message\":\"follow-up done\"}"
+				}
+			],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	store := false
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIKeyEnv:  "OPENAI_API_KEY",
+		BaseURL:    server.URL + "/v1",
+		Model:      "gpt-5.4",
+		TimeoutSec: 30,
+		WireAPI:    "responses",
+		Store:      &store,
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: completionPolicy(session.ModeExec),
+		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
+	}
+	// A previously finished session lands in StatusCompleted; a later
+	// user input must resume it in place instead of forcing a new session.
+	state := session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "turn_decide",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	result, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "补充信息后继续原任务",
+	})
+	if err != nil {
+		t.Fatalf("continue completed session: %v", err)
+	}
+	if result.Status != session.StatusCompleted {
+		t.Fatalf("expected completed result after resuming, got %#v", result)
+	}
+	if result.SessionID != meta.ID {
+		t.Fatalf("expected same session id, got %q want %q", result.SessionID, meta.ID)
+	}
+}
+
 func TestRunnerContinueBackfillsMissingProviderOptions(t *testing.T) {
 	var seenBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

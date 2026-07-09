@@ -133,6 +133,15 @@ session 系统保证下面四件事同时成立：
 
 它不是错误状态，也不是完成状态。
 
+### 5.2 `completed`
+
+表示：
+
+- 模型已显式 `finish`，本轮任务被视为完成
+- 它是完成状态，不是错误状态
+
+`completed` 也是可恢复状态：用户在 finish 之后补充信息时，应当在原 session 上 `continue`，把新的 user message 追加进既有历史并把状态切回 `running`，而不是新开一个丢失上下文的 session。这样“任务已 finish 但需要补充信息”的场景可以延续原始上下文。
+
 ## 6. 创建规则
 
 启动 `run` 或 `exec` 时：
@@ -144,7 +153,8 @@ session 系统保证下面四件事同时成立：
 启动 `continue` 时：
 
 - 必须能找到现有 session
-- 仅允许恢复 `paused`、`awaiting_input` 或 `failed`
+- 允许恢复 `paused`、`awaiting_input`、`failed` 或 `completed`
+- `completed` session 收到新的 user message 时按普通 continue 延续既有历史；不允许恢复的只有正在 `running` 的 session（应改用 `steer`）
 
 启动 `steer` 时：
 

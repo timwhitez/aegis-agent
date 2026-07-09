@@ -2431,13 +2431,13 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
 	default:
 		writeError(w, http.StatusConflict, newWebError(
 			errorCodeSessionNotResumable,
 			"session is not resumable",
-			"only paused, awaiting_input, and failed sessions can be continued",
-			"start a new session or choose a resumable session",
+			"only paused, awaiting_input, failed, and completed sessions can be continued",
+			"wait for the active run, then continue the session",
 		))
 		return
 	}
@@ -2657,9 +2657,9 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 		return err
 	}
 	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
 	default:
-		return newWebError(errorCodeSessionNotResumable, "session is not resumable", "only paused, awaiting_input, and failed sessions can be continued", "wait for the active run or choose another action")
+		return newWebError(errorCodeSessionNotResumable, "session is not resumable", "only paused, awaiting_input, failed, and completed sessions can be continued", "wait for the active run or choose another action")
 	}
 	cfg, err := s.configSnapshot()
 	if err != nil {

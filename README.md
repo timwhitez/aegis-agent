@@ -11,7 +11,7 @@
 - `exec` 适合脚本或 CI，默认要求模型显式 `finish`
 - `run/exec --plan` 或 Web 的 Plan 开关会进入 session-scoped Plan Mode：审批前只允许读/搜索、`request_user_input` 和 `submit_plan`，批准后才执行
 - `steer` 通过文件控制队列向运行中 session 追加输入，`--interrupt` 是 best-effort 抢占
-- `continue` 恢复 `paused`、`awaiting_input`、`failed` session
+- `continue` 恢复 `paused`、`awaiting_input`、`failed`、`completed` session（finish 后补充信息可延续原上下文，无需新开 session）
 - session / state / messages / events / goal / todo / tasks 是本地文件事实源
 - provider 原生支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - `openai-compatible` 作为 OpenAI Responses 形状的兼容部署模式提供
