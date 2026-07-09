@@ -1358,7 +1358,7 @@ async function sendMessage() {
   }
 
   const currentStatus = state.sessionDetail?.state?.status || '';
-  if (hasDurableSession() && ['awaiting_input', 'paused', 'failed'].includes(currentStatus)) {
+  if (hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus)) {
     const sessionID = state.sessionId;
     const actionPlanModeIdentity = currentPlanModeActionIdentity();
     let revisingPlanMode = false;
@@ -1424,7 +1424,7 @@ async function sendMessage() {
     return;
   }
 
-  if (!hasDurableSession() || currentStatus === 'completed') {
+  if (!hasDurableSession()) {
     const goalDraft = collectGoalDraft(text);
     if (goalDraft?.error) {
       removeOptimisticMessage(optimisticID);
@@ -1836,6 +1836,10 @@ function chatInputPlaceholder() {
   if (isPlanModeComposerEnabled()) {
     return 'Describe the objective to plan before execution...';
   }
+  const status = state.sessionDetail?.state?.status || '';
+  if (hasDurableSession() && status === 'completed') {
+    return 'Add a follow-up to continue this completed session...';
+  }
   return 'Ask anything...';
 }
 
@@ -1863,7 +1867,7 @@ function inputActionLabel() {
     return `Continue ${humanizeStatus(status)} session: next send resumes this durable session.`;
   }
   if (hasDurableSession() && status === 'completed') {
-    return 'Completed session loaded: next send starts a new session unless you open another session from the Sessions view.';
+    return 'Completed session loaded: next send adds a follow-up and continues this session with its existing context.';
   }
   return 'Start new session: Enter sends, Shift+Enter / Ctrl+Enter inserts a line.';
 }
