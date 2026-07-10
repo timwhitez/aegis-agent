@@ -530,7 +530,7 @@ func goalItemStatusUpdateArraySchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":          map[string]any{"type": "string", "description": "Criterion or validation id to update."},
+				"id":          map[string]any{"type": "string", "description": "Existing criterion or validation id from get_goal; ids are system-assigned, not free-form labels."},
 				"status":      map[string]any{"type": "string", "description": "Item status such as verified, failed, skipped, blocked, or pending."},
 				"evidence":    withDescription(stringArraySchema(), "Concrete evidence refs for this item."),
 				"last_run_at": map[string]any{"type": "string", "description": "Optional RFC3339 validation run timestamp."},
@@ -563,10 +563,10 @@ func missionFeatureUpdateArraySchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":                 map[string]any{"type": "string", "description": "Mission feature id to update."},
+				"id":                 map[string]any{"type": "string", "description": "Existing mission feature id from get_goal.mission.features; ids are system-assigned, not free-form labels."},
 				"status":             map[string]any{"type": "string", "description": "Feature status such as pending, in_progress, completed, blocked, or skipped."},
 				"evidence":           withDescription(stringArraySchema(), "Evidence refs for this feature."),
-				"claimed_assertions": withDescription(stringArraySchema(), "Validation contract ids this feature covers."),
+				"claimed_assertions": withDescription(stringArraySchema(), "Existing mission validation contract ids from get_goal.mission.validation_contract. Omit when the mission has no validation contract items."),
 				"task_ids":           withDescription(stringArraySchema(), "Durable task ids linked to this feature."),
 				"child_session_ids":  withDescription(stringArraySchema(), "Child session ids linked to this feature."),
 				"queue_job_ids":      withDescription(stringArraySchema(), "Queue job ids linked to this feature."),
@@ -574,7 +574,7 @@ func missionFeatureUpdateArraySchema() map[string]any {
 			"required":             []string{"id"},
 			"additionalProperties": false,
 		},
-	}, "Append-friendly updates for mission features by id.")
+	}, "Append-friendly updates for mission features by exact ids from get_goal. Omit feature_updates when the current goal has no mission features.")
 }
 
 func missionMilestoneUpdateArraySchema() map[string]any {
@@ -583,11 +583,11 @@ func missionMilestoneUpdateArraySchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":                map[string]any{"type": "string", "description": "Mission milestone id to update."},
+				"id":                map[string]any{"type": "string", "description": "Existing mission milestone id from get_goal.mission.milestones; ids are system-assigned, not free-form labels."},
 				"status":            map[string]any{"type": "string", "description": "Milestone status such as pending, in_progress, completed, blocked, or skipped."},
 				"evidence":          withDescription(stringArraySchema(), "Evidence refs for this milestone."),
-				"feature_ids":       withDescription(stringArraySchema(), "Feature ids linked to this milestone."),
-				"validation_ids":    withDescription(stringArraySchema(), "Validation contract ids this milestone covers."),
+				"feature_ids":       withDescription(stringArraySchema(), "Existing mission feature ids from get_goal.mission.features."),
+				"validation_ids":    withDescription(stringArraySchema(), "Existing mission validation contract ids from get_goal.mission.validation_contract. Omit when the mission has no validation contract items."),
 				"task_ids":          withDescription(stringArraySchema(), "Durable task ids linked to this milestone."),
 				"child_session_ids": withDescription(stringArraySchema(), "Child session ids linked to this milestone."),
 				"queue_job_ids":     withDescription(stringArraySchema(), "Queue job ids linked to this milestone."),
@@ -595,7 +595,7 @@ func missionMilestoneUpdateArraySchema() map[string]any {
 			"required":             []string{"id"},
 			"additionalProperties": false,
 		},
-	}, "Append-friendly updates for mission milestones by id.")
+	}, "Append-friendly updates for mission milestones by exact ids from get_goal. Omit milestone_updates when the current goal has no mission milestones.")
 }
 
 func missionValidationUpdateArraySchema() map[string]any {
@@ -604,7 +604,7 @@ func missionValidationUpdateArraySchema() map[string]any {
 		"items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":                 map[string]any{"type": "string", "description": "Validation id to update in the goal validation plan or mission validation contract."},
+				"id":                 map[string]any{"type": "string", "description": "Existing validation id from get_goal.validation_plan or get_goal.mission.validation_contract; ids are system-assigned, not free-form labels."},
 				"status":             map[string]any{"type": "string", "description": "Validation status such as verified, failed, skipped, blocked, or pending."},
 				"evidence":           withDescription(stringArraySchema(), "Evidence refs for this validation item."),
 				"last_run_at":        map[string]any{"type": "string", "description": "Optional RFC3339 validation run timestamp."},
@@ -615,7 +615,7 @@ func missionValidationUpdateArraySchema() map[string]any {
 			"required":             []string{"id"},
 			"additionalProperties": false,
 		},
-	}, "Append-friendly updates for validation plan or validation contract items by id.")
+	}, "Append-friendly updates for validation plan or mission validation contract items by exact ids from get_goal. Omit validation_updates when the current goal has no validation items.")
 }
 
 func evaluatorEvidenceArraySchema() map[string]any {
@@ -2300,7 +2300,7 @@ func restoreCreateGoalWithPlanMode(execCtx ExecContext, previousPlanMode session
 func defRecordGoalProgress() Definition {
 	return Definition{
 		Name:        "record_goal_progress",
-		Description: "Append structured progress, handoff, validation evidence, evaluator child/queue attribution, commands, artifacts, blockers, or budget wrap-up facts to the current durable goal. This does not change the objective, pause/resume/clear the goal, approve plans, or mark completion; use update_goal only after a real completion audit.",
+		Description: "Append structured progress, handoff, validation evidence, evaluator child/queue attribution, commands, artifacts, blockers, or budget wrap-up facts to the current durable goal. Read get_goal before sending any feature, milestone, or validation id: these ids are system-assigned and are not free-form labels. This does not change the objective, pause/resume/clear the goal, approve plans, or mark completion; use update_goal only after a real completion audit.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -2315,7 +2315,7 @@ func defRecordGoalProgress() Definition {
 				"blockers":           withDescription(stringArraySchema(), "Current blockers or remaining risks."),
 				"child_session_ids":  withDescription(stringArraySchema(), "Child session ids related to this progress or handoff."),
 				"queue_job_ids":      withDescription(stringArraySchema(), "Queue job ids related to this progress or handoff."),
-				"validation_ids":     withDescription(stringArraySchema(), "Validation ids related to this progress or handoff."),
+				"validation_ids":     withDescription(stringArraySchema(), "Existing ids from get_goal.validation_plan or get_goal.mission.validation_contract related to this progress. Omit when the current goal has no validation items."),
 				"feature_updates":    missionFeatureUpdateArraySchema(),
 				"milestone_updates":  missionMilestoneUpdateArraySchema(),
 				"validation_updates": missionValidationUpdateArraySchema(),

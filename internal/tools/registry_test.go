@@ -1455,6 +1455,195 @@ func TestGoalToolsCreateReadRejectInvalidStatusAndComplete(t *testing.T) {
 	}
 }
 
+func TestRecordGoalProgressSchemaExplainsSystemAssignedIDs(t *testing.T) {
+	registry, err := NewRegistry(config.Default(), nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	def := registry.Get("record_goal_progress")
+	if def == nil {
+		t.Fatal("record_goal_progress definition missing")
+	}
+	if !strings.Contains(def.Description, "Read get_goal") || !strings.Contains(def.Description, "system-assigned") {
+		t.Fatalf("record_goal_progress description must identify the id source, got %q", def.Description)
+	}
+	schemaJSON, err := json.Marshal(def.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal record_goal_progress schema: %v", err)
+	}
+	schemaText := string(schemaJSON)
+	for _, want := range []string{
+		"get_goal.validation_plan",
+		"get_goal.mission.validation_contract",
+		"get_goal.mission.features",
+		"get_goal.mission.milestones",
+		"Omit feature_updates",
+		"Omit milestone_updates",
+		"Omit validation_updates",
+	} {
+		if !strings.Contains(schemaText, want) {
+			t.Fatalf("record_goal_progress schema must mention %q, got %s", want, schemaText)
+		}
+	}
+}
+
+func TestRecordGoalProgressValidationIDsRecoverFromGetGoal(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	createSession := func(id string) session.SessionMetadata {
+		meta := session.SessionMetadata{
+			SchemaVersion:    1,
+			ID:               id,
+			CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+			Workdir:          t.TempDir(),
+			Mode:             session.ModeRun,
+			Provider:         "fake",
+			Model:            "fake",
+			CompletionPolicy: session.CompletionPolicyInteractive,
+		}
+		if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			t.Fatalf("create session %s: %v", id, err)
+		}
+		return meta
+	}
+	execute := func(meta session.SessionMetadata, payload string) session.ToolResult {
+		result, err := registry.Execute(context.Background(), "record_goal_progress", ExecContext{
+			SessionID: meta.ID,
+			Workdir:   meta.Workdir,
+			Store:     store,
+			Config:    cfg,
+		}, json.RawMessage(payload))
+		if err != nil {
+			t.Fatalf("record_goal_progress execute: %v", err)
+		}
+		return result
+	}
+
+	withValidation := createSession("goal_progress_validation_recovery")
+	goal, err := store.CreateGoal(withValidation.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeGoal,
+		Objective:      "Validate progress ids",
+		ValidationPlan: []string{"go test ./..."},
+		Source:         session.GoalSourceTool,
+	})
+	if err != nil {
+		t.Fatalf("create goal with validation: %v", err)
+	}
+	validID := goal.ValidationPlan[0].ID
+	for _, tc := range []struct {
+		name    string
+		payload string
+	}{
+		{name: "validation update", payload: `{"validation_updates":[{"id":"invented-validation","status":"verified"}]}`},
+		{name: "progress validation reference", payload: `{"summary":"validation evidence","validation_ids":["invented-validation"]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := execute(withValidation, tc.payload)
+			if !result.IsError || !strings.Contains(result.DisplayOutput, validID) || !strings.Contains(result.DisplayOutput, "get_goal") {
+				t.Fatalf("expected valid validation ids and get_goal recovery, got %#v", result)
+			}
+		})
+	}
+
+	withoutValidation := createSession("goal_progress_validation_empty")
+	if _, err := store.CreateGoal(withoutValidation.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "No validation items",
+		Source:    session.GoalSourceTool,
+	}); err != nil {
+		t.Fatalf("create goal without validation: %v", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		payload   string
+		omitField string
+	}{
+		{name: "validation update", payload: `{"validation_updates":[{"id":"invented-validation","status":"verified"}]}`, omitField: "omit validation_updates"},
+		{name: "progress validation reference", payload: `{"summary":"validation evidence","validation_ids":["invented-validation"]}`, omitField: "omit validation_ids"},
+		{name: "feature update", payload: `{"feature_updates":[{"id":"invented-feature","status":"completed"}]}`, omitField: "omit feature_updates"},
+		{name: "milestone update", payload: `{"milestone_updates":[{"id":"invented-milestone","status":"completed"}]}`, omitField: "omit milestone_updates"},
+	} {
+		t.Run("empty "+tc.name, func(t *testing.T) {
+			result := execute(withoutValidation, tc.payload)
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.omitField) || !strings.Contains(result.DisplayOutput, "get_goal") {
+				t.Fatalf("expected empty-id omission recovery %q, got %#v", tc.omitField, result)
+			}
+		})
+	}
+}
+
+func TestRecordGoalProgressMissionIDsRecoverFromGetGoal(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "goal_progress_mission_recovery",
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	goal, err := store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:        true,
+		Mode:           session.GoalModeMission,
+		Objective:      "Validate mission progress ids",
+		Features:       []string{"Feature one"},
+		Milestones:     []string{"Milestone one"},
+		ValidationPlan: []string{"Mission validation"},
+		Source:         session.GoalSourceTool,
+	})
+	if err != nil {
+		t.Fatalf("create mission goal: %v", err)
+	}
+	if goal.Mission == nil || len(goal.Mission.Features) != 1 || len(goal.Mission.Milestones) != 1 || len(goal.Mission.ValidationContract) != 1 {
+		t.Fatalf("expected mission ids, got %#v", goal)
+	}
+	featureID := goal.Mission.Features[0].ID
+	milestoneID := goal.Mission.Milestones[0].ID
+	validationID := goal.Mission.ValidationContract[0].ID
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: meta.Workdir, Store: store, Config: cfg}
+
+	tests := []struct {
+		name    string
+		payload string
+		wantID  string
+		field   string
+	}{
+		{name: "feature id", payload: `{"feature_updates":[{"id":"invented-feature","status":"completed"}]}`, wantID: featureID, field: "feature_updates"},
+		{name: "milestone id", payload: `{"milestone_updates":[{"id":"invented-milestone","status":"completed"}]}`, wantID: milestoneID, field: "milestone_updates"},
+		{name: "validation id", payload: `{"validation_updates":[{"id":"invented-validation","status":"verified"}]}`, wantID: validationID, field: "validation_updates"},
+		{name: "feature assertion", payload: fmt.Sprintf(`{"feature_updates":[{"id":%q,"claimed_assertions":["invented-validation"]}]}`, featureID), wantID: validationID, field: "claimed_assertions"},
+		{name: "milestone validation", payload: fmt.Sprintf(`{"milestone_updates":[{"id":%q,"validation_ids":["invented-validation"]}]}`, milestoneID), wantID: validationID, field: "validation_ids"},
+		{name: "milestone feature", payload: fmt.Sprintf(`{"milestone_updates":[{"id":%q,"feature_ids":["invented-feature"]}]}`, milestoneID), wantID: featureID, field: "feature_ids"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := registry.Execute(context.Background(), "record_goal_progress", execCtx, json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatalf("record_goal_progress execute: %v", err)
+			}
+			if !result.IsError || !strings.Contains(result.DisplayOutput, tc.wantID) || !strings.Contains(result.DisplayOutput, "get_goal") || !strings.Contains(result.DisplayOutput, tc.field) {
+				t.Fatalf("expected mission id recovery for %s, got %#v", tc.field, result)
+			}
+		})
+	}
+}
+
 func TestGoalToolsRejectMissingSessionMetadata(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())

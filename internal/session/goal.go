@@ -1669,9 +1669,9 @@ func goalBudgetExceeded(goal SessionGoal) bool {
 	return false
 }
 
-func unknownGoalItemHint(kind string, ids []string) string {
+func unknownGoalItemHint(kind string, ids []string, omitField string) string {
 	if len(ids) == 0 {
-		return fmt.Sprintf("this goal has no %s items; call get_goal to inspect the goal, and omit %s_statuses (system-assigned ids only, not free-form labels)", kind, kind)
+		return fmt.Sprintf("this goal has no %s items; call get_goal to inspect the current goal, and omit %s (system-assigned ids only, not free-form labels)", kind, omitField)
 	}
 	return fmt.Sprintf("valid %s ids are [%s]; get exact ids from get_goal (ids are system-assigned, not free-form labels)", kind, strings.Join(ids, ", "))
 }
@@ -1690,7 +1690,7 @@ func applyGoalCriterionUpdates(items []GoalCriterion, updates []GoalItemStatusUp
 		}
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("unknown criterion id %q: %s", id, unknownGoalItemHint("criterion", ids))
+			return fmt.Errorf("unknown criterion id %q: %s", id, unknownGoalItemHint("criterion", ids, "criteria_statuses"))
 		}
 		status := normalizeGoalEvidenceStatus(update.Status)
 		if status != "" {
@@ -1716,7 +1716,7 @@ func applyGoalValidationUpdates(items []GoalValidation, updates []GoalItemStatus
 		}
 		i, ok := index[id]
 		if !ok {
-			return fmt.Errorf("unknown validation id %q: %s", id, unknownGoalItemHint("validation", ids))
+			return fmt.Errorf("unknown validation id %q: %s", id, unknownGoalItemHint("validation", ids, "validation_statuses"))
 		}
 		status := normalizeGoalEvidenceStatus(update.Status)
 		if status != "" {

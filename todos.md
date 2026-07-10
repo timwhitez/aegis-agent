@@ -201,7 +201,7 @@ PASS
 
 ---
 
-## - [ ] T4 [P2] `record_goal_progress` 仍缺少与 `update_goal` 对齐的 ID 来源和恢复提示
+## - [x] T4 [P2] `record_goal_progress` 仍缺少与 `update_goal` 对齐的 ID 来源和恢复提示
 
 ### 现象与证据
 

@@ -142,18 +142,26 @@ func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (S
 		if goal.GoalID == "" {
 			return errors.New("session has no current goal")
 		}
+		if err := validateGoalProgressReferences("validation", "validation_ids", input.ValidationIDs, goalProgressValidationIDs(*goal)); err != nil {
+			return err
+		}
 		if len(input.FeatureUpdates) > 0 || len(input.MilestoneUpdates) > 0 {
-			if goal.Mission == nil {
-				return errors.New("mission plan is required for feature or milestone updates")
+			var features []MissionFeature
+			var milestones []MissionMilestone
+			var contractIDs []string
+			if goal.Mission != nil {
+				features = goal.Mission.Features
+				milestones = goal.Mission.Milestones
+				contractIDs = goalValidationItemIDs(goal.Mission.ValidationContract)
 			}
 			for _, update := range input.FeatureUpdates {
-				if err := applyFeatureProgressUpdate(goal.Mission.Features, update); err != nil {
+				if err := applyFeatureProgressUpdate(features, contractIDs, update); err != nil {
 					return err
 				}
 				planChanged = true
 			}
 			for _, update := range input.MilestoneUpdates {
-				if err := applyMilestoneProgressUpdate(goal.Mission.Milestones, update); err != nil {
+				if err := applyMilestoneProgressUpdate(milestones, goalMissionFeatureIDs(features), contractIDs, update); err != nil {
 					return err
 				}
 				planChanged = true
@@ -302,7 +310,7 @@ func compactProgressCommands(commands []GoalProgressCommand) []GoalProgressComma
 	return out
 }
 
-func applyFeatureProgressUpdate(items []MissionFeature, update MissionFeatureProgressUpdate) error {
+func applyFeatureProgressUpdate(items []MissionFeature, contractIDs []string, update MissionFeatureProgressUpdate) error {
 	id := strings.TrimSpace(update.ID)
 	if id == "" {
 		return errors.New("feature update id is required")
@@ -310,6 +318,9 @@ func applyFeatureProgressUpdate(items []MissionFeature, update MissionFeaturePro
 	for i := range items {
 		if items[i].ID != id {
 			continue
+		}
+		if err := validateGoalProgressReferences("mission validation contract", "feature_updates[].claimed_assertions", update.ClaimedAssertions, contractIDs); err != nil {
+			return err
 		}
 		if status := normalizeGoalEvidenceStatus(update.Status); status != "" {
 			items[i].Status = status
@@ -321,10 +332,10 @@ func applyFeatureProgressUpdate(items []MissionFeature, update MissionFeaturePro
 		items[i].QueueJobIDs = mergeStringLists(items[i].QueueJobIDs, update.QueueJobIDs)
 		return nil
 	}
-	return fmt.Errorf("unknown feature id: %s", id)
+	return fmt.Errorf("unknown feature id %q in feature_updates: %s", id, unknownGoalItemHint("mission feature", goalMissionFeatureIDs(items), "feature_updates"))
 }
 
-func applyMilestoneProgressUpdate(items []MissionMilestone, update MissionMilestoneProgressUpdate) error {
+func applyMilestoneProgressUpdate(items []MissionMilestone, featureIDs, contractIDs []string, update MissionMilestoneProgressUpdate) error {
 	id := strings.TrimSpace(update.ID)
 	if id == "" {
 		return errors.New("milestone update id is required")
@@ -332,6 +343,12 @@ func applyMilestoneProgressUpdate(items []MissionMilestone, update MissionMilest
 	for i := range items {
 		if items[i].ID != id {
 			continue
+		}
+		if err := validateGoalProgressReferences("mission feature", "milestone_updates[].feature_ids", update.FeatureIDs, featureIDs); err != nil {
+			return err
+		}
+		if err := validateGoalProgressReferences("mission validation contract", "milestone_updates[].validation_ids", update.ValidationIDs, contractIDs); err != nil {
+			return err
 		}
 		if status := normalizeGoalEvidenceStatus(update.Status); status != "" {
 			items[i].Status = status
@@ -344,7 +361,7 @@ func applyMilestoneProgressUpdate(items []MissionMilestone, update MissionMilest
 		items[i].QueueJobIDs = mergeStringLists(items[i].QueueJobIDs, update.QueueJobIDs)
 		return nil
 	}
-	return fmt.Errorf("unknown milestone id: %s", id)
+	return fmt.Errorf("unknown milestone id %q in milestone_updates: %s", id, unknownGoalItemHint("mission milestone", goalMissionMilestoneIDs(items), "milestone_updates"))
 }
 
 func applyValidationProgressUpdate(goal *SessionGoal, update GoalValidationProgressUpdate, now string) (bool, error) {
@@ -368,9 +385,61 @@ func applyValidationProgressUpdate(goal *SessionGoal, update GoalValidationProgr
 		}
 	}
 	if !changed {
-		return false, fmt.Errorf("unknown validation id: %s", id)
+		return false, fmt.Errorf("unknown validation id %q in validation_updates: %s", id, unknownGoalItemHint("validation", goalProgressValidationIDs(*goal), "validation_updates"))
 	}
 	return true, nil
+}
+
+func validateGoalProgressReferences(kind, field string, provided, valid []string) error {
+	if len(provided) == 0 {
+		return nil
+	}
+	validSet := make(map[string]struct{}, len(valid))
+	for _, id := range valid {
+		validSet[id] = struct{}{}
+	}
+	for _, rawID := range provided {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			return fmt.Errorf("%s id is required", field)
+		}
+		if _, ok := validSet[id]; !ok {
+			return fmt.Errorf("unknown %s id %q in %s: %s", kind, id, field, unknownGoalItemHint(kind, valid, field))
+		}
+	}
+	return nil
+}
+
+func goalProgressValidationIDs(goal SessionGoal) []string {
+	ids := goalValidationItemIDs(goal.ValidationPlan)
+	if goal.Mission != nil {
+		ids = mergeStringLists(ids, goalValidationItemIDs(goal.Mission.ValidationContract))
+	}
+	return ids
+}
+
+func goalValidationItemIDs(items []GoalValidation) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = appendUnique(ids, item.ID)
+	}
+	return ids
+}
+
+func goalMissionFeatureIDs(items []MissionFeature) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = appendUnique(ids, item.ID)
+	}
+	return ids
+}
+
+func goalMissionMilestoneIDs(items []MissionMilestone) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = appendUnique(ids, item.ID)
+	}
+	return ids
 }
 
 func applyOneValidationProgressUpdate(item *GoalValidation, update GoalValidationProgressUpdate, now string) {
