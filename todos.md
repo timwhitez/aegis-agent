@@ -232,7 +232,7 @@ PASS
 
 ---
 
-## - [ ] T5 [P2] discovery 工具对 session artifact path 返回误导性的 `not_found`
+## - [x] T5 [P2] discovery 工具对 session artifact path 返回误导性的 `not_found`
 
 ### 现象与证据
 

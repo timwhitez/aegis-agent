@@ -102,6 +102,7 @@ v1 内置工具固定为：
 - skill 文件读取必须校验 symlink escape，且不赋予写入权限
 - 例外：session 私有的 ephemeral tool-output artifact 允许用工具结果返回的显式路径只读读取；该路径必须落在当前 session 的 ephemeral artifact root 内，仍要拒绝 symlink escape，并继续套用 120 行 `offset` / `limit` 分页窗口
 - workspace 内 `.artifacts` 这类内部生成物仍默认拒绝读取；`glob` / `grep` / `grep_files` discovery 也必须跳过 session ephemeral artifacts，避免把临时大输出重新作为候选噪音回灌
+- 当 `glob` / `grep` / `grep_files` 显式收到 `artifacts/tool-outputs` 或其子路径时，必须在普通 workspace/skill path resolver 之前返回稳定的 `unsupported_path_source` 错误：提示该 session artifact 不可 discovery，保留原始 path，并要求用 `read_file` 精确读取；不得把它归类为 workspace `not_found`，也不得建议猜路径或重跑生成命令
 - 默认支持 `offset` / `limit`
 - v1 采用小窗口读取，默认与最大返回窗口都限制为 120 行
 - 读取前必须拒绝超大 regular file；当前共享文件读取上限为 16 MiB，避免 `offset` / `limit` 窗口化之前先把异常大文件完整读入内存

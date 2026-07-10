@@ -173,6 +173,24 @@ func TestDiscoveryToolParameterSetsStayAligned(t *testing.T) {
 	}
 }
 
+func TestDiscoveryToolDescriptionsRouteSessionArtifactsToReadFile(t *testing.T) {
+	registry, err := NewRegistry(config.Default(), nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	for _, name := range []string{"glob", "grep", "grep_files"} {
+		def := registry.Get(name)
+		if def == nil {
+			t.Fatalf("%s definition missing", name)
+		}
+		for _, want := range []string{"artifacts/tool-outputs", "read_file", "exact artifact path"} {
+			if !strings.Contains(def.Description, want) {
+				t.Fatalf("expected %s description to mention %q, got %q", name, want, def.Description)
+			}
+		}
+	}
+}
+
 func TestBuiltinToolExecutionRejectsUnknownTopLevelField(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -4156,6 +4174,64 @@ func TestGrepToolsBlockExplicitInternalArtifacts(t *testing.T) {
 	}
 }
 
+func TestDiscoveryToolsRejectSessionArtifactPathsBeforeWorkspaceResolution(t *testing.T) {
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
+
+	for _, toolName := range []string{"glob", "grep", "grep_files"} {
+		for _, artifactPath := range []string{"artifacts/tool-outputs", "artifacts/tool-outputs/shell-call_OX4.txt"} {
+			t.Run(toolName+"/"+filepath.Base(artifactPath), func(t *testing.T) {
+				payload := fmt.Sprintf(`{"pattern":"needle","path":%q}`, artifactPath)
+				var firstOutput string
+				for attempt := 0; attempt < 2; attempt++ {
+					result, err := registry.Execute(context.Background(), toolName, execCtx, json.RawMessage(payload))
+					if err != nil {
+						t.Fatalf("%s attempt %d: %v", toolName, attempt+1, err)
+					}
+					if !result.IsError ||
+						!strings.Contains(result.DisplayOutput, "not searchable by discovery tools") ||
+						!strings.Contains(result.DisplayOutput, "read_file") ||
+						!strings.Contains(result.DisplayOutput, artifactPath) {
+						t.Fatalf("expected directed artifact recovery for %s, got %#v", artifactPath, result)
+					}
+					if strings.Contains(strings.ToLower(result.DisplayOutput), "not found") || strings.Contains(strings.ToLower(result.DisplayOutput), "does not exist") {
+						t.Fatalf("artifact path must not be misclassified as missing: %q", result.DisplayOutput)
+					}
+					if result.Metadata[MetadataFailureClass] != FailureClassUnsupportedPath ||
+						result.Metadata["path"] != artifactPath ||
+						result.Metadata["path_source"] != "session_ephemeral_artifact" {
+						t.Fatalf("expected unsupported path metadata, got %#v", result.Metadata)
+					}
+					if attempt == 0 {
+						firstOutput = result.DisplayOutput
+					} else if result.DisplayOutput != firstOutput {
+						t.Fatalf("repeated artifact discovery must return the same recovery error, first=%q second=%q", firstOutput, result.DisplayOutput)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestGrepToolsReportMissingExplicitPath(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -4184,7 +4260,7 @@ func TestGrepToolsReportMissingExplicitPath(t *testing.T) {
 	}
 	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
 
-	for _, name := range []string{"grep", "grep_files"} {
+	for _, name := range []string{"glob", "grep", "grep_files"} {
 		result, err := registry.Execute(context.Background(), name, execCtx, json.RawMessage(`{
 			"pattern":"needle",
 			"path":"missing.txt"
@@ -4197,6 +4273,9 @@ func TestGrepToolsReportMissingExplicitPath(t *testing.T) {
 		}
 		if strings.Contains(result.DisplayOutput, "(no matches)") {
 			t.Fatalf("expected %s missing path not to be reported as no matches, got %q", name, result.DisplayOutput)
+		}
+		if result.Metadata[MetadataFailureClass] != FailureClassNotFound {
+			t.Fatalf("expected ordinary missing workspace path to remain not_found for %s, got %#v", name, result.Metadata)
 		}
 	}
 }

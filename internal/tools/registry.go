@@ -46,6 +46,7 @@ const (
 	FailureClassInterrupted         = "interrupted"
 	FailureClassSchemaReject        = "schema_reject"
 	FailureClassNotFound            = "not_found"
+	FailureClassUnsupportedPath     = "unsupported_path_source"
 	InterruptedToolExecutionMessage = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
 	TimedOutToolExecutionMessage    = "[Command timed out and was terminated after the timeout window. This is a command/network timeout, not a bug in the command syntax; any spawned process may still be running. Consider an offline approach, a narrower command, or a larger timeout; verify state before re-running side-effecting commands.]"
 )
@@ -1104,7 +1105,7 @@ func lineNumberOfExact(content, anchor string) int {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory, and optional include applies an additional file filter. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory, and optional include applies an additional file filter. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1116,7 +1117,7 @@ func defGlob() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional workspace-relative or registered skill directory to search. Omit to search the workspace.",
+					"description": "Optional workspace-relative or registered skill directory to search. Session artifacts/tool-outputs paths are unsupported here and must be read with read_file using the exact path. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -1141,6 +1142,9 @@ func defGlob() Definition {
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("glob", err), nil
+			}
+			if isSessionEphemeralArtifactSearchInput(execCtx, input.Path) {
+				return sessionArtifactDiscoveryErrorResult("glob", input.Path), nil
 			}
 			root, err := resolveGrepRoot(execCtx, input.Path)
 			if err != nil {
@@ -1221,7 +1225,7 @@ func validateGlobMatchedPath(execCtx ExecContext, root resolvedSearchRoot, path,
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
+		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1231,7 +1235,7 @@ func defGrep() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
+					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Session artifacts/tool-outputs paths are unsupported here and must be read with read_file using the exact path. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -1256,6 +1260,9 @@ func defGrep() Definition {
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("grep", err), nil
+			}
+			if isSessionEphemeralArtifactSearchInput(execCtx, input.Path) {
+				return sessionArtifactDiscoveryErrorResult("grep", input.Path), nil
 			}
 			root, err := resolveGrepRoot(execCtx, input.Path)
 			if err != nil {
@@ -1342,7 +1349,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
+		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1354,7 +1361,7 @@ func defGrepFiles() Definition {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
+					"description": "Optional single workspace-relative file or directory to search. Registered skill bundle paths such as skills/<skill-name>/references/file.md are also accepted. Session artifacts/tool-outputs paths are unsupported here and must be read with read_file using the exact path. Does not accept |, multiple paths, or glob syntax; call repeatedly for multiple exact paths or use include for a file filter. Omit to search the workspace.",
 				},
 				"include": map[string]any{
 					"type":        "string",
@@ -1379,6 +1386,9 @@ func defGrepFiles() Definition {
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
 				return errorResult("grep_files", err), nil
+			}
+			if isSessionEphemeralArtifactSearchInput(execCtx, input.Path) {
+				return sessionArtifactDiscoveryErrorResult("grep_files", input.Path), nil
 			}
 			root, err := resolveGrepRoot(execCtx, input.Path)
 			if err != nil {
@@ -1527,6 +1537,38 @@ func isInternalGeneratedArtifactInput(path string) bool {
 		}
 	}
 	return false
+}
+
+func isSessionEphemeralArtifactSearchInput(execCtx ExecContext, input string) bool {
+	clean := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(input), `\`, "/")))
+	if clean == "." || clean == "" {
+		return false
+	}
+	if isSessionEphemeralArtifactRelativePath(clean) {
+		return true
+	}
+	if !filepath.IsAbs(clean) || execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
+		return false
+	}
+	rel, err := filepath.Rel(execCtx.Store.SessionDir(execCtx.SessionID), clean)
+	return err == nil && isSessionEphemeralArtifactRelativePath(rel)
+}
+
+func isSessionEphemeralArtifactRelativePath(input string) bool {
+	slash := filepath.ToSlash(filepath.Clean(input))
+	return slash == "artifacts/tool-outputs" || strings.HasPrefix(slash, "artifacts/tool-outputs/")
+}
+
+func sessionArtifactDiscoveryErrorResult(tool, inputPath string) session.ToolResult {
+	path := strings.TrimSpace(inputPath)
+	result := errorResult(tool, fmt.Errorf("session artifact path %q is not searchable by discovery tools; use read_file with the exact path %q (and offset/limit when paging). Do not guess another path or rerun the producing command", path, path))
+	setToolResultFailureClass(&result, FailureClassUnsupportedPath)
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata["path"] = path
+	result.Metadata["path_source"] = "session_ephemeral_artifact"
+	return result
 }
 
 var errNoRegisteredSkillPath = errors.New("path is not under a registered skill")

@@ -402,7 +402,7 @@ while true:
 8. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
 9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
 10. 落盘最终 tool result
-11. 对标记为 ephemeral 的工具输出，只在 provider request view 中应用按工具类型计算的滑动窗口：最新 `EphemeralWindow` 个结果保持 inline，窗口之外且足够大的旧结果写入 session 私有 `artifacts/tool-outputs/`，并在该 request view 中替换成可由 `read_file(path=..., offset=..., limit=120)` 显式分页读取的指针；短输出与短错误摘要继续 inline。原始 `messages.jsonl`、tool event 和当前刚执行完的结果不得被 pointer-only 覆盖；`grep` / `grep_files` / `glob` 仍不得把 artifact 目录作为 discovery 输入
+11. 对标记为 ephemeral 的工具输出，只在 provider request view 中应用按工具类型计算的滑动窗口：最新 `EphemeralWindow` 个结果保持 inline，窗口之外且足够大的旧结果写入 session 私有 `artifacts/tool-outputs/`，并在该 request view 中替换成可由 `read_file(path=..., offset=..., limit=120)` 显式分页读取的指针；短输出与短错误摘要继续 inline。原始 `messages.jsonl`、tool event 和当前刚执行完的结果不得被 pointer-only 覆盖；`grep` / `grep_files` / `glob` 仍不得把 artifact 目录作为 discovery 输入。三个 discovery 工具必须在 workspace/skill resolver 前识别 `artifacts/tool-outputs` 及其子路径，返回 `unsupported_path_source`、保留原 path 并指向 `read_file` 精确读取，不能误报 `not_found`
 
 ### 5.6 turn_decide
 
