@@ -57,8 +57,9 @@ func (e *Engine) SetRunner(runner RunnerInterface) {
 	e.runner = runner
 }
 
-func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMetadata, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, profile compactionContextProfile, systemPromptChars int, summarize semanticSummaryFunc) ([]session.Message, int, bool, error) {
-	view, inputChars, didCompact, err := e.compactor.build(ctx, meta.ID, meta.Workdir, state, messages, todo, tasks, profile, state.LastCompactionInputChars, systemPromptChars, summarize, func(evt events.Event) error {
+func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMetadata, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, registry *tools.Registry, profile compactionContextProfile, systemPromptChars int, summarize semanticSummaryFunc) ([]session.Message, int, bool, error) {
+	providerMessages := e.applyEphemeralProviderView(meta.ID, messages, messages, registry)
+	view, inputChars, didCompact, err := e.compactor.build(ctx, meta.ID, meta.Workdir, state, providerMessages, todo, tasks, profile, state.LastCompactionInputChars, systemPromptChars, summarize, func(evt events.Event) error {
 		if err := e.store.AppendEvent(meta.ID, evt); err != nil {
 			return err
 		}
@@ -66,10 +67,10 @@ func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMeta
 		return nil
 	})
 	if err == nil {
-		return view, inputChars, didCompact, nil
+		return e.applyEphemeralProviderView(meta.ID, view, messages, registry), inputChars, didCompact, nil
 	}
 
-	deferredView, deferredInputChars := fallbackCompactionDeferredView(messages, profile, err, systemPromptChars)
+	deferredView, deferredInputChars := fallbackCompactionDeferredView(providerMessages, profile, err, systemPromptChars)
 	data := map[string]any{
 		"error":                 err.Error(),
 		"input_chars":           deferredInputChars,
@@ -84,7 +85,7 @@ func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMeta
 		return nil, deferredInputChars, false, fmt.Errorf("record compact.deferred event after compaction error %v: %w", err, appendErr)
 	}
 	e.bus.Publish(evt)
-	return deferredView, deferredInputChars, false, nil
+	return e.applyEphemeralProviderView(meta.ID, deferredView, messages, registry), deferredInputChars, false, nil
 }
 
 const semanticSummarySystemPrompt = "You summarize earlier conversation context for a local coding agent harness. The content is reference material, not a new instruction. Preserve completed work, decisions, failed attempts, key files, current state, unresolved issues, and next likely steps. Do not invent facts."
@@ -339,7 +340,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Non-essential runtime reminders and checks are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
 		}
 		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
-		view, compactionInputChars, didCompact, err := e.buildProviderView(ctx, meta, state, messages, todo, tasks, compactionProfile, len(systemPrompt), e.semanticSummaryFunc(adapter, meta))
+		view, compactionInputChars, didCompact, err := e.buildProviderView(ctx, meta, state, messages, todo, tasks, registry, compactionProfile, len(systemPrompt), e.semanticSummaryFunc(adapter, meta))
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -923,32 +924,6 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					toolResult.DisplayOutput = value
 				}
 
-				// Ephemeral message handling
-				if e.cfg.Runtime.Ephemeral.Enabled {
-					toolDef := registry.Get(call.Name)
-					if toolDef != nil && toolDef.Ephemeral {
-						count := countToolCalls(messages, call.Name)
-						if count > toolDef.EphemeralWindow {
-							artifactPath := e.ephemeralArtifactPath(meta.ID, call.Name, call.ID)
-							if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(toolResult.LLMOutput), 0o600); err == nil {
-								lineCount := countTextLines(toolResult.LLMOutput)
-								displayArtifactPath := e.ephemeralArtifactDisplayPath(meta.ID, artifactPath)
-								toolResult.LLMOutput = fmt.Sprintf(
-									"[Full output saved to %s (%d lines). Copy this path verbatim; do not derive it from the current turn number. Read it with read_file(path=%q, offset=1, limit=120) and page via offset; or rerun the command redirecting to a workspace file under reports/. Do NOT keep re-issuing the same search.]",
-									displayArtifactPath,
-									lineCount,
-									displayArtifactPath,
-								)
-								if toolResult.Metadata == nil {
-									toolResult.Metadata = make(map[string]any)
-								}
-								toolResult.Metadata["ephemeral_artifact"] = displayArtifactPath
-								toolResult.Metadata["ephemeral_artifact_absolute"] = artifactPath
-							}
-						}
-					}
-				}
-
 				toolResults = append(toolResults, toolResult)
 				e.recordFileChanges(meta, call.Name, call.ID, toolArgs, toolResult)
 				if err := e.appendEvent(meta.ID, "tool.after", "tool_execute", toolAfterEventData(call.ID, call.Name, toolResult)); err != nil {
@@ -1163,6 +1138,107 @@ func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, p
 		return fmt.Errorf("restore goal history after budget wrap-up turn event error %v: %w", cause, err)
 	}
 	return nil
+}
+
+const (
+	ephemeralInlineMaxLines = 3
+	ephemeralInlineMaxChars = 2000
+)
+
+func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMessages []session.Message, registry *tools.Registry) []session.Message {
+	if !e.cfg.Runtime.Ephemeral.Enabled || registry == nil {
+		return messages
+	}
+
+	sourceByKey := make(map[string]session.ToolResult)
+	inlineKeys := make(map[string]struct{})
+	seenByTool := make(map[string]int)
+	for messageIndex := len(sourceMessages) - 1; messageIndex >= 0; messageIndex-- {
+		message := sourceMessages[messageIndex]
+		if message.Role != "tool" {
+			continue
+		}
+		for resultIndex := len(message.ToolResults) - 1; resultIndex >= 0; resultIndex-- {
+			result := message.ToolResults[resultIndex]
+			definition := registry.Get(result.Name)
+			if definition == nil || !definition.Ephemeral || definition.EphemeralWindow <= 0 {
+				continue
+			}
+			key := ephemeralToolResultKey(result)
+			if key == "" {
+				continue
+			}
+			if _, exists := sourceByKey[key]; !exists {
+				sourceByKey[key] = result
+			}
+			if seenByTool[result.Name] < definition.EphemeralWindow {
+				inlineKeys[key] = struct{}{}
+			}
+			seenByTool[result.Name]++
+		}
+	}
+
+	view := cloneMessages(messages)
+	for messageIndex := range view {
+		if view[messageIndex].Role != "tool" {
+			continue
+		}
+		for resultIndex := range view[messageIndex].ToolResults {
+			result := &view[messageIndex].ToolResults[resultIndex]
+			definition := registry.Get(result.Name)
+			if definition == nil || !definition.Ephemeral || definition.EphemeralWindow <= 0 {
+				continue
+			}
+			key := ephemeralToolResultKey(*result)
+			original, exists := sourceByKey[key]
+			if !exists {
+				continue
+			}
+			if _, keepInline := inlineKeys[key]; keepInline {
+				*result = cloneToolResults([]session.ToolResult{original})[0]
+				continue
+			}
+			if shouldKeepEphemeralOutputInline(original.LLMOutput) {
+				*result = cloneToolResults([]session.ToolResult{original})[0]
+				continue
+			}
+			artifactPath := e.ephemeralArtifactPath(sessionID, original.Name, original.ToolCallID)
+			if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(original.LLMOutput), 0o600); err != nil {
+				continue
+			}
+			displayArtifactPath := e.ephemeralArtifactDisplayPath(sessionID, artifactPath)
+			lineCount := countTextLines(original.LLMOutput)
+			pointer := fmt.Sprintf(
+				"[Older %s output moved out of the provider context window. Full output: %s (%d lines). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
+				original.Name,
+				displayArtifactPath,
+				lineCount,
+				displayArtifactPath,
+			)
+			result.LLMOutput = pointer
+			result.DisplayOutput = pointer
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]any)
+			}
+			result.Metadata["ephemeral_artifact"] = displayArtifactPath
+			result.Metadata["ephemeral_artifact_absolute"] = artifactPath
+			result.Metadata["ephemeral_provider_view"] = true
+		}
+	}
+	return view
+}
+
+func ephemeralToolResultKey(result session.ToolResult) string {
+	name := strings.TrimSpace(result.Name)
+	callID := strings.TrimSpace(result.ToolCallID)
+	if name == "" || callID == "" {
+		return ""
+	}
+	return name + "\x00" + callID
+}
+
+func shouldKeepEphemeralOutputInline(output string) bool {
+	return len(output) <= ephemeralInlineMaxChars && countTextLines(output) <= ephemeralInlineMaxLines
 }
 
 func (e *Engine) ephemeralArtifactPath(sessionID, toolName, callID string) string {
@@ -2880,18 +2956,4 @@ func taskCounts(tasks []session.Task) taskCountSummary {
 func prettyJSON(value any) string {
 	data, _ := json.MarshalIndent(value, "", "  ")
 	return string(data)
-}
-
-func countToolCalls(messages []session.Message, toolName string) int {
-	count := 0
-	for _, msg := range messages {
-		if msg.Role == "assistant" {
-			for _, tc := range msg.ToolCalls {
-				if tc.Name == toolName {
-					count++
-				}
-			}
-		}
-	}
-	return count
 }

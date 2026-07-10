@@ -438,7 +438,7 @@ hooks:
 - 阈值优先级：`runtime.compact.context_profiles` 命中的 `input_char_threshold` > 顶层显式 `input_char_threshold` > 由 `context_window_tokens` / known-model / 200000 推导
 - `runtime.compact.utilization_factor` 默认 `0.85`，取值 `(0, 1]`
 - `runtime.compact.semantic_summary.enabled` 默认 `true`：对被裁掉的中段消息做一次有界、独立超时的 provider 语义摘要补充确定性结构化摘要；失败 / 超时不会使压缩失败，回退到确定性 baseline
-- `runtime.ephemeral.enabled` 默认 `true`：对高频大输出工具超过窗口后的完整 `llm_output` 写入 session 私有 artifact，并在 tool result 中返回可由 `read_file` 显式分页读取的路径；discovery 工具仍跳过该目录
+- `runtime.ephemeral.enabled` 默认 `true`：对高频大输出工具使用 provider-view 滑动窗口；每种工具最新 `EphemeralWindow` 个结果和短输出保持 inline，只有更老且较大的结果在 provider request view 中替换为 session 私有 artifact 路径。原始 messages/events 不被改写，当前结果不会 pointer-only；discovery 工具仍跳过该目录
 - `runtime.degeneration.enabled` 默认 `true`：当连续 `done_candidate` turn 只有文本、没有 valid tool call，且未接纳 steer/background/finish 时，`reminder_after` 后注入 `degeneration_recovery_required` reminder，`give_up_after` 后用 `model_degeneration_no_progress` 显式停靠或失败；`detect_low_quality` 预留给乱码/重复 token 启发式，默认关闭
 
 ## 8. Provider 配置字段

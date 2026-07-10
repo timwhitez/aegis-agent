@@ -3622,11 +3622,32 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 	}
 }
 
-func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
+func TestEngineEphemeralProviderViewKeepsLatestWindowInline(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
-	writeEvidenceFile(t, meta.Workdir, "visible.txt", "visible\n")
+	for i := 1; i <= 6; i++ {
+		writeEvidenceFile(t, meta.Workdir, fmt.Sprintf("visible-%d.txt", i), "visible\n")
+	}
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep checking the same glob output until you finish.")); err != nil {
 		t.Fatalf("append: %v", err)
+	}
+	findResult := func(messages []session.Message, callID string) (session.ToolResult, bool) {
+		for _, message := range messages {
+			for _, result := range message.ToolResults {
+				if result.ToolCallID == callID {
+					return result, true
+				}
+			}
+		}
+		return session.ToolResult{}, false
+	}
+	assertInline := func(req provider.TurnRequest, callID string) {
+		result, ok := findResult(req.Messages, callID)
+		if !ok {
+			t.Fatalf("provider request missing tool result %s", callID)
+		}
+		if !strings.Contains(result.LLMOutput, "visible-1.txt") || strings.Contains(result.LLMOutput, "moved out of the provider context window") {
+			t.Fatalf("expected %s to remain inline, got %q", callID, result.LLMOutput)
+		}
 	}
 	fake := provider.NewFake(
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
@@ -3636,24 +3657,37 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			assertInline(req, "call_1")
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_2", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
 				StopReason: "tool_use",
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			assertInline(req, "call_2")
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_3", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
 				StopReason: "tool_use",
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			assertInline(req, "call_3")
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_4", Name: "glob", Arguments: json.RawMessage(`{"pattern":"**/*.txt"}`)}},
 				StopReason: "tool_use",
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			assertInline(req, "call_2")
+			assertInline(req, "call_3")
+			assertInline(req, "call_4")
+			oldest, ok := findResult(req.Messages, "call_1")
+			if !ok {
+				t.Fatal("provider request missing oldest glob result")
+			}
+			if !strings.Contains(oldest.LLMOutput, "Older glob output moved out of the provider context window") || !strings.Contains(oldest.LLMOutput, "read_file") {
+				t.Fatalf("expected only the result outside the latest window to become an artifact pointer, got %q", oldest.LLMOutput)
+			}
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
 				StopReason: "tool_use",
@@ -3672,7 +3706,7 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load messages: %v", err)
 	}
-	found := false
+	durableResults := 0
 	for _, msg := range messages {
 		if msg.Role != "tool" {
 			continue
@@ -3681,57 +3715,60 @@ func TestEngineEphemeralArtifactGuidanceAvoidsReadFileLoop(t *testing.T) {
 			if toolResult.Name != "glob" {
 				continue
 			}
-			artifactPath, _ := toolResult.Metadata["ephemeral_artifact"].(string)
-			if artifactPath == "" {
-				continue
+			durableResults++
+			if !strings.Contains(toolResult.LLMOutput, "visible-1.txt") || strings.Contains(toolResult.LLMOutput, "moved out of the provider context window") {
+				t.Fatalf("durable tool result was rewritten: %#v", toolResult)
 			}
-			artifactAbs, _ := toolResult.Metadata["ephemeral_artifact_absolute"].(string)
-			found = true
-			if !strings.Contains(toolResult.LLMOutput, "Read it with read_file") {
-				t.Fatalf("expected explicit read_file guidance, got %q", toolResult.LLMOutput)
-			}
-			if !strings.Contains(toolResult.LLMOutput, "Copy this path verbatim; do not derive it from the current turn number") {
-				t.Fatalf("expected stable path copy guidance, got %q", toolResult.LLMOutput)
-			}
-			if !strings.Contains(toolResult.LLMOutput, "redirecting to a workspace file under reports/") {
-				t.Fatalf("expected workspace redirect guidance, got %q", toolResult.LLMOutput)
-			}
-			if strings.Contains(toolResult.LLMOutput, "not readable via read_file") || strings.Contains(toolResult.LLMOutput, "use read_file to review if needed") {
-				t.Fatalf("expected old misleading guidance to be removed, got %q", toolResult.LLMOutput)
-			}
-			if filepath.IsAbs(artifactPath) || !strings.HasPrefix(filepath.ToSlash(artifactPath), "artifacts/tool-outputs/") {
-				t.Fatalf("expected model-facing ephemeral artifact path to be session-relative, got %s", artifactPath)
-			}
-			wantPrefix := filepath.Join(engine.store.SessionDir(meta.ID), "artifacts", "tool-outputs")
-			if !strings.HasPrefix(artifactAbs, wantPrefix+string(os.PathSeparator)) {
-				t.Fatalf("expected default ephemeral artifact under session root %s, got %s", wantPrefix, artifactAbs)
-			}
-			if strings.Contains(filepath.Base(artifactPath), "turn") {
-				t.Fatalf("expected stable call-id artifact name without turn number, got %s", artifactPath)
-			}
-			if !strings.Contains(filepath.Base(artifactPath), "call_") {
-				t.Fatalf("expected artifact name to include call id, got %s", artifactPath)
-			}
-			if strings.Count(toolResult.LLMOutput, artifactPath) != 2 {
-				t.Fatalf("expected model-facing prompt path to match metadata path exactly, path=%s output=%q", artifactPath, toolResult.LLMOutput)
-			}
-			info, err := os.Stat(artifactAbs)
-			if err != nil {
-				t.Fatalf("stat ephemeral artifact: %v", err)
-			}
-			if perm := info.Mode().Perm(); perm != 0o600 {
-				t.Fatalf("expected ephemeral artifact mode 0600, got %s", perm.String())
+			if toolResult.Metadata["ephemeral_provider_view"] == true {
+				t.Fatalf("provider-view metadata leaked into durable messages: %#v", toolResult.Metadata)
 			}
 		}
 	}
-	if !found {
-		t.Fatal("expected ephemeral artifact guidance to be recorded")
+	if durableResults != 4 {
+		t.Fatalf("expected four durable glob results, got %d", durableResults)
+	}
+	artifactAbs := engine.ephemeralArtifactPath(meta.ID, "glob", "call_1")
+	artifactData, err := os.ReadFile(artifactAbs)
+	if err != nil {
+		t.Fatalf("read ephemeral artifact: %v", err)
+	}
+	if !strings.Contains(string(artifactData), "visible-1.txt") {
+		t.Fatalf("artifact did not preserve the older full tool result: %q", artifactData)
+	}
+	info, err := os.Stat(artifactAbs)
+	if err != nil {
+		t.Fatalf("stat ephemeral artifact: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("expected ephemeral artifact mode 0600, got %s", perm.String())
+	}
+}
+
+func TestEngineEphemeralProviderViewKeepsShortOldOutputInline(t *testing.T) {
+	engine, meta, _, registry, _, _ := newTestEngine(t, session.ModeRun)
+	var messages []session.Message
+	for i := 1; i <= 4; i++ {
+		messages = append(messages, session.NewToolMessage([]session.ToolResult{{
+			ToolCallID: fmt.Sprintf("call_%d", i),
+			Name:       "glob",
+			LLMOutput:  "one.txt\ntwo.txt",
+		}}))
+	}
+	view := engine.applyEphemeralProviderView(meta.ID, messages, messages, registry)
+	for _, message := range view {
+		for _, result := range message.ToolResults {
+			if strings.Contains(result.LLMOutput, "moved out of the provider context window") {
+				t.Fatalf("short output became pointer-only: %#v", result)
+			}
+		}
 	}
 }
 
 func TestEngineEphemeralArtifactRejectsSymlinkTarget(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
-	writeEvidenceFile(t, meta.Workdir, "visible.txt", "visible\n")
+	for i := 1; i <= 5; i++ {
+		writeEvidenceFile(t, meta.Workdir, fmt.Sprintf("visible-%d.txt", i), "visible\n")
+	}
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
 		t.Fatalf("write outside file: %v", err)
