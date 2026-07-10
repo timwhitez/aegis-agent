@@ -294,8 +294,20 @@ function collectFakeElementsByClass(root, className) {
   return results;
 }
 
-function createAppHarnessContext() {
+function createAppHarnessContext(initialStorage = {}) {
   const pendingRequests = [];
+  const storage = new Map(Object.entries(initialStorage));
+  const localStorage = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    }
+  };
   const appContext = {
     console: {
       error() {},
@@ -323,7 +335,8 @@ function createAppHarnessContext() {
       clearInterval() {},
       confirm() {
         return true;
-      }
+      },
+      localStorage
     },
     document: {
       listeners: {},
@@ -349,13 +362,7 @@ function createAppHarnessContext() {
         appendChild() {}
       }
     },
-    localStorage: {
-      getItem() {
-        return null;
-      },
-      setItem() {},
-      removeItem() {}
-    },
+    localStorage,
     setTimeout() {
       return 0;
     },
@@ -396,6 +403,7 @@ function createAppHarnessContext() {
   `, appContext);
   vm.runInContext(appSource, appContext, { filename: 'app.js' });
   appContext.pendingRequests = pendingRequests;
+  appContext.storage = storage;
   return appContext;
 }
 
@@ -5923,6 +5931,204 @@ test('workspace directory responses do not overwrite later file selection', asyn
     path: '',
     filename: 'new.txt',
     content: 'new file body'
+  });
+});
+
+test('Workspace fetch preserves a manually browsed path across view changes', async () => {
+  const appContext = createAppHarnessContext();
+  await vm.runInContext(`(async () => {
+    state.meta = { workspace_root: '/tmp/workspace', workspace_switch_supported: false };
+    state.sessionId = 'session_workspace_keep';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: {
+        id: 'session_workspace_keep',
+        workdir: '/tmp/workspace/session-root'
+      }
+    };
+    setCurrentViewName('workspace');
+    syncWorkspaceToCurrentSession({ refresh: false });
+    setCurrentWorkspacePath('session-root/deep');
+    listWorkspaceFiles = async function(path) {
+      state.requestedWorkspacePath = path;
+      return [];
+    };
+    switchView('chat');
+    await fetchWorkspace();
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: currentWorkspacePath(),
+    requestedPath: state.requestedWorkspacePath,
+    sessionPath: currentSessionWorkspacePath()
+  })`, appContext)), {
+    path: 'session-root/deep',
+    requestedPath: 'session-root/deep',
+    sessionPath: 'session-root'
+  });
+});
+
+test('Workspace path preferences are isolated per session and new-session composer', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    state.meta = { workspace_root: '/tmp/workspace', workspace_switch_supported: false };
+
+    state.sessionId = 'session_workspace_a';
+    state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_workspace_a', workdir: '/tmp/workspace/a' } };
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    setCurrentWorkspacePath('a/deep');
+
+    state.sessionId = 'session_workspace_b';
+    state.sessionDetail = { metadata: { id: 'session_workspace_b', workdir: '/tmp/workspace/b' } };
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const firstBPath = currentWorkspacePath();
+    setCurrentWorkspacePath('b/review');
+
+    state.sessionId = 'session_workspace_a';
+    state.sessionDetail = { metadata: { id: 'session_workspace_a', workdir: '/tmp/workspace/a' } };
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const restoredAPath = currentWorkspacePath();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const stableAPath = currentWorkspacePath();
+    state.sessionDetail = { metadata: { id: 'session_workspace_a', workdir: '/tmp/workspace/a-next' } };
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const changedWorkdirPath = currentWorkspacePath();
+
+    state.sessionId = '0xABCDEF';
+    state.sessionBacked = false;
+    state.sessionDetail = null;
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const initialComposerPath = currentWorkspacePath();
+    setCurrentWorkspacePath('drafts/new-session');
+
+    state.sessionId = 'session_workspace_b';
+    state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_workspace_b', workdir: '/tmp/workspace/b' } };
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    const restoredBPath = currentWorkspacePath();
+
+    state.sessionId = '0x123456';
+    state.sessionBacked = false;
+    state.sessionDetail = null;
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    return {
+      firstBPath,
+      restoredAPath,
+      stableAPath,
+      changedWorkdirPath,
+      initialComposerPath,
+      restoredBPath,
+      restoredComposerPath: currentWorkspacePath(),
+      noSessionPath: currentSessionWorkspacePath()
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    firstBPath: 'b',
+    restoredAPath: 'a/deep',
+    stableAPath: 'a/deep',
+    changedWorkdirPath: 'a-next',
+    initialComposerPath: '',
+    restoredBPath: 'b/review',
+    restoredComposerPath: 'drafts/new-session',
+    noSessionPath: null
+  });
+});
+
+test('Workspace fetch preserves the new-session composer path without an active session', async () => {
+  const appContext = createAppHarnessContext();
+  const result = await vm.runInContext(`(async () => {
+    state.meta = { workspace_root: '/tmp/workspace', workspace_switch_supported: false };
+    state.sessionBacked = false;
+    state.sessionDetail = null;
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    setCurrentWorkspacePath('drafts/composer');
+    listWorkspaceFiles = async function(path) {
+      state.requestedWorkspacePath = path;
+      return [];
+    };
+    await fetchWorkspace();
+    return {
+      path: currentWorkspacePath(),
+      requestedPath: state.requestedWorkspacePath,
+      sessionPath: currentSessionWorkspacePath()
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    path: 'drafts/composer',
+    requestedPath: 'drafts/composer',
+    sessionPath: null
+  });
+});
+
+test('Workspace path preference survives browser UI state restore', () => {
+  const firstContext = createAppHarnessContext();
+  vm.runInContext(`
+    state.meta = { workspace_root: '/tmp/workspace', workspace_switch_supported: false };
+    state.sessionId = 'session_workspace_restore';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_workspace_restore', workdir: '/tmp/workspace/session-home' }
+    };
+    resetWorkspaceSessionSync();
+    syncWorkspaceToCurrentSession({ refresh: false });
+    setCurrentWorkspacePath('session-home/restored');
+    persistUIState();
+  `, firstContext);
+  const persisted = firstContext.storage.get('go-cli-agent.webconsole.ui-state.v1');
+  assert.ok(persisted);
+
+  const secondContext = createAppHarnessContext({
+    'go-cli-agent.webconsole.ui-state.v1': persisted
+  });
+  const restoredPath = vm.runInContext(`(() => {
+    restoreUIState();
+    state.meta = { workspace_root: '/tmp/workspace', workspace_switch_supported: false };
+    state.sessionDetail = {
+      metadata: { id: 'session_workspace_restore', workdir: '/tmp/workspace/session-home' }
+    };
+    syncWorkspaceToCurrentSession({ refresh: false });
+    return currentWorkspacePath();
+  })()`, secondContext);
+  assert.equal(restoredPath, 'session-home/restored');
+});
+
+test('Workspace invalid persisted path falls back to the nearest accessible parent once', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  vm.runInContext(`
+    toastCalls = [];
+    showToast = function(message, tone) {
+      toastCalls.push({ message, tone });
+    };
+    setCurrentWorkspacePath('gone/deep');
+  `, workspaceContext);
+  const load = vm.runInContext(`loadWorkspaceDirectoryWithFallback(currentWorkspacePath())`, workspaceContext);
+  assert.equal(workspaceContext.pendingRequests.length, 1);
+  workspaceContext.pendingRequests[0].reject({ status: 404, message: 'missing deep path' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workspaceContext.pendingRequests.length, 2);
+  assert.match(workspaceContext.pendingRequests[1].url, /gone/);
+  workspaceContext.pendingRequests[1].resolve([]);
+  await load;
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    path: currentWorkspacePath(),
+    toastCalls
+  })`, workspaceContext)), {
+    path: 'gone',
+    toastCalls: [{
+      message: 'Workspace path gone/deep is unavailable. Showing gone instead.',
+      tone: 'info'
+    }]
   });
 });
 

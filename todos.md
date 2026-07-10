@@ -71,7 +71,7 @@
 
 ---
 
-## - [ ] T2 [P1] Workspace 浏览目录在页面切换后被 session workdir 强制覆盖
+## - [x] T2 [P1] Workspace 浏览目录在页面切换后被 session workdir 强制覆盖
 
 ### 用户可见问题
 

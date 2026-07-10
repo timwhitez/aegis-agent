@@ -1734,6 +1734,7 @@ function resetChatSession() {
   setComposerMode(null);
   resetMessagePagingWindowState();
   resetWorkspaceSessionSync();
+  syncWorkspaceToCurrentSession({ refresh: false });
   resetSessionFileChangesState();
   if (typeof clearMarkdownCache === 'function') {
     clearMarkdownCache();
@@ -3618,6 +3619,7 @@ function persistUIState() {
       currentView: currentViewName(),
       historyPage: currentHistoryPage(),
       selectedSessionId,
+      workspacePaths: workspacePathPreferences(),
       todoFloatExpanded: isFloatingPanelExpanded('todo'),
       fileChangesExpanded: isFloatingPanelExpanded('files'),
       subAgentExpanded: isFloatingPanelExpanded('subAgents')
@@ -3641,6 +3643,7 @@ function restoreUIState() {
     state.sessionId = persisted.selectedSessionId.trim();
     state.sessionBacked = true;
   }
+  restoreWorkspacePathPreferences(persisted.workspacePaths);
   if (typeof persisted.todoFloatExpanded === 'boolean') {
     setFloatingPanelExpanded('todo', persisted.todoFloatExpanded);
   }
@@ -3920,6 +3923,7 @@ async function handleSkillAction(id, isInstalled, button) {
 
 async function refreshMeta() {
   state.meta = await requestJSON('/api/meta');
+  syncWorkspaceToCurrentSession({ refresh: false });
   updateWorkspaceMeta();
 }
 

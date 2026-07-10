@@ -354,6 +354,7 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 - timeline/event descriptor、event refresh filter 和 live-activity event promotion helper 集中在 `events.js`；`app.js` 只调用这些 helper，不重复维护事件文案映射。
 - Settings view 的 render 与 save handler 集中在 `settings-view.js`；`app.js` 只负责视图切换时调用 `renderSettings()`。
 - Workspace browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
+- Workspace 当前浏览目录是 localStorage 中的纯 UI preference，按 `workspace_root + selected session id` 分桶；new-session composer 使用独立 bucket。普通页面切换、polling 和同一 session detail 刷新只能刷新当前目录，不能把手动浏览路径重新覆盖为 session workdir。首次选中 session、切换 session 或同一 session 的 metadata workdir 真实变化时，`syncWorkspaceToCurrentSession()` 才同步初始目录；已有 bucket preference 优先用于浏览器刷新恢复。持久化路径失效时逐级回退到最近可访问父目录，最后回到 workspace 根，并只提示一次。该 preference 不是 session 执行状态，start/continue 提交的 workdir 仍由后端做 workspace safety 校验。
 - Workspace browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取或下载 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
 - Workspace 创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；创建/删除只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成删除服务 cwd 或仓库元数据的入口。批量删除必须先完成所有选中路径的安全预检，再执行删除事务；任一选中路径越界、指向敏感路径、为 symlink 或其目录子树包含敏感路径时，整个批量删除失败且不得删除其他已选项。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。

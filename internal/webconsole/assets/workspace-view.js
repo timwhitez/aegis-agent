@@ -7,6 +7,10 @@ const workspaceViewState = {
   selectedTreePath: '',
   selectedPaths: new Set(),
   filePreview: null,
+  pathByBucket: {},
+  activeBucket: '',
+  pendingInitialWorkdirBucket: '',
+  syncedSessionId: '',
   syncedSessionWorkdir: '',
   actionPending: ''
 };
@@ -17,20 +21,12 @@ async function fetchWorkspace() {
     if (!state.meta) {
       await refreshMeta().catch(() => {});
     }
-    const sessionPath = currentSessionWorkspacePath();
-    if (sessionPath !== null && sessionPath !== currentWorkspacePath()) {
-      setCurrentWorkspacePath(sessionPath);
-      setSelectedWorkspaceTreePath('');
-      clearSelectedWorkspacePaths();
-      setWorkspaceFilePreview(null);
-    }
-    workspaceViewState.syncedSessionWorkdir = currentSessionWorkdir();
     updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
     nodes.editorFilename.innerText = workspaceDisplayName();
     nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
     renderWorkspaceActions();
-    await loadWorkspaceDirectory(currentWorkspacePath());
+    await loadWorkspaceDirectoryWithFallback(currentWorkspacePath());
   } catch (err) {
     console.error('workspace error', err);
     const message = workspaceErrorMessage(err);
@@ -43,30 +39,78 @@ async function fetchWorkspace() {
 }
 
 function syncWorkspaceToCurrentSession(options = {}) {
+  const bucket = workspacePreferenceBucketKey();
+  if (!bucket) {
+    return;
+  }
+  const sessionID = currentWorkspaceSessionId();
   const sessionWorkdir = currentSessionWorkdir();
-  if (workspaceViewState.syncedSessionWorkdir === sessionWorkdir && !options.force) {
-    return;
-  }
   const sessionPath = currentSessionWorkspacePath();
-  if (sessionPath === null) {
+  const bucketChanged = workspaceViewState.activeBucket !== bucket;
+  let nextPath = currentWorkspacePath();
+
+  if (bucketChanged) {
+    workspaceViewState.activeBucket = bucket;
+    const hasSavedPath = Object.prototype.hasOwnProperty.call(workspaceViewState.pathByBucket, bucket);
+    if (hasSavedPath) {
+      nextPath = normalizeWorkspacePath(workspaceViewState.pathByBucket[bucket]);
+    } else if (sessionPath !== null) {
+      nextPath = sessionPath;
+    } else {
+      nextPath = '';
+    }
+    workspaceViewState.pendingInitialWorkdirBucket = hasSavedPath && sessionID && !sessionWorkdir ? bucket : '';
+  } else if (workspaceViewState.pendingInitialWorkdirBucket === bucket &&
+    workspaceViewState.syncedSessionId === sessionID &&
+    !workspaceViewState.syncedSessionWorkdir &&
+    sessionWorkdir) {
+    workspaceViewState.pendingInitialWorkdirBucket = '';
+    workspaceViewState.syncedSessionWorkdir = sessionWorkdir;
+    updateWorkspaceMeta();
     return;
+  } else if (!options.force &&
+    workspaceViewState.syncedSessionId === sessionID &&
+    workspaceViewState.syncedSessionWorkdir === sessionWorkdir) {
+    return;
+  } else if (sessionPath !== null) {
+    nextPath = sessionPath;
   }
+
+  const pathChanged = nextPath !== currentWorkspacePath();
+  workspaceViewState.syncedSessionId = sessionID;
   workspaceViewState.syncedSessionWorkdir = sessionWorkdir;
-  if (sessionPath === currentWorkspacePath()) {
+  if (!pathChanged) {
+    persistWorkspacePathPreference(nextPath);
     updateWorkspaceMeta();
     return;
   }
-  setCurrentWorkspacePath(sessionPath);
+  setCurrentWorkspacePath(nextPath);
   setSelectedWorkspaceTreePath('');
   clearSelectedWorkspacePaths();
   setWorkspaceFilePreview(null);
   updateWorkspaceMeta();
-  if (currentViewName() === 'workspace') {
+  if (options.refresh !== false && currentViewName() === 'workspace') {
     fetchWorkspace();
   }
 }
 
+function currentWorkspaceSessionId() {
+  const sessionID = String(state.sessionId || '').trim();
+  if (!state.sessionBacked || !sessionID) {
+    return '';
+  }
+  if (typeof isEphemeralSessionId === 'function' && isEphemeralSessionId(sessionID)) {
+    return '';
+  }
+  return sessionID;
+}
+
 function currentSessionWorkdir() {
+  const sessionID = currentWorkspaceSessionId();
+  const detailSessionID = String(state.sessionDetail?.metadata?.id || '').trim();
+  if (!sessionID || detailSessionID !== sessionID) {
+    return '';
+  }
   return String(state.sessionDetail?.metadata?.workdir || '').trim();
 }
 
@@ -74,7 +118,7 @@ function currentSessionWorkspacePath() {
   const root = String(state.meta?.workspace_root || '').trim();
   const workdir = currentSessionWorkdir();
   if (!root || !workdir) {
-    return '';
+    return null;
   }
   const rootPath = normalizeAbsoluteWorkspacePath(root);
   const workdirPath = normalizeAbsoluteWorkspacePath(workdir);
@@ -143,6 +187,38 @@ async function loadWorkspaceDirectory(path = '') {
   nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
 }
 
+async function loadWorkspaceDirectoryWithFallback(path = '') {
+  const requestedPath = normalizeWorkspacePath(path);
+  let candidate = requestedPath;
+  try {
+    await loadWorkspaceDirectory(candidate);
+    return;
+  } catch (err) {
+    if (!candidate || !isUnavailableWorkspacePathError(err)) {
+      throw err;
+    }
+  }
+
+  while (candidate) {
+    candidate = parentWorkspacePath(candidate);
+    try {
+      await loadWorkspaceDirectory(candidate);
+      const fallbackLabel = candidate || 'workspace root';
+      showToast(`Workspace path ${requestedPath} is unavailable. Showing ${fallbackLabel} instead.`, 'info');
+      return;
+    } catch (err) {
+      if (!candidate || !isUnavailableWorkspacePathError(err)) {
+        throw err;
+      }
+    }
+  }
+}
+
+function isUnavailableWorkspacePathError(err) {
+  const status = Number(err?.status || 0);
+  return status === 400 || status === 404;
+}
+
 function nextWorkspaceRequestSeq() {
   return ++workspaceViewState.requestSeq;
 }
@@ -151,8 +227,11 @@ function currentWorkspacePath() {
   return workspaceViewState.path || '';
 }
 
-function setCurrentWorkspacePath(path) {
+function setCurrentWorkspacePath(path, options = {}) {
   workspaceViewState.path = normalizeWorkspacePath(path);
+  if (options.persist !== false) {
+    persistWorkspacePathPreference(workspaceViewState.path);
+  }
 }
 
 function currentWorkspaceTree() {
@@ -245,7 +324,47 @@ function setWorkspaceActionPending(action) {
 }
 
 function resetWorkspaceSessionSync() {
+  workspaceViewState.activeBucket = '';
+  workspaceViewState.pendingInitialWorkdirBucket = '';
+  workspaceViewState.syncedSessionId = '';
   workspaceViewState.syncedSessionWorkdir = '';
+}
+
+function workspacePreferenceBucketKey() {
+  const root = normalizeAbsoluteWorkspacePath(state.meta?.workspace_root || '');
+  if (!root) {
+    return '';
+  }
+  const sessionID = currentWorkspaceSessionId() || 'new-session';
+  return JSON.stringify([root, sessionID]);
+}
+
+function persistWorkspacePathPreference(path) {
+  const bucket = workspaceViewState.activeBucket || workspacePreferenceBucketKey();
+  if (!bucket) {
+    return;
+  }
+  workspaceViewState.activeBucket = bucket;
+  workspaceViewState.pathByBucket[bucket] = normalizeWorkspacePath(path);
+  if (typeof persistUIState === 'function') {
+    persistUIState();
+  }
+}
+
+function workspacePathPreferences() {
+  return { ...workspaceViewState.pathByBucket };
+}
+
+function restoreWorkspacePathPreferences(preferences) {
+  workspaceViewState.pathByBucket = {};
+  if (preferences && typeof preferences === 'object' && !Array.isArray(preferences)) {
+    Object.entries(preferences).slice(-100).forEach(([bucket, path]) => {
+      if (typeof bucket === 'string' && typeof path === 'string') {
+        workspaceViewState.pathByBucket[bucket] = normalizeWorkspacePath(path);
+      }
+    });
+  }
+  resetWorkspaceSessionSync();
 }
 
 function normalizeWorkspacePath(path = '') {
