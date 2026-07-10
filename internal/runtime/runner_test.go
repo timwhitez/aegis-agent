@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1579,6 +1581,7 @@ func TestRunnerContinueResumesCompletedSession(t *testing.T) {
 		CompletionPolicy: completionPolicy(session.ModeExec),
 		ProviderOptions:  providerOptionsFromConfig("openai-compatible", cfg.Providers["openai-compatible"]),
 	}
+	meta.RootSessionID = meta.ID
 	// A previously finished session lands in StatusCompleted; a later
 	// user input must resume it in place instead of forcing a new session.
 	state := session.State{
@@ -1589,6 +1592,27 @@ func TestRunnerContinueResumesCompletedSession(t *testing.T) {
 	if err := runner.store.Create(meta, state); err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	if _, err := runner.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Complete the original task",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	completedGoal, err := runner.store.CompleteGoal(meta.ID, session.GoalCompletionInput{
+		Summary:     "Original task completed.",
+		Evidence:    []string{"initial completion evidence"},
+		CompletedBy: session.GoalSourceCLI,
+		Source:      session.GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("complete goal: %v", err)
+	}
+
+	// Recreate the runner to prove continuation is reconstructed from durable
+	// session, Goal, and event files rather than an in-memory handle.
+	runner = NewRunner(cfg)
 
 	result, err := runner.Continue(context.Background(), ContinueRequest{
 		SessionID: meta.ID,
@@ -1602,6 +1626,116 @@ func TestRunnerContinueResumesCompletedSession(t *testing.T) {
 	}
 	if result.SessionID != meta.ID {
 		t.Fatalf("expected same session id, got %q want %q", result.SessionID, meta.ID)
+	}
+	loadedGoal, err := runner.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load completed goal after follow-up: %v", err)
+	}
+	if loadedGoal.Status != session.GoalStatusComplete || loadedGoal.CompletedAt != completedGoal.CompletedAt || loadedGoal.CompletionAudit == nil || loadedGoal.CompletionAudit.Summary != "Original task completed." {
+		t.Fatalf("completed Goal must remain a historical fact during follow-up, before=%#v after=%#v", completedGoal, loadedGoal)
+	}
+	events, err := runner.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	foundCompletedResume := false
+	for _, event := range events {
+		if event.Type == "session.resumed" && fmt.Sprint(event.Data["resumed_from"]) == session.StatusCompleted {
+			foundCompletedResume = true
+		}
+		if event.Type == "completion.gate.blocked" && fmt.Sprint(event.Data["gate_id"]) == "goal_completion_audit" {
+			t.Fatalf("completed historical Goal must not reactivate the completion gate: %#v", events)
+		}
+	}
+	if !foundCompletedResume {
+		t.Fatalf("expected durable session.resumed event with resumed_from=completed, got %#v", events)
+	}
+}
+
+func TestRunnerContinueRejectsCompletedChildWithoutReopeningQueueFacts(t *testing.T) {
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	childMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "completed_child_continue_rejected",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       "job_completed_child_continue_rejected",
+		Depth:            1,
+	}
+	if err := runner.store.Create(childMeta, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatalf("create completed child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              childMeta.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusCompleted,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "completed child work",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       childMeta.ID,
+		SessionStatus:   session.StatusCompleted,
+		FinalText:       "done",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save completed queue job: %v", err)
+	}
+	coordination := session.ParentCoordination{
+		SchemaVersion:          1,
+		ParentSessionID:        parentID,
+		WaitMode:               parentWaitAll,
+		CompletedChildSessions: []string{childMeta.ID},
+		CompletedQueueJobs:     []string{job.ID},
+		UpdatedAt:              now,
+	}
+	if err := runner.store.SaveParentCoordination(parentID, coordination); err != nil {
+		t.Fatalf("save completed parent coordination: %v", err)
+	}
+
+	_, err := runner.Continue(context.Background(), ContinueRequest{SessionID: childMeta.ID, Message: "continue completed child"})
+	var notResumable *SessionNotResumableError
+	if !errors.As(err, &notResumable) {
+		t.Fatalf("expected structured completed-child rejection, got %v", err)
+	}
+	if !strings.Contains(notResumable.Action, "agent_prompt") || !strings.Contains(notResumable.Action, "queue job") {
+		t.Fatalf("expected parent/queue recovery guidance, got %#v", notResumable)
+	}
+	childState, err := runner.store.LoadState(childMeta.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if childState.Status != session.StatusCompleted {
+		t.Fatalf("generic continue must not reopen completed child state: %#v", childState)
+	}
+	loadedJob, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load queue job: %v", err)
+	}
+	if loadedJob.Status != session.QueueStatusCompleted || loadedJob.SessionStatus != session.StatusCompleted {
+		t.Fatalf("generic continue must not reopen completed queue facts: %#v", loadedJob)
+	}
+	loadedCoordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if !slices.Equal(loadedCoordination.CompletedChildSessions, coordination.CompletedChildSessions) ||
+		!slices.Equal(loadedCoordination.CompletedQueueJobs, coordination.CompletedQueueJobs) ||
+		len(loadedCoordination.UnresolvedChildSessions) != 0 || len(loadedCoordination.UnresolvedQueueJobs) != 0 {
+		t.Fatalf("generic continue must preserve completed parent coordination: %#v", loadedCoordination)
 	}
 }
 

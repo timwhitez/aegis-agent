@@ -1427,6 +1427,44 @@ test('Goal inspector separates runtime facts from mission facts', () => {
   });
 });
 
+test('Goal inspector marks a completed Goal as historical during session follow-up', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    const detail = {
+      metadata: { id: 'session_goal_historical' },
+      state: { status: 'running', phase: 'provider_call' },
+      goal: {
+        goal_id: 'goal_historical',
+        mode: 'goal',
+        status: 'complete',
+        objective: 'Completed objective',
+        completion_audit: {
+          status: 'complete',
+          summary: 'Original objective completed.',
+          completed_at: '2026-07-10T01:00:00Z'
+        }
+      },
+      goal_facts: { coverage: {}, evaluator_evidence_count: 0 }
+    };
+    const html = renderGoalPanel(detail);
+    return {
+      historical: isHistoricalCompletedGoal(detail),
+      hasHistoricalBadge: html.includes('>Historical<'),
+      hasRunningFact: html.includes('session Running'),
+      hasCompletionAudit: html.includes('Original objective completed.')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    historical: true,
+    hasHistoricalBadge: true,
+    hasRunningFact: true,
+    hasCompletionAudit: true
+  });
+});
+
 test('Goal tool lane renders compact status cards instead of full objective JSON', () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });

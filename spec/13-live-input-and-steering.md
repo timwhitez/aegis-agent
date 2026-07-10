@@ -157,6 +157,7 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
 - `paused`
 - `awaiting_input`
 - `failed`
+- root session 的 `completed`；completed child / queue session 必须从 parent 使用 `agent_prompt` 的可恢复路径，或重新提交 queue job
 
 ### 8.2 `steer`
 

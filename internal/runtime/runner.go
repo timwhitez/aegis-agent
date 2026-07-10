@@ -832,11 +832,10 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
-	default:
-		return RunResult{}, errors.New("session is not resumable")
+	if err := ValidateContinueTarget(meta, state); err != nil {
+		return RunResult{}, err
 	}
+	resumedFrom := state.Status
 	releaseRunSlot, err := r.acquireRunSlot(meta.ID)
 	if err != nil {
 		return RunResult{}, err
@@ -906,6 +905,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		}
 		if _, err := r.ensurePlanModeCancelled(meta.ID, source); err != nil {
 			return r.failBeforeRun(meta.ID, state, "plan_input", err)
+		}
+		if err := r.appendSessionResumedEvent(meta, resumedFrom, source); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		state.Status = session.StatusAwaitingInput
 		state.Phase = "plan_cancelled"
@@ -992,6 +994,9 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
+	if err := r.appendSessionResumedEvent(meta, resumedFrom, source); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
 	if err := r.notifySessionActive(meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
@@ -1001,6 +1006,49 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	return result, err
+}
+
+func (r *Runner) appendSessionResumedEvent(meta session.SessionMetadata, resumedFrom, source string) error {
+	if err := r.appendEvent(meta.ID, "session.resumed", "prepare", map[string]any{
+		"resumed_from": resumedFrom,
+		"source":       source,
+		"provider":     meta.Provider,
+		"model":        meta.Model,
+	}); err != nil {
+		return fmt.Errorf("record session.resumed event: %w", err)
+	}
+	return nil
+}
+
+func ValidateContinueTarget(meta session.SessionMetadata, state session.State) error {
+	switch state.Status {
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
+		return nil
+	case session.StatusCompleted:
+		if strings.TrimSpace(meta.ParentSessionID) == "" {
+			return nil
+		}
+		return &SessionNotResumableError{
+			SessionID: meta.ID,
+			Status:    state.Status,
+			Detail:    fmt.Sprintf("completed child session %s is already settled with parent session %s and its queue facts", meta.ID, meta.ParentSessionID),
+			Action:    "Use agent_prompt from the parent only while a child is resumable; submit a new queue job to requeue follow-up work for this completed child.",
+		}
+	case session.StatusRunning:
+		return &SessionNotResumableError{
+			SessionID: meta.ID,
+			Status:    state.Status,
+			Detail:    fmt.Sprintf("session %s is already running", meta.ID),
+			Action:    "Send steer to the active run, or wait for it to settle before continuing.",
+		}
+	default:
+		return &SessionNotResumableError{
+			SessionID: meta.ID,
+			Status:    state.Status,
+			Detail:    fmt.Sprintf("session %s cannot continue from status %s", meta.ID, state.Status),
+			Action:    "Continue only paused, awaiting_input, failed, or completed root sessions.",
+		}
+	}
 }
 
 func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata) error {

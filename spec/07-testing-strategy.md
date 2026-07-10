@@ -131,7 +131,9 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `awaiting_input` 状态可恢复
 - `paused` 状态可恢复
 - `failed` 状态可恢复
-- `completed` 状态不能恢复
+- completed root session 可恢复，并写入带 `resumed_from=completed` 的 durable `session.resumed` 事件
+- completed child / queue session 的通用 continue 被拒绝，且 child state、queue job、parent coordination 仍保持 completed 事实
+- completed Goal 的 root follow-up 保留 Goal completion audit 与 complete 状态，不自动触发 active Goal completion gate
 - `steer.jsonl` 只在接纳后转成真实 user message
 
 ### 4.3.1 Plan Mode
@@ -269,7 +271,7 @@ fixture 内容：
 - Web 控制台能启动并加载静态资源
 - Web Session 工作区能新建 session
 - Web 运行中 steer 能入队并在 timeline 可见
-- Web awaiting_input / paused / failed session 能 continue
+- Web awaiting_input / paused / failed session 与 completed root session 能 continue；completed child 返回 parent `agent_prompt` / queue requeue 恢复提示
 - Web Goal / Plan Mode 控制能按文件事实展示和执行
 - Settings provider/model 配置能保存并驱动后续 Web session start / continue；Session composer 不再暴露 per-session Advanced provider 面板
 - `init` 是否生成正确配置

@@ -462,12 +462,15 @@ running -> failed
 awaiting_input -> running
 paused -> running
 failed -> running
+completed(root) -> running
 ```
 
 不允许：
 
-- `completed -> running`
+- `completed(child/queue) -> running` 通过通用 `continue` 直接发生；completed child 已经结算 queue job、parent coordination 与 background notification，后续工作必须从 parent 使用 `agent_prompt` 的可恢复路径，或提交新的 queue job 重新排队
 - `completed -> paused`
+
+`completed(root) -> running` 只表示用户在已完成 root session 上追加 follow-up，并复用原始消息历史。该转换必须写入 durable `session.resumed` 事件及 `resumed_from=completed`；若原 session 的 Goal 已 complete，普通 follow-up 保留它作为历史完成事实，不自动恢复为 active，也不重新启用旧 Goal 的 completion gate。
 
 ## 8. 事件模型
 

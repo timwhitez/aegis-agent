@@ -2430,15 +2430,17 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, status, err)
 		return
 	}
-	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
-	default:
-		writeError(w, http.StatusConflict, newWebError(
-			errorCodeSessionNotResumable,
-			"session is not resumable",
-			"only paused, awaiting_input, failed, and completed sessions can be continued",
-			"wait for the active run, then continue the session",
-		))
+	meta, err := s.store.LoadMetadata(sessionID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, fs.ErrNotExist) {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err)
+		return
+	}
+	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+		writeError(w, http.StatusConflict, webContinueError(err))
 		return
 	}
 	if s.hasActiveHandle(sessionID) {
@@ -2652,14 +2654,16 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 }
 
 func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueRequest) error {
+	meta, err := s.store.LoadMetadata(sessionID)
+	if err != nil {
+		return err
+	}
 	state, err := s.store.LoadState(sessionID)
 	if err != nil {
 		return err
 	}
-	switch state.Status {
-	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
-	default:
-		return newWebError(errorCodeSessionNotResumable, "session is not resumable", "only paused, awaiting_input, failed, and completed sessions can be continued", "wait for the active run or choose another action")
+	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+		return webContinueError(err)
 	}
 	cfg, err := s.configSnapshot()
 	if err != nil {
@@ -2677,6 +2681,14 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
 	})
 	return nil
+}
+
+func webContinueError(err error) error {
+	var notResumable *runtime.SessionNotResumableError
+	if errors.As(err, &notResumable) {
+		return newWebError(errorCodeSessionNotResumable, "session is not resumable", notResumable.Detail, notResumable.Action)
+	}
+	return err
 }
 
 func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCoverage bool) error {

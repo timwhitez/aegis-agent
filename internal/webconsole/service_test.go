@@ -5043,6 +5043,49 @@ func TestContinueCompletedSessionIsAccepted(t *testing.T) {
 	})
 }
 
+func TestContinueCompletedChildReturnsParentQueueRecovery(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	parent := testSessionMetadata(t, "session_continue_completed_child_parent")
+	parent.RootSessionID = parent.ID
+	if err := svc.store.Create(parent, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create parent session: %v", err)
+	}
+	child := testSessionMetadata(t, "session_continue_completed_child")
+	child.ParentSessionID = parent.ID
+	child.RootSessionID = parent.ID
+	child.QueueJobID = "job_continue_completed_child"
+	child.Depth = 1
+	if err := svc.store.Create(child, testSessionState(session.StatusCompleted)); err != nil {
+		t.Fatalf("create completed child: %v", err)
+	}
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+child.ID+"/continue", map[string]any{
+		"message": "continue completed child",
+	}, http.StatusConflict)
+	if errResp.Code != errorCodeSessionNotResumable ||
+		!strings.Contains(errResp.Detail, "completed child session") ||
+		!strings.Contains(errResp.Action, "agent_prompt") ||
+		!strings.Contains(errResp.Action, "queue job") {
+		t.Fatalf("expected structured parent/queue recovery guidance, got %#v", errResp)
+	}
+	state, err := svc.store.LoadState(child.ID)
+	if err != nil {
+		t.Fatalf("load completed child state: %v", err)
+	}
+	if state.Status != session.StatusCompleted {
+		t.Fatalf("web continue must not reopen completed child, got %#v", state)
+	}
+}
+
 func TestInterruptNonOwnedSessionReturnsStructuredError(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})

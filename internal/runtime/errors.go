@@ -1,6 +1,10 @@
 package runtime
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 type ConfigError struct {
 	Err error
@@ -46,4 +50,22 @@ func WrapProviderError(err error) error {
 		return err
 	}
 	return &ProviderError{Err: err}
+}
+
+type SessionNotResumableError struct {
+	SessionID string
+	Status    string
+	Detail    string
+	Action    string
+}
+
+func (e *SessionNotResumableError) Error() string {
+	detail := strings.TrimSpace(e.Detail)
+	if detail == "" {
+		detail = fmt.Sprintf("session %s cannot continue from status %s", e.SessionID, e.Status)
+	}
+	if action := strings.TrimSpace(e.Action); action != "" {
+		return "session is not resumable: " + detail + "; " + action
+	}
+	return "session is not resumable: " + detail
 }

@@ -432,6 +432,11 @@ function goalRuntimeFacts(detail) {
   };
 }
 
+function isHistoricalCompletedGoal(detail) {
+  return String(detail?.goal?.status || '').toLowerCase() === 'complete' &&
+    String(detail?.state?.status || '').toLowerCase() !== 'completed';
+}
+
 function renderSessionGoalLine(detail) {
   const facts = goalRuntimeFacts(detail);
   if (!facts) {
@@ -2256,6 +2261,7 @@ function renderGoalPanel(detail) {
   const planMode = detail?.plan_mode || null;
   const canApprove = mission && mission.plan_status !== 'approved' && (!planMode || planMode.status === 'awaiting_approval');
   const facts = goalRuntimeFacts(detail);
+  const historicalCompletion = isHistoricalCompletedGoal(detail);
 
   return `
     <div class="goal-panel">
@@ -2266,6 +2272,7 @@ function renderGoalPanel(detail) {
         </div>
         <div class="goal-panel-head-chips">
           <span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>
+          ${historicalCompletion ? '<span class="status-badge neutral">Historical</span>' : ''}
           <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
         </div>
       </div>

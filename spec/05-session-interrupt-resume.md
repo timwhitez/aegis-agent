@@ -140,7 +140,9 @@ session 系统保证下面四件事同时成立：
 - 模型已显式 `finish`，本轮任务被视为完成
 - 它是完成状态，不是错误状态
 
-`completed` 也是可恢复状态：用户在 finish 之后补充信息时，应当在原 session 上 `continue`，把新的 user message 追加进既有历史并把状态切回 `running`，而不是新开一个丢失上下文的 session。这样“任务已 finish 但需要补充信息”的场景可以延续原始上下文。
+root session 的 `completed` 也是可恢复状态：用户在 finish 之后补充信息时，应当在原 session 上 `continue`，把新的 user message 追加进既有历史并把状态切回 `running`，而不是新开一个丢失上下文的 session。这样“任务已 finish 但需要补充信息”的场景可以延续原始上下文。
+
+completed child / queue session 不允许走通用 `continue`。child 完成时 queue job、parent coordination 和 background notification 已经结算；后续 child 工作必须由 parent 通过 `agent_prompt` 的可恢复路径处理，或提交新的 queue job 重新排队，不能只把 child `state.json` 改回 `running`。
 
 ## 6. 创建规则
 
@@ -153,8 +155,9 @@ session 系统保证下面四件事同时成立：
 启动 `continue` 时：
 
 - 必须能找到现有 session
-- 允许恢复 `paused`、`awaiting_input`、`failed` 或 `completed`
-- `completed` session 收到新的 user message 时按普通 continue 延续既有历史；不允许恢复的只有正在 `running` 的 session（应改用 `steer`）
+- 允许恢复 `paused`、`awaiting_input`、`failed`，以及 root session 的 `completed`
+- completed root session 收到新的 user message 时按普通 continue 延续既有历史；completed child / queue session 返回结构化恢复提示，要求从 parent 使用 `agent_prompt` 或重新提交 queue job
+- 正在 `running` 的 session 不允许 continue，应改用 `steer`
 
 启动 `steer` 时：
 
@@ -200,7 +203,10 @@ session 系统保证下面四件事同时成立：
 4. 追加新的 user message（如果提供）
 5. 重置本次恢复 run 的 bounded turn budget（避免沿用上一次 run 已耗尽的 `state.turn`）
 6. 将状态切回 `running`
-7. 继续 loop
+7. 追加 durable `session.resumed` 事件，`data.resumed_from` 记录原状态
+8. 继续 loop
+
+若恢复前 Goal 已经是 `complete`，普通 session follow-up 不修改 `goal.json`：完成审计、完成时间和 evidence 都继续作为历史事实存在，旧 Goal 不自动变回 active。只有显式 Goal resume 控制面才能恢复该 durable objective。
 
 ### 9.2 不恢复的内容
 

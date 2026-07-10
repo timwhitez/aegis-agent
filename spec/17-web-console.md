@@ -17,7 +17,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 可以在创建或继续 session 时通过 Plan 开关进入 Plan Mode，并在 inspector 中审批、修订、取消或回答规划问题
 - 默认启动表单不要求也不展示 agent name / agent role；role hints 仍由 agent 内部 mission plan、child/queue 高级 API 或 CLI/API advanced payload 显式传递
 - 可以对运行中的 session 追加 steer
-- 可以对暂停、等待输入、失败或已完成的 session 执行 continue
+- 可以对暂停、等待输入、失败的 session 或已完成的 root session 执行 continue；completed child / queue session 只能从 parent 使用 `agent_prompt` 的可恢复路径，或重新提交 queue job
 - 可以查看 background queue / children / task board / timeline / errors
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
@@ -461,7 +461,9 @@ Settings API：
 行为：
 
 - 异步恢复该 session
-- 可恢复状态为 `paused` / `awaiting_input` / `failed` / `completed`；`completed` session 补充 `message` 后按普通 continue 延续既有历史，只有正在 `running` 的 session 返回 not-resumable
+- 可恢复状态为 `paused` / `awaiting_input` / `failed`，以及 root session 的 `completed`；completed root 补充 `message` 后按普通 continue 延续既有历史，并写入 `session.resumed.data.resumed_from=completed`
+- completed child / queue session 返回结构化 `SESSION_NOT_RESUMABLE`，action 指向 parent `agent_prompt` 或重新提交 queue job；Web 不得只把 child state 改成 running
+- completed root 的旧 Goal 默认保持 historical complete：Goal inspector 在 session follow-up 运行期间明确显示 historical completed Goal，普通 continue 不自动恢复 Goal 或重新开启旧 Goal completion gate
 - 立即返回 `202`
 - 若当前 `planmode.status=awaiting_approval` 且传入普通 `message`，后端将其作为 plan revision user message，而不是执行计划
 
