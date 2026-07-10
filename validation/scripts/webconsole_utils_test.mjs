@@ -909,10 +909,20 @@ test('stop action pending sessions are isolated from durable app state', async (
 
   const finalState = vm.runInContext(`({
     stateHasStoppingSessionIds: Object.prototype.hasOwnProperty.call(state, 'stoppingSessionIds'),
+    inFlight: stopActionViewState.sessionIds.has('session_stop_pending'),
+    requestedHold: stopActionViewState.requestedAtBySessionId.has('session_stop_pending'),
     isStopping: isStoppingSession('session_stop_pending')
   })`, appContext);
   assert.equal(finalState.stateHasStoppingSessionIds, false);
-  assert.equal(finalState.isStopping, false);
+  assert.equal(finalState.inFlight, false);
+  assert.equal(finalState.requestedHold, true);
+  assert.equal(finalState.isStopping, true);
+
+  vm.runInContext(`clearSettledStopRequestsFromDetail({
+    metadata: { id: 'session_stop_pending' },
+    state: { status: 'paused' }
+  })`, appContext);
+  assert.equal(vm.runInContext(`isStoppingSession('session_stop_pending')`, appContext), false);
 });
 
 test('history parent expansion is isolated from durable app state', () => {
@@ -1390,7 +1400,7 @@ test('Goal inspector separates runtime facts from mission facts', () => {
     };
     const html = renderGoalPanel(detail);
     return {
-      hasMissionStatus: html.includes('Mission Budget limited'),
+      hasGoalStatus: html.includes('Goal Budget limited'),
       hasRuntimeSection: html.includes('goal-runtime-card'),
       hasSessionPhase: html.includes('Provider call') || html.includes('Provider Call'),
       hasGoalFactsTitle: html.includes('Goal facts'),
@@ -1400,7 +1410,7 @@ test('Goal inspector separates runtime facts from mission facts', () => {
   })()`, appContext);
 
   assert.deepEqual(sameRealm(result), {
-    hasMissionStatus: true,
+    hasGoalStatus: true,
     hasRuntimeSection: true,
     hasSessionPhase: true,
     hasGoalFactsTitle: true,
@@ -1920,6 +1930,30 @@ function createWorkspaceHarnessContext() {
       return new Promise((resolve, reject) => {
         pendingRequests.push({ url, resolve, reject });
       });
+    },
+    listWorkspaceFiles(path = '.') {
+      return workspaceContext.requestJSON(`/api/files?path=${encodeURIComponent(path || '.')}`);
+    },
+    readWorkspaceFile(path, offset = 0, limit = 256 * 1024) {
+      return workspaceContext.requestJSON(`/api/file/read?path=${encodeURIComponent(path)}&offset=${encodeURIComponent(String(offset || 0))}&limit=${encodeURIComponent(String(limit))}`);
+    },
+    createWorkspaceDirectory(path, name) {
+      return workspaceContext.requestJSON('/api/files/mkdir', {
+        method: 'POST',
+        payload: { path: path || '.', name }
+      });
+    },
+    deleteWorkspacePath(path) {
+      return workspaceContext.requestJSON(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    },
+    deleteWorkspacePaths(paths = []) {
+      return workspaceContext.requestJSON('/api/files/delete', {
+        method: 'POST',
+        payload: { paths }
+      });
+    },
+    workspaceDownloadURL(path) {
+      return `/api/file/download?path=${encodeURIComponent(path)}`;
     },
     showToast() {}
   };
@@ -5038,7 +5072,7 @@ test('stop completion does not update a newly selected session', async () => {
     selected: 'session_fast_b',
     generating: false,
     activityTitle: 'Loaded session B',
-    stoppingA: false
+    stoppingA: true
   });
 });
 
@@ -5088,7 +5122,7 @@ test('stop completion ignores refreshed same-session state', async () => {
     selected: 'session_stop_same_a',
     generating: false,
     activityTitle: 'Loaded completed session',
-    stoppingA: false
+    stoppingA: true
   });
   assert.deepEqual(sameRealm(toasts), []);
 });
@@ -5197,7 +5231,7 @@ test('child stop completion refreshes selected parent session', async () => {
   })`, appContext)), {
     selected: 'parent_session_stop',
     activityTitle: 'Parent loaded',
-    stoppingChild: false,
+    stoppingChild: true,
     refreshCalls: [
       { kind: 'session', delay: 120, selected: 'parent_session_stop' },
       { kind: 'overview', delay: 180, selected: 'parent_session_stop' }
@@ -5265,7 +5299,7 @@ test('child stop completion ignores refreshed parent without child reference', a
   })`, appContext)), {
     selected: 'parent_session_stop_same_refresh',
     activityTitle: 'Parent refreshed without child',
-    stoppingChild: false,
+    stoppingChild: true,
     refreshCalls: [],
     toastCalls: []
   });
@@ -6109,6 +6143,7 @@ test('renderSettings ignores stale config responses', async () => {
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
     'settings-model': fakeRendererElement(),
+    'settings-context-window': fakeRendererElement(),
     'settings-reasoning-mode': fakeRendererElement(),
     'settings-reasoning-help': fakeRendererElement(),
     'settings-reasoning-summary': fakeRendererElement(),
@@ -6242,6 +6277,20 @@ function fakeRendererElement(initial = {}) {
     },
     querySelectorAll() {
       return [];
+    },
+    replaceChildren(...children) {
+      this.__children = children;
+      this.innerHTML = '';
+    },
+    appendChild(child) {
+      if (!Array.isArray(this.__children)) {
+        this.__children = [];
+      }
+      this.__children.push(child);
+      return child;
+    },
+    remove() {
+      this.removed = true;
     }
   };
 }
@@ -6287,6 +6336,7 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
     'settings-model': fakeRendererElement(),
+    'settings-context-window': fakeRendererElement(),
     'settings-reasoning-mode': fakeRendererElement(),
     'settings-reasoning-help': fakeRendererElement(),
     'settings-reasoning-summary': fakeRendererElement(),
@@ -6302,6 +6352,14 @@ async function renderSettingsHarness({ hasKey }) {
   context.document = {
     getElementById(id) {
       return elements[id] || null;
+    },
+    createElement() {
+      return fakeRendererElement();
+    },
+    body: {
+      contains() {
+        return true;
+      }
     }
   };
   context.requestJSON = async () => settingsConfig({ model: 'gpt-test', hasKey });

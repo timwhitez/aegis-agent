@@ -181,6 +181,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
+- `node --test validation/scripts/webconsole_utils_test.mjs` 通过
 - Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model 配置和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
@@ -212,7 +213,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 验收补充：
 
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
-- `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法
+- `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法，`node --test validation/scripts/webconsole_utils_test.mjs` 覆盖前端状态机、异步竞态与模块 API contract
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
 - Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI

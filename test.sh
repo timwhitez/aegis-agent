@@ -19,6 +19,8 @@ for js_file in internal/webconsole/assets/*.js; do
   node --check "$js_file"
 done
 
+node --test validation/scripts/webconsole_utils_test.mjs
+
 PKG_PATTERNS=(
   ./cmd/...
   ./internal/...

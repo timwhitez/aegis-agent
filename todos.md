@@ -147,7 +147,7 @@ completed root session 的同 session follow-up 已在远端真实工作，这�
 
 ---
 
-## - [ ] T6 [P1] 前端 utility test 门禁已失效，19 个失败没有进入默认 `test.sh`
+## - [x] T6 [P1] 前端 utility test 门禁已失效，19 个失败没有进入默认 `test.sh`
 
 ### 当前证据
 

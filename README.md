@@ -201,7 +201,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 ## 脚本
 
 - `build.sh`: 构建 `bin/go-cli-agent`
-- `test.sh`: 检查 `gofmt` 漂移、WebConsole JS 语法，并执行 `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
+- `test.sh`: 检查 `gofmt` 漂移、WebConsole JS 语法与 utility 行为测试，并执行 `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
 - `run.sh`: 启动、停止或查看本地 Web 控制台进程
 - `live_smoke.sh`: 真实 provider 的在线探活脚本
 - `validation/run_openai_compatible_acceptance_stack.sh`: provider 连通性确认后的长期 acceptance 入口
