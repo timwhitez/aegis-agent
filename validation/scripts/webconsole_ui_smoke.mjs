@@ -377,6 +377,38 @@ async function main() {
     );
     results.interactions.workspace_loaded = true;
 
+    const browsedWorkspacePath = await browserClient.evaluate(`(() => {
+      const button = Array.from(document.querySelectorAll('#file-tree .tree-node')).find((item) =>
+        item.dataset.type === 'directory' && item.dataset.navigation !== 'parent' && Boolean(item.dataset.path)
+      );
+      if (!button) return '';
+      const path = button.dataset.path;
+      button.click();
+      return path;
+    })()`);
+    if (!browsedWorkspacePath) {
+      throw new Error('workspace smoke requires at least one browsable child directory');
+    }
+    await waitFor(
+      () => browserClient.evaluate(`typeof currentWorkspacePath === 'function' && currentWorkspacePath() === ${JSON.stringify(browsedWorkspacePath)}`),
+      15000,
+      'workspace child directory navigation'
+    );
+    await click('[data-view="history"]', 'history nav for workspace retention');
+    await waitFor(
+      () => browserClient.evaluate(`Boolean(document.getElementById('history-view')) && document.getElementById('history-view').textContent.includes('Sessions')`),
+      15000,
+      'history view for workspace retention'
+    );
+    await click('[data-view="workspace"]', 'workspace nav after history');
+    await waitFor(
+      () => browserClient.evaluate(`typeof currentWorkspacePath === 'function' && currentWorkspacePath() === ${JSON.stringify(browsedWorkspacePath)}`),
+      15000,
+      'workspace path retained after view switch'
+    );
+    results.interactions.workspace_path_retained = true;
+    results.interactions.workspace_browsed_path = browsedWorkspacePath;
+
     await click('[data-view="skills"]', 'skills nav');
     await waitFor(
       () => browserClient.evaluate(`Boolean(document.getElementById('skills-grid')) && document.getElementById('skills-grid').textContent.length >= 0`),
