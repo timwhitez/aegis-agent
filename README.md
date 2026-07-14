@@ -177,6 +177,15 @@ Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`arti
 
 `run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取/下载 workspace 文件，并在 workspace 内创建文件夹或删除单个/多个文件/文件夹；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
 
+需要把控制台暴露到非可信网络时，可以在配置中启用 WebConsole 自身的 HTTP Basic Auth。`password_hash` 必须是 bcrypt hash，不能保存明文；HTTP Basic Auth 还必须放在 HTTPS 后面，否则密码会随请求以可逆编码传输。认证覆盖 UI、REST API 和 WebSocket：
+
+```yaml
+web:
+  basic_auth:
+    username: operator
+    password_hash: "$2a$..."
+```
+
 WebConsole 的页面结构、Session Background 观测口径、API 契约和浏览器验证要求写在 [`spec/17-web-console.md`](./spec/17-web-console.md)。
 Settings 页面提供 Provider Profile、API Provider、provider reasoning / thinking 下拉、OpenAI reasoning summary 下拉和测试按钮：OpenAI / `openai-compatible` 可以选择 `xhigh` + `Auto` summary，Anthropic-compatible / Google 这类 thinking provider 可以选择 `max`。测试按钮会用当前表单值做一次 thinking-observation probe，并回显 adapter 采用的 `thinking_strategy`；结果会区分“请求成功”和“本次实际返回可读 thinking / summary”，成功测试不会自动保存配置。
 

@@ -28,6 +28,7 @@ type Config struct {
 	DefaultProvider string              `yaml:"default_provider"`
 	Providers       map[string]Provider `yaml:"providers"`
 	RoleProviders   RoleProvidersConfig `yaml:"role_providers,omitempty"`
+	Web             WebConfig           `yaml:"web,omitempty"`
 	Session         SessionConfig       `yaml:"session"`
 	Skills          SkillsConfig        `yaml:"skills"`
 	Runtime         RuntimeConfig       `yaml:"runtime"`
@@ -72,6 +73,20 @@ type RoleProviderOverride struct {
 	APIProvider string `yaml:"api_provider,omitempty"`
 	BaseURL     string `yaml:"base_url,omitempty"`
 	Model       string `yaml:"model,omitempty"`
+}
+
+// WebConfig controls the local WebConsole adapter. The runtime and session
+// stores do not depend on these operator-surface settings.
+type WebConfig struct {
+	BasicAuth WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
+}
+
+// WebBasicAuthConfig enables HTTP Basic authentication when both fields are
+// set. PasswordHash must be a bcrypt hash; the clear-text password never
+// belongs in the configuration file.
+type WebBasicAuthConfig struct {
+	Username     string `yaml:"username,omitempty"`
+	PasswordHash string `yaml:"password_hash,omitempty"`
 }
 
 func (p Provider) ResolvedAPIKey() string {

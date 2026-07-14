@@ -30,7 +30,75 @@ import (
 	skillcatalog "go-cli-agent/internal/skills"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
+
+func TestServiceBasicAuthProtectsUIAndAPI(t *testing.T) {
+	cfg := testConfig(t, "")
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte("correct password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate password hash: %v", err)
+	}
+	cfg.Web.BasicAuth = config.WebBasicAuthConfig{
+		Username:     "operator",
+		PasswordHash: string(passwordHash),
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	for _, path := range []string{"/", "/api/meta", "/ws"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			recorder := httptest.NewRecorder()
+			svc.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("unauthenticated %s status=%d want %d", path, recorder.Code, http.StatusUnauthorized)
+			}
+			if got := recorder.Header().Get("WWW-Authenticate"); !strings.Contains(got, "Basic") {
+				t.Fatalf("missing Basic challenge: %q", got)
+			}
+		})
+	}
+
+	wrong := httptest.NewRequest(http.MethodGet, "/api/meta", nil)
+	wrong.SetBasicAuth("operator", "wrong password")
+	wrongRecorder := httptest.NewRecorder()
+	svc.ServeHTTP(wrongRecorder, wrong)
+	if wrongRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password status=%d want %d", wrongRecorder.Code, http.StatusUnauthorized)
+	}
+
+	valid := httptest.NewRequest(http.MethodGet, "/api/meta", nil)
+	valid.SetBasicAuth("operator", "correct password")
+	validRecorder := httptest.NewRecorder()
+	svc.ServeHTTP(validRecorder, valid)
+	if validRecorder.Code != http.StatusOK {
+		t.Fatalf("valid credentials status=%d body=%s", validRecorder.Code, validRecorder.Body.String())
+	}
+}
+
+func TestServiceRejectsIncompleteOrInvalidBasicAuthConfig(t *testing.T) {
+	validHash, err := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("generate password hash: %v", err)
+	}
+	for name, auth := range map[string]config.WebBasicAuthConfig{
+		"username only": {Username: "operator"},
+		"hash only":     {PasswordHash: string(validHash)},
+		"invalid hash":  {Username: "operator", PasswordHash: "not-a-bcrypt-hash"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testConfig(t, "")
+			cfg.Web.BasicAuth = auth
+			if _, err := New(cfg, Options{WorkerCount: 0}); err == nil {
+				t.Fatal("expected invalid basic auth configuration to be rejected")
+			}
+		})
+	}
+}
 
 func TestServiceSteerWritesWebSource(t *testing.T) {
 	cfg := testConfig(t, "")

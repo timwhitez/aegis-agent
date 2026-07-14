@@ -85,6 +85,30 @@ func TestExampleConfigUsesCurrentProviderTimeoutAndRetryDefaults(t *testing.T) {
 	}
 }
 
+func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
+	cfg := Default()
+	cfg.Web.BasicAuth = WebBasicAuthConfig{
+		Username:     "operator",
+		PasswordHash: "$2a$10$abcdefghijklmnopqrstuuJ7lHjSuP9gGCP3zZ8KXw2mzg9S0FZ7mP9m",
+	}
+
+	cloned, err := Clone(cfg)
+	if err != nil {
+		t.Fatalf("clone config: %v", err)
+	}
+	if cloned.Web.BasicAuth != cfg.Web.BasicAuth {
+		t.Fatalf("web basic auth changed after clone: got %#v want %#v", cloned.Web.BasicAuth, cfg.Web.BasicAuth)
+	}
+
+	data, err := MarshalYAML(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if !strings.Contains(string(data), "password_hash:") || strings.Contains(string(data), "password:") {
+		t.Fatalf("unexpected web basic auth YAML: %s", data)
+	}
+}
+
 func TestDefaultDisablesHardTurnLimitAndUsesFiveMinuteTimeouts(t *testing.T) {
 	cfg := Default()
 	if cfg.Runtime.MaxTurnsHard != -1 {

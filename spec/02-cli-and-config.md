@@ -78,6 +78,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 
 - Web 控制台是默认 operator surface，但仍只复用本地文件事实与 runtime 控制面
 - listen 地址不是 loopback 时必须输出 LAN 安全提示
+- `web.basic_auth` 同时配置 `username` 与 bcrypt `password_hash` 时，WebConsole 的静态页面、REST API 和 WebSocket upgrade 都必须要求 HTTP Basic authentication；空配置保持本地无认证默认。缺少任一字段或 hash 非 bcrypt 时启动必须失败，避免误以为服务已受保护。该密码只能以 bcrypt hash 落盘，公网或不可信网络仍必须在 HTTPS 后使用 Basic Auth。
 - unsafe mutation 必须走本地控制台 guard：Origin / 自定义 header / Content-Type / 请求体大小上限
 - `experimental web` 旧入口应保持兼容，避免已有脚本失效
 

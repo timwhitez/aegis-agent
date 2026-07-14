@@ -342,6 +342,8 @@ worker pool 允许并发 `N >= 0`。`0` 表示无 worker 的观察/测试模式�
 
 所有 API 默认返回 JSON。
 
+WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 bcrypt `password_hash` 后，所有 UI asset、REST API 与 WebSocket upgrade 均先挑战 `WWW-Authenticate: Basic`，认证失败返回 `401` 且不得进入路由或 service state。该认证属于 Web app/service adapter 层，不读取或改写 session/runtime 文件事实；配置不完整或 bcrypt hash 无效时 service 启动失败。Basic Auth 只在 HTTPS 传输层后适合不可信网络暴露。
+
 控制面约束：
 
 - 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。

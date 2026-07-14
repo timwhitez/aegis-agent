@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,7 @@ import (
 	"go-cli-agent/internal/tools"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var upgrader = websocket.Upgrader{
@@ -120,6 +122,7 @@ type Service struct {
 	store      *session.Store
 	staticFS   fs.FS
 	workers    *workerPool
+	basicAuth  *basicAuthenticator
 
 	// beforeAppendAuditEvent is set only by package tests to force deterministic
 	// audit persistence failures between preflight and append.
@@ -146,6 +149,14 @@ type Service struct {
 
 	reaperCancel context.CancelFunc
 	reaperDone   chan struct{}
+}
+
+// basicAuthenticator is deliberately an HTTP-adapter concern. It gates the
+// complete WebConsole surface, including static assets, REST endpoints, and
+// WebSocket upgrades, without becoming a second source of runtime state.
+type basicAuthenticator struct {
+	usernameDigest [sha256.Size]byte
+	passwordHash   []byte
 }
 
 type launchHandle struct {
@@ -326,12 +337,17 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	basicAuth, err := newBasicAuthenticator(serviceCfg.Web.BasicAuth)
+	if err != nil {
+		return nil, err
+	}
 	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
 		cfg:             serviceCfg,
 		configPath:      opts.ConfigPath,
 		store:           store,
 		staticFS:        staticFS,
+		basicAuth:       basicAuth,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
 		setProcessEnv:   os.Setenv,
@@ -340,6 +356,42 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
 	svc.startQueueReaper()
 	return svc, nil
+}
+
+func newBasicAuthenticator(cfg config.WebBasicAuthConfig) (*basicAuthenticator, error) {
+	username := strings.TrimSpace(cfg.Username)
+	passwordHash := strings.TrimSpace(cfg.PasswordHash)
+	if username == "" && passwordHash == "" {
+		return nil, nil
+	}
+	if username == "" || passwordHash == "" {
+		return nil, errors.New("web.basic_auth requires both username and password_hash")
+	}
+	if _, err := bcrypt.Cost([]byte(passwordHash)); err != nil {
+		return nil, fmt.Errorf("web.basic_auth.password_hash must be a valid bcrypt hash: %w", err)
+	}
+	return &basicAuthenticator{
+		usernameDigest: sha256.Sum256([]byte(username)),
+		passwordHash:   []byte(passwordHash),
+	}, nil
+}
+
+func (a *basicAuthenticator) authorizes(r *http.Request) bool {
+	username, password, provided := r.BasicAuth()
+	providedDigest := sha256.Sum256([]byte(username))
+	usernameMatches := subtle.ConstantTimeCompare(providedDigest[:], a.usernameDigest[:])
+	passwordMatches := bcrypt.CompareHashAndPassword(a.passwordHash, []byte(password)) == nil
+	return provided && usernameMatches == 1 && passwordMatches
+}
+
+func (s *Service) requireBasicAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.basicAuth == nil || s.basicAuth.authorizes(r) {
+		return true
+	}
+	w.Header().Set("WWW-Authenticate", `Basic realm="go-cli-agent", charset="UTF-8"`)
+	w.Header().Set("Cache-Control", "no-store")
+	http.Error(w, "authentication required", http.StatusUnauthorized)
+	return false
 }
 
 func (s *Service) Close() {
@@ -369,6 +421,9 @@ func (s *Service) Close() {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.requireBasicAuth(w, r) {
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/ws" || r.URL.Path == "/api/ws" {
 		s.serveAPI(w, r)
 		return

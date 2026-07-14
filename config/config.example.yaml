@@ -108,6 +108,15 @@ role_providers:
     base_url: ""
     model: ""
 
+# Optional WebConsole HTTP Basic authentication. Both fields must be set to
+# enable it. Generate a bcrypt hash outside this file; never save a clear-text
+# password here. Basic Auth needs HTTPS when the console is exposed over an
+# untrusted network.
+# web:
+#   basic_auth:
+#     username: operator
+#     password_hash: "$2a$..."
+
 session:
   dir: .go-cli-agent/sessions
   dir_mode: "0700"
