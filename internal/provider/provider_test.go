@@ -1939,6 +1939,115 @@ func TestOpenAIAdapterSendsOptionalGenerationFields(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterFallsBackWhenCompatibleEndpointRejectsMetadata(t *testing.T) {
+	var attempts int32
+	var fallbackEvents int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		attempt := atomic.AddInt32(&attempts, 1)
+		var body map[string]any
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &body)
+		if attempt == 1 {
+			if _, ok := body["metadata"]; !ok {
+				t.Fatalf("expected first request to contain metadata, got %#v", body)
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"400","error":"Argument not supported: metadata"}`))
+			return
+		}
+		if _, ok := body["metadata"]; ok {
+			t.Fatalf("expected fallback request to omit metadata, got %#v", body["metadata"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_1",
+			"status":"completed",
+			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback ok"}]}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	result, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:       "s1",
+		Model:           "grok-4.5",
+		ProviderProfile: "openai",
+		APIProvider:     "openai-compatible",
+		SystemPrompt:    "system",
+		Messages:        []session.Message{session.NewMessage("user", "hello")},
+		Metadata:        map[string]any{"session_id": "s1"},
+	}, func(eventType string, data map[string]any) {
+		if eventType != "provider.capability_fallback" {
+			return
+		}
+		fallbackEvents++
+		if data["feature"] != "metadata" || data["reason"] != "unsupported_argument" || data["status_code"] != http.StatusBadRequest {
+			t.Fatalf("unexpected capability fallback event: %#v", data)
+		}
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected metadata request plus one fallback request, got %d attempts", attempts)
+	}
+	if fallbackEvents != 1 {
+		t.Fatalf("expected one capability fallback event, got %d", fallbackEvents)
+	}
+	if result.Text != "fallback ok" {
+		t.Fatalf("unexpected fallback result: %#v", result)
+	}
+	if result.RawProvider["metadata_requested"] != true || result.RawProvider["metadata_sent"] != false || result.RawProvider["metadata_capability_fallback"] != true {
+		t.Fatalf("expected fallback telemetry in raw provider data, got %#v", result.RawProvider)
+	}
+
+	_, err = adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:       "s1",
+		Model:           "grok-4.5",
+		ProviderProfile: "openai",
+		APIProvider:     "openai-compatible",
+		SystemPrompt:    "system",
+		Messages:        []session.Message{session.NewMessage("user", "hello again")},
+		Metadata:        map[string]any{"session_id": "s1"},
+	}, func(eventType string, data map[string]any) {
+		if eventType == "provider.capability_fallback" {
+			t.Fatalf("cached metadata suppression should not emit another fallback event: %#v", data)
+		}
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if attempts != 3 {
+		t.Fatalf("expected cached suppression to use one request, got %d total attempts", attempts)
+	}
+}
+
+func TestOpenAIAdapterDoesNotFallbackForOtherMetadataValidationErrors(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"metadata value is invalid"}`))
+	}))
+	defer server.Close()
+
+	adapter := NewOpenAI(server.URL, "key", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID: "s1",
+		Model:     "gpt-5.4",
+		Messages:  []session.Message{session.NewMessage("user", "hello")},
+		Metadata:  map[string]any{"session_id": "s1"},
+	}, func(string, map[string]any) {})
+	if err == nil {
+		t.Fatal("expected invalid metadata value error")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected no compatibility fallback for a value validation error, got %d attempts", attempts)
+	}
+}
+
 func TestOpenAIAdapterRetriesRetryable5xx(t *testing.T) {
 	var attempts int32
 	var retryEvents int

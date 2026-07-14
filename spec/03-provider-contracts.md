@@ -167,11 +167,13 @@ adapter 负责转换为：
 - `reasoning_summary=auto|concise|detailed` -> `reasoning.summary`
 - `text_verbosity` -> `text.verbosity`
 - `store` -> `store`
+- `metadata` -> `metadata`，可通过 provider profile 的 `send_metadata: false` 显式关闭
 
 当前实现决策：
 
 - OpenAI / `openai-compatible` 默认 `store: false`
 - 原因是 session / messages / events 的唯一事实源必须是本地文件，而不是服务端存储
+- OpenAI-compatible 网关并不保证实现 Responses 的 `metadata` 参数。已知不支持时应配置 `send_metadata: false`；若兼容端点以 `400` / `422` 明确返回 metadata argument/parameter unsupported，OpenAI adapter 可在尚未获得成功响应、也没有工具副作用的前提下仅重试一次并移除 `metadata`，同时写 `provider.capability_fallback` 事件和 raw-provider 诊断字段。其他 metadata 校验错误不得触发该降级。
 - provider HTTP 层允许按配置做有限 retry，默认面向 `5xx` 和 transport timeout；认证错误与请求错误直接失败
 - 当 `reasoning` 对象非空时，请求包含 `include: ["reasoning.encrypted_content"]`，用于无状态 Responses replay；`reasoning_summary=none` 表示显式不请求可读 summary。
 - OpenAI / `openai-compatible` 不发送 provider-specific cache marker；若上游返回 `input_tokens_details.cached_tokens` 或兼容的 cache write 计数，adapter 只把它们记录进 usage / raw provider telemetry。

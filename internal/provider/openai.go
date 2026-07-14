@@ -3,17 +3,20 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"go-cli-agent/internal/session"
 )
 
 type OpenAIAdapter struct {
-	client JSONClient
-	apiKey string
+	client              JSONClient
+	apiKey              string
+	metadataUnsupported atomic.Bool
 }
 
 func NewOpenAI(baseURL, apiKey string, httpClient *http.Client) *OpenAIAdapter {
@@ -69,7 +72,10 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if req.Store != nil {
 		body["store"] = *req.Store
 	}
-	if len(req.Metadata) > 0 {
+	metadataRequested := len(req.Metadata) > 0
+	metadataSent := metadataRequested && !a.metadataUnsupported.Load()
+	metadataFallback := false
+	if metadataSent {
 		body["metadata"] = req.Metadata
 	}
 	var resp struct {
@@ -104,6 +110,30 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	err = a.client.DoJSON(ctx, http.MethodPost, "/responses", map[string]string{
 		"Authorization": "Bearer " + a.apiKey,
 	}, body, &resp, emit)
+	if err != nil && metadataSent && isUnsupportedOpenAIMetadataError(err) {
+		var httpErr *HTTPError
+		_ = errors.As(err, &httpErr)
+		a.metadataUnsupported.Store(true)
+		delete(body, "metadata")
+		metadataSent = false
+		metadataFallback = true
+		if emit != nil {
+			data := map[string]any{
+				"provider":         "openai",
+				"provider_profile": req.ProviderProfile,
+				"api_provider":     req.APIProvider,
+				"feature":          "metadata",
+				"reason":           "unsupported_argument",
+			}
+			if httpErr != nil && httpErr.StatusCode > 0 {
+				data["status_code"] = httpErr.StatusCode
+			}
+			emit("provider.capability_fallback", data)
+		}
+		err = a.client.DoJSON(ctx, http.MethodPost, "/responses", map[string]string{
+			"Authorization": "Bearer " + a.apiKey,
+		}, body, &resp, emit)
+	}
 	if err != nil {
 		return TurnResult{}, err
 	}
@@ -198,15 +228,18 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	rawStopSource := "status"
 	rawStopReason := resp.Status
 	rawExtras := map[string]any{
-		"reasoning_summary_count":     reasoningSummaryCount,
-		"reasoning_text_count":        reasoningTextCount,
-		"reasoning_encrypted_count":   reasoningEncryptedCount,
-		"reasoning_tokens":            resp.Usage.OutputTokensDetails.ReasoningTokens,
-		"cache_creation_input_tokens": resp.Usage.InputTokensDetails.CacheWriteTokens,
-		"cache_read_input_tokens":     resp.Usage.InputTokensDetails.CachedTokens,
-		"thinking_visible_observed":   len(thinkingParts) > 0,
-		"thinking_replay_observed":    reasoningEncryptedCount > 0,
-		"thinking_strategy":           thinkingStrategy,
+		"reasoning_summary_count":      reasoningSummaryCount,
+		"reasoning_text_count":         reasoningTextCount,
+		"reasoning_encrypted_count":    reasoningEncryptedCount,
+		"reasoning_tokens":             resp.Usage.OutputTokensDetails.ReasoningTokens,
+		"cache_creation_input_tokens":  resp.Usage.InputTokensDetails.CacheWriteTokens,
+		"cache_read_input_tokens":      resp.Usage.InputTokensDetails.CachedTokens,
+		"thinking_visible_observed":    len(thinkingParts) > 0,
+		"thinking_replay_observed":     reasoningEncryptedCount > 0,
+		"thinking_strategy":            thinkingStrategy,
+		"metadata_requested":           metadataRequested,
+		"metadata_sent":                metadataSent,
+		"metadata_capability_fallback": metadataFallback,
 	}
 	if incompleteReason != "" {
 		rawStopSource = "incomplete_details.reason"
@@ -228,6 +261,35 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		},
 		RawProvider: rawProviderEnvelope(rawStopSource, rawStopReason, rawExtras),
 	}, nil
+}
+
+func isUnsupportedOpenAIMetadataError(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Class != "invalid_request" {
+		return false
+	}
+	if httpErr.StatusCode != http.StatusBadRequest && httpErr.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(httpErr.Message))
+	if !strings.Contains(message, "metadata") {
+		return false
+	}
+	for _, marker := range []string{
+		"argument not supported",
+		"unsupported argument",
+		"unsupported parameter",
+		"parameter not supported",
+		"unknown argument",
+		"unknown parameter",
+		"unrecognized argument",
+		"unrecognized parameter",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIThinkingStrategy(req TurnRequest) string {
