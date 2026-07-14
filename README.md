@@ -175,7 +175,7 @@ Web 的 Plan 开关对应同一个 Plan Mode 事实源：`planmode.json`、`arti
 ./run.sh stop
 ```
 
-`run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取/下载 workspace 文件，并在 workspace 内创建文件夹或删除单个/多个文件/文件夹；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
+`run.sh` 为 WSL / Windows 浏览器访问默认监听 `0.0.0.0:3940`。这个本地控制台可以写配置和 `.env` API key、删除 session、管理 skill、读取/下载/上传/重命名 workspace 文件，并在 workspace 内创建文件夹或删除单个/多个文件/文件夹；只在可信本机网络使用，暴露到非 loopback 地址前先确认风险。
 
 需要把控制台暴露到非可信网络时，可以在配置中启用 WebConsole 自身的 HTTP Basic Auth。`password_hash` 必须是 bcrypt hash，不能保存明文；HTTP Basic Auth 还必须放在 HTTPS 后面，否则密码会随请求以可逆编码传输。认证覆盖 UI、REST API 和 WebSocket：
 

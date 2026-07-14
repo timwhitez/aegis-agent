@@ -6577,7 +6577,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
+	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
@@ -6631,7 +6631,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
 	}
-	if !strings.Contains(apiBody, "function listWorkspaceFiles") || !strings.Contains(apiBody, "function createWorkspaceDirectory") || !strings.Contains(apiBody, "function deleteWorkspacePath") || !strings.Contains(apiBody, "function deleteWorkspacePaths") || !strings.Contains(apiBody, "function workspaceDownloadURL") {
+	if !strings.Contains(apiBody, "function listWorkspaceFiles") || !strings.Contains(apiBody, "function createWorkspaceDirectory") || !strings.Contains(apiBody, "function uploadWorkspaceFile") || !strings.Contains(apiBody, "function renameWorkspaceFile") || !strings.Contains(apiBody, "function deleteWorkspacePath") || !strings.Contains(apiBody, "function deleteWorkspacePaths") || !strings.Contains(apiBody, "function workspaceDownloadURL") {
 		t.Fatalf("expected api.js to expose Workspace file operation helpers, got api.js body: %s", apiBody)
 	}
 	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
@@ -6670,8 +6670,8 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "currentSessionWorkspacePath()") || !strings.Contains(workspaceBody, "function syncWorkspaceToCurrentSession") || !strings.Contains(workspaceBody, "syncedSessionWorkdir") {
 		t.Fatalf("expected Workspace view to sync to the selected session workdir, got workspace-view.js body: %s", workspaceBody)
 	}
-	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceItems") || !strings.Contains(workspaceBody, "workspace-select-checkbox") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
-		t.Fatalf("expected Workspace view to expose create/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
+	if !strings.Contains(workspaceBody, "handleCreateWorkspaceFolder") || !strings.Contains(workspaceBody, "handleUploadWorkspaceFile") || !strings.Contains(workspaceBody, "handleRenameSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDownloadSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceFile") || !strings.Contains(workspaceBody, "handleDeleteSelectedWorkspaceItems") || !strings.Contains(workspaceBody, "workspace-select-checkbox") || !strings.Contains(workspaceBody, "handleDeleteCurrentWorkspaceDirectory") || !strings.Contains(workspaceBody, "confirmLocalAction") {
+		t.Fatalf("expected Workspace view to expose create/upload/rename/download/delete controls with confirmation, got workspace-view.js body: %s", workspaceBody)
 	}
 	if !strings.Contains(workspaceBody, "handleDeleteWorkspaceHeaderAction") || !strings.Contains(workspaceBody, "visible: hasSelection || Boolean(currentPath)") || !strings.Contains(workspaceBody, "pending === 'delete-dir' || pending === 'delete-selected'") || strings.Contains(workspaceBody, "nodes.workspaceDeleteSelectedBtn") {
 		t.Fatalf("expected Workspace view to route selected-item deletion through the refresh-adjacent trash button, got workspace-view.js body: %s", workspaceBody)
@@ -11444,6 +11444,142 @@ func TestServiceWorkspaceRoutesCreateDownloadAndDelete(t *testing.T) {
 	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
 	if !hasWebAuditEvent(events, "web.workspace.mkdir") || !hasWebAuditEvent(events, "web.workspace.delete") {
 		t.Fatalf("expected workspace mkdir/delete audit events, got %#v", events)
+	}
+}
+
+func TestServiceWorkspaceRoutesUploadAndRenameFile(t *testing.T) {
+	root := t.TempDir()
+	workspaceRoot := filepath.Join(root, "workspace")
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatalf("chdir root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(previousWD)
+	})
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "uploads"), 0o755); err != nil {
+		t.Fatalf("mkdir uploads: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "uploads", "existing.txt"), []byte("existing"), 0o600); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	if err := os.Symlink("existing.txt", filepath.Join(workspaceRoot, "uploads", "existing-link.txt")); err != nil {
+		t.Fatalf("create upload symlink: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-only.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write root-only file: %v", err)
+	}
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	upload := func(path, name, content string, wantStatus int, target any) {
+		t.Helper()
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if err := writer.WriteField("path", path); err != nil {
+			t.Fatalf("write upload path: %v", err)
+		}
+		part, err := writer.CreateFormFile("file", name)
+		if err != nil {
+			t.Fatalf("create upload file part: %v", err)
+		}
+		if _, err := io.WriteString(part, content); err != nil {
+			t.Fatalf("write upload content: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close upload multipart: %v", err)
+		}
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/files/upload", &body)
+		if err != nil {
+			t.Fatalf("new upload request: %v", err)
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set(webMutationHeader, "1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("upload request: %v", err)
+		}
+		defer resp.Body.Close()
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read upload response: %v", err)
+		}
+		if resp.StatusCode != wantStatus {
+			t.Fatalf("unexpected upload status=%d want=%d body=%s", resp.StatusCode, wantStatus, string(responseBody))
+		}
+		if target != nil && len(responseBody) > 0 {
+			if err := json.Unmarshal(responseBody, target); err != nil {
+				t.Fatalf("decode upload response: %v body=%s", err, string(responseBody))
+			}
+		}
+	}
+
+	var uploadResp map[string]any
+	upload("uploads", "draft.txt", "uploaded content", http.StatusCreated, &uploadResp)
+	if uploadResp["created"] != true || uploadResp["path"] != "uploads/draft.txt" || uploadResp["type"] != "file" || int(uploadResp["size"].(float64)) != len("uploaded content") {
+		t.Fatalf("unexpected upload response: %#v", uploadResp)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "uploads", "draft.txt")); err != nil || string(data) != "uploaded content" {
+		t.Fatalf("unexpected uploaded file data=%q err=%v", string(data), err)
+	}
+	upload("uploads", "draft.txt", "duplicate", http.StatusConflict, nil)
+	upload("uploads", ".env", "SECRET=1", http.StatusBadRequest, nil)
+	upload("..", "outside-upload.txt", "outside", http.StatusForbidden, nil)
+	if _, err := os.Stat(filepath.Join(root, "outside-upload.txt")); !os.IsNotExist(err) {
+		t.Fatalf("outside upload should not exist, err=%v", err)
+	}
+
+	var renameResp map[string]any
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "uploads/draft.txt",
+		"name": "final.txt",
+	}, http.StatusOK, &renameResp)
+	if renameResp["renamed"] != true || renameResp["from"] != "uploads/draft.txt" || renameResp["path"] != "uploads/final.txt" || renameResp["type"] != "file" {
+		t.Fatalf("unexpected rename response: %#v", renameResp)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "uploads", "draft.txt")); !os.IsNotExist(err) {
+		t.Fatalf("old upload path should not exist, err=%v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(workspaceRoot, "uploads", "final.txt")); err != nil || string(data) != "uploaded content" {
+		t.Fatalf("unexpected renamed file data=%q err=%v", string(data), err)
+	}
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "uploads/final.txt",
+		"name": "existing.txt",
+	}, http.StatusConflict, nil)
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "uploads/final.txt",
+		"name": ".env",
+	}, http.StatusBadRequest, nil)
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "uploads",
+		"name": "renamed-dir",
+	}, http.StatusBadRequest, nil)
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "uploads/existing-link.txt",
+		"name": "renamed-link.txt",
+	}, http.StatusBadRequest, nil)
+	postJSONWithMethod(t, http.MethodPatch, ts.URL+"/api/files/rename", map[string]any{
+		"path": "../root-only.txt",
+		"name": "renamed-outside.txt",
+	}, http.StatusForbidden, nil)
+	if data, err := os.ReadFile(filepath.Join(root, "root-only.txt")); err != nil || string(data) != "outside" {
+		t.Fatalf("outside file should remain data=%q err=%v", string(data), err)
+	}
+
+	events := loadWebAuditEvents(t, webAuditLogPath(cfg.Session.Dir))
+	if !hasWebAuditEvent(events, "web.workspace.upload") || !hasWebAuditEvent(events, "web.workspace.rename") {
+		t.Fatalf("expected workspace upload/rename audit events, got %#v", events)
 	}
 }
 

@@ -290,6 +290,7 @@ async function main() {
 
   let browserClient;
   let results = null;
+  const workspaceCleanupPaths = [];
   try {
     await waitFor(async () => {
       try {
@@ -408,6 +409,54 @@ async function main() {
     );
     results.interactions.workspace_path_retained = true;
     results.interactions.workspace_browsed_path = browsedWorkspacePath;
+
+    const uploadName = `webconsole-upload-smoke-${Date.now()}.txt`;
+    const renamedName = uploadName.replace('upload', 'renamed');
+    const uploadPath = `${browsedWorkspacePath}/${uploadName}`;
+    const renamedPath = `${browsedWorkspacePath}/${renamedName}`;
+    const uploadStarted = await browserClient.evaluate(`(() => {
+      const input = document.getElementById('workspace-upload-input');
+      if (!input || typeof DataTransfer !== 'function' || typeof File !== 'function') return false;
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['workspace upload smoke'], ${JSON.stringify(uploadName)}, { type: 'text/plain' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    if (!uploadStarted) {
+      throw new Error('workspace upload input could not be activated');
+    }
+    workspaceCleanupPaths.push(uploadPath);
+    await waitFor(
+      () => browserClient.evaluate(`Array.from(document.querySelectorAll('#file-tree .tree-node')).some((item) => item.dataset.path === ${JSON.stringify(uploadPath)})`),
+      15000,
+      'workspace uploaded file'
+    );
+    await click(`#file-tree .tree-node[data-path=${JSON.stringify(uploadPath)}]`, 'uploaded workspace file');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('editor-filename')?.textContent === ${JSON.stringify(uploadPath)}`),
+      15000,
+      'workspace uploaded file preview'
+    );
+    await browserClient.evaluate(`(() => {
+      window.__workspaceOriginalPrompt = window.prompt;
+      window.prompt = () => ${JSON.stringify(renamedName)};
+    })()`);
+    await click('#workspace-rename-btn', 'workspace rename action');
+    await waitFor(
+      () => browserClient.evaluate(`document.getElementById('editor-filename')?.textContent === ${JSON.stringify(renamedPath)} && Array.from(document.querySelectorAll('#file-tree .tree-node')).some((item) => item.dataset.path === ${JSON.stringify(renamedPath)})`),
+      15000,
+      'workspace renamed file'
+    );
+    workspaceCleanupPaths.push(renamedPath);
+    await browserClient.evaluate(`(() => {
+      if (window.__workspaceOriginalPrompt) {
+        window.prompt = window.__workspaceOriginalPrompt;
+        delete window.__workspaceOriginalPrompt;
+      }
+    })()`);
+    results.interactions.workspace_upload = true;
+    results.interactions.workspace_rename = true;
 
     await click('[data-view="skills"]', 'skills nav');
     await waitFor(
@@ -843,6 +892,9 @@ async function main() {
     }
     throw err;
   } finally {
+    for (const workspacePath of workspaceCleanupPaths.reverse()) {
+      await fetchJSON(`${baseURL}/api/files?path=${encodeURIComponent(workspacePath)}`, { method: 'DELETE' }).catch(() => {});
+    }
     if (browserClient) {
       await browserClient.close().catch(() => {});
     }

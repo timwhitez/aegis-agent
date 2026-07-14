@@ -42,7 +42,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 不把 Web UI 变成权威状态源
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
-- 当前 workspace 面板只作为“服务进程当前 cwd”的受限本地文件管理器存在，不承诺独立的 workspace-root 切换能力；它可以浏览、预览、下载文件，并在默认 `workspace/` 根内创建文件夹、选择多个可见文件或文件夹并批量删除
+- 当前 workspace 面板只作为“服务进程当前 cwd”的受限本地文件管理器存在，不承诺独立的 workspace-root 切换能力；它可以浏览、预览、下载和上传文件，在同一目录内重命名普通文件，并在默认 `workspace/` 根内创建文件夹、选择多个可见文件或文件夹并批量删除
 - 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `go-cli-agent web --workers`、兼容的 `experimental web --workers` 或后端 API 调整
 - 不把普通 start / steer / continue / Plan approve 设计成多步确认向导；用户明确提交后应直接执行，风险动作才确认
 
@@ -346,7 +346,7 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 
 控制面约束：
 
-- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill upload 保持表单入口但仍受 header 与 path/root 校验约束。
+- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill/workspace upload 保持表单入口但仍受 header、请求体上限与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
 - goal 控制只通过 REST endpoint 写入 session store，不通过 WebSocket 控制消息。
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session；浏览器 WebSocket upgrade 必须拒绝 foreign `Origin`，无 `Origin` 的本地非浏览器 client 可继续用于测试/诊断。
@@ -358,9 +358,9 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 - Workspace browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
 - Workspace 当前浏览目录是 localStorage 中的纯 UI preference，按 `workspace_root + selected session id` 分桶；new-session composer 使用独立 bucket。普通页面切换、polling 和同一 session detail 刷新只能刷新当前目录，不能把手动浏览路径重新覆盖为 session workdir。首次选中 session、切换 session 或同一 session 的 metadata workdir 真实变化时，`syncWorkspaceToCurrentSession()` 才同步初始目录；已有 bucket preference 优先用于浏览器刷新恢复。持久化路径失效时逐级回退到最近可访问父目录，最后回到 workspace 根，并只提示一次。该 preference 不是 session 执行状态，start/continue 提交的 workdir 仍由后端做 workspace safety 校验。
 - Workspace browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取或下载 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
-- Workspace 创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；创建/删除只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成删除服务 cwd 或仓库元数据的入口。批量删除必须先完成所有选中路径的安全预检，再执行删除事务；任一选中路径越界、指向敏感路径、为 symlink 或其目录子树包含敏感路径时，整个批量删除失败且不得删除其他已选项。
+- Workspace 上传、文件重命名、创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；写操作只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成修改服务 cwd 或仓库元数据的入口。上传采用 multipart 单文件请求，文件内容和整个请求都有硬上限，目标已存在时拒绝覆盖，并通过同目录临时文件 + no-replace rename 原子发布。文件重命名只允许普通文件在原目录内改名，拒绝覆盖、目录移动、symlink、敏感源/目标名与越界路径。批量删除必须先完成所有选中路径的安全预检，再执行删除事务；任一选中路径越界、指向敏感路径、为 symlink 或其目录子树包含敏感路径时，整个批量删除失败且不得删除其他已选项。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
-- 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载 workspace 文件，以及在 workspace 内创建文件夹或删除单个/多个文件夹和文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
+- 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载/上传/重命名 workspace 文件，以及在 workspace 内创建文件夹或删除单个/多个文件夹和文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。
 - 单个 session tree 删除必须先完成 active handle、stale running owner、running session/job 与 audit writability 检查；审计事件写入成功后直接调用 session store 删除目标 session tree 和 linked queue jobs。不要在请求路径上先把整棵 session tree 搬到历史备份目录再删除，因为大型 master/child 会话会让删除响应被大目录 I/O 阻塞。全量 clear history 仍可使用 history mutation transaction 提供 audit 失败回滚。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh` 和 summary `default | auto | concise | detailed | off`，Anthropic-compatible / Google 支持 `default | standard | max | off`；`max` 映射到 thinking budget profile，不能要求用户手写 token budget。
@@ -638,6 +638,19 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 - 动态调整 worker pool 并发数
 - 该接口保留给高级/测试入口，默认前端不展示 worker pool 调参控件
+
+### 7.19 Workspace file APIs
+
+- `GET /api/files?path=...`：列出受限目录
+- `GET /api/file/read?path=...`：分页预览普通文件
+- `GET /api/file/download?path=...`：下载普通文件
+- `POST /api/files/mkdir`：在目标目录创建文件夹
+- `POST /api/files/upload`：multipart 单文件上传；字段为 `path` 和 `file`，成功返回 `201`
+- `PATCH /api/files/rename`：输入 `path` 与同目录 `name`，仅重命名普通文件且不覆盖已有路径
+- `DELETE /api/files?path=...`：删除单个文件或目录
+- `POST /api/files/delete`：事务式删除多个文件或目录
+
+所有 workspace mutation 都必须限制在默认 `workspace/` 根内，复用敏感路径与 symlink policy，并写入 `web.workspace.*` 审计事件。
 
 ## 8. 交互状态机
 

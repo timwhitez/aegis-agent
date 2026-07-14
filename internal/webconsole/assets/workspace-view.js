@@ -394,6 +394,18 @@ function ensureWorkspaceActionBindings() {
     nodes.workspaceNewFolderBtn.dataset.bound = '1';
     nodes.workspaceNewFolderBtn.addEventListener('click', handleCreateWorkspaceFolder);
   }
+  if (nodes.workspaceUploadBtn && nodes.workspaceUploadBtn.dataset.bound !== '1') {
+    nodes.workspaceUploadBtn.dataset.bound = '1';
+    nodes.workspaceUploadBtn.addEventListener('click', () => {
+      if (!workspaceActionPending()) {
+        nodes.workspaceUploadInput?.click();
+      }
+    });
+  }
+  if (nodes.workspaceUploadInput && nodes.workspaceUploadInput.dataset.bound !== '1') {
+    nodes.workspaceUploadInput.dataset.bound = '1';
+    nodes.workspaceUploadInput.addEventListener('change', handleUploadWorkspaceFile);
+  }
   if (nodes.workspaceRefreshBtn && nodes.workspaceRefreshBtn.dataset.bound !== '1') {
     nodes.workspaceRefreshBtn.dataset.bound = '1';
     nodes.workspaceRefreshBtn.addEventListener('click', handleRefreshWorkspace);
@@ -405,6 +417,10 @@ function ensureWorkspaceActionBindings() {
   if (nodes.workspaceDownloadBtn && nodes.workspaceDownloadBtn.dataset.bound !== '1') {
     nodes.workspaceDownloadBtn.dataset.bound = '1';
     nodes.workspaceDownloadBtn.addEventListener('click', handleDownloadSelectedWorkspaceFile);
+  }
+  if (nodes.workspaceRenameBtn && nodes.workspaceRenameBtn.dataset.bound !== '1') {
+    nodes.workspaceRenameBtn.dataset.bound = '1';
+    nodes.workspaceRenameBtn.addEventListener('click', handleRenameSelectedWorkspaceFile);
   }
   if (nodes.workspaceDeleteFileBtn && nodes.workspaceDeleteFileBtn.dataset.bound !== '1') {
     nodes.workspaceDeleteFileBtn.dataset.bound = '1';
@@ -423,6 +439,11 @@ function renderWorkspaceActions() {
     visible: true,
     disabled: Boolean(pending),
     busy: pending === 'mkdir'
+  });
+  setWorkspaceButtonState(nodes.workspaceUploadBtn, {
+    visible: true,
+    disabled: Boolean(pending),
+    busy: pending === 'upload'
   });
   setWorkspaceButtonState(nodes.workspaceRefreshBtn, {
     visible: true,
@@ -446,6 +467,11 @@ function renderWorkspaceActions() {
     disabled: Boolean(pending) || !hasFile,
     busy: false
   });
+  setWorkspaceButtonState(nodes.workspaceRenameBtn, {
+    visible: hasFile && !hasSelection,
+    disabled: Boolean(pending) || !hasFile || hasSelection,
+    busy: pending === 'rename'
+  });
   if (nodes.workspaceSelectedChip) {
     nodes.workspaceSelectedChip.classList.toggle('is-hidden', !hasSelection);
     nodes.workspaceSelectedChip.textContent = selectedCount === 1 ? '1 selected' : `${selectedCount} selected`;
@@ -457,6 +483,9 @@ function renderWorkspaceActions() {
   });
   if (nodes.workspaceDownloadBtn && hasFile) {
     nodes.workspaceDownloadBtn.title = `Download ${preview.path}`;
+  }
+  if (nodes.workspaceRenameBtn && hasFile) {
+    nodes.workspaceRenameBtn.title = `Rename ${preview.path}`;
   }
   if (nodes.workspaceDeleteFileBtn && hasFile) {
     nodes.workspaceDeleteFileBtn.title = `Delete ${preview.path}`;
@@ -500,6 +529,31 @@ async function handleCreateWorkspaceFolder() {
   } catch (err) {
     showToast(workspaceErrorMessage(err, 'Failed to create folder.'), 'error');
   } finally {
+    setWorkspaceActionPending('');
+  }
+}
+
+async function handleUploadWorkspaceFile() {
+  const input = nodes.workspaceUploadInput;
+  const file = input?.files?.[0];
+  if (!file || workspaceActionPending()) {
+    if (input) {
+      input.value = '';
+    }
+    return;
+  }
+  const path = currentWorkspacePath();
+  setWorkspaceActionPending('upload');
+  try {
+    const result = await uploadWorkspaceFile(path || '.', file);
+    showToast(`Uploaded ${result?.path || file.name}.`, 'success');
+    await loadWorkspaceDirectory(path);
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to upload file.'), 'error');
+  } finally {
+    if (input) {
+      input.value = '';
+    }
     setWorkspaceActionPending('');
   }
 }
@@ -567,6 +621,47 @@ function handleDownloadSelectedWorkspaceFile() {
   anchor.click();
   anchor.remove();
   showToast(`Download started for ${preview.path}.`, 'success');
+}
+
+async function handleRenameSelectedWorkspaceFile() {
+  const preview = workspaceFilePreview();
+  if (!preview?.path || workspaceActionPending()) {
+    return;
+  }
+  const currentName = preview.path.split('/').pop() || preview.path;
+  const nextName = window.prompt(`Rename ${currentName}`, currentName);
+  if (nextName === null) {
+    return;
+  }
+  const trimmed = String(nextName || '').trim();
+  if (!trimmed) {
+    showToast('File name is required.', 'error');
+    return;
+  }
+  if (trimmed === currentName) {
+    showToast('Choose a different file name.', 'info');
+    return;
+  }
+  if (trimmed === '.' || trimmed === '..' || /[\\/]/.test(trimmed)) {
+    showToast('File name must not contain path separators.', 'error');
+    return;
+  }
+  setWorkspaceActionPending('rename');
+  try {
+    const result = await renameWorkspaceFile(preview.path, trimmed);
+    const renamedPath = result?.path || `${parentWorkspacePath(preview.path) ? `${parentWorkspacePath(preview.path)}/` : ''}${trimmed}`;
+    showToast(`Renamed file to ${trimmed}.`, 'success');
+    await loadWorkspaceDirectory(currentWorkspacePath());
+    if (await loadFile(renamedPath)) {
+      setSelectedWorkspaceTreePath(renamedPath);
+      const button = nodes.fileTree?.querySelector(`.tree-node[data-path="${cssEscape(renamedPath)}"]`);
+      button?.classList.add('active');
+    }
+  } catch (err) {
+    showToast(workspaceErrorMessage(err, 'Failed to rename file.'), 'error');
+  } finally {
+    setWorkspaceActionPending('');
+  }
 }
 
 async function handleDeleteSelectedWorkspaceFile() {

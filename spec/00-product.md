@@ -220,7 +220,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - skills 和 `AGENTS.md` 指令链
 - hooks v1
 - compaction
-- local Web console：session start/continue/steer、Goal、Plan Mode、Settings provider/model 配置、timeline、tasks、children、queue、settings、workspace browser with bounded local file operations
+- local Web console：session start/continue/steer、Goal、Plan Mode、Settings provider/model 配置、timeline、tasks、children、queue、settings，以及支持预览、下载、上传、文件重命名、建目录和删除的受限 workspace browser
 - `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` / `init`
 - provider probe / doctor
 - OpenAI / Anthropic / Google adapter

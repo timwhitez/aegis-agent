@@ -1989,6 +1989,18 @@ function createWorkspaceHarnessContext() {
         payload: { path: path || '.', name }
       });
     },
+    uploadWorkspaceFile(path, file) {
+      return workspaceContext.requestJSON('/api/files/upload', {
+        method: 'POST',
+        payload: { path: path || '.', file }
+      });
+    },
+    renameWorkspaceFile(path, name) {
+      return workspaceContext.requestJSON('/api/files/rename', {
+        method: 'PATCH',
+        payload: { path, name }
+      });
+    },
     deleteWorkspacePath(path) {
       return workspaceContext.requestJSON(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
     },
@@ -5851,6 +5863,102 @@ test('workspace selected paths use the refresh-adjacent trash action', async () 
     selectedCount: 0,
     reloadedPath: 'src',
     pending: ''
+  });
+});
+
+test('workspace upload control sends the selected file to the current directory and refreshes', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  workspaceContext.nodes.workspaceUploadBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceUploadInput = fakeAppElement();
+  workspaceContext.nodes.workspaceRefreshBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceNewFolderBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceDeleteDirBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceSelectedChip = fakeAppElement();
+
+  vm.runInContext(`
+    uploadCalls = [];
+    toasts = [];
+    uploadWorkspaceFile = async function(path, file) {
+      uploadCalls.push({ path, name: file.name });
+      return { path: 'src/' + file.name };
+    };
+    loadWorkspaceDirectory = async function(path) {
+      state.reloadedPath = path;
+    };
+    showToast = function(message, tone) {
+      toasts.push({ message, tone });
+    };
+    setCurrentWorkspacePath('src');
+    nodes.workspaceUploadInput.files = [{ name: 'notes.txt' }];
+    ensureWorkspaceActionBindings();
+  `, workspaceContext);
+
+  await vm.runInContext(`nodes.workspaceUploadInput.listeners.change()`, workspaceContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    uploadCalls,
+    reloadedPath: state.reloadedPath,
+    inputValue: nodes.workspaceUploadInput.value,
+    pending: workspaceActionPending(),
+    toast: toasts[0]
+  })`, workspaceContext)), {
+    uploadCalls: [{ path: 'src', name: 'notes.txt' }],
+    reloadedPath: 'src',
+    inputValue: '',
+    pending: '',
+    toast: { message: 'Uploaded src/notes.txt.', tone: 'success' }
+  });
+});
+
+test('workspace rename control renames the previewed file and keeps its preview selected', async () => {
+  const workspaceContext = createWorkspaceHarnessContext();
+  workspaceContext.nodes.workspaceRenameBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceDownloadBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceDeleteFileBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceRefreshBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceNewFolderBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceDeleteDirBtn = fakeAppElement();
+  workspaceContext.nodes.workspaceSelectedChip = fakeAppElement();
+
+  vm.runInContext(`
+    renameCalls = [];
+    toasts = [];
+    window.prompt = function() { return 'final.txt'; };
+    renameWorkspaceFile = async function(path, name) {
+      renameCalls.push({ path, name });
+      return { path: 'src/final.txt' };
+    };
+    loadWorkspaceDirectory = async function(path) {
+      state.reloadedPath = path;
+    };
+    loadFile = async function(path) {
+      state.loadedFile = path;
+      return true;
+    };
+    showToast = function(message, tone) {
+      toasts.push({ message, tone });
+    };
+    setCurrentWorkspacePath('src');
+    setWorkspaceFilePreview({ path: 'src/draft.txt', content: 'draft' });
+    ensureWorkspaceActionBindings();
+  `, workspaceContext);
+
+  await vm.runInContext(`nodes.workspaceRenameBtn.listeners.click()`, workspaceContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    renameCalls,
+    reloadedPath: state.reloadedPath,
+    loadedFile: state.loadedFile,
+    selectedPath: selectedWorkspaceTreePath(),
+    pending: workspaceActionPending(),
+    toast: toasts[0]
+  })`, workspaceContext)), {
+    renameCalls: [{ path: 'src/draft.txt', name: 'final.txt' }],
+    reloadedPath: 'src',
+    loadedFile: 'src/final.txt',
+    selectedPath: 'src/final.txt',
+    pending: '',
+    toast: { message: 'Renamed file to final.txt.', tone: 'success' }
   });
 });
 

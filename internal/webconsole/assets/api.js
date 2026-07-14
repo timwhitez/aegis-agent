@@ -209,6 +209,20 @@ function createWorkspaceDirectory(path, name) {
   }));
 }
 
+function uploadWorkspaceFile(path, file) {
+  const form = new FormData();
+  form.append('path', path || '.');
+  form.append('file', file);
+  return requestFormJSON('/api/files/upload', form, { method: 'POST' });
+}
+
+function renameWorkspaceFile(path, name) {
+  return requestJSON('/api/files/rename', jsonRequest({
+    path,
+    name
+  }, { method: 'PATCH' }));
+}
+
 function deleteWorkspacePath(path) {
   return requestJSON(`/api/files?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
 }

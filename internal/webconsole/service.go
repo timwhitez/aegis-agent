@@ -70,6 +70,8 @@ const (
 	maxSkillZipTotalBytes           = 100 << 20
 	skillZipDirectoryMode           = 0o700
 	maxWebJSONBodyBytes             = 4 << 20
+	maxWorkspaceUploadBytes         = 50 << 20
+	maxWorkspaceUploadRequestBytes  = maxWorkspaceUploadBytes + (1 << 20)
 	workspaceFilePreviewDefaultSize = 256 << 10
 	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
@@ -486,6 +488,10 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleListFiles(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/files/mkdir":
 		s.handleCreateWorkspaceDirectory(w, r)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/files/upload":
+		s.handleUploadWorkspaceFile(w, r)
+	case r.Method == http.MethodPatch && r.URL.Path == "/api/files/rename":
+		s.handleRenameWorkspaceFile(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/files/delete":
 		s.handleDeleteWorkspacePaths(w, r)
 	case r.Method == http.MethodDelete && r.URL.Path == "/api/files":
@@ -3465,6 +3471,283 @@ type workspaceDeleteRequest struct {
 	Paths []string `json:"paths"`
 }
 
+type workspaceRenameRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+func (s *Service) handleUploadWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	if r.Body == nil || r.Body == http.NoBody {
+		writeError(w, http.StatusBadRequest, errors.New("workspace upload request body is required"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxWorkspaceUploadRequestBytes)
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	defer file.Close()
+	name := strings.TrimSpace(header.Filename)
+	if err := validateWorkspaceFileName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	parentRel := normalizeWorkspaceBrowserRel(r.FormValue("path"))
+	parentLexical, err := workspaceBrowserLexicalPath(root, browseRoot, parentRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	parentResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, parentRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if !pathWithinRoot(root, parentLexical) || !pathWithinRoot(root, parentResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(parentLexical) || policy.targetDenied(parentResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	info, err := os.Stat(parentLexical)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a directory"))
+		return
+	}
+
+	targetRel := workspaceBrowserJoinRel(parentRel, name)
+	targetLexical := filepath.Join(parentLexical, name)
+	if filepath.Dir(targetLexical) != filepath.Clean(parentLexical) {
+		writeError(w, http.StatusBadRequest, errors.New("file name must not contain path separators"))
+		return
+	}
+	targetResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, targetRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if !pathWithinRoot(root, targetLexical) || !pathWithinRoot(root, targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(targetLexical) || policy.targetDenied(targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if _, err := os.Lstat(targetLexical); err == nil {
+		writeError(w, http.StatusConflict, errors.New("path already exists"))
+		return
+	} else if !os.IsNotExist(err) {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	tmpFile, err := fileutil.CreateTempNoSymlink(parentLexical, ".workspace-upload-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	tmpPath := tmpFile.Name()
+	tmpExists := true
+	defer func() {
+		_ = tmpFile.Close()
+		if tmpExists {
+			_ = fileutil.RemoveFileNoSymlink(tmpPath)
+		}
+	}()
+	written, err := io.Copy(tmpFile, io.LimitReader(file, maxWorkspaceUploadBytes+1))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if written > maxWorkspaceUploadBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, fmt.Errorf("workspace upload exceeds %d bytes", maxWorkspaceUploadBytes))
+		return
+	}
+	if err := tmpFile.Sync(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := tmpFile.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := fileutil.RenamePathNoSymlink(tmpPath, targetLexical); err != nil {
+		writeError(w, workspaceMutationStatus(err), err)
+		return
+	}
+	tmpExists = false
+	if err := s.appendAuditEvent("web.workspace.upload", map[string]any{
+		"path": targetRel,
+		"size": written,
+	}); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(targetLexical, tmpPath); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore workspace upload after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		tmpExists = true
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"created": true,
+		"path":    targetRel,
+		"type":    "file",
+		"size":    written,
+	})
+}
+
+func (s *Service) handleRenameWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	var req workspaceRenameRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if err := validateWorkspaceFileName(name); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	path := strings.TrimSpace(req.Path)
+	if path == "" || path == "." {
+		writeError(w, http.StatusBadRequest, errors.New("path is required"))
+		return
+	}
+
+	root, browseRoot, policy, err := workspaceBrowserContext()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	sourceLexical, err := workspaceBrowserLexicalPath(root, browseRoot, path)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	sourceResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, path)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if filepath.Clean(sourceLexical) == filepath.Clean(root) || !pathWithinRoot(root, sourceLexical) || !pathWithinRoot(root, sourceResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(sourceLexical) || policy.targetDenied(sourceResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	info, err := os.Lstat(sourceLexical)
+	if err != nil {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		writeError(w, http.StatusBadRequest, errors.New("refusing to rename symlink path"))
+		return
+	}
+	if !info.Mode().IsRegular() {
+		writeError(w, http.StatusBadRequest, errors.New("path is not a regular file"))
+		return
+	}
+
+	parentLexical := filepath.Dir(sourceLexical)
+	if filepath.Base(sourceLexical) == name {
+		writeError(w, http.StatusBadRequest, errors.New("new file name must differ from the current name"))
+		return
+	}
+	targetLexical := filepath.Join(parentLexical, name)
+	if filepath.Dir(targetLexical) != filepath.Clean(parentLexical) {
+		writeError(w, http.StatusBadRequest, errors.New("file name must not contain path separators"))
+		return
+	}
+	targetRel, err := filepath.Rel(root, targetLexical)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	targetRel = filepath.ToSlash(filepath.Clean(targetRel))
+	targetResolved, err := resolveWorkspaceBrowserPath(root, browseRoot, targetRel)
+	if err != nil {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if !pathWithinRoot(root, targetLexical) || !pathWithinRoot(root, targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("workspace mutations are limited to the workspace root"))
+		return
+	}
+	if policy.targetDenied(targetLexical) || policy.targetDenied(targetResolved) {
+		writeError(w, http.StatusForbidden, errors.New("access denied"))
+		return
+	}
+	if _, err := os.Lstat(targetLexical); err == nil {
+		writeError(w, http.StatusConflict, errors.New("path already exists"))
+		return
+	} else if !os.IsNotExist(err) {
+		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if err := s.ensureAuditLogWritable(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := fileutil.RenamePathNoSymlink(sourceLexical, targetLexical); err != nil {
+		writeError(w, workspaceMutationStatus(err), err)
+		return
+	}
+	sourceRel, err := filepath.Rel(root, sourceLexical)
+	if err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(targetLexical, sourceLexical); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, errors.Join(err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	sourceRel = filepath.ToSlash(filepath.Clean(sourceRel))
+	if err := s.appendAuditEvent("web.workspace.rename", map[string]any{
+		"from": sourceRel,
+		"to":   targetRel,
+	}); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(targetLexical, sourceLexical); rollbackErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("restore workspace rename after audit error %v: %w", err, rollbackErr))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"renamed": true,
+		"from":    sourceRel,
+		"path":    targetRel,
+		"type":    "file",
+	})
+}
+
 func (s *Service) handleCreateWorkspaceDirectory(w http.ResponseWriter, r *http.Request) {
 	var req workspaceMkdirRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -3951,6 +4234,19 @@ func workspaceBrowserStatStatus(err error) int {
 	}
 }
 
+func workspaceMutationStatus(err error) int {
+	switch {
+	case os.IsNotExist(err):
+		return http.StatusNotFound
+	case os.IsExist(err), strings.Contains(strings.ToLower(err.Error()), "existing path"):
+		return http.StatusConflict
+	case os.IsPermission(err):
+		return http.StatusForbidden
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 func currentServerWorkspaceRoot() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -4040,6 +4336,23 @@ func validateWorkspaceDirectoryName(name string) error {
 	}
 	if webFileBrowserNameDenied(name) {
 		return errors.New("folder name is not allowed")
+	}
+	return nil
+}
+
+func validateWorkspaceFileName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("file name is required")
+	}
+	if name == "." || name == ".." {
+		return errors.New("file name is invalid")
+	}
+	if strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
+		return errors.New("file name must not contain path separators")
+	}
+	if webFileBrowserNameDenied(name) {
+		return errors.New("file name is not allowed")
 	}
 	return nil
 }
@@ -8201,6 +8514,9 @@ func jsonBodyPolicyForRequest(method, path string) webJSONBodyPolicy {
 		case "/api/sessions/clear":
 			return webJSONBodyOptional
 		}
+	}
+	if method == http.MethodPatch && path == "/api/files/rename" {
+		return webJSONBodyRequired
 	}
 
 	if method == http.MethodPost && strings.HasPrefix(path, "/api/skills/") {

@@ -92,6 +92,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 
 - embedded shell 与静态前端 assets 能由同进程 service 稳定提供
 - Web 发起的 `start` / goal create/pause/resume/clear/complete / mission plan approve / `continue` / `steer` / worker pool 更新都走真实 runtime 与文件事实；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
+- Workspace upload / rename 走真实 HTTP API 和本地文件事实；覆盖 request/body 上限、同目录 no-replace rename、敏感路径、symlink/escape 拒绝、审计事件与前端 pending/refresh 行为
 - headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
@@ -181,7 +182,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - 若 retry-resume proof 已拿到上述 durable evidence，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 completion quirk / follow-up note，而不是误判成 retry-policy 失败
 - worker pool 更新与 queue job 提交能落到真实 queue / child session 路径；worker scaling、queue notification 去重、queue job detail 与 retry proof 主要由 API / shell / service tests 覆盖
 - parent session 的 background notification 在 queue completion 与 stale-running reconcile 重叠时仍按 `queue_job_id` 去重
-- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start/continue 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history 清理；前端不再验收 Background / Queue UI，API 提交 queue job 后只验证后端 queue detail 与文件事实源
+- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，Workspace 上传与文件重命名，start/continue 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history 清理；前端不再验收 Background / Queue UI，API 提交 queue job 后只验证后端 queue detail 与文件事实源
 - 浏览器端 `runtime exception` / `console error` 必须为空
 
 ## 5. Fixture 组织

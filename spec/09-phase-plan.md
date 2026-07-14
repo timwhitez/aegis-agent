@@ -265,6 +265,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - session / queue / children / task board / timeline 可视化
 - Web 发起的 `start` / `continue` / `steer`；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
 - Web 发起的 `start` 可通过一个 optional Goal 开关附带 prompt-derived goal；session inspector 可显示 goal 状态、criteria、validation、agent 拆分出的 features/milestones，并提供用户控制的 pause/resume/clear/complete/approve plan 操作
+- Workspace 面板提供受限本地文件操作：预览、下载、上传、文件重命名、创建目录，以及删除单个或多个文件/目录；所有写操作继续受 workspace root、敏感路径、symlink、请求体上限和审计约束
 - 可配置并发 worker pool
 
 ### 15.6 Phase 16+ 的规则

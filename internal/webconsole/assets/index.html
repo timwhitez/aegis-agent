@@ -142,6 +142,10 @@
             <button class="workspace-icon-btn" id="workspace-new-folder-btn" type="button" aria-label="New folder" title="New folder">
               <i data-lucide="folder-plus"></i>
             </button>
+            <button class="workspace-icon-btn" id="workspace-upload-btn" type="button" aria-label="Upload file" title="Upload file">
+              <i data-lucide="upload"></i>
+            </button>
+            <input type="file" id="workspace-upload-input" class="visually-hidden-file">
             <button class="workspace-icon-btn" id="workspace-refresh-btn" type="button" aria-label="Refresh workspace" title="Refresh">
               <i data-lucide="rotate-cw"></i>
             </button>
@@ -160,6 +164,9 @@
               <div class="workspace-selection-actions" id="workspace-selection-actions">
                 <button class="workspace-editor-action is-hidden" id="workspace-download-btn" type="button" aria-label="Download selected file" title="Download file">
                   <i data-lucide="download"></i>
+                </button>
+                <button class="workspace-editor-action is-hidden" id="workspace-rename-btn" type="button" aria-label="Rename selected file" title="Rename file">
+                  <i data-lucide="pencil"></i>
                 </button>
                 <button class="workspace-editor-action danger is-hidden" id="workspace-delete-file-btn" type="button" aria-label="Delete selected file" title="Delete file">
                   <i data-lucide="trash-2"></i>
