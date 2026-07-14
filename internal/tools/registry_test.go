@@ -31,6 +31,25 @@ type recordingPlanInputResponder struct {
 	calls int
 }
 
+func TestCreateGoalSchemaUsesGoalObjectiveLimit(t *testing.T) {
+	definition := defCreateGoal()
+	properties, ok := definition.InputSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("create_goal properties missing from schema: %#v", definition.InputSchema)
+	}
+	objective, ok := properties["objective"].(map[string]any)
+	if !ok {
+		t.Fatalf("create_goal objective missing from schema: %#v", properties)
+	}
+	if objective["maxLength"] != session.MaxGoalObjectiveChars {
+		t.Fatalf("create_goal maxLength=%#v want %d", objective["maxLength"], session.MaxGoalObjectiveChars)
+	}
+	description, _ := objective["description"].(string)
+	if !strings.Contains(description, fmt.Sprintf("max %d characters", session.MaxGoalObjectiveChars)) {
+		t.Fatalf("create_goal description does not expose the current limit: %q", description)
+	}
+}
+
 func (r *recordingPlanInputResponder) RequestPlanInput(context.Context, string, session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
 	r.calls++
 	return []session.PlanModeInputAnswer{{

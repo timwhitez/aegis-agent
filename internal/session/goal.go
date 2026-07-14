@@ -36,7 +36,7 @@ const (
 	GoalSourceTool   = "tool"
 	GoalSourceSystem = "system"
 
-	MaxGoalObjectiveChars = 4000
+	MaxGoalObjectiveChars = 12000
 )
 
 type SessionGoal struct {

@@ -38,6 +38,8 @@ The goal snapshot records:
 
 The default user-facing Web entry is intentionally narrower than the data model: one Goal button plus the prompt. The agent can later split the goal into criteria, validation, tasks, features, or milestones using tools and ordinary session work.
 
+The durable Goal objective accepts at most 12,000 Unicode characters across Web, CLI, runtime, store validation, and the `create_goal` tool. Plan Mode keeps its independent objective limit; increasing the Goal limit must not silently widen unrelated prompt or Plan Mode boundaries.
+
 The model-facing tools are intentionally narrow:
 
 - `get_goal` reads the current durable goal

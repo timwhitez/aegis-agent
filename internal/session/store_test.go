@@ -2369,6 +2369,38 @@ func blockGoalHistoryPath(t *testing.T, store *Store, sessionID string) {
 	}
 }
 
+func TestGoalObjectiveLimitIsThreeTimesPreviousLimit(t *testing.T) {
+	if MaxGoalObjectiveChars != 12000 {
+		t.Fatalf("expected goal objective limit 12000, got %d", MaxGoalObjectiveChars)
+	}
+}
+
+func TestNewSessionGoalFromDraftAcceptsObjectiveAtLimit(t *testing.T) {
+	objective := strings.Repeat("目", MaxGoalObjectiveChars)
+	goal, err := NewSessionGoalFromDraft(NewSessionID(), GoalDraft{
+		Enabled:   true,
+		Objective: objective,
+		Source:    GoalSourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("expected %d-character goal objective to be accepted: %v", MaxGoalObjectiveChars, err)
+	}
+	if goal.Objective != objective {
+		t.Fatalf("goal objective changed during creation: got %d bytes want %d bytes", len(goal.Objective), len(objective))
+	}
+}
+
+func TestNewSessionGoalFromDraftRejectsObjectiveAboveLimit(t *testing.T) {
+	_, err := NewSessionGoalFromDraft(NewSessionID(), GoalDraft{
+		Enabled:   true,
+		Objective: strings.Repeat("目", MaxGoalObjectiveChars+1),
+		Source:    GoalSourceCLI,
+	})
+	if err == nil || !strings.Contains(err.Error(), "goal objective exceeds 12000 characters") {
+		t.Fatalf("expected objective limit error, got %v", err)
+	}
+}
+
 func TestGoalHistoryRejectsMalformedTimestamps(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
