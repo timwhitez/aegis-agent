@@ -148,7 +148,7 @@
 - 一个 session 默认最多一个 current goal，goal 是用户可见的 durable objective，不是 system 级指令升级
 - 默认产品入口只有一个 Goal 开关；开启后 prompt 本身就是 objective，用户不需要在启动前填写 success criteria、validation、milestone、role plan 或 budget
 - `goal.json` 与 `artifacts/goal-history.jsonl` 是目标事实源；`session.md`、checkpoint、WebConsole 展示都只是派生视图
-- 模型工具面只允许 `get_goal`、`create_goal`、`update_goal(status=complete)`；pause / resume / clear / budget-limited 由用户或系统控制
+- Goal 状态变更工具面只允许 `get_goal`、`create_goal`、`update_goal(status=complete)`；pause / resume / clear / budget-limited 由用户或系统控制。通用 `await_input` 只停靠 session 并记录 blocker，不改变 Goal 状态
 - Mission 的长任务能力收敛为 Goal 的内部结构化计划：agent 可以在运行中保存 success criteria、validation contract、features、milestones、role hints 与 shared artifacts，但 runtime 不得据此硬编码 DAG、强制委派或强制验证顺序
 - Mission plan approval 只采用已有 Plan Mode 门禁：`require_plan_approval` / `needs_approval` 会确保 linked Plan Mode 存在，pending 状态下由 Plan Mode 裁剪工具和阻断 mutating/execution actions；批准后同步 mission plan approved 事实
 - `record_goal_progress` 是唯一新增的模型可写 progress/handoff 工具：它只对当前 goal 的结构化计划、validation evidence、evaluator/child/queue 链接、commands、artifacts、blockers 和 budget wrap-up 做 append-friendly 更新，不允许改 objective、用户控制状态或完成状态

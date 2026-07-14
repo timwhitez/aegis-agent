@@ -55,6 +55,7 @@
 - 单轮纯文本任务
 - 带工具调用任务
 - `finish` 结束
+- `await_input` 在不完成 session、不改变 active Goal 的前提下进入可恢复等待，并补齐同批后续工具的合成结果
 - `run` / `exec` 在 plain `done_candidate` 后继续 loop，直到显式 `finish` 或触发其它停止条件
 - `exec` 模式 reminder + degeneration 回路
 - running session `steer` -> 下一安全边界接纳
@@ -113,8 +114,9 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `write_file` 创建父目录
 - `edit_file` 替换失败时报错
 - `finish` 设置 `final`
+- `await_input` 返回结构化等待 metadata 且不设置 `final`
 - `shell` 仅继承 allowlist 环境变量
-- `todo_write` 只允许一个 `in_progress`
+- `todo_write` 允许多个 `in_progress` 并完整持久化
 - `task_create` / `task_update` 保持依赖边双向一致
 - task graph cycle 被拒绝
 
@@ -130,6 +132,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 
 - 创建 session 后文件存在
 - `awaiting_input` 状态可恢复
+- 模型显式 `await_input` 会记录 `phase=model_wait`、等待原因和恢复条件，active Goal 仍为 active
 - `paused` 状态可恢复
 - `failed` 状态可恢复
 - completed root session 可恢复，并写入带 `resumed_from=completed` 的 durable `session.resumed` 事件

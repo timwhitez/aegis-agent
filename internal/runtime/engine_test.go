@@ -2241,6 +2241,116 @@ func TestEngineBudgetWrapUpThenFinishAwaitsInput(t *testing.T) {
 	}
 }
 
+func TestEngineAwaitInputParksActiveGoalWithoutCompletingIt(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
+		Enabled:   true,
+		Mode:      session.GoalModeGoal,
+		Objective: "Complete work after an external prerequisite becomes available.",
+		Source:    session.GoalSourceCLI,
+	}); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Stop safely if the prerequisite is unavailable.")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	var providerCalls int
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		providerCalls++
+		return provider.TurnResult{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:   "call_record_blocker",
+					Name: "record_goal_progress",
+					Arguments: json.RawMessage(`{
+						"kind":"blocker",
+						"summary":"External prerequisite is unavailable.",
+						"blockers":["VPN health check failed"]
+					}`),
+				},
+				{
+					ID:   "call_await_input",
+					Name: "await_input",
+					Arguments: json.RawMessage(`{
+						"kind":"blocked",
+						"reason":"The required VPN connection is unavailable.",
+						"blockers":["VPN health check failed"],
+						"resume_condition":"Continue after the VPN health check succeeds."
+					}`),
+				},
+				{
+					ID:        "call_must_not_run",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"echo should-not-run"}`),
+				},
+			},
+			StopReason: "tool_use",
+		}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if providerCalls != 1 {
+		t.Fatalf("await_input should end the current run after one provider turn, calls=%d", providerCalls)
+	}
+	if result.Status != session.StatusAwaitingInput || !strings.Contains(result.FinalText, "Execution parked (blocked)") {
+		t.Fatalf("expected explicit awaiting_input result, got %#v", result)
+	}
+	loadedState, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loadedState.Status != session.StatusAwaitingInput || loadedState.Phase != "model_wait" || loadedState.IdleReason != "model_requested_blocked" {
+		t.Fatalf("unexpected parked state: %#v", loadedState)
+	}
+	goal, err := engine.store.LoadGoal(meta.ID)
+	if err != nil {
+		t.Fatalf("load goal: %v", err)
+	}
+	if goal.Status != session.GoalStatusActive || len(goal.Progress) != 1 || goal.Progress[0].Kind != "blocker" {
+		t.Fatalf("await_input must preserve active goal and blocker progress: %#v", goal)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var parkedResult, skippedResult *session.ToolResult
+	for messageIndex := range messages {
+		for resultIndex := range messages[messageIndex].ToolResults {
+			toolResult := &messages[messageIndex].ToolResults[resultIndex]
+			switch toolResult.ToolCallID {
+			case "call_await_input":
+				parkedResult = toolResult
+			case "call_must_not_run":
+				skippedResult = toolResult
+			}
+		}
+	}
+	if parkedResult == nil || parkedResult.IsError || parkedResult.Final || parkedResult.Metadata[tools.MetadataAwaitInput] != true {
+		t.Fatalf("missing successful await_input tool result: %#v", messages)
+	}
+	if skippedResult == nil || !skippedResult.IsError || !strings.Contains(skippedResult.DisplayOutput, "await_input parked the session") {
+		t.Fatalf("later tool call must receive a replayable synthetic result: %#v", messages)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	var foundAwaiting bool
+	for _, event := range events {
+		if event.Type == "completion.gate.blocked" && fmt.Sprint(event.Data["gate_id"]) == "goal_completion_audit" {
+			t.Fatalf("await_input must not be forced through the Goal completion gate: %#v", event)
+		}
+		if event.Type == "session.awaiting_input" && event.Phase == "model_wait" && fmt.Sprint(event.Data["reason"]) == "model_requested" && fmt.Sprint(event.Data["kind"]) == "blocked" {
+			foundAwaiting = true
+		}
+	}
+	if !foundAwaiting {
+		t.Fatalf("expected durable model_wait awaiting event, got %#v", events)
+	}
+}
+
 func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"

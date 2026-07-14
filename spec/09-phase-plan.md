@@ -201,6 +201,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - required artifact tracker：`artifact-tracker.json`
 - centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
 - active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；completion evidence 和 criteria / validation 状态必须回写 `goal.json` 快照；若高级入口设置了预算，budget_limited 只能触发 wrap-up，不等同完成
+- explicit model park：任务未完成但受外部条件阻塞时，模型可调用 `await_input` 把 session 停靠为可恢复状态；该路径不触发 completed、不改变 active Goal，也不要求伪造 completion audit
 - mission validation coverage：`goal plan check` / Web detail / approval gate 必须从同一份 `goal.json` 派生 coverage report；mission plan approval 默认阻断 uncovered 或 invalid validation contract，除非 CLI/API 明确 override
 - structured goal progress：模型工具 `record_goal_progress` 可追加 feature / milestone / validation / evaluator / child / queue / artifact / command / blocker / handoff / budget wrap-up 事实，并同步 `goal-history.jsonl`、`goal.json`、`session.md` / checkpoint；该工具不能改变 objective 或完成状态
 - provider attempt ledger：`provider-attempts.jsonl`

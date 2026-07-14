@@ -134,6 +134,15 @@ func TestBuiltinToolSchemasDisallowUnknownProperties(t *testing.T) {
 	}
 }
 
+func TestTodoItemSchemaAllowsParallelInProgressDescription(t *testing.T) {
+	properties, _ := todoItemSchema()["properties"].(map[string]any)
+	status, _ := properties["status"].(map[string]any)
+	description, _ := status["description"].(string)
+	if !strings.Contains(description, "Multiple independent or parallel items may be in_progress") || strings.Contains(description, "at most one") {
+		t.Fatalf("todo status description still implies a single active item: %q", description)
+	}
+}
+
 func TestToolDescriptionsMentionOnlyDeclaredParameters(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
@@ -335,6 +344,53 @@ func TestFinishRejectsBlankMessage(t *testing.T) {
 				t.Fatalf("expected blank finish message rejection, got %#v", result)
 			}
 		})
+	}
+}
+
+func TestAwaitInputReturnsStructuredParkingMetadata(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "await_input", ExecContext{}, json.RawMessage(`{
+		"kind":"needs_input",
+		"reason":"A deployment target must be selected.",
+		"blockers":["No target environment was specified."],
+		"resume_condition":"Continue after the user chooses staging or production."
+	}`))
+	if err != nil {
+		t.Fatalf("await_input: %v", err)
+	}
+	if result.IsError || result.Final {
+		t.Fatalf("await_input must park without completing, got %#v", result)
+	}
+	if result.Metadata[MetadataAwaitInput] != true || result.Metadata[MetadataAwaitInputKind] != "needs_input" || result.Metadata[MetadataAwaitInputReason] != "A deployment target must be selected." {
+		t.Fatalf("unexpected await_input metadata: %#v", result.Metadata)
+	}
+	blockers, ok := result.Metadata[MetadataAwaitInputBlockers].([]string)
+	if !ok || len(blockers) != 1 || blockers[0] != "No target environment was specified." {
+		t.Fatalf("unexpected blockers metadata: %#v", result.Metadata)
+	}
+	if result.Metadata[MetadataAwaitInputResume] != "Continue after the user chooses staging or production." {
+		t.Fatalf("unexpected resume condition: %#v", result.Metadata)
+	}
+	if !strings.Contains(result.DisplayOutput, "Execution parked (needs_input)") || !strings.Contains(result.DisplayOutput, "Resume when:") {
+		t.Fatalf("unexpected await_input display: %q", result.DisplayOutput)
+	}
+}
+
+func TestAwaitInputRejectsBlankReason(t *testing.T) {
+	registry, err := NewRegistry(config.Default(), nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "await_input", ExecContext{}, json.RawMessage(`{"reason":"  "}`))
+	if err != nil {
+		t.Fatalf("await_input: %v", err)
+	}
+	if !result.IsError || result.Final || !strings.Contains(result.DisplayOutput, "reason is required") {
+		t.Fatalf("expected blank reason rejection, got %#v", result)
 	}
 }
 

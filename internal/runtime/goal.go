@@ -77,7 +77,7 @@ func goalPromptContext(goal session.SessionGoal) string {
 	}
 	switch goal.Status {
 	case session.GoalStatusActive:
-		b.WriteString("\nBefore marking the goal complete, perform a completion audit against concrete files, command results, events, or other session facts. If complete, call update_goal with status \"complete\" before finish.\n")
+		b.WriteString("\nBefore marking the goal complete, perform a completion audit against concrete files, command results, events, or other session facts. If complete, call update_goal with status \"complete\" before finish. If the goal is unfinished and an external prerequisite or user decision prevents progress, record useful blocker facts and call await_input; this parks the session without changing the Goal status.\n")
 	case session.GoalStatusBudgetLimited:
 		b.WriteString("\nThe goal is budget_limited. Budget exhaustion is not completion; wrap up current progress, evidence, remaining work, and blockers unless the actual completion audit proves the goal is complete. If stop_on_budget is active, call record_goal_progress with kind \"budget_wrapup\", then stop and wait for user input unless you can legitimately call update_goal(status=\"complete\").\n")
 	case session.GoalStatusPaused:

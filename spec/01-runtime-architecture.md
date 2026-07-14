@@ -119,6 +119,7 @@
 - 当 goal/mission 要求 `require_plan_approval` 或 mission plan 进入 `needs_approval` 时，必须确保存在 linked Plan Mode；审批前的执行门禁由 Plan Mode 负责，而不是靠 mission prompt 文本自觉。若 mission 重新进入 `needs_approval`，已 approved / executing 的旧 Plan Mode 不能被当作新的 pending gate；pending 但未链接的 Plan Mode 必须补 `linked_goal_id` 或重新创建 linked gate。
 - mission validation contract 有只读 coverage checker：它核对 contract assertion ID、feature `claimed_assertions`、milestone `validation_ids`、未覆盖断言、无 assertion feature、无 validation milestone、重复/空 ID 与未知引用；mission plan approval 默认因 uncovered / invalid contract 阻断，只有显式 override 才能继续
 - 模型可用 `record_goal_progress` 对当前 goal 追加结构化 progress / handoff / validation evidence / evaluator child 或 queue 关联 / command / blocker / budget wrap-up 事实；该工具不得改 objective、不得 pause/resume/clear、不得 approve plan、不得跳过 `update_goal(status="complete")` 完成审计
+- active goal 尚未完成且遇到外部阻塞、缺少用户输入或必须等待外部状态时，模型可以先记录 blocker，再调用通用 `await_input` 显式停靠 session；goal 继续保持 `active`，该动作不等同 pause/complete，也不绕过后续 completion audit
 - `stop_on_budget=true` 时，budget 触顶会写入 durable budget wrap-up request，最多允许一轮模型 wrap-up；若未通过 `record_goal_progress(kind="budget_wrapup")` 写入 wrap-up 事实，则 `finish` 被 completion gate 阻断，并且 runtime 回到 `awaiting_input` 而不是无限继续 provider turns
 - `update_goal(status="complete")` 必须把 completion evidence、summary 和 criteria / validation item 状态回写 `goal.json` 的当前快照，同时追加 `artifacts/goal-history.jsonl`
 
@@ -403,12 +404,14 @@ while true:
 9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
 10. 落盘最终 tool result
 11. 对标记为 ephemeral 的工具输出，只在 provider request view 中应用按工具类型计算的滑动窗口：最新 `EphemeralWindow` 个结果保持 inline，窗口之外且足够大的旧结果写入 session 私有 `artifacts/tool-outputs/`，并在该 request view 中替换成可由 `read_file(path=..., offset=..., limit=120)` 显式分页读取的指针；短输出与短错误摘要继续 inline。原始 `messages.jsonl`、tool event 和当前刚执行完的结果不得被 pointer-only 覆盖；`grep` / `grep_files` / `glob` 仍不得把 artifact 目录作为 discovery 输入。三个 discovery 工具必须在 workspace/skill resolver 前识别 `artifacts/tool-outputs` 及其子路径，返回 `unsupported_path_source`、保留原 path 并指向 `read_file` 精确读取，不能误报 `not_found`
+12. `await_input` 的成功结果会终止同批后续工具调用、先完整落盘 tool result，再把 session 转为 `awaiting_input`；它不设置 `ToolResult.final`，不触发 completed，也不改变 Goal 状态
 
 ### 5.6 turn_decide
 
 分支规则：
 
 - 如果模型调用了 `finish` 工具，必须先通过 `CompletionController` 的 finish gates；通过后 session 完成
+- 如果模型调用了 `await_input`，runtime 持久化 kind、reason、blockers 和 resume condition，停止当前 tool batch，并进入 `awaiting_input`；只有 `finish` 表示完成
 - 如果有普通 tool calls，则进入下一轮
 - 如果没有 tool calls：
   - 统一视为 `done_candidate`，继续下一轮 provider turn；普通“无 tool / 无 finish”不能直接结束 loop
@@ -425,6 +428,7 @@ while true:
 用于 `run`
 
 - `finish` 表示整个 session 已完成
+- `await_input` 表示任务未完成但当前无法安全继续；它是模型显式选择的可恢复停靠，不是完成或错误
 - 无 tool calls 且无 `finish` 时，不强行判定完成，也不因单次 `done_candidate` 直接停到 `awaiting_input`
 - 普通 `done_candidate` turn 应继续 loop；只有显式等待/停靠场景（例如 pause、plan gate、budget wrap-up、background wait、degeneration park）才进入 `awaiting_input`
 - 进入 `awaiting_input` 前若属于退化停靠，应写 `session.idle_parked` 事件并记录 `idle_reason=model_degeneration_no_progress` 与可选 `incomplete_reason`
@@ -436,6 +440,7 @@ while true:
 用于 `exec`
 
 - 默认要求显式 `finish`
+- `await_input` 可以让 autonomous session 以非 completed 的 `awaiting_input` 状态返回，供 operator 后续 `continue`；脚本不得把该状态解释为成功完成
 - “无工具调用且无 `finish`”只算 `done_candidate`，runtime 继续 loop，不把它当作成功或自然结束
 - runtime 可插入一次 harness reminder，要求任务完成时显式调用 `finish`
 - 若最新 interrupt steer 已明确要求立即交付，runtime 可插入专门的 completion reminder，并对继续的只读探索或 bookkeeping detour 加 guard，直到出现交付动作或新的外部指令

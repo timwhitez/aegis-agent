@@ -40,6 +40,11 @@ type Definition struct {
 
 const (
 	MetadataFailureClass            = "failure_class"
+	MetadataAwaitInput              = "await_input"
+	MetadataAwaitInputKind          = "await_input_kind"
+	MetadataAwaitInputReason        = "await_input_reason"
+	MetadataAwaitInputBlockers      = "await_input_blockers"
+	MetadataAwaitInputResume        = "await_input_resume_condition"
 	FailureClassHarnessError        = "harness_error"
 	FailureClassCommandNonzero      = "command_nonzero_exit"
 	FailureClassTimeout             = "command_timeout"
@@ -183,7 +188,7 @@ var beforeShellCommandStart func(workdir string) error
 
 var reservedNames = map[string]struct{}{
 	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
-	"finish": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
+	"finish": {}, "await_input": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_wait": {}, "agent_stop": {}, "agent_status": {},
 	"agent_prompt": {}, "agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
 	"get_plan_mode": {}, "submit_plan": {}, "request_user_input": {},
@@ -433,6 +438,7 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 		defGrepFiles(),
 		defGrep(),
 		defFinish(),
+		defAwaitInput(),
 		defLoadSkill(catalog),
 		defGetGoal(),
 		defCreateGoal(),
@@ -504,7 +510,7 @@ func todoItemSchema() map[string]any {
 			"status": map[string]any{
 				"type":        "string",
 				"enum":        []string{"pending", "in_progress", "completed", "cancelled"},
-				"description": "Current task state. Use in_progress for at most one active item and completed only after the work is actually done.",
+				"description": "Current task state. Multiple independent or parallel items may be in_progress; use completed only after the work is actually done.",
 			},
 			"priority": map[string]any{
 				"type":        "string",
@@ -650,7 +656,7 @@ func withDescription(schema map[string]any, description string) map[string]any {
 func defShell() Definition {
 	return Definition{
 		Name:            "shell",
-		Description:     "Run non-interactive terminal commands in the workspace for build, test, package, git, and runtime operations. Prefer dedicated tools for file search, reading, writing, and editing instead of shell cat/grep/sed/echo. Use the workdir parameter instead of embedding cd when changing directories; workdir may be workspace-relative or a registered skill directory returned by load_skill. Quote paths with spaces, and inspect exit_code/output before claiming success.",
+		Description:     "Run non-interactive terminal commands in the workspace for build, test, package, git, and runtime operations. Prefer dedicated tools for file search, reading, writing, and editing instead of shell cat/grep/sed/echo. Use the workdir parameter instead of embedding cd when changing directories; workdir may be workspace-relative or a registered skill directory returned by load_skill. Quote paths with spaces, and inspect exit_code/output before claiming success. When remote data needs repeated analysis, fetch it once into a temporary snapshot and parse that snapshot; refresh only after external state changes or freshness matters. Never combine piped data with a heredoc that also supplies the same interpreter stdin (for example, curl ... | python3 - <<'PY'); use a temporary file, python3 -c, or let the script perform the request.",
 		Ephemeral:       true,
 		EphemeralWindow: 2,
 		InputSchema: map[string]any{
@@ -2014,7 +2020,7 @@ func annotateReadWindow(workdir, path string, offset, end, totalLines, requested
 func defFinish() Definition {
 	return Definition{
 		Name:        "finish",
-		Description: "Signal that the current task is complete and provide the final concise result for the user. Use only after requested work, required artifacts, and necessary validation are complete, or after clearly stating any blocker or unrun/failed validation. Do not call finish merely because the model has no more ideas.",
+		Description: "Signal that the current task is complete and provide the final concise result for the user. Use only after requested work, required artifacts, and necessary validation are complete. If work is unfinished because an external prerequisite, missing user decision, or external wait prevents progress, use await_input instead and state the blocker/resume condition there. Report any unrun/failed validation honestly, but do not call finish merely because the model has no more ideas.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -2040,6 +2046,120 @@ func defFinish() Definition {
 				LLMOutput:     input.Message,
 				DisplayOutput: input.Message,
 				Final:         true,
+			}, nil
+		},
+	}
+}
+
+func defAwaitInput() Definition {
+	const (
+		maxReasonChars    = 2000
+		maxResumeChars    = 2000
+		maxBlockerChars   = 1000
+		maxBlockerEntries = 20
+	)
+	return Definition{
+		Name:        "await_input",
+		Description: "Park the current run in awaiting_input without marking the task or active Goal complete. Use only when work is unfinished but cannot safely continue until an external prerequisite changes, the user provides a decision, or an external wait completes. Use finish for completed work, request_user_input for Plan Mode questions, and agent_wait for background child results. If an active Goal has a durable blocker, record it with record_goal_progress before parking when useful.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind": map[string]any{
+					"type":        "string",
+					"enum":        []string{"blocked", "needs_input", "external_wait"},
+					"description": "Why execution must park. Defaults to blocked when omitted.",
+				},
+				"reason": map[string]any{
+					"type":        "string",
+					"maxLength":   maxReasonChars,
+					"description": "Concise user-facing explanation of why the unfinished task cannot continue now.",
+				},
+				"blockers": map[string]any{
+					"type":        "array",
+					"maxItems":    maxBlockerEntries,
+					"items":       map[string]any{"type": "string", "maxLength": maxBlockerChars},
+					"description": "Optional concrete blockers that must be resolved.",
+				},
+				"resume_condition": map[string]any{
+					"type":        "string",
+					"maxLength":   maxResumeChars,
+					"description": "Optional condition or information needed before continue can make progress.",
+				},
+			},
+			"required": []string{"reason"},
+		},
+		Execute: func(_ context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			var input struct {
+				Kind            string   `json:"kind"`
+				Reason          string   `json:"reason"`
+				Blockers        []string `json:"blockers"`
+				ResumeCondition string   `json:"resume_condition"`
+			}
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return errorResult("await_input", err), nil
+			}
+			kind := strings.ToLower(strings.TrimSpace(input.Kind))
+			if kind == "" {
+				kind = "blocked"
+			}
+			switch kind {
+			case "blocked", "needs_input", "external_wait":
+			default:
+				return errorResult("await_input", fmt.Errorf("kind must be blocked, needs_input, or external_wait")), nil
+			}
+			reason := strings.TrimSpace(input.Reason)
+			if reason == "" {
+				return errorResult("await_input", errors.New("reason is required")), nil
+			}
+			if utf8.RuneCountInString(reason) > maxReasonChars {
+				return errorResult("await_input", fmt.Errorf("reason exceeds %d characters", maxReasonChars)), nil
+			}
+			resumeCondition := strings.TrimSpace(input.ResumeCondition)
+			if utf8.RuneCountInString(resumeCondition) > maxResumeChars {
+				return errorResult("await_input", fmt.Errorf("resume_condition exceeds %d characters", maxResumeChars)), nil
+			}
+			if len(input.Blockers) > maxBlockerEntries {
+				return errorResult("await_input", fmt.Errorf("blockers exceeds %d items", maxBlockerEntries)), nil
+			}
+			blockers := make([]string, 0, len(input.Blockers))
+			for _, blocker := range input.Blockers {
+				blocker = strings.TrimSpace(blocker)
+				if blocker == "" {
+					continue
+				}
+				if utf8.RuneCountInString(blocker) > maxBlockerChars {
+					return errorResult("await_input", fmt.Errorf("blocker exceeds %d characters", maxBlockerChars)), nil
+				}
+				blockers = append(blockers, blocker)
+			}
+
+			var display strings.Builder
+			display.WriteString("Execution parked (" + kind + "): " + reason)
+			if len(blockers) > 0 {
+				display.WriteString("\nBlockers:")
+				for _, blocker := range blockers {
+					display.WriteString("\n- " + blocker)
+				}
+			}
+			if resumeCondition != "" {
+				display.WriteString("\nResume when: " + resumeCondition)
+			}
+			metadata := map[string]any{
+				MetadataAwaitInput:       true,
+				MetadataAwaitInputKind:   kind,
+				MetadataAwaitInputReason: reason,
+			}
+			if len(blockers) > 0 {
+				metadata[MetadataAwaitInputBlockers] = blockers
+			}
+			if resumeCondition != "" {
+				metadata[MetadataAwaitInputResume] = resumeCondition
+			}
+			return session.ToolResult{
+				Name:          "await_input",
+				LLMOutput:     display.String(),
+				DisplayOutput: display.String(),
+				Metadata:      metadata,
 			}, nil
 		},
 	}

@@ -33,6 +33,9 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 	if hasProviderTool(defaultTools, "submit_plan") || hasProviderTool(defaultTools, "request_user_input") {
 		t.Fatalf("plan-only tools must not be exposed in default mode: %#v", defaultTools)
 	}
+	if !hasProviderTool(defaultTools, "await_input") {
+		t.Fatalf("await_input must be exposed outside pending Plan Mode: %#v", defaultTools)
+	}
 	pending := &session.PlanModeState{Status: session.PlanModeStatusPlanning}
 	planTools := providerToolsForPlanMode(registry, pending)
 	for _, name := range []string{"read_file", "grep", "get_plan_mode", "request_user_input", "submit_plan"} {
@@ -40,7 +43,7 @@ func TestProviderToolsExposePlanModeToolsOnlyWhilePending(t *testing.T) {
 			t.Fatalf("expected %s in Plan Mode tools: %#v", name, planTools)
 		}
 	}
-	for _, name := range []string{"shell", "write_file", "todo_write", "agent_spawn", "agent_prompt", "finish"} {
+	for _, name := range []string{"shell", "write_file", "todo_write", "agent_spawn", "agent_prompt", "await_input", "finish"} {
 		if hasProviderTool(planTools, name) {
 			t.Fatalf("did not expect %s in Plan Mode tools: %#v", name, planTools)
 		}

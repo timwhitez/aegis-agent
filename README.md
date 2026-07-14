@@ -9,6 +9,7 @@
 - Web-first v1 默认围绕 `web` 本地控制台；CLI fallback 围绕 `init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`
 - `run` 支持交互式执行和 `Esc` 暂停
 - `exec` 适合脚本或 CI，默认要求模型显式 `finish`
+- 任务尚未完成但遇到外部阻塞、缺少用户决策或必须等待外部状态时，模型可用 `await_input` 显式停靠；session 可继续恢复，active Goal 不会被误标完成
 - `run/exec --plan` 或 Web 的 Plan 开关会进入 session-scoped Plan Mode：审批前只允许读/搜索、`request_user_input` 和 `submit_plan`，批准后才执行
 - `steer` 通过文件控制队列向运行中 session 追加输入，`--interrupt` 是 best-effort 抢占
 - `continue` 恢复 `paused`、`awaiting_input`、`failed`、`completed` session（finish 后补充信息可延续原上下文，无需新开 session）
@@ -194,6 +195,7 @@ Settings 页面提供 Provider Profile、API Provider、provider reasoning / thi
 - `provider.retry` / `provider.auto_resume` 说明 adapter 或 runtime 在处理上游超时/重试；查看 `.go-cli-agent/sessions/<id>/provider-attempts.jsonl` 和 `session.md`，其中也会汇总 provider 返回的 cache read/write token 计数。
 - session 长时间运行但 provider attempts 持续成功、同时反复 `load_skill`、同一路径 `read_file` 或 `todo_write` no-op，通常是工具循环退化；`session.md` 的 `Tool Repetition` 小节会列出重复工具、重复读取路径和 no-op todo 次数。
 - 重复 `load_skill` 默认返回 `already_loaded`，需要重新读取 skill 文件时显式使用 `force_reload=true`。
+- 远端 JSON/API 数据需要多次分析时应先保存一次快照再本地解析，外部状态变化后再刷新；不要使用 `curl ... | python3 - <<'PY'` 这类 pipe 与 heredoc 争用 stdin 的组合。
 - todo 是当前 session 的执行进度账本；`todo_write` 只能保留已有项并追加/推进状态，不能删除已完成项或重写 todo 文本来替代实际执行。durable tasks 在 `tasks/` 目录中。空 `tasks/` 不代表 todo 刷新就是持久任务进展。
 
 ## 设计原则

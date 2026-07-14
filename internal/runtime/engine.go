@@ -653,6 +653,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			toolResults := make([]session.ToolResult, 0, len(result.ToolCalls))
 			planModeTerminal := ""
 			backgroundWait := false
+			var modelWait *modelAwaitInputRequest
 			for callIndex, call := range result.ToolCalls {
 				argumentsText := prettyJSON(call.Arguments)
 				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
@@ -942,6 +943,13 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}
 					break
 				}
+				if request, ok := modelAwaitInputRequestFromResult(toolResult); ok {
+					modelWait = &request
+					if callIndex+1 < len(result.ToolCalls) {
+						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: await_input parked the session; this later tool call was not executed")...)
+					}
+					break
+				}
 				if isBackgroundWaitResult(toolResult) {
 					backgroundWait = true
 				}
@@ -965,6 +973,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			if planModeTerminal == planModeTerminalPlanCancelled {
 				return e.awaitingPlanCancelled(ctx, meta, state, hookManager)
+			}
+			if modelWait != nil {
+				return e.awaitingModelInput(ctx, meta, state, *modelWait, hookManager)
 			}
 			if backgroundWait {
 				decision, err := e.beforeAwaitingBackground(meta)
@@ -1381,6 +1392,103 @@ func isBackgroundWaitResult(result session.ToolResult) bool {
 	}
 	wait, _ := result.Metadata["background_wait"].(bool)
 	return wait
+}
+
+type modelAwaitInputRequest struct {
+	Kind            string
+	Reason          string
+	Blockers        []string
+	ResumeCondition string
+	Display         string
+}
+
+func modelAwaitInputRequestFromResult(result session.ToolResult) (modelAwaitInputRequest, bool) {
+	if result.IsError || result.Metadata == nil {
+		return modelAwaitInputRequest{}, false
+	}
+	wait, _ := result.Metadata[tools.MetadataAwaitInput].(bool)
+	if !wait {
+		return modelAwaitInputRequest{}, false
+	}
+	kind, _ := result.Metadata[tools.MetadataAwaitInputKind].(string)
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "blocked"
+	}
+	reason, _ := result.Metadata[tools.MetadataAwaitInputReason].(string)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = strings.TrimSpace(result.DisplayOutput)
+	}
+	resumeCondition, _ := result.Metadata[tools.MetadataAwaitInputResume].(string)
+	request := modelAwaitInputRequest{
+		Kind:            kind,
+		Reason:          reason,
+		Blockers:        metadataStringSlice(result.Metadata[tools.MetadataAwaitInputBlockers]),
+		ResumeCondition: strings.TrimSpace(resumeCondition),
+		Display:         strings.TrimSpace(result.DisplayOutput),
+	}
+	if request.Display == "" {
+		request.Display = request.Reason
+	}
+	return request, true
+}
+
+func metadataStringSlice(value any) []string {
+	var raw []string
+	switch items := value.(type) {
+	case []string:
+		raw = append(raw, items...)
+	case []any:
+		for _, item := range items {
+			if text, ok := item.(string); ok {
+				raw = append(raw, text)
+			}
+		}
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func (e *Engine) awaitingModelInput(ctx context.Context, meta session.SessionMetadata, state session.State, request modelAwaitInputRequest, hookManager *hooks.Manager) (RunResult, error) {
+	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	state.Status = session.StatusAwaitingInput
+	state.Phase = "model_wait"
+	state.IdleReason = "model_requested_" + request.Kind
+	state.IncompleteReason = ""
+	state.LastError = ""
+	state.PauseReason = ""
+	state.LastAssistantExcerpt = truncateText(request.Display, 500)
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	eventData := map[string]any{
+		"reason":           "model_requested",
+		"kind":             request.Kind,
+		"message":          request.Reason,
+		"blocker_count":    len(request.Blockers),
+		"resume_condition": request.ResumeCondition,
+	}
+	if len(request.Blockers) > 0 {
+		eventData["blockers"] = request.Blockers
+	}
+	if err := e.appendEvent(meta.ID, "session.awaiting_input", state.Phase, eventData); err != nil {
+		return RunResult{}, fmt.Errorf("record session.awaiting_input event for model wait: %w", err)
+	}
+	result := RunResult{SessionID: meta.ID, Status: state.Status, FinalText: request.Display}
+	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
+		return result, err
+	}
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return result, nil
 }
 
 type backgroundWaitDecision struct {
@@ -2720,7 +2828,7 @@ func providerStopFailure(stopReason string) (string, string) {
 }
 
 func degenerationRecoveryPrompt(count int) string {
-	return fmt.Sprintf("Harness reminder: the last %d turns produced text but no valid tool call. You appear stuck. Take exactly ONE concrete action now: (a) rerun the needed command redirecting output to reports/..., then read_file it; or (b) use finish with a clear blocker if you cannot proceed. Do not narrate; emit a tool call.", count)
+	return fmt.Sprintf("Harness reminder: the last %d turns produced text but no valid tool call. You appear stuck. Take exactly ONE concrete action now: (a) run the next necessary command or tool; or (b) call await_input with a concrete blocker and resume condition if unfinished work cannot proceed. Use finish only when the task is complete. Do not narrate; emit a tool call.", count)
 }
 
 func countTextLines(text string) int {

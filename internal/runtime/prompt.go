@@ -17,8 +17,9 @@ import (
 var artifactPathPattern = regexp.MustCompile(`(?i)(?:[a-z]:)?(?:/|\.?/)?[a-z0-9._/-]+\.md`)
 var explicitInspectionPathPattern = regexp.MustCompile(`(?i)(?:\./)?[a-z0-9._/-]+\.(?:md|go|ts|py|rs|txt|jsonl?|ya?ml|toml|sh)`)
 var literalAndSeparatorPattern = regexp.MustCompile(`(?i)\s*,?\s+and\s+`)
-var explicitTargetPhrasePattern = regexp.MustCompile(`(?i)(?:原始目标是|目标是|最新目标是|target(?:\s+url)?\s*(?:is|=)|scope\s*(?:is|=))\s*([^\s，。；;]+)`)
+var explicitTargetPhrasePattern = regexp.MustCompile(`(?i)(?:原始目标是|目标是|最新目标是|target(?:\s+url)?\s*(?:is|=)|scope\s*(?:is|=))\s*[:：]?\s*([^\s，。；;]+)`)
 var pathLikeTargetPattern = regexp.MustCompile(`/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+`)
+var explicitTargetIdentifierPattern = regexp.MustCompile(`(?i)^[a-z0-9][a-z0-9._-]*[._-][a-z0-9._-]*$`)
 var nonZeroExitPattern = regexp.MustCompile(`(?i)(exit(?:ed)?(?: code| status)?|exit_code|non[- ]?zero).{0,20}[1-9][0-9]*`)
 
 func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []skills.Summary, skillTools []skills.CommandTool, state session.State, messages []session.Message, agentContext ...string) string {
@@ -61,6 +62,9 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	builder.WriteString("- Workspace boundary is the current workdir. Do not read `../` or absolute paths outside it unless the user explicitly expands scope.\n")
 	builder.WriteString("- Prefer dedicated tools for their purpose: `grep_files` or `grep` for discovery, `read_file` for known files, `write_file` or `edit_file` for file changes, and `shell` for build, test, package, git, or runtime commands.\n")
 	builder.WriteString("- Use the `shell` tool's `workdir` argument instead of embedding `cd` in commands whenever possible.\n")
+	builder.WriteString("- Use `finish` only for completed work. If unfinished work cannot continue until an external prerequisite changes or the user supplies a decision, use `await_input` with a concrete reason and resume condition; use `agent_wait` for background child results and Plan Mode `request_user_input` for planning questions.\n")
+	builder.WriteString("- When remote/API data needs multiple analyses, fetch it once into a temporary snapshot and parse that snapshot; refresh only after external state changes or when freshness matters.\n")
+	builder.WriteString("- Do not combine piped data with a heredoc that also supplies the same interpreter stdin (for example, `curl ... | python3 - <<'PY'`); use a temporary file, `python3 -c`, or let the script perform the request.\n")
 	builder.WriteString("- Do not chain shell commands with separators like `echo \"====\";`, and do not repeatedly redirect discovery output into throwaway `reports/_*.txt` files; use `grep_files`, `glob`, and `read_file`, and keep scratch output out of deliverable directories.\n")
 	builder.WriteString("- Avoid `cat`, `grep`, `sed`, and `echo` inside `shell` when `read_file`, `grep`, or `edit_file` already covers the need.\n")
 	builder.WriteString("- For unfamiliar code, use scoped discovery and read the owning files, contracts, and tests needed for the task; multi-file analysis often requires multiple targeted reads.\n")
@@ -144,7 +148,7 @@ func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []st
 	if note := recentSteerNote(messages); note != "" {
 		notes = append(notes, note)
 	}
-	if note := targetConsistencyNote(messages); note != "" {
+	if note := targetConsistencyNote(workdir, messages); note != "" {
 		notes = append(notes, note)
 	}
 	if note := exactRequestedArtifactPathNote(workdir, messages); note != "" {
@@ -259,9 +263,9 @@ type targetConsistencyRequirement struct {
 	ConflictLiterals []string
 }
 
-func targetConsistencyNote(messages []session.Message) string {
+func targetConsistencyNote(workdir string, messages []session.Message) string {
 	req := latestTargetConsistencyRequirement(messages)
-	if !req.Active {
+	if !req.Active || !targetConsistencyHasArtifactContext(workdir, messages) {
 		return ""
 	}
 	return fmt.Sprintf("The latest explicit target anchor is %s. Final reports and durable spec/plan updates must reflect that target before finish.", req.Display)
@@ -333,7 +337,7 @@ func targetLiteralsFromSeed(seed string) []string {
 	}
 	var out []string
 	decoded := decodeTargetToken(seed)
-	if decoded != "" {
+	if isExplicitTargetLiteral(decoded) {
 		out = append(out, decoded)
 	}
 	if strings.Contains(seed, "://") {
@@ -363,7 +367,25 @@ func targetLiteralsFromSeed(seed string) []string {
 }
 
 func trimTargetToken(value string) string {
-	return strings.Trim(strings.TrimSpace(value), " \t\r\n`\"'<>()[]{}，。；;,")
+	return strings.Trim(strings.TrimSpace(value), " \t\r\n`\"'<>()[]{}，。；;,:：")
+}
+
+func isExplicitTargetLiteral(value string) bool {
+	value = trimTargetToken(value)
+	if value == "" {
+		return false
+	}
+	if strings.Contains(value, "://") {
+		parsed, err := url.Parse(value)
+		return err == nil && parsed.Scheme != "" && (parsed.Host != "" || parsed.Opaque != "")
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, "./") || strings.HasPrefix(value, "../") || strings.Contains(value, "\\") {
+		return true
+	}
+	if strings.ContainsAny(value, "/?=#@") {
+		return true
+	}
+	return explicitTargetIdentifierPattern.MatchString(value)
 }
 
 func decodeTargetToken(value string) string {
@@ -485,7 +507,7 @@ func normalizedTargetHaystack(content string) string {
 
 func targetConsistencyReminder(workdir string, messages []session.Message) harnessReminder {
 	req := latestTargetConsistencyRequirement(messages)
-	if !req.Active || targetConsistencySatisfiedByMessages(workdir, messages, req) {
+	if !req.Active || !targetConsistencyHasArtifactContext(workdir, messages) || targetConsistencySatisfiedByMessages(workdir, messages, req) {
 		return harnessReminder{}
 	}
 	return harnessReminder{
@@ -510,6 +532,9 @@ func targetConsistencyGuard(workdir string, messages []session.Message, toolName
 		}
 		return "target_consistency", fmt.Sprintf("Target-consistency guard: the latest explicit target anchor is %s. This artifact still appears to use a stale or missing target. Update the artifact content to reflect %s before writing it.", req.Display, req.Display)
 	case "finish":
+		if !targetConsistencyHasArtifactContext(workdir, messages) {
+			return "", ""
+		}
 		if targetConsistencySatisfiedByMessages(workdir, messages, req) {
 			return "", ""
 		}
@@ -517,6 +542,13 @@ func targetConsistencyGuard(workdir string, messages []session.Message, toolName
 	default:
 		return "", ""
 	}
+}
+
+func targetConsistencyHasArtifactContext(workdir string, messages []session.Message) bool {
+	if len(requestedArtifactPaths(workdir, messages)) > 0 {
+		return true
+	}
+	return latestFinalArtifactWritePosition(messages).Valid
 }
 
 func targetConsistencySatisfiedByMessages(workdir string, messages []session.Message, req targetConsistencyRequirement) bool {

@@ -509,6 +509,33 @@ func TestToolGuardBlocksFinishWhenLatestTargetNotInFinalArtifact(t *testing.T) {
 	}
 }
 
+func TestTargetConsistencyIgnoresOrdinaryGoalClause(t *testing.T) {
+	req := targetConsistencyRequirementFromText("你的目标是：在任务时限结束之前尽可能多地完成题目")
+	if req.Active {
+		t.Fatalf("ordinary goal clause must not become an exact target anchor: %#v", req)
+	}
+}
+
+func TestToolGuardAllowsFinishForTargetWithoutArtifactContext(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Check target https://example.test/api/v1 and report the result in the final response."),
+	}
+	kind, text := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"The target is unavailable."}`), true)
+	if kind != "" || text != "" {
+		t.Fatalf("target consistency must not invent a file deliverable, got kind=%q text=%q", kind, text)
+	}
+}
+
+func TestSystemPromptWarnsAgainstPipeHeredocAndRedundantRefetch(t *testing.T) {
+	prompt := buildSystemPrompt(t.TempDir(), session.ModeRun, "", nil, nil, session.State{}, nil)
+	for _, want := range []string{"temporary snapshot", "external state changes", "curl ... | python3 - <<'PY'", "python3 -c"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected shell data-reuse guidance %q, got:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestToolGuardBlocksReviewArtifactValidationSuccessContradictedByShellFailure(t *testing.T) {
 	workdir := t.TempDir()
 	messages := []session.Message{

@@ -23,6 +23,7 @@ v1 内置工具固定为：
 - `grep_files`
 - `grep`
 - `finish`
+- `await_input`
 - `load_skill`
 - `get_goal`
 - `create_goal`
@@ -80,6 +81,7 @@ v1 内置工具固定为：
 - `llm_output` 供模型继续推理
 - `display_output` 供 CLI 直接展示
 - `final` 用于 `finish`
+- `await_input` 通过 metadata 请求 runtime 进入可恢复等待，不设置 `final`
 
 ## 4. 工具行为约束
 
@@ -94,6 +96,8 @@ v1 内置工具固定为：
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
 - 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
 - exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI
+- 当同一个远端响应需要多次统计或筛选时，应优先单次获取到临时快照后本地复用；只有外部状态已变化或新鲜度确实重要时才刷新，避免“先完整打印、再重新请求解析”的无效重复
+- 不要把 pipe 数据和 heredoc 脚本同时送入同一个解释器 stdin，例如 `curl ... | python3 - <<'PY'`；heredoc 会占用 stdin，脚本内再读 `sys.stdin` 会得到 EOF。应使用临时文件、`python3 -c`，或让脚本自己发请求
 
 ### 4.2 `read_file`
 
@@ -151,6 +155,16 @@ v1 内置工具固定为：
 - 接受 `message`
 - 不写文件，不做副作用
 - 由 runtime 解释为显式完成信号
+- 只用于实际完成的任务；未完成但受外部条件阻塞时使用 `await_input`，不能用 blocker 文案把 `finish` 当作通用停止工具
+
+### 4.8.1 `await_input`
+
+- 用于任务尚未完成，但因外部依赖、缺少用户决策或必须等待外部状态而无法继续的场景
+- 接受 `kind = blocked | needs_input | external_wait`、必填 `reason`，以及可选 `blockers` / `resume_condition`
+- 成功后当前 tool batch 停止，session 进入 `awaiting_input`，并把原因和恢复条件写入 state/event/tool result 事实
+- 不设置 `final`，不把 session 标记为 completed，也不改变 active Goal 的状态
+- 若存在 active Goal，模型应在 blocker 对恢复有长期价值时先用 `record_goal_progress` 记录；不得用 `await_input` 规避已经完成任务所需的 `update_goal(status=complete)` 与 `finish`
+- 等待 background child 结果时继续使用 `agent_wait`；Plan Mode 提问继续使用 `request_user_input`
 
 ### 4.9 `load_skill`
 
@@ -201,7 +215,7 @@ v1 内置工具固定为：
 - 有交互 responder 时可以同步等待回答；active Web handle 丢失或进程重启后，回答/取消必须通过已持久化的 `pending_request.tool_call_id` 补齐 tool result
 - CLI 非交互且没有 responder 时，必须在写入 pending request 前返回可 replay 的工具错误
 
-Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必须只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input` 和 `submit_plan`；未知工具、skill command tools、workspace extension tools、mutating tools、agent/queue tools 与 `finish` 默认拒绝。
+Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必须只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input` 和 `submit_plan`；未知工具、skill command tools、workspace extension tools、mutating tools、agent/queue tools、`await_input` 与 `finish` 默认拒绝。
 
 ### 4.10 `task_update`
 
@@ -215,7 +229,7 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - 用于高频更新 session 级 todo 列表
 - 只表达“执行进度账本”，不表达依赖图，也不替代实际执行、验证或 `finish`
 - 保留已有 todo 的顺序、内容和优先级；已完成/取消项不可删除或回退；新 todo 只能追加，不能直接新增为 completed/cancelled
-- 仅允许一个 todo 为 `in_progress`
+- 允许多个互不依赖或并行推进的 todo 同时为 `in_progress`
 
 ### 4.12 `todo_read`
 

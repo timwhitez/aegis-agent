@@ -128,7 +128,7 @@ session 系统保证下面四件事同时成立：
 表示：
 
 - session 进入了显式可恢复等待/停靠状态
-- 例如手动暂停、Plan Mode gate、budget wrap-up、background wait，或退化停靠
+- 例如模型显式调用 `await_input`、手动暂停、Plan Mode gate、budget wrap-up、background wait，或退化停靠
 - 用户后续可补充 prompt 后继续
 
 它不是错误状态，也不是完成状态。
@@ -190,6 +190,8 @@ completed child / queue session 不允许走通用 `continue`。child 完成时 
 2. 将该 turn 视为 `done_candidate`
 3. runtime 继续 agent loop，并可按需插入“若任务完成请显式调用 `finish`”的 harness reminder
 4. 只有显式等待/停靠场景（如 pause、Plan Mode、budget wrap-up、background wait、degeneration park）才会把 state 改为 `awaiting_input`
+
+模型若已确认任务未完成且当前无法继续，可以调用 `await_input` 主动进入该状态。runtime 必须先落盘 matching tool result，再记录 `phase=model_wait`、稳定的 `idle_reason`、用户可读原因、blockers 和 resume condition；同批后续工具不得继续执行。active Goal 保持 active，后续 `continue` 从原事实恢复。
 
 ## 9. 恢复语义
 

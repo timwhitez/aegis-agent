@@ -61,7 +61,7 @@
 - 支持 mission validation coverage 与 structured progress/handoff：validation contract approval 前可检查覆盖关系，模型可用窄工具记录 progress、evaluator 证据、child/queue 链接、commands、artifacts、blockers 和 budget wrap-up，但 runtime 不据此强制 DAG 或固定 worker/validator 流程
 - 支持显式 Plan Mode：用户通过 CLI flag、Web toggle 或 API 字段进入 planning gate；审批前只允许只读探索、`request_user_input` 和 `submit_plan`，审批后再恢复普通执行
 - 支持 Web 与 CLI 两条入口上的 `start` / `run` / `exec` / `steer` / `continue`
-- 支持 `Esc` 暂停、显式等待/停靠场景进入 `awaiting_input`、`continue` 恢复
+- 支持 `Esc` 暂停、模型通过 `await_input` 显式声明外部阻塞或等待条件、其他显式等待/停靠场景进入 `awaiting_input`，并由 `continue` 恢复
 - 支持 provider generation / reasoning 选项通过 runtime 和 session metadata 传递
 - 架构上可演进为 Go SDK 或 OpenAPI 服务
 
@@ -129,6 +129,7 @@
 - CLI 前台执行入口，适合终端用户和故障恢复
 - 运行期间监听 `Esc`
 - 若模型本轮未调用 `finish`，runtime 默认继续 agent loop；只有显式暂停、Plan Mode/预算/后台等待、或退化停靠等场景才进入 `awaiting_input`
+- 当任务尚未完成、但用户输入或外部条件缺失而无法继续时，模型可以调用 `await_input` 返回控制权；该动作不把 session 或 active Goal 标记为完成
 - 运行中的 session 可通过外部 `steer` 或 Web steer 热插入新 prompt
 
 ### 5.3 `exec`
@@ -256,6 +257,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - 能完成带工具调用任务
 - Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制、Settings provider/model 配置与 queue job 提交
 - `run` 只在显式等待/停靠场景进入 `awaiting_input`；普通无 tool / 无 `finish` turn 会继续 loop
+- `await_input` 会把未完成任务显式停靠为可恢复状态，保留 active Goal 与 blocker/resume condition 事实，不绕过 `finish` 的完成审计
 - `exec` 在未 `finish` 时不会误判成功
 - `steer` 可在运行中被接纳
 - `Esc` 可暂停，`continue` 可恢复

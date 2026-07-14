@@ -327,7 +327,7 @@ func (c *CompletionController) goalCompletionGate(toolName string) (string, stri
 	}
 	switch goal.Status {
 	case session.GoalStatusActive:
-		return "goal_completion_audit", "Goal completion gate: this session has an active goal. Before finishing, restate the objective as concrete deliverables, audit each success criterion and validation item against real evidence, then call update_goal with status \"complete\" if the goal is actually achieved. If it is not achieved, keep working or stop in awaiting input instead of calling finish."
+		return "goal_completion_audit", "Goal completion gate: this session has an active goal. Before finishing, restate the objective as concrete deliverables, audit each success criterion and validation item against real evidence, then call update_goal with status \"complete\" if the goal is actually achieved. If it is not achieved, keep working; when an external prerequisite, missing user decision, or external wait prevents progress, record useful blocker facts and call await_input instead of finish."
 	case session.GoalStatusBudgetLimited:
 		if goal.Control.StopOnBudget && !session.HasBudgetWrapUpRecord(goal) {
 			return "goal_budget_wrapup", "Goal budget gate: stop_on_budget is true and the goal is budget_limited. Before finish, call record_goal_progress with kind \"budget_wrapup\" and record progress, evidence, remaining work, commands, and blockers. Budget exhaustion is not completion; only call update_goal(status=\"complete\") if the completion audit actually passed."
