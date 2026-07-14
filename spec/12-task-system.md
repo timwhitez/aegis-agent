@@ -92,7 +92,7 @@ task graph 是当前 session 的“持久化任务板”。
 
 约束：
 
-- 同一时刻最多一个 todo 为 `in_progress`
+- `in_progress` 表示该条工作已经启动；允许多个互不依赖或并行推进的 todo 同时处于 `in_progress`
 - 空 todo 列表合法
 
 ## 6. Task 数据结构
@@ -197,7 +197,7 @@ task 满足以下条件时视为 blocked：
 - 需要改写措辞、调整范围或重设优先级时，不能编辑已存在条目，而是在末尾 append 一个新 todo
 - `pending` 可推进到 `in_progress | completed | cancelled`；`in_progress` 可推进到 `completed | cancelled`；`completed` / `cancelled` 是终态，不可回退或改写
 - 新增 todo 只能追加到列表末尾，初始状态只能是 `pending` 或 `in_progress`，不能直接新增为 `completed` / `cancelled`
-- 校验最多一个 `in_progress`
+- 允许多个 `in_progress`；runtime 不把 todo ledger 强制解释为单线程执行队列
 - 校验失败时返回 directive recovery 错误（提示 `todo_read` 后重发完整快照、或改用 append），帮助模型自纠而不是反复触发同一错误
 - 写 `todo.updated` 事件
 - 当 normalized todo snapshot（content/status/priority/order）未变化时，返回 `noop=true` / `changed=false`，保留原 `todo.json` 的 `updated_at`，避免把自动更新时间戳误当成进展
@@ -284,6 +284,7 @@ task 满足以下条件时视为 blocked：
 - 每轮 `prepare` 可以写 `session.context.loaded` 事件，记录当前 todo/task 计数以及 project-memory present/missing 状态，作为恢复与 live validation 的 durable 证据
 - compaction summary 必须包含：
   - 当前 todo 摘要
+  - 全部 `in_progress` todos
   - ready tasks
   - blocked tasks
   - 当前 in_progress task
@@ -323,6 +324,7 @@ BLOCKED
 ## 13. 验收标准
 
 - todo 可频繁更新且顺序稳定
+- todo 可同时记录多个 `in_progress` 项并完整持久化、恢复和进入 compaction handoff
 - task graph 可持久化、恢复、列出
 - 双向依赖始终一致
 - cycle 被拒绝

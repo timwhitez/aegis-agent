@@ -4921,7 +4921,6 @@ func validateStringList(kind string, values []string) error {
 }
 
 func validateTodo(todo []TodoItem) error {
-	inProgress := 0
 	for i, item := range todo {
 		if strings.TrimSpace(item.Content) == "" {
 			return fmt.Errorf("todo item %d content is required", i+1)
@@ -4945,12 +4944,6 @@ func validateTodo(todo []TodoItem) error {
 		if _, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err != nil {
 			return fmt.Errorf("todo item %d updated_at must be RFC3339Nano: %w", i+1, err)
 		}
-		if item.Status == "in_progress" {
-			inProgress++
-		}
-	}
-	if inProgress > 1 {
-		return errors.New("only one todo may be in_progress")
 	}
 	return nil
 }

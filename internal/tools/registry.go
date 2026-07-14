@@ -2883,7 +2883,7 @@ func defRequestUserInput() Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Update the session todo progress ledger for non-trivial multi-step work; skip trivial one-step or purely conversational tasks. This is an append/advance-only ledger, not a plan you rewrite: always resubmit the FULL current list (call todo_read first if unsure of the exact text/order), keeping every existing item in its original position. The ONLY edit allowed to an existing item is advancing its status (pending->in_progress->completed/cancelled). Existing content text, priority, and order must be preserved exactly: do not reword, reorder, insert, or delete existing items. To reword, re-scope, reprioritize, or split an item, append a NEW item to the end instead of editing the existing one. New items must start as pending or in_progress, and completed/cancelled items stay in the list unchanged. This tool only records progress; it does not perform or verify the work.",
+		Description: "Update the session todo progress ledger for non-trivial multi-step work; skip trivial one-step or purely conversational tasks. This is an append/advance-only ledger, not a plan you rewrite: always resubmit the FULL current list (call todo_read first if unsure of the exact text/order), keeping every existing item in its original position. The ONLY edit allowed to an existing item is advancing its status (pending->in_progress->completed/cancelled). Multiple independent or parallel items may be in_progress at the same time. Existing content text, priority, and order must be preserved exactly: do not reword, reorder, insert, or delete existing items. To reword, re-scope, reprioritize, or split an item, append a NEW item to the end instead of editing the existing one. New items must start as pending or in_progress, and completed/cancelled items stay in the list unchanged. This tool only records progress; it does not perform or verify the work.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3076,7 +3076,6 @@ func markSkillLoaded(execCtx ExecContext, name string) error {
 }
 
 func validateTodoSnapshot(todos []session.TodoItem) error {
-	inProgress := 0
 	for i, item := range todos {
 		if strings.TrimSpace(item.Content) == "" {
 			return fmt.Errorf("todo item %d content is required", i+1)
@@ -3100,12 +3099,6 @@ func validateTodoSnapshot(todos []session.TodoItem) error {
 		if _, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err != nil {
 			return fmt.Errorf("todo item %d updated_at must be RFC3339Nano: %w", i+1, err)
 		}
-		if item.Status == "in_progress" {
-			inProgress++
-		}
-	}
-	if inProgress > 1 {
-		return errors.New("todo_write allows at most one in_progress item; keep a single active item and leave the rest pending")
 	}
 	return nil
 }

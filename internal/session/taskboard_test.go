@@ -386,7 +386,7 @@ func TestSaveTodoRejectsInvalidItems(t *testing.T) {
 	}
 }
 
-func TestLoadTodoRejectsMalformedSnapshot(t *testing.T) {
+func TestLoadTodoAcceptsMultipleInProgressItems(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
 		SchemaVersion:    1,
@@ -411,8 +411,12 @@ func TestLoadTodoRejectsMalformedSnapshot(t *testing.T) {
 		t.Fatalf("write malformed todo: %v", err)
 	}
 
-	if _, err := store.LoadTodo(meta.ID); err == nil || !strings.Contains(err.Error(), "validate todo.json") || !strings.Contains(err.Error(), "only one todo") {
-		t.Fatalf("expected malformed todo snapshot error, got %v", err)
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo with parallel in-progress items: %v", err)
+	}
+	if len(todo) != 2 || todo[0].Status != "in_progress" || todo[1].Status != "in_progress" {
+		t.Fatalf("expected both in-progress items to load, got %#v", todo)
 	}
 }
 

@@ -6364,7 +6364,7 @@ func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
 		})
 	}
 
-	accepted, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"in_progress","priority":"high"},{"content":"Run focused tests","status":"pending","priority":"medium"}]}`))
+	accepted, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"in_progress","priority":"high"},{"content":"Run focused tests","status":"in_progress","priority":"medium"}]}`))
 	if err != nil || accepted.IsError {
 		t.Fatalf("expected append/progress update to succeed, err=%v result=%#v", err, accepted)
 	}
@@ -6372,7 +6372,7 @@ func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load accepted todo: %v", err)
 	}
-	if len(todo) != 3 || todo[1].Status != "in_progress" || todo[2].Content != "Run focused tests" || todo[2].Status != "pending" {
+	if len(todo) != 3 || todo[1].Status != "in_progress" || todo[2].Content != "Run focused tests" || todo[2].Status != "in_progress" {
 		t.Fatalf("unexpected accepted todo snapshot: %#v", todo)
 	}
 }

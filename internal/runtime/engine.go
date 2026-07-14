@@ -2891,8 +2891,10 @@ func contextLoadedEventData(meta session.SessionMetadata, turn int, stack projec
 		"cancelled_task_count":   taskSummary.Cancelled,
 		"done_task_count":        taskSummary.Done,
 	}
-	if item := currentInProgressTodo(todo); item != nil {
-		data["current_in_progress_todo"] = item
+	if items := inProgressTodos(todo); len(items) > 0 {
+		data["in_progress_todos"] = items
+		data["in_progress_todo_count"] = len(items)
+		data["current_in_progress_todo"] = items[0]
 	}
 	if task := currentInProgressTask(tasks); task != nil {
 		data["current_in_progress_task"] = task

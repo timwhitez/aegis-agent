@@ -155,6 +155,7 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		"current_goal":                currentGoal,
 		"current_status":              summarizeLatestMessages(sourceMessages),
 		"current_in_progress_todo":    currentInProgressTodo(todo),
+		"in_progress_todos":           inProgressTodos(todo),
 		"current_in_progress_task":    currentInProgressTask(tasks),
 		"high_value_proofs":           highValueProofs,
 		"feature_list":                featureList,
@@ -297,6 +298,7 @@ func (c *compactor) fallbackCompactionReuseSummary(sessionID, workdir string, st
 		"current_goal":                currentGoal,
 		"current_status":              summarizeLatestMessages(messages),
 		"current_in_progress_todo":    currentInProgressTodo(todo),
+		"in_progress_todos":           inProgressTodos(todo),
 		"current_in_progress_task":    currentInProgressTask(tasks),
 		"high_value_proofs":           highValueProofs,
 		"key_paths":                   keyPaths,
@@ -1079,16 +1081,26 @@ func filterTasks(tasks []session.Task, fn func(session.Task) bool) []session.Tas
 }
 
 func currentInProgressTodo(todo []session.TodoItem) map[string]any {
-	for _, item := range todo {
-		if item.Status == "in_progress" {
-			return map[string]any{
-				"content":    item.Content,
-				"priority":   item.Priority,
-				"updated_at": item.UpdatedAt,
-			}
-		}
+	items := inProgressTodos(todo)
+	if len(items) > 0 {
+		return items[0]
 	}
 	return nil
+}
+
+func inProgressTodos(todo []session.TodoItem) []map[string]any {
+	items := make([]map[string]any, 0)
+	for _, item := range todo {
+		if item.Status != "in_progress" {
+			continue
+		}
+		items = append(items, map[string]any{
+			"content":    item.Content,
+			"priority":   item.Priority,
+			"updated_at": item.UpdatedAt,
+		})
+	}
+	return items
 }
 
 func currentInProgressTask(tasks []session.Task) map[string]any {

@@ -131,6 +131,7 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	todo := []session.TodoItem{
 		{Content: "Audit provider contracts", Status: "completed", Priority: "high", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 		{Content: "Finish compaction artifact", Status: "in_progress", Priority: "high", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
+		{Content: "Refresh validation evidence", Status: "in_progress", Priority: "medium", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)},
 	}
 	tasks := []session.Task{
 		{
@@ -214,6 +215,10 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 
 	if summary["current_in_progress_todo"] == nil {
 		t.Fatalf("expected current_in_progress_todo, got %#v", summary)
+	}
+	inProgressTodos, _ := summary["in_progress_todos"].([]any)
+	if len(inProgressTodos) != 2 {
+		t.Fatalf("expected all in-progress todos in compaction summary, got %#v", summary["in_progress_todos"])
 	}
 	if summary["current_in_progress_task"] == nil {
 		t.Fatalf("expected current_in_progress_task, got %#v", summary)

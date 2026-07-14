@@ -5786,12 +5786,20 @@ func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(meta.Workdir, "reports", "spec.md"), []byte("# spec\n"), 0o644); err != nil {
 		t.Fatalf("write spec: %v", err)
 	}
-	if err := engine.store.SaveTodo(meta.ID, []session.TodoItem{{
-		Content:   "Refresh rollout plan",
-		Status:    "in_progress",
-		Priority:  "high",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}}); err != nil {
+	if err := engine.store.SaveTodo(meta.ID, []session.TodoItem{
+		{
+			Content:   "Refresh rollout plan",
+			Status:    "in_progress",
+			Priority:  "high",
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		{
+			Content:   "Collect validation evidence",
+			Status:    "in_progress",
+			Priority:  "medium",
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		},
+	}); err != nil {
 		t.Fatalf("save todo: %v", err)
 	}
 	if _, err := session.CreateTask(engine.store, meta.ID, session.TaskCreateInput{
@@ -5824,8 +5832,12 @@ func TestEngineEmitsContextLoadedEventWithDurableState(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected session.context.loaded event, got %#v", events)
 	}
-	if evt.Data["todo_count"] != float64(1) || evt.Data["task_count"] != float64(1) || evt.Data["ready_task_count"] != float64(1) {
+	if evt.Data["todo_count"] != float64(2) || evt.Data["in_progress_todo_count"] != float64(2) || evt.Data["task_count"] != float64(1) || evt.Data["ready_task_count"] != float64(1) {
 		t.Fatalf("expected durable counts in context event, got %#v", evt.Data)
+	}
+	inProgressTodos, _ := evt.Data["in_progress_todos"].([]any)
+	if len(inProgressTodos) != 2 {
+		t.Fatalf("expected all in-progress todos in context event, got %#v", evt.Data["in_progress_todos"])
 	}
 	present, _ := evt.Data["project_memory_present"].([]any)
 	if len(present) != 1 || present[0] != filepath.Join("reports", "spec.md") {
