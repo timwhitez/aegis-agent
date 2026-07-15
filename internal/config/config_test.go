@@ -127,13 +127,13 @@ func TestDefaultDisablesHardTurnLimitAndUsesFiveMinuteTimeouts(t *testing.T) {
 	}
 }
 
-func TestDefaultChildBudgetAndQueueReaper(t *testing.T) {
+func TestDefaultDisablesChildBudgetAndConfiguresQueueReaper(t *testing.T) {
 	cfg := Default()
-	if cfg.Runtime.ChildBudget.MaxWallClockSec != 7200 {
-		t.Fatalf("expected default child wall-clock budget 7200, got %d", cfg.Runtime.ChildBudget.MaxWallClockSec)
+	if cfg.Runtime.ChildBudget.MaxWallClockSec != 0 {
+		t.Fatalf("expected default child wall-clock budget disabled, got %d", cfg.Runtime.ChildBudget.MaxWallClockSec)
 	}
-	if cfg.Runtime.ChildBudget.MaxTurns != 1500 {
-		t.Fatalf("expected default child turn budget 1500, got %d", cfg.Runtime.ChildBudget.MaxTurns)
+	if cfg.Runtime.ChildBudget.MaxTurns != 0 {
+		t.Fatalf("expected default child turn budget disabled, got %d", cfg.Runtime.ChildBudget.MaxTurns)
 	}
 	if cfg.Runtime.Queue.ReaperIntervalMS != 60000 {
 		t.Fatalf("expected default reaper interval 60000ms, got %d", cfg.Runtime.Queue.ReaperIntervalMS)

@@ -364,11 +364,38 @@ async function main() {
 
     await click('[data-view="settings"]', 'settings nav');
     await waitFor(
-      () => browserClient.evaluate(`Boolean(document.getElementById('settings-provider')) && Boolean(document.getElementById('settings-baseurl')) && Boolean(document.getElementById('settings-model'))`),
+      () => browserClient.evaluate(`Boolean(document.getElementById('settings-provider')) && Boolean(document.getElementById('settings-baseurl')) && Boolean(document.getElementById('settings-model')) && Boolean(document.getElementById('settings-enable-child-budget'))`),
       15000,
       'settings form'
     );
     results.interactions.settings_loaded = true;
+    const childBudgetDefaults = await browserClient.evaluate(`(() => {
+      const enabled = document.getElementById('settings-enable-child-budget');
+      const wallClock = document.getElementById('settings-child-budget-wall-clock');
+      const maxTurns = document.getElementById('settings-child-budget-max-turns');
+      const state = document.getElementById('settings-child-budget-state');
+      return {
+        enabled: Boolean(enabled?.checked),
+        wall_clock_disabled: Boolean(wallClock?.disabled),
+        max_turns_disabled: Boolean(maxTurns?.disabled),
+        state: state?.textContent || ''
+      };
+    })()`);
+    if (childBudgetDefaults.enabled || !childBudgetDefaults.wall_clock_disabled || !childBudgetDefaults.max_turns_disabled || childBudgetDefaults.state !== 'Off') {
+      throw new Error(`expected default child budget controls to be disabled: ${JSON.stringify(childBudgetDefaults)}`);
+    }
+    await click('#settings-enable-child-budget', 'sub-agent budget toggle');
+    const childBudgetEnabled = await browserClient.evaluate(`(() => ({
+      wall_clock_enabled: !document.getElementById('settings-child-budget-wall-clock')?.disabled,
+      max_turns_enabled: !document.getElementById('settings-child-budget-max-turns')?.disabled,
+      state: document.getElementById('settings-child-budget-state')?.textContent || ''
+    }))()`);
+    if (!childBudgetEnabled.wall_clock_enabled || !childBudgetEnabled.max_turns_enabled || childBudgetEnabled.state !== 'Enabled') {
+      throw new Error(`expected child budget controls to enable together: ${JSON.stringify(childBudgetEnabled)}`);
+    }
+    await click('#settings-enable-child-budget', 'sub-agent budget reset');
+    results.interactions.child_budget_defaults_off = true;
+    results.interactions.child_budget_toggle_works = true;
 
     await click('[data-view="workspace"]', 'workspace nav');
     await waitFor(

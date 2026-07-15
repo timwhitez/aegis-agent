@@ -330,7 +330,7 @@ func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools
 	if strings.TrimSpace(job.ParentSessionID) != parentMeta.ID {
 		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentMeta.ID)
 	}
-	if job.Status != session.QueueStatusQueued {
+	if job.Status != session.QueueStatusQueued && job.Status != session.QueueStatusBlocked {
 		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is %s and cannot be safely stopped by parent; use agent_wait or inspect it with agent_status", job.ID, job.Status)
 	}
 	previousJob := job
@@ -342,7 +342,11 @@ func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools
 	if err != nil {
 		return tools.AgentStopResult{}, err
 	}
-	job, err = r.store.StopQueuedJob(job.ID, parentMeta.ID, "stopped by parent agent before worker claim")
+	if job.Status == session.QueueStatusBlocked {
+		job, err = r.store.StopBudgetPausedJob(job.ID, parentMeta.ID, "")
+	} else {
+		job, err = r.store.StopQueuedJob(job.ID, parentMeta.ID, "stopped by parent agent before worker claim")
+	}
 	if err != nil {
 		return tools.AgentStopResult{}, err
 	}
@@ -362,8 +366,11 @@ func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools
 		return tools.AgentStopResult{}, err
 	}
 	if err := r.appendEvent(parentMeta.ID, "queue.job.stopped", "delegate", map[string]any{
-		"job_id":     job.ID,
-		"last_error": job.LastError,
+		"job_id":          job.ID,
+		"previous_status": previousJob.Status,
+		"status":          job.Status,
+		"stop_reason":     job.StopReason,
+		"last_error":      job.LastError,
 	}); err != nil {
 		if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, coordinationSnapshot); restoreErr != nil {
 			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)

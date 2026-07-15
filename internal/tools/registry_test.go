@@ -3340,7 +3340,7 @@ func TestAgentToolsDescribeModelLedDelegation(t *testing.T) {
 	if stopDef == nil {
 		t.Fatal("agent_stop definition missing")
 	}
-	if !strings.Contains(stopDef.Description, "Stop a queued background child job") || !strings.Contains(stopDef.Description, "cannot safely stop a running child") {
+	if !strings.Contains(stopDef.Description, "Stop a queued background child job") || !strings.Contains(stopDef.Description, "budget-paused") || !strings.Contains(stopDef.Description, "Running jobs") {
 		t.Fatalf("expected agent_stop description to explain stop boundary, got %q", stopDef.Description)
 	}
 	promptDef := registry.Get("agent_prompt")

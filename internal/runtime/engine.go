@@ -1539,7 +1539,7 @@ func (e *Engine) unresolvedBackgroundExitState(sessionID string) (unresolvedBack
 		return unresolvedBackgroundExitState{}, err
 	}
 	return unresolvedBackgroundExitState{
-		Reminder:    fmt.Sprintf("Harness reminder: unresolved child or background work is still running or parent-stopped (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running child work or to restart parent-stopped child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued background work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(children), joinPromptItems(jobs)),
+		Reminder:    fmt.Sprintf("Harness reminder: unresolved child or background work remains (children: %s; jobs: %s). Do not exit while sub-agent work is unresolved. Use agent_prompt to send a convergence or handoff prompt to running/resumable child work, call agent_wait to park and auto-resume when any background result arrives, call agent_stop for queued or budget-paused blocked work that is no longer needed, or use agent_status/agent_list to verify and resolve the child work before exiting.", joinPromptItems(children), joinPromptItems(jobs)),
 		Signature:   harnessReminderSemanticSignature("background_work_unresolved", children, jobs),
 		CanProgress: canProgress,
 	}, nil
@@ -1550,7 +1550,7 @@ func backgroundWaitNeedsInterventionPrompt(reason string) string {
 	if reason == "" {
 		reason = "unresolved child work has already produced a liveness notification and no pending background result remains"
 	}
-	return "Harness reminder: agent_wait cannot make progress because the same blocked child/background deadlock was already reported and there is no pending background result to consume. The master agent must intervene now: inspect agent_list/agent_status, use agent_prompt to continue or redirect a blocked child, use agent_stop for queued work that has not started, or continue with an explicit unresolved-work handoff if no runtime control can resolve it. Deadlock detail: " + reason
+	return "Harness reminder: agent_wait cannot make progress because the same blocked child/background deadlock was already reported and there is no pending background result to consume. The master agent must intervene now: inspect agent_list/agent_status, use agent_prompt to continue or redirect a blocked child, use agent_stop for queued or budget-paused blocked work that is no longer needed, or continue with an explicit unresolved-work handoff if no runtime control can resolve it. Deadlock detail: " + reason
 }
 
 func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {

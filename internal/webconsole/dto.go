@@ -119,7 +119,14 @@ type UpdateConfigRequest struct {
 	GuardrailsMode       string                                 `json:"guardrails_mode"`
 	MaxTurnsHard         *int                                   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool                                   `json:"disable_hard_turn_limit"`
+	ChildBudget          *ChildBudgetSettingsRequest            `json:"child_budget"`
 	RoleProviders        map[string]RoleProviderOverrideRequest `json:"role_providers"`
+}
+
+type ChildBudgetSettingsRequest struct {
+	Disabled        bool `json:"disabled"`
+	MaxWallClockSec int  `json:"max_wall_clock_sec"`
+	MaxTurns        int  `json:"max_turns"`
 }
 
 type TestConfigRequest struct {

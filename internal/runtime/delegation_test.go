@@ -299,6 +299,154 @@ func TestRunnerStopAgentStopsQueuedJobAndResolvesParent(t *testing.T) {
 	}
 }
 
+func TestRunnerStopAgentSettlesBudgetPausedBlockedJob(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_budget_paused_stop",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       "job_budget_paused_stop",
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{
+		Status:      session.StatusPaused,
+		Phase:       "interrupt",
+		PauseReason: "child_budget_turns_exceeded",
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("create budget-paused child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "bounded child task",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save budget-paused blocked job: %v", err)
+	}
+	if err := addParentQueueJob(runner.store, parentID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	if err := runner.store.EnsureBackgroundNotification(parentID, session.NewBackgroundNotification(job)); err != nil {
+		t.Fatalf("seed blocked notification: %v", err)
+	}
+
+	result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
+	if err != nil {
+		t.Fatalf("settle budget-paused job: %v", err)
+	}
+	if result.Status != session.QueueStatusFailed || !strings.Contains(result.LastError, "child_budget_turns_exceeded") {
+		t.Fatalf("unexpected stop result: %#v", result)
+	}
+	loaded, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load settled job: %v", err)
+	}
+	if loaded.Status != session.QueueStatusFailed || loaded.StopReason != session.QueueStopReasonAgentStop {
+		t.Fatalf("expected failed settled job, got %#v", loaded)
+	}
+	childState, err := runner.store.LoadState(child.ID)
+	if err != nil {
+		t.Fatalf("load child state: %v", err)
+	}
+	if childState.Status != session.StatusPaused || childState.PauseReason != "child_budget_turns_exceeded" {
+		t.Fatalf("expected child budget pause preserved, got %#v", childState)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil {
+		t.Fatalf("load parent coordination: %v", err)
+	}
+	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.FailedQueueJobs, job.ID) || coordination.Parked {
+		t.Fatalf("expected budget stop to resolve parent coordination, got %#v", coordination)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].Status != session.QueueStatusFailed || notifications[0].StopReason != session.QueueStopReasonAgentStop || !strings.Contains(notifications[0].LastError, "child_budget_turns_exceeded") {
+		t.Fatalf("expected terminal budget stop notification, got %#v", notifications)
+	}
+}
+
+func TestRunnerStopAgentRejectsNonBudgetBlockedJob(t *testing.T) {
+	cfg := testRuntimeConfig(t)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_awaiting_input_stop",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-test",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       "job_awaiting_input_stop",
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusAwaitingInput, Phase: "model_wait", UpdatedAt: now}); err != nil {
+		t.Fatalf("create awaiting child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "waiting child task",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusAwaitingInput,
+		LastError:       "child session is resumable: awaiting_input",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save awaiting blocked job: %v", err)
+	}
+	if err := addParentQueueJob(runner.store, parentID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+
+	if result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID}); err == nil {
+		t.Fatalf("expected non-budget blocked stop rejection, got %#v", result)
+	} else if !strings.Contains(err.Error(), "only budget-paused blocked jobs") {
+		t.Fatalf("unexpected blocked stop rejection: %v", err)
+	}
+	loaded, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load preserved blocked job: %v", err)
+	}
+	if loaded.Status != session.QueueStatusBlocked || loaded.SessionStatus != session.StatusAwaitingInput {
+		t.Fatalf("expected non-budget blocked job preserved, got %#v", loaded)
+	}
+}
+
 func TestRunnerStopAgentRejectsRunningJob(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)

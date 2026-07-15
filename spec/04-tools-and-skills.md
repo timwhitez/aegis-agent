@@ -295,7 +295,9 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
-- 停止尚未被 worker claim 的 queued background child job；不能安全停止 running child
+- 停止尚未被 worker claim 的 queued background child job
+- 也可显式结算 linked child 已因 `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded` 暂停的 blocked job；job 进入 failed terminal 状态并释放 parent coordination gate，child 保留 paused 事实
+- 不能停止 running child，也不能把 awaiting input、manual stop 或其他原因形成的 blocked child 越权结算
 
 ### 4.22 `agent_prompt`
 

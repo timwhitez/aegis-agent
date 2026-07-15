@@ -5430,6 +5430,144 @@ func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
 	}
 }
 
+func TestStopBudgetPausedJobSettlesBlockedJobAndPreservesChildPause(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentID := "parent_budget_stop"
+	childID := "child_budget_stop"
+	jobID := "job_budget_stop"
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               childID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-test",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       jobID,
+		Depth:            1,
+	}
+	if err := store.Create(child, State{
+		Status:      StatusPaused,
+		Phase:       "interrupt",
+		PauseReason: "child_budget_wallclock_exceeded",
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("create budget-paused child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              jobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusBlocked,
+		ClaimedBy:       "worker:test",
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		WorkerPID:       1234,
+		ProcessStartID:  "1234:test",
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "bounded child work",
+		Mode:            ModeExec,
+		Background:      true,
+		SessionID:       childID,
+		SessionStatus:   StatusPaused,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save blocked budget job: %v", err)
+	}
+
+	stopped, err := store.StopBudgetPausedJob(job.ID, parentID, "")
+	if err != nil {
+		t.Fatalf("stop budget-paused job: %v", err)
+	}
+	if stopped.Status != QueueStatusFailed || stopped.StopReason != QueueStopReasonAgentStop {
+		t.Fatalf("expected terminal failed budget stop, got %#v", stopped)
+	}
+	if !strings.Contains(stopped.LastError, "child_budget_wallclock_exceeded") {
+		t.Fatalf("expected durable budget reason in stop error, got %#v", stopped)
+	}
+	if stopped.ClaimedBy != "" || stopped.ClaimedAt != "" || stopped.HeartbeatAt != "" || stopped.WorkerPID != 0 || stopped.ProcessStartID != "" {
+		t.Fatalf("expected settled job lease cleared, got %#v", stopped)
+	}
+	loaded, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load settled budget job: %v", err)
+	}
+	if loaded.Status != QueueStatusFailed || loaded.StopReason != QueueStopReasonAgentStop || loaded.LastError != stopped.LastError {
+		t.Fatalf("expected settled terminal job to remain failed, got %#v", loaded)
+	}
+	state, err := store.LoadState(childID)
+	if err != nil {
+		t.Fatalf("load preserved child state: %v", err)
+	}
+	if state.Status != StatusPaused || state.PauseReason != "child_budget_wallclock_exceeded" {
+		t.Fatalf("expected child pause fact preserved, got %#v", state)
+	}
+}
+
+func TestStopBudgetPausedJobRejectsOtherBlockedReasons(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	parentID := "parent_non_budget_stop"
+	childID := "child_non_budget_stop"
+	jobID := "job_non_budget_stop"
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               childID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-test",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       jobID,
+		Depth:            1,
+	}
+	if err := store.Create(child, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create manually paused child: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              jobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          QueueStatusBlocked,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "manual child work",
+		Mode:            ModeExec,
+		Background:      true,
+		SessionID:       childID,
+		SessionStatus:   StatusPaused,
+		StopReason:      QueueStopReasonParentStop,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save non-budget blocked job: %v", err)
+	}
+
+	if stopped, err := store.StopBudgetPausedJob(job.ID, parentID, ""); err == nil {
+		t.Fatalf("expected non-budget blocked stop rejection, got %#v", stopped)
+	} else if !strings.Contains(err.Error(), "only budget-paused blocked jobs") {
+		t.Fatalf("unexpected rejection: %v", err)
+	}
+	loaded, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load preserved blocked job: %v", err)
+	}
+	if loaded.Status != QueueStatusBlocked || loaded.StopReason != QueueStopReasonParentStop {
+		t.Fatalf("expected non-budget blocked job preserved, got %#v", loaded)
+	}
+}
+
 func TestBlockQueuedJobForParentStopIsRequeueable(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	job := QueueJob{

@@ -198,7 +198,7 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 
 若 job 带有 `resume_parent=true`，这是 parent agent 自己选择停车等待的事实。活跃 parent run 可以在 `agent_spawn(background=true, resume_parent=true)` 的 tool result 落盘后进入 `awaiting_input` / `background_wait`，保持 auto worker 存活；worker 写入任一 pending background notification 后，parent 在同一 harness 流程中自动接纳 `<background-agent-results>` 并继续下一次 provider turn。该能力不能由 runtime 自动替 parent 决定，只能由模型显式选择。parent 恢复后由模型判断是否继续等待其他 child、提示 child 收敛或停止不再需要的 queued job。
 
-当 parent coordination 仍存在 unresolved child session 或 queue job 时，parent 的普通 `run` 自然停顿不能直接退出到普通 `awaiting_input`。runtime 应提醒模型先选择 `agent_wait` 停车等待，或通过 `agent_stop` 停止尚未被 worker claim 的 queued job；对于已经 running / blocked 的 child work，模型可以用 `agent_prompt` 向 child 发送收敛/交付 prompt，再通过 `agent_wait` 等待结果，或用 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理。该 unresolved-work reminder 必须按排序后的 children/jobs 语义事实去重；同一 unresolved set 已提醒过时，`run` 模式可以放行一轮不重复刷字的自愈 turn，若仍无进展再回到可继续的 `awaiting_input`。`exec` / `init` 只有在 unresolved work 已确认不可自行推进时才可因重复 unresolved 失败；仍有 queued/running/live-owner work 时应保持可恢复状态。`finish` 同样由 parent coordination gate 阻断 unresolved work，即使 `wait_mode=wait-any` 已经收到一个完成结果，也不能带着其他未结束 child/job 退出。
+当 parent coordination 仍存在 unresolved child session 或 queue job 时，parent 的普通 `run` 自然停顿不能直接退出到普通 `awaiting_input`。runtime 应提醒模型先选择 `agent_wait` 停车等待，或通过 `agent_stop` 停止尚未被 worker claim 的 queued job以及显式结算 budget-paused blocked job；对于 running 或其他原因 blocked 的 child work，模型可以用 `agent_prompt` 向 child 发送收敛/交付 prompt，再通过 `agent_wait` 等待结果，或用 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理。该 unresolved-work reminder 必须按排序后的 children/jobs 语义事实去重；同一 unresolved set 已提醒过时，`run` 模式可以放行一轮不重复刷字的自愈 turn，若仍无进展再回到可继续的 `awaiting_input`。`exec` / `init` 只有在 unresolved work 已确认不可自行推进时才可因重复 unresolved 失败；仍有 queued/running/live-owner work 时应保持可恢复状态。`finish` 同样由 parent coordination gate 阻断 unresolved work，即使 `wait_mode=wait-any` 已经收到一个完成结果，也不能带着其他未结束 child/job 退出。
 
 parent-linked queue job 只能由 root master session 创建。`depth > 0` 或存在 `parent_session_id` 的 child session 不允许再提交 parent-linked background queue job，避免 nested sub-agent 的等待状态分散到多层 parent coordination。
 
@@ -247,9 +247,10 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 为防止单个委派会话无限 loop（只烧 token 不产出），runtime 对 child / background（有 `parent_session_id`）会话施加兜底预算：
 
-- `runtime.child_budget.max_wall_clock_sec`（默认 `7200`）与 `max_turns`（默认 `1500`），任一维度 `0` 表示禁用；墙钟从会话 `created_at` 计（跨恢复累计）。
+- `runtime.child_budget.max_wall_clock_sec` 与 `max_turns` 默认均为 `0`（关闭）；Settings / config 可显式启用任一维度。墙钟从会话 `created_at` 计（跨恢复累计）。
 - root master session 不受此预算约束，仍沿用 `runtime.max_turns_hard`（默认 `-1` 关闭）。
-- 超限时 child 以可恢复方式 `paused`（reason `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded`），并记录 `session.child_budget.exceeded` 事件；其 linked queue job 随之 reconcile 为 `blocked` 并写 parent notification，由模型决定续跑/收敛/停止。runtime 不直接判失败，也不替模型决定后续 workflow。
+- 超限时 child 以可恢复方式 `paused`（reason `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded`），并记录 `session.child_budget.exceeded` 事件；其 linked queue job 随之 reconcile 为 `blocked` 并写 parent notification，由模型决定续跑、停止或结算。
+- parent 对 budget-paused linked blocked job 调用 `agent_stop` 时，runtime 将 job 转为 `failed` terminal、写 `stop_reason=agent_stop`、从 unresolved queue jobs 移除并更新 notification；child session 保留原始 paused/budget reason。其他 blocked 原因与 running job 继续拒绝该操作。
 
 ## 6. 与 delegation 的关系
 
@@ -264,5 +265,5 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 - `experimental queue worker --once` 能真实消化至少一个 job
 - auto worker 能在活跃 CLI 进程中自动消化 background child job
 - queue job 与 child session 能正确关联
-- child 完成/失败后 parent session 能在下一安全边界接纳 background notification；child 若停在 `paused` / `awaiting_input`，queue job 必须保持 `blocked` / resumable，不能释放 parent completion gate
+- child 完成/失败后 parent session 能在下一安全边界接纳 background notification；child 若停在 `paused` / `awaiting_input`，queue job 默认保持 `blocked` / resumable，不能释放 parent completion gate；唯一显式例外是 parent 用 `agent_stop` 结算 budget-paused blocked job
 - 多 worker 同时启动时不会重复消费同一 queued 文件

@@ -172,9 +172,11 @@ child session 使用独立工作目录执行。当前支持：
 行为：
 
 - parent agent 显式停止一个尚未被 worker claim 的 queued background child job
+- parent agent 也可显式停止并结算一个 linked child 已因 `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded` 暂停的 blocked job
 - stopped job 进入 failed terminal queue 状态，并从 parent coordination 的 unresolved job 集合中移除
 - runtime 写入 background notification，使 parent transcript 后续可看到该 job 已被停止
-- 该工具当前不能安全停止 `running` / `blocked` child job；如果 job 已经启动，parent 必须使用 `agent_wait` 等待结果，或通过 `agent_status` / `agent_list` 检查后交给拥有 active handle 的控制面处理
+- budget-paused blocked job 被结算后，child session 保留 `paused` 与原始预算原因；runtime 不把它伪造为 completed
+- 该工具不能安全停止 `running` child，也不能停止 awaiting input、manual stop 或其他原因形成的 blocked child；这些情况仍应使用 `agent_prompt` / `agent_wait` 或交给拥有 active handle 的控制面处理
 - 不允许把 running child 仅在 parent coordination 中标记为 resolved；停止必须有真实 durable 结果或可验证的控制动作
 
 #### `agent_prompt`
@@ -193,7 +195,7 @@ child session 使用独立工作目录执行。当前支持：
 - 对 running child，`agent_prompt` 走 steer；对已 linked child 且 child session 为 `paused` / `awaiting_input` / `failed`、queue job 为 `blocked` 的可恢复 work，`agent_prompt` 可显式 continue 该 child 并把 prompt 作为 parent intervention 追加进去
 - `interrupt` 默认 `false`，普通 parent prompt 只作为 durable steer 进入 child，避免抢占仍在自主探索的 sub-agent
 - 当 parent 明确发现 child 长时间重复 discovery、重复 read/grep/load_skill、范围漂移或需要立即交付当前证据时，可以显式传 `interrupt=true` 请求 best-effort 抢占
-- 该工具不会创建、取消、停止或标记 child work 完成；parent 仍需用 `agent_status` / `agent_list` / `agent_wait` 回收结果，或用 `agent_stop` 停止尚未启动且不再需要的 queued job
+- 该工具不会创建、取消、停止或标记 child work 完成；parent 仍需用 `agent_status` / `agent_list` / `agent_wait` 回收结果，或用 `agent_stop` 停止尚未启动的 queued job以及显式结算 budget-paused blocked job
 - 只能操作当前 parent 关联的 child/session job；不得向无关 session 注入 prompt
 - 这只是给 master agent 一个 Codex-style steer 能力，不代表 runtime 自动替 parent 决定何时收敛子任务或固定任何审计 workflow
 

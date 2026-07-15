@@ -135,6 +135,8 @@
 - role hint 不应只停留在 prompt 文本里；当 session 或 child job 显式声明 `planner` / `generator` / `evaluator` 时，该 role 应持久化进 session metadata、queue job、background notification 和 provider request metadata，方便后续 traceability 与 comparator 验证
 - role hint 的 provider override 必须基于显式选择，而不是从 `agent_name` 或 orchestrator / worker / validator 文案做模糊匹配；模型需要在 `role_plan.role` 或 `agent_role` 中直接选择 `planner` / `generator` / `evaluator`
 - 三类 role hint 可以各自配置 provider override，覆盖只作为默认 provider/model/adapter 选择，不代表 runtime 自动创建 orchestrator / worker / validator 三段任务流
+- Codex 当前公开的普通 sub-agent 配置提供并发数、嵌套深度、steer/stop 等控制；`agents.job_max_runtime_seconds` 只对应 `spawn_agents_on_csv` worker，未提供通用的逐 child parent budget 字段。因此本项目不新增 `agent_spawn` 的逐 child budget 参数，只保留 Settings / config 中默认关闭的全局 optional child budget
+- child budget 一旦启用，必须同时提供可收敛控制：parent 能显式停止并结算因预算暂停的 linked blocked job；该动作只结算 queue / parent coordination，不把 paused child 伪造为 completed
 
 ### 2.10 Session Goals
 

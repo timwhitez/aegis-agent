@@ -16,6 +16,12 @@ async function renderSettings() {
     const guardrailsMode = configData.guardrails_mode || 'yolo';
     const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
     const maxTurnsHard = Number(configData.max_turns_hard || 0);
+    const childBudget = configData.child_budget || {};
+    const childBudgetMaxWallClockSec = Number(childBudget.max_wall_clock_sec || 0);
+    const childBudgetMaxTurns = Number(childBudget.max_turns || 0);
+    const childBudgetDisabled = Object.prototype.hasOwnProperty.call(childBudget, 'disabled')
+      ? Boolean(childBudget.disabled)
+      : childBudgetMaxWallClockSec <= 0 && childBudgetMaxTurns <= 0;
     const roleProviders = configData.role_providers || {};
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
@@ -96,7 +102,7 @@ async function renderSettings() {
     container.innerHTML = `
       <div class="view-header">
         <h2 class="view-title">Settings</h2>
-        <p class="view-subtitle">Configure provider defaults, local API credentials, and guardrails mode. API keys are persisted to the local env file for future restarts.</p>
+        <p class="view-subtitle">Configure runtime limits, provider defaults, local API credentials, and guardrails mode. API keys are persisted to the local env file for future restarts.</p>
       </div>
       <div class="skill-card settings-card">
         <form class="settings-form">
@@ -110,16 +116,63 @@ async function renderSettings() {
               YOLO disables non-essential runtime reminders and checks for new or resumed turns; tool safety boundaries still apply.
             </p>
           </div>
-          <div class="field">
-            <label class="field-label">Hard Max Turns</label>
-            <input id="settings-max-turns-hard" class="settings-input" type="number" min="1" step="1">
-            <label class="check-row">
-              <input id="settings-disable-hard-turn-limit" type="checkbox">
-              <span>Disable hard turn limit</span>
-            </label>
-            <p class="view-subtitle settings-help">
-              When disabled, the runtime will no longer fail a session with <code>max_turns_hard_exceeded</code>.
-            </p>
+          <div class="field settings-runtime-section">
+            <div class="settings-section-heading">
+              <div>
+                <span class="field-label">Runtime Limits</span>
+                <p class="view-subtitle settings-help">
+                  Master sessions and delegated sub-agents have separate controls. Both are unlimited by default.
+                </p>
+              </div>
+            </div>
+            <div class="settings-runtime-grid">
+              <section class="settings-limit-card">
+                <div class="settings-limit-header">
+                  <div>
+                    <strong>Master session</strong>
+                    <small>Applies to root runs through <code>max_turns_hard</code>.</small>
+                  </div>
+                  <span id="settings-master-limit-state" class="settings-limit-state">${disableHardTurnLimit ? 'Off' : 'Enabled'}</span>
+                </div>
+                <label class="field">
+                  <span class="field-label">Hard Max Turns</span>
+                  <input id="settings-max-turns-hard" class="settings-input" type="number" min="1" step="1">
+                </label>
+                <label class="check-row">
+                  <input id="settings-disable-hard-turn-limit" type="checkbox">
+                  <span>Disable master hard turn limit</span>
+                </label>
+                <p class="view-subtitle settings-help">
+                  Disabled sessions will not fail with <code>max_turns_hard_exceeded</code>.
+                </p>
+              </section>
+              <section class="settings-limit-card settings-child-budget-card">
+                <div class="settings-limit-header">
+                  <div>
+                    <strong>Sub-agent budget</strong>
+                    <small>Only delegated child and background sessions are affected.</small>
+                  </div>
+                  <span id="settings-child-budget-state" class="settings-limit-state">Off</span>
+                </div>
+                <label class="check-row settings-budget-toggle">
+                  <input id="settings-enable-child-budget" type="checkbox">
+                  <span>Enable sub-agent budget</span>
+                </label>
+                <div class="settings-limit-fields">
+                  <label class="field">
+                    <span class="field-label">Wall-clock Seconds</span>
+                    <input id="settings-child-budget-wall-clock" class="settings-input" type="number" min="0" step="1" placeholder="No wall-clock limit">
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Max Turns</span>
+                    <input id="settings-child-budget-max-turns" class="settings-input" type="number" min="0" step="1" placeholder="No turn limit">
+                  </label>
+                </div>
+                <p class="view-subtitle settings-help">
+                  Leave a dimension blank or 0 to disable it. At least one positive limit is required when enabled. A parent may explicitly settle a child paused by this budget.
+                </p>
+              </section>
+            </div>
           </div>
           <div class="field">
             <label class="field-label">Provider Profile</label>
@@ -197,6 +250,11 @@ async function renderSettings() {
     const guardrailsSelect = document.getElementById('settings-guardrails');
     const maxTurnsHardInput = document.getElementById('settings-max-turns-hard');
     const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
+    const masterLimitState = document.getElementById('settings-master-limit-state');
+    const enableChildBudgetInput = document.getElementById('settings-enable-child-budget');
+    const childBudgetWallClockInput = document.getElementById('settings-child-budget-wall-clock');
+    const childBudgetMaxTurnsInput = document.getElementById('settings-child-budget-max-turns');
+    const childBudgetState = document.getElementById('settings-child-budget-state');
     const baseURLInput = document.getElementById('settings-baseurl');
     const modelInput = document.getElementById('settings-model');
     const contextWindowInput = document.getElementById('settings-context-window');
@@ -287,10 +345,24 @@ async function renderSettings() {
     syncProviderFields();
     maxTurnsHardInput.value = maxTurnsHard > 0 ? String(maxTurnsHard) : '40';
     disableHardTurnLimitInput.checked = disableHardTurnLimit;
-    maxTurnsHardInput.disabled = disableHardTurnLimit;
-    disableHardTurnLimitInput.addEventListener('change', () => {
-      maxTurnsHardInput.disabled = disableHardTurnLimitInput.checked;
-    });
+    const syncMasterLimitControls = () => {
+      const disabled = disableHardTurnLimitInput.checked;
+      maxTurnsHardInput.disabled = disabled;
+      masterLimitState.textContent = disabled ? 'Off' : 'Enabled';
+    };
+    disableHardTurnLimitInput.addEventListener('change', syncMasterLimitControls);
+    syncMasterLimitControls();
+    enableChildBudgetInput.checked = !childBudgetDisabled;
+    childBudgetWallClockInput.value = childBudgetMaxWallClockSec > 0 ? String(childBudgetMaxWallClockSec) : '';
+    childBudgetMaxTurnsInput.value = childBudgetMaxTurns > 0 ? String(childBudgetMaxTurns) : '';
+    const syncChildBudgetControls = () => {
+      const enabled = enableChildBudgetInput.checked;
+      childBudgetWallClockInput.disabled = !enabled;
+      childBudgetMaxTurnsInput.disabled = !enabled;
+      childBudgetState.textContent = enabled ? 'Enabled' : 'Off';
+    };
+    enableChildBudgetInput.addEventListener('change', syncChildBudgetControls);
+    syncChildBudgetControls();
 
     const currentAPIKeyValue = () => (
       apiKeyInput.value === maskedKey && apiKeyInput.dataset.originalHasKey === 'true' ? '' : apiKeyInput.value
@@ -342,10 +414,37 @@ async function renderSettings() {
       }
       return parsed;
     };
-    const buildConfigPayload = () => ({
-      guardrailsMode: guardrailsSelect.value,
-      maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
-      disableHardTurnLimit: disableHardTurnLimitInput.checked,
+    const parseOptionalChildBudgetDimension = (input, label) => {
+      const raw = input.value.trim();
+      if (raw === '') {
+        return 0;
+      }
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`${label} must be a non-negative integer.`);
+      }
+      return parsed;
+    };
+    const currentChildBudget = () => {
+      if (!enableChildBudgetInput.checked) {
+        return {
+          disabled: true,
+          maxWallClockSec: 0,
+          maxTurns: 0
+        };
+      }
+      const maxWallClockSec = parseOptionalChildBudgetDimension(childBudgetWallClockInput, 'Sub-agent wall-clock seconds');
+      const maxTurns = parseOptionalChildBudgetDimension(childBudgetMaxTurnsInput, 'Sub-agent max turns');
+      if (maxWallClockSec === 0 && maxTurns === 0) {
+        throw new Error('Enable at least one positive sub-agent budget limit.');
+      }
+      return {
+        disabled: false,
+        maxWallClockSec,
+        maxTurns
+      };
+    };
+    const buildProviderPayload = () => ({
       provider: providerSelect.value,
       apiProvider: apiProviderSelect.value,
       baseURL: baseURLInput.value,
@@ -356,12 +455,19 @@ async function renderSettings() {
       roleProviders: collectRoleProviders(),
       apiKey: currentAPIKeyValue()
     });
+    const buildConfigPayload = () => ({
+      guardrailsMode: guardrailsSelect.value,
+      maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
+      disableHardTurnLimit: disableHardTurnLimitInput.checked,
+      childBudget: currentChildBudget(),
+      ...buildProviderPayload()
+    });
 
     testButton.addEventListener('click', async () => {
       testButton.innerText = 'Testing...';
       testButton.disabled = true;
       try {
-        const result = await testConfig(buildConfigPayload());
+        const result = await testConfig(buildProviderPayload());
         if (!isCurrentSettingsRender()) {
           return;
         }
@@ -395,6 +501,7 @@ async function renderSettings() {
             throw new Error('Hard max turns must be a positive integer, or disable the hard limit.');
           }
         }
+        currentChildBudget();
         const confirmed = await confirmSettingsSave(apiKeyInput, maskedKey);
         if (!isCurrentSettingsRender()) {
           return;

@@ -4389,8 +4389,13 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"guardrails_mode":         cfg.Runtime.GuardrailsMode,
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
-		"providers":               provs,
-		"role_providers":          roleProviderOverridesResponse(cfg),
+		"child_budget": map[string]any{
+			"disabled":           cfg.Runtime.ChildBudget.MaxWallClockSec <= 0 && cfg.Runtime.ChildBudget.MaxTurns <= 0,
+			"max_wall_clock_sec": cfg.Runtime.ChildBudget.MaxWallClockSec,
+			"max_turns":          cfg.Runtime.ChildBudget.MaxTurns,
+		},
+		"providers":      provs,
+		"role_providers": roleProviderOverridesResponse(cfg),
 	})
 }
 
@@ -4454,6 +4459,28 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
+	}
+	if req.ChildBudget != nil {
+		childBudget := *req.ChildBudget
+		if childBudget.Disabled {
+			updatedCfg.Runtime.ChildBudget.MaxWallClockSec = 0
+			updatedCfg.Runtime.ChildBudget.MaxTurns = 0
+		} else {
+			if childBudget.MaxWallClockSec < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("child_budget.max_wall_clock_sec must be non-negative"))
+				return
+			}
+			if childBudget.MaxTurns < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns must be non-negative"))
+				return
+			}
+			if childBudget.MaxWallClockSec == 0 && childBudget.MaxTurns == 0 {
+				writeError(w, http.StatusBadRequest, errors.New("enabled child_budget requires max_wall_clock_sec or max_turns to be positive"))
+				return
+			}
+			updatedCfg.Runtime.ChildBudget.MaxWallClockSec = childBudget.MaxWallClockSec
+			updatedCfg.Runtime.ChildBudget.MaxTurns = childBudget.MaxTurns
+		}
 	}
 
 	cwd, err := os.Getwd()
@@ -4618,6 +4645,9 @@ func configAuditData(updatedCfg *config.Config, configPath string) map[string]an
 		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
 		"max_turns_hard":         updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active": updatedCfg.Runtime.MaxTurnsHard > 0,
+		"child_budget_active":    updatedCfg.Runtime.ChildBudget.MaxWallClockSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurns > 0,
+		"child_budget_wall_sec":  updatedCfg.Runtime.ChildBudget.MaxWallClockSec,
+		"child_budget_max_turns": updatedCfg.Runtime.ChildBudget.MaxTurns,
 		"api_provider":           updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
 		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
@@ -4640,6 +4670,7 @@ func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
 		strings.TrimSpace(req.GuardrailsMode) != "" ||
 		req.MaxTurnsHard != nil ||
 		req.DisableHardTurnLimit ||
+		req.ChildBudget != nil ||
 		configRequestHasProviderScopedFields(req) ||
 		len(req.RoleProviders) > 0
 }

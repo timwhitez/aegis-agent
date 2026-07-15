@@ -2091,6 +2091,92 @@ func (s *Store) StopQueuedJob(jobID, parentSessionID, lastError string) (QueueJo
 	return s.StopQueuedJobWithReason(jobID, parentSessionID, lastError, QueueStopReasonAgentStop)
 }
 
+// StopBudgetPausedJob explicitly settles a blocked queue job whose linked
+// child is durably paused by the optional child budget. The child session keeps
+// its paused state and original pause reason; only the queue/parent
+// coordination fact becomes terminal so the parent can finish or hand off.
+func (s *Store) StopBudgetPausedJob(jobID, parentSessionID, lastError string) (QueueJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, err
+	}
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
+	parentSessionID = strings.TrimSpace(parentSessionID)
+	if parentSessionID != "" {
+		if err := validateStoreID("queue job parent session", parentSessionID); err != nil {
+			return QueueJob{}, err
+		}
+	}
+
+	blockedPath := s.queueJobPath(QueueStatusBlocked, jobID)
+	var job QueueJob
+	if err := readJSONFile(blockedPath, &job); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
+			if loadErr != nil {
+				return QueueJob{}, loadErr
+			}
+			if len(copies) == 0 {
+				return QueueJob{}, os.ErrNotExist
+			}
+			current := canonicalQueueJobCopy(copies).job
+			if parentSessionID != "" && strings.TrimSpace(current.ParentSessionID) != parentSessionID {
+				return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", current.ID, parentSessionID)
+			}
+			return QueueJob{}, fmt.Errorf("queue job %s is %s and is not a budget-paused blocked job", current.ID, current.Status)
+		}
+		return QueueJob{}, err
+	}
+	if job.ID != jobID {
+		return QueueJob{}, fmt.Errorf("queue job %s id mismatch in blocked file: %s", jobID, job.ID)
+	}
+	if err := validateQueueJob(job); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if err := validateQueueJobStatusDirectory(job, QueueStatusBlocked); err != nil {
+		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
+	}
+	if parentSessionID != "" && strings.TrimSpace(job.ParentSessionID) != parentSessionID {
+		return QueueJob{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
+	}
+	childSessionID := strings.TrimSpace(job.SessionID)
+	if childSessionID == "" {
+		return QueueJob{}, fmt.Errorf("queue job %s has no linked child session and cannot be settled as budget-paused", job.ID)
+	}
+	state, err := s.LoadState(childSessionID)
+	if err != nil {
+		return QueueJob{}, fmt.Errorf("load child session %s for queue job %s: %w", childSessionID, job.ID, err)
+	}
+	if state.Status != StatusPaused || !isChildBudgetPauseReason(state.PauseReason) {
+		return QueueJob{}, fmt.Errorf("queue job %s child session %s is %s with pause reason %q; only budget-paused blocked jobs can be explicitly settled", job.ID, childSessionID, state.Status, state.PauseReason)
+	}
+
+	job = clearReapedQueueLease(job)
+	job.Status = QueueStatusFailed
+	job.SessionStatus = state.Status
+	job.StopReason = QueueStopReasonAgentStop
+	job.LastError = strings.TrimSpace(lastError)
+	if job.LastError == "" {
+		job.LastError = "stopped by parent after child budget pause: " + state.PauseReason
+	}
+	if err := s.saveJobLocked(job); err != nil {
+		return QueueJob{}, err
+	}
+	return job, nil
+}
+
+func isChildBudgetPauseReason(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "child_budget_turns_exceeded", "child_budget_wallclock_exceeded":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopReason string) (QueueJob, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3209,7 +3295,7 @@ func NewCoordinationDeadlockNotification(parentSessionID, reason string) Backgro
 		Source:         BackgroundSourceCoordinationDeadlock,
 		SessionID:      parentSessionID,
 		Status:         "coordination_deadlock",
-		FinalText:      reason + ". No background child work can advance on its own. Decide how to proceed: re-prompt running or resumable child work to converge with agent_prompt, stop queued/blocked work that is no longer needed with agent_stop, or continue the remaining audit yourself in this session.",
+		FinalText:      reason + ". No background child work can advance on its own. Decide how to proceed: re-prompt running or resumable child work to converge with agent_prompt, stop queued or budget-paused blocked work that is no longer needed with agent_stop, or continue the remaining audit yourself in this session.",
 		DeliveryStatus: BackgroundNotificationPending,
 	}
 }
@@ -3838,6 +3924,12 @@ func isTerminalQueueStatus(status string) bool {
 func reconcileStateFromTerminalQueueJob(state State, job QueueJob) (State, bool) {
 	switch job.Status {
 	case QueueStatusFailed:
+		if job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && isChildBudgetPauseReason(state.PauseReason) {
+			// Parent settlement closes only the queue/coordination fact. Preserve
+			// the child's durable budget pause so operators can still inspect why
+			// execution stopped instead of rewriting it as a runtime failure.
+			return state, false
+		}
 		if state.Status == StatusCompleted || state.Status == StatusFailed {
 			return state, false
 		}

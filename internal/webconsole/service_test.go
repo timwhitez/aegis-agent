@@ -6628,6 +6628,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "class APIError") || !strings.Contains(apiBody, "function requestJSON") || !strings.Contains(apiBody, "function startSession") || !strings.Contains(apiBody, "function continueSession") || !strings.Contains(apiBody, "function steerSession") {
 		t.Fatalf("unexpected api.js body: %s", apiBody)
 	}
+	if !strings.Contains(apiBody, "child_budget") || !strings.Contains(apiBody, "max_wall_clock_sec: payload.childBudget.maxWallClockSec") {
+		t.Fatalf("expected api.js to persist optional child budget settings, got api.js body: %s", apiBody)
+	}
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
 	}
@@ -6650,6 +6653,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(settingsBody, "apiProviderSelect.addEventListener('change'") || !strings.Contains(settingsBody, "reasoningModesForAPIProvider") || !strings.Contains(settingsBody, "reasoningSummaryModesForAPIProvider") {
 		t.Fatalf("expected settings view to refresh reasoning controls when API Provider changes, got settings-view.js body: %s", settingsBody)
+	}
+	if !strings.Contains(settingsBody, "settings-enable-child-budget") || !strings.Contains(settingsBody, "currentChildBudget") || !strings.Contains(settingsBody, "Sub-agent budget") {
+		t.Fatalf("expected settings view to expose an optional sub-agent budget, got settings-view.js body: %s", settingsBody)
 	}
 	if !strings.Contains(settingsBody, "confirmSettingsSave") || !strings.Contains(settingsBody, "write the entered API key to the local env file") {
 		t.Fatalf("expected settings save to require explicit local config/API key confirmation, got settings-view.js body: %s", settingsBody)
@@ -9794,6 +9800,10 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if before["guardrails_mode"] != "yolo" {
 		t.Fatalf("unexpected default guardrails mode: %#v", before)
 	}
+	beforeChildBudget, _ := before["child_budget"].(map[string]any)
+	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_wall_clock_sec"] != float64(0) || beforeChildBudget["max_turns"] != float64(0) {
+		t.Fatalf("expected default child budget disabled, got %#v", beforeChildBudget)
+	}
 
 	postJSON(t, ts.URL+"/api/config", map[string]any{
 		"provider":                "openai",
@@ -9804,6 +9814,11 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		"api_key":                 "secret-key",
 		"guardrails_mode":         "standard",
 		"disable_hard_turn_limit": true,
+		"child_budget": map[string]any{
+			"disabled":           false,
+			"max_wall_clock_sec": 3600,
+			"max_turns":          250,
+		},
 	}, http.StatusOK, nil)
 
 	var after map[string]any
@@ -9816,6 +9831,10 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if after["disable_hard_turn_limit"] != true {
 		t.Fatalf("expected hard turn limit to be disabled, got %#v", after)
+	}
+	afterChildBudget, _ := after["child_budget"].(map[string]any)
+	if afterChildBudget["disabled"] != false || afterChildBudget["max_wall_clock_sec"] != float64(3600) || afterChildBudget["max_turns"] != float64(250) {
+		t.Fatalf("expected enabled child budget after update, got %#v", afterChildBudget)
 	}
 	providers, _ := after["providers"].(map[string]any)
 	openaiProvider, _ := providers["openai"].(map[string]any)
@@ -9856,6 +9875,83 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(configBytes), "context_window_tokens: 272000") {
 		t.Fatalf("expected context window to persist to config, got %q", string(configBytes))
+	}
+	if !strings.Contains(string(configBytes), "max_wall_clock_sec: 3600") || !strings.Contains(string(configBytes), "max_turns: 250") {
+		t.Fatalf("expected child budget to persist to config, got %q", string(configBytes))
+	}
+}
+
+func TestServiceConfigRejectsInvalidChildBudget(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":           false,
+			"max_wall_clock_sec": 0,
+			"max_turns":          0,
+		},
+	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":           false,
+			"max_wall_clock_sec": -1,
+			"max_turns":          20,
+		},
+	}, http.StatusBadRequest, nil)
+
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.Runtime.ChildBudget.MaxWallClockSec != 0 || updated.Runtime.ChildBudget.MaxTurns != 0 {
+		t.Fatalf("invalid child budget requests must not mutate config, got %#v", updated.Runtime.ChildBudget)
+	}
+}
+
+func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.ChildBudget.MaxWallClockSec = 7200
+	cfg.Runtime.ChildBudget.MaxTurns = 500
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":           true,
+			"max_wall_clock_sec": 7200,
+			"max_turns":          500,
+		},
+	}, http.StatusOK, nil)
+
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.Runtime.ChildBudget.MaxWallClockSec != 0 || updated.Runtime.ChildBudget.MaxTurns != 0 {
+		t.Fatalf("disabled child budget must persist as 0/0, got %#v", updated.Runtime.ChildBudget)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	if !strings.Contains(string(configBytes), "max_wall_clock_sec: 0") || !strings.Contains(string(configBytes), "max_turns: 0") {
+		t.Fatalf("expected disabled child budget persisted as 0/0, got %q", string(configBytes))
 	}
 }
 

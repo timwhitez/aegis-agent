@@ -189,14 +189,14 @@ runtime:
     # before recording a wait-timeout and returning to awaiting_input. 0 disables
     # the timeout (deadlock detection still wakes the parent on stalled work).
     background_wait_timeout_sec: 0
-  # Bounds child / background (delegated) sessions so a single run cannot loop
-  # indefinitely. Root master sessions are not limited here (they use
-  # max_turns_hard, default off). On breach the child is paused (resumable ->
-  # queue blocked) and the parent is notified to decide next steps. 0 disables a
-  # dimension.
+  # Optional limits for child / background (delegated) sessions. Root master
+  # sessions are not limited here (they use max_turns_hard, default off). Both
+  # dimensions default to 0 (disabled). On breach the child is paused
+  # (resumable -> queue blocked), and the parent can resume it or explicitly
+  # settle the budget-paused blocked job with agent_stop.
   child_budget:
-    max_wall_clock_sec: 7200
-    max_turns: 1500
+    max_wall_clock_sec: 0
+    max_turns: 0
 
 output:
   format: text

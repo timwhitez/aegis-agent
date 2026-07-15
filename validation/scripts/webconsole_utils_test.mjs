@@ -6424,9 +6424,71 @@ test('settings save keeps empty API key fields unmasked after success', async ()
 
   assert.equal(savedPayloads.length, 1);
   assert.equal(savedPayloads[0].apiKey, '');
+  assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
+    disabled: true,
+    maxWallClockSec: 0,
+    maxTurns: 0
+  });
   assert.equal(elements['settings-apikey'].value, '');
   assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'false');
   assert.equal(toasts.at(-1)?.tone, 'success');
+});
+
+test('settings saves an explicitly enabled sub-agent budget', async () => {
+  const { elements, savedPayloads, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    elements['settings-enable-child-budget'].checked = true;
+    elements['settings-enable-child-budget'].listeners.change();
+    elements['settings-child-budget-wall-clock'].value = '5400';
+    elements['settings-child-budget-max-turns'].value = '320';
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 1);
+  assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
+    disabled: false,
+    maxWallClockSec: 5400,
+    maxTurns: 320
+  });
+  assert.equal(elements['settings-child-budget-wall-clock'].disabled, false);
+  assert.equal(elements['settings-child-budget-max-turns'].disabled, false);
+  assert.equal(elements['settings-child-budget-state'].textContent, 'Enabled');
+});
+
+test('settings rejects an enabled sub-agent budget without a positive limit', async () => {
+  const { elements, savedPayloads, confirmCalls, toasts, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    elements['settings-enable-child-budget'].checked = true;
+    elements['settings-enable-child-budget'].listeners.change();
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 0);
+  assert.equal(confirmCalls.length, 0);
+  assert.deepEqual(toasts.at(-1), {
+    message: 'Enable at least one positive sub-agent budget limit.',
+    tone: 'error'
+  });
+});
+
+test('provider settings test omits runtime child budget controls', async () => {
+  const { elements, testedPayloads, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    elements['settings-enable-child-budget'].checked = true;
+    elements['settings-enable-child-budget'].listeners.change();
+    elements['settings-child-budget-max-turns'].value = '100';
+    await elements['settings-test-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(testedPayloads.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(testedPayloads[0], 'childBudget'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(testedPayloads[0], 'maxTurnsHard'), false);
 });
 
 test('settings save keeps existing API key mask when cleared field means unchanged', async () => {
@@ -6493,6 +6555,11 @@ test('renderSettings ignores stale config responses', async () => {
     'settings-guardrails': fakeRendererElement({ value: 'standard' }),
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
+    'settings-master-limit-state': fakeRendererElement(),
+    'settings-enable-child-budget': fakeRendererElement(),
+    'settings-child-budget-wall-clock': fakeRendererElement(),
+    'settings-child-budget-max-turns': fakeRendererElement(),
+    'settings-child-budget-state': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
     'settings-model': fakeRendererElement(),
     'settings-context-window': fakeRendererElement(),
@@ -6653,6 +6720,11 @@ function settingsConfig({ model, hasKey }) {
     guardrails_mode: 'standard',
     max_turns_hard: 40,
     disable_hard_turn_limit: false,
+    child_budget: {
+      disabled: true,
+      max_wall_clock_sec: 0,
+      max_turns: 0
+    },
     role_providers: {},
     providers: {
       openai: {
@@ -6686,6 +6758,11 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-guardrails': fakeRendererElement({ value: 'standard' }),
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
+    'settings-master-limit-state': fakeRendererElement(),
+    'settings-enable-child-budget': fakeRendererElement(),
+    'settings-child-budget-wall-clock': fakeRendererElement(),
+    'settings-child-budget-max-turns': fakeRendererElement(),
+    'settings-child-budget-state': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
     'settings-model': fakeRendererElement(),
     'settings-context-window': fakeRendererElement(),
@@ -6698,6 +6775,7 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-save-btn': fakeRendererElement({ innerText: 'Save Changes' })
   };
   const savedPayloads = [];
+  const testedPayloads = [];
   const toasts = [];
 
   context.nodes = { views: { settings: container } };
@@ -6719,7 +6797,10 @@ async function renderSettingsHarness({ hasKey }) {
     savedPayloads.push(payload);
     return { success: true };
   };
-  context.testConfig = async () => ({ success: true });
+  context.testConfig = async (payload) => {
+    testedPayloads.push(payload);
+    return { success: true };
+  };
   context.showToast = (message, tone) => {
     toasts.push({ message, tone });
   };
@@ -6737,6 +6818,7 @@ async function renderSettingsHarness({ hasKey }) {
   return {
     elements,
     savedPayloads,
+    testedPayloads,
     toasts,
     confirmCalls,
     restore() {

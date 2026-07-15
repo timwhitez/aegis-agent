@@ -236,6 +236,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - 不做 provider fallback routing
 - 不把 child agent / queue / TUI 变成固定 workflow；Web 可以展示和触发这些能力，但 child / queue 是否使用仍由模型或用户明确决定
 - Web console 是默认本地 operator surface；它仍然只能复用 runtime 与文件事实，不能成为权威状态源
+- root master session 默认不启用硬 turn / wall-clock budget；child / background budget 也是可选配置，默认关闭，只在 Settings 或配置文件中显式启用
 - Session Goal 是 core 收敛加固：它记录用户可见目标和完成审计，不把 runtime 改造成固定 DAG、plan graph 或 verification engine。原 Mission 能力收敛为 Goal 的内部结构化计划字段：agent 可在运行中沉淀 features、milestones、validation contract 和 role hints，但默认用户不需要选择 Goal/Mission 模式、不需要填写预算或拆分表单；child / queue 是否使用仍由模型或用户决定。
 - Mission 的 `require_plan_approval` 不是展示状态：它会创建 linked Plan Mode，并由 Plan Mode schema 裁剪与 `CompletionController` gate 在批准前阻断 shell/write/edit/todo/task/agent/queue/finish 等执行动作。批准后 runtime 同步 mission plan approved 状态，但不会把 plan 转成固定 workflow。
 - Mission plan approval 会先检查 validation contract coverage；未覆盖或 invalid assertion 默认阻断，CLI/API 明确 override 才能继续。`stop_on_budget` 触发时 runtime 只允许预算 wrap-up，不把 budget-limited 渲染成 completed。

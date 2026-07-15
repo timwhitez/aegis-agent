@@ -368,8 +368,9 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 
 Settings API：
 
-- `GET /api/config` 返回当前默认 provider、guardrails、hard turn limit，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、`reasoning_mode`、`reasoning_modes`、`reasoning_summary`、`reasoning_summary_modes`、`reasoning_effort`、`thinking_budget`、`include_thoughts`、`max_output_tokens`
-- `POST /api/config` 保存 provider 默认值、API Provider、base URL、model、API key、guardrails、hard turn limit、reasoning / thinking mode 和 reasoning summary，并写入审计事件
+- `GET /api/config` 返回当前默认 provider、guardrails、master hard turn limit、`child_budget { disabled, max_wall_clock_sec, max_turns }`，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、`reasoning_mode`、`reasoning_modes`、`reasoning_summary`、`reasoning_summary_modes`、`reasoning_effort`、`thinking_budget`、`include_thoughts`、`max_output_tokens`
+- `POST /api/config` 保存 provider 默认值、API Provider、base URL、model、API key、guardrails、master hard turn limit、optional child budget、reasoning / thinking mode 和 reasoning summary，并写入审计事件；`child_budget.disabled=true` 持久化为 `0/0`，启用时两个维度必须非负且至少一个为正数
+- Settings 将 root/master hard turn limit 与 Sub-agent Budget 分组展示；两者默认均关闭。Sub-agent Budget 不进入 provider test payload，也不在普通 session start / `agent_spawn` 表单增加逐 child budget 字段
 - `POST /api/config/test` 接收同一 provider 表单子集，执行 probe 后返回 `success`、`provider`、`api_provider`、`effective_api_provider`、`model`、`reasoning_mode`、`reasoning_summary`、`thinking_visible_observed`、`thinking_replay_observed`、`reasoning_summary_observed`、`reasoning_encrypted_observed`、`reasoning_tokens`、`thinking_strategy`、`thinking_detail` 与实际 provider option 摘要
 
 ### 7.1 `GET /api/meta`

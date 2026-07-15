@@ -158,11 +158,11 @@ type QueueConfig struct {
 	BackgroundWaitTimeoutSec int  `yaml:"background_wait_timeout_sec"`
 }
 
-// ChildBudgetConfig bounds child/background sessions so a single delegated run
-// cannot loop indefinitely. It does not apply to root master sessions. A
-// non-positive value disables that dimension. When a child exceeds a budget it
-// is paused (resumable -> queue blocked) and the parent is notified, rather than
-// failed, so the model can decide whether to converge, re-prompt, or stop it.
+// ChildBudgetConfig optionally bounds child/background sessions so a single
+// delegated run cannot loop indefinitely. It does not apply to root master
+// sessions. Both dimensions default to zero (disabled); a non-positive value
+// disables that dimension. When a child exceeds a budget it is paused
+// (resumable -> queue blocked) and the parent is notified.
 type ChildBudgetConfig struct {
 	MaxWallClockSec int `yaml:"max_wall_clock_sec"`
 	MaxTurns        int `yaml:"max_turns"`
@@ -380,8 +380,8 @@ func Default() *Config {
 				BackgroundWaitTimeoutSec: 0,
 			},
 			ChildBudget: ChildBudgetConfig{
-				MaxWallClockSec: 7200,
-				MaxTurns:        1500,
+				MaxWallClockSec: 0,
+				MaxTurns:        0,
 			},
 			ExecPolicy: ExecPolicyConfig{
 				Mode: "warn",

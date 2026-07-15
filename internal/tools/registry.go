@@ -3814,7 +3814,7 @@ func defAgentWait(control ControlPlane) Definition {
 func defAgentStop(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_stop",
-		Description: "Stop a queued background child job before any worker claims it, so the parent may exit without leaving unresolved sub-agent work. This cannot safely stop a running child job; if the job is already running or blocked, use agent_wait or inspect it with agent_status/agent_list.",
+		Description: "Stop a queued background child job before any worker claims it, or explicitly settle a linked blocked job whose child is paused by child_budget_turns_exceeded or child_budget_wallclock_exceeded. Settling a budget-paused job releases parent coordination without marking the child completed. Running jobs and blocked jobs with any other pause reason remain protected; inspect them with agent_status/agent_list or use agent_prompt/agent_wait.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

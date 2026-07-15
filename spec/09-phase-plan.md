@@ -182,7 +182,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
 - `node --test validation/scripts/webconsole_utils_test.mjs` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model 配置和 queue job 提交主路径通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、master hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
@@ -208,6 +208,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - operator session summary：`session.md`
 - long-run checkpoint：`checkpoints/longrun-latest.json`
 - explicit parent coordination：`parent-coordination.json`
+- optional child budget：默认 `0/0` 关闭，Settings 可持久化配置；budget-paused blocked job 可由 parent 显式 `agent_stop` 结算且不得伪造 child completed
 - workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
 - optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
 
