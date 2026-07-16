@@ -130,7 +130,10 @@ runtime:
   # standard: keep conservative delivery-consistency checks and collaboration reminders
   # yolo: disable non-essential runtime reminders/checks and let the model self-manage within tool-enforced boundaries
   guardrails_mode: yolo
+  # Global per-run checkpoint; writes one reminder and never stops execution.
   max_turns_soft: 24
+  # Global per-run hard guard for root, foreground child, and queue child.
+  # -1 disables the hard turn budget.
   max_turns_hard: -1
   command_timeout_sec: 300
   provider_auto_resume:
@@ -171,7 +174,13 @@ runtime:
   # multi_agent 默认开启只是暴露 child-agent 工具，是否真正派生 child 仍由当前 master agent 自主决定。
   multi_agent:
     enabled: true
-    max_depth: 4
+    # v1 supports root -> child only; nested child spawning remains disabled.
+    max_depth: 1
+    # Shared active cap for foreground and background child work.
+    max_active_children: 4
+    # Cooperative cancellation grace before agent_stop returns a durable
+    # cancel-requested result to the parent.
+    cancel_grace_sec: 5
   isolation:
     default_mode: off
     # Must live outside the source workspace to avoid recursive copy/worktree targets.
@@ -190,13 +199,15 @@ runtime:
     # the timeout (deadlock detection still wakes the parent on stalled work).
     background_wait_timeout_sec: 0
   # Optional limits for child / background (delegated) sessions. Root master
-  # sessions are not limited here (they use max_turns_hard, default off). Both
-  # dimensions default to 0 (disabled). On breach the child is paused
-  # (resumable -> queue blocked), and the parent can resume it or explicitly
-  # settle the budget-paused blocked job with agent_stop.
+  # sessions are not limited here; all three dimensions default to 0 (Off).
+  # Active runtime excludes paused/offline time. Absolute elapsed time starts
+  # when the child/job is created and includes queueing and pauses. Turns are
+  # counted per budget attempt; only an explicit parent budget extension starts
+  # the next attempt. Settings changes affect newly created child/job work only.
   child_budget:
-    max_wall_clock_sec: 0
-    max_turns: 0
+    max_active_runtime_sec: 0
+    max_elapsed_sec: 0
+    max_turns_per_attempt: 0
 
 output:
   format: text

@@ -1364,6 +1364,20 @@ test('session activity card surfaces durable Goal runtime status', () => {
   });
 });
 
+test('session activity distinguishes cancelled from failed and paused', () => {
+  const appContext = createAppHarnessContext();
+  const { cancelled, failed, paused } = sameRealm(vm.runInContext(`({
+    cancelled: sessionActivityForState({ status: 'cancelled' }),
+    failed: sessionActivityForState({ status: 'failed', last_error: 'boom' }),
+    paused: sessionActivityForState({ status: 'paused' })
+  })`, appContext));
+  assert.equal(cancelled.title, 'Cancelled');
+  assert.equal(cancelled.tone, 'danger');
+  assert.match(cancelled.copy, /explicitly cancelled/);
+  assert.equal(failed.title, 'Failed');
+  assert.equal(paused.title, 'Paused');
+});
+
 test('Goal inspector separates runtime facts from mission facts', () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
@@ -2440,6 +2454,72 @@ test('sub-agent cards prefer blocked queue status over resumable child status', 
   assert.match(html, />Blocked<\/span>/);
   assert.doesNotMatch(html, />Awaiting input<\/span>/);
   assert.match(html, /child session is resumable/);
+});
+
+test('sub-agent budget summary exposes attempt usage remaining deadline and reason', () => {
+  const summary = context.effectiveBudgetSummary({
+    status: 'exhausted',
+    attempt: 2,
+    max_turns_per_attempt: 5,
+    used_turns: 4,
+    remaining_turns: 1,
+    max_active_runtime_ms: 60000,
+    used_active_runtime_ms: 45000,
+    remaining_active_runtime_ms: 15000,
+    absolute_deadline_at: '2026-07-15T12:00:00Z',
+    last_reason: 'child_budget_active_runtime_exceeded',
+    source: 'runtime.child_budget'
+  });
+  assert.match(summary, /attempt 2/);
+  assert.match(summary, /turns 4\/5, 1 left/);
+  assert.match(summary, /active 45s\/60s, 15s left/);
+  assert.match(summary, /deadline/);
+  assert.match(summary, /child_budget_active_runtime_exceeded/);
+  assert.match(summary, /runtime.child_budget/);
+});
+
+test('sub-agent cards distinguish cancelled queue outcomes and show parent actions', () => {
+  const card = context.renderSubAgentCard({
+    job: {
+      id: 'job_cancelled_budget',
+      status: 'cancelled',
+      session_status: 'paused',
+      stop_reason: 'agent_stop',
+      effective_budget: {
+        status: 'exhausted',
+        attempt: 1,
+        max_turns_per_attempt: 1,
+        used_turns: 1,
+        remaining_turns: 0,
+        last_reason: 'child_budget_turns_exceeded',
+        source: 'runtime.child_budget'
+      }
+    }
+  });
+  assert.match(card, /Cancelled/);
+  assert.match(card, /child_budget_turns_exceeded/);
+
+  const notification = context.renderNotificationCard({
+    id: 'notification_budget',
+    queue_job_id: 'job_budget',
+    status: 'blocked',
+    session_status: 'paused',
+    delivery_status: 'pending',
+    available_actions: ['extend_resume', 'cancel_settle', 'inspect'],
+    effective_budget: {
+      status: 'exhausted',
+      attempt: 1,
+      max_turns_per_attempt: 1,
+      used_turns: 1,
+      remaining_turns: 0,
+      last_reason: 'child_budget_turns_exceeded',
+      source: 'runtime.child_budget'
+    }
+  });
+  assert.match(notification, /Parent actions:/);
+  assert.match(notification, /Extend resume/);
+  assert.match(notification, /Cancel settle/);
+  assert.match(notification, /Inspect/);
 });
 
 test('sub-agent float session rows prefer blocked queue status over resumable child status', () => {
@@ -6426,12 +6506,27 @@ test('settings save keeps empty API key fields unmasked after success', async ()
   assert.equal(savedPayloads[0].apiKey, '');
   assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
     disabled: true,
-    maxWallClockSec: 0,
-    maxTurns: 0
+    maxActiveRuntimeSec: 0,
+    maxElapsedSec: 0,
+    maxTurnsPerAttempt: 0
   });
   assert.equal(elements['settings-apikey'].value, '');
   assert.equal(elements['settings-apikey'].dataset.originalHasKey, 'false');
   assert.equal(toasts.at(-1)?.tone, 'success');
+});
+
+test('settings copy states global scope, soft semantics, default Off, and new-work snapshot behavior', async () => {
+  const { container, elements, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    assert.match(container.innerHTML, /Applies per run to master, foreground child, and background\/queue child sessions\./);
+    assert.match(container.innerHTML, /Soft is a one-time checkpoint reminder and never stops execution\./);
+    assert.match(container.innerHTML, /off by default/i);
+    assert.match(container.innerHTML, /Changes affect newly created child\/job work only/);
+    assert.equal(elements['settings-child-budget-state'].textContent, 'Off');
+    assert.equal(elements['settings-disable-hard-turn-limit'].checked, true);
+  } finally {
+    restore();
+  }
 });
 
 test('settings saves an explicitly enabled sub-agent budget', async () => {
@@ -6439,7 +6534,8 @@ test('settings saves an explicitly enabled sub-agent budget', async () => {
   try {
     elements['settings-enable-child-budget'].checked = true;
     elements['settings-enable-child-budget'].listeners.change();
-    elements['settings-child-budget-wall-clock'].value = '5400';
+    elements['settings-child-budget-active-runtime'].value = '1h30m';
+    elements['settings-child-budget-elapsed'].value = '2h';
     elements['settings-child-budget-max-turns'].value = '320';
     await elements['settings-save-btn'].listeners.click();
   } finally {
@@ -6449,10 +6545,12 @@ test('settings saves an explicitly enabled sub-agent budget', async () => {
   assert.equal(savedPayloads.length, 1);
   assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
     disabled: false,
-    maxWallClockSec: 5400,
-    maxTurns: 320
+    maxActiveRuntimeSec: 5400,
+    maxElapsedSec: 7200,
+    maxTurnsPerAttempt: 320
   });
-  assert.equal(elements['settings-child-budget-wall-clock'].disabled, false);
+  assert.equal(elements['settings-child-budget-active-runtime'].disabled, false);
+  assert.equal(elements['settings-child-budget-elapsed'].disabled, false);
   assert.equal(elements['settings-child-budget-max-turns'].disabled, false);
   assert.equal(elements['settings-child-budget-state'].textContent, 'Enabled');
 });
@@ -6489,6 +6587,27 @@ test('provider settings test omits runtime child budget controls', async () => {
   assert.equal(testedPayloads.length, 1);
   assert.equal(Object.prototype.hasOwnProperty.call(testedPayloads[0], 'childBudget'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(testedPayloads[0], 'maxTurnsHard'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(testedPayloads[0], 'maxTurnsSoft'), false);
+});
+
+test('settings duration parser accepts canonical human-readable values', () => {
+  assert.equal(context.parseSettingsDuration('30m', 'Duration'), 1800);
+  assert.equal(context.parseSettingsDuration('2h', 'Duration'), 7200);
+  assert.equal(context.parseSettingsDuration('1h30m', 'Duration'), 5400);
+  assert.equal(context.parseSettingsDuration('90', 'Duration'), 90);
+  assert.equal(context.formatSettingsDuration(1800), '30m');
+  assert.equal(context.formatSettingsDuration(7200), '2h');
+});
+
+test('settings duration parser rejects malformed values', () => {
+  assert.throws(
+    () => context.parseSettingsDuration('1h30', 'Duration'),
+    /must be a duration/
+  );
+  assert.throws(
+    () => context.parseSettingsDuration('-1h', 'Duration'),
+    /must be a duration/
+  );
 });
 
 test('settings save keeps existing API key mask when cleared field means unchanged', async () => {
@@ -6553,11 +6672,13 @@ test('renderSettings ignores stale config responses', async () => {
     'settings-api-provider': fakeRendererElement(),
     'settings-api-provider-help': fakeRendererElement(),
     'settings-guardrails': fakeRendererElement({ value: 'standard' }),
+    'settings-max-turns-soft': fakeRendererElement(),
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
-    'settings-master-limit-state': fakeRendererElement(),
+    'settings-global-turn-limit-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
-    'settings-child-budget-wall-clock': fakeRendererElement(),
+    'settings-child-budget-active-runtime': fakeRendererElement(),
+    'settings-child-budget-elapsed': fakeRendererElement(),
     'settings-child-budget-max-turns': fakeRendererElement(),
     'settings-child-budget-state': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
@@ -6718,12 +6839,14 @@ function settingsConfig({ model, hasKey }) {
   return {
     default_provider: 'openai',
     guardrails_mode: 'standard',
-    max_turns_hard: 40,
-    disable_hard_turn_limit: false,
+    max_turns_soft: 24,
+    max_turns_hard: -1,
+    disable_hard_turn_limit: true,
     child_budget: {
       disabled: true,
-      max_wall_clock_sec: 0,
-      max_turns: 0
+      max_active_runtime_sec: 0,
+      max_elapsed_sec: 0,
+      max_turns_per_attempt: 0
     },
     role_providers: {},
     providers: {
@@ -6756,11 +6879,13 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-api-provider': fakeRendererElement(),
     'settings-api-provider-help': fakeRendererElement(),
     'settings-guardrails': fakeRendererElement({ value: 'standard' }),
+    'settings-max-turns-soft': fakeRendererElement(),
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
-    'settings-master-limit-state': fakeRendererElement(),
+    'settings-global-turn-limit-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
-    'settings-child-budget-wall-clock': fakeRendererElement(),
+    'settings-child-budget-active-runtime': fakeRendererElement(),
+    'settings-child-budget-elapsed': fakeRendererElement(),
     'settings-child-budget-max-turns': fakeRendererElement(),
     'settings-child-budget-state': fakeRendererElement(),
     'settings-baseurl': fakeRendererElement(),
@@ -6816,6 +6941,7 @@ async function renderSettingsHarness({ hasKey }) {
   await context.renderSettings();
 
   return {
+    container,
     elements,
     savedPayloads,
     testedPayloads,

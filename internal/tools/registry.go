@@ -122,41 +122,48 @@ type AgentWaitRequest struct {
 
 type AgentStopRequest struct {
 	ParentSessionID string `json:"-"`
-	QueueJobID      string `json:"queue_job_id"`
+	SessionID       string `json:"session_id,omitempty"`
+	QueueJobID      string `json:"queue_job_id,omitempty"`
 }
 
 type AgentPromptRequest struct {
-	ParentSessionID string `json:"-"`
-	SessionID       string `json:"session_id,omitempty"`
-	QueueJobID      string `json:"queue_job_id,omitempty"`
-	Message         string `json:"message"`
-	Interrupt       *bool  `json:"interrupt,omitempty"`
+	ParentSessionID string                   `json:"-"`
+	SessionID       string                   `json:"session_id,omitempty"`
+	QueueJobID      string                   `json:"queue_job_id,omitempty"`
+	Message         string                   `json:"message"`
+	Interrupt       *bool                    `json:"interrupt,omitempty"`
+	BudgetExtension *session.BudgetExtension `json:"budget_extension,omitempty"`
 }
 
 type AgentStopResult struct {
-	QueueJobID string `json:"queue_job_id"`
+	SessionID  string `json:"session_id,omitempty"`
+	QueueJobID string `json:"queue_job_id,omitempty"`
 	Status     string `json:"status"`
+	Accepted   bool   `json:"accepted"`
+	Behavior   string `json:"behavior,omitempty"`
 	LastError  string `json:"last_error,omitempty"`
 }
 
 type AgentPromptResult struct {
-	SessionID  string `json:"session_id"`
-	QueueJobID string `json:"queue_job_id,omitempty"`
-	Accepted   bool   `json:"accepted"`
-	Behavior   string `json:"behavior"`
+	SessionID       string                   `json:"session_id"`
+	QueueJobID      string                   `json:"queue_job_id,omitempty"`
+	Accepted        bool                     `json:"accepted"`
+	Behavior        string                   `json:"behavior"`
+	EffectiveBudget *session.EffectiveBudget `json:"effective_budget,omitempty"`
 }
 
 type AgentStatusResult struct {
-	SessionID     string `json:"session_id,omitempty"`
-	QueueJobID    string `json:"queue_job_id,omitempty"`
-	Status        string `json:"status,omitempty"`
-	SessionStatus string `json:"session_status,omitempty"`
-	FinalText     string `json:"final_text,omitempty"`
-	StopReason    string `json:"stop_reason,omitempty"`
-	LastError     string `json:"last_error,omitempty"`
-	Workdir       string `json:"workdir,omitempty"`
-	AgentName     string `json:"agent_name,omitempty"`
-	AgentRole     string `json:"agent_role,omitempty"`
+	SessionID       string                   `json:"session_id,omitempty"`
+	QueueJobID      string                   `json:"queue_job_id,omitempty"`
+	Status          string                   `json:"status,omitempty"`
+	SessionStatus   string                   `json:"session_status,omitempty"`
+	FinalText       string                   `json:"final_text,omitempty"`
+	StopReason      string                   `json:"stop_reason,omitempty"`
+	LastError       string                   `json:"last_error,omitempty"`
+	Workdir         string                   `json:"workdir,omitempty"`
+	AgentName       string                   `json:"agent_name,omitempty"`
+	AgentRole       string                   `json:"agent_role,omitempty"`
+	EffectiveBudget *session.EffectiveBudget `json:"effective_budget,omitempty"`
 }
 
 type AgentListResult struct {
@@ -528,6 +535,36 @@ func stringArraySchema() map[string]any {
 	return map[string]any{
 		"type":  "array",
 		"items": map[string]any{"type": "string"},
+	}
+}
+
+func budgetExtensionSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"add_turns": map[string]any{
+				"type":        "integer",
+				"minimum":     0,
+				"description": "Additional provider turns made available to the next child budget attempt.",
+			},
+			"add_active_runtime_sec": map[string]any{
+				"type":        "integer",
+				"minimum":     0,
+				"description": "Additional active runtime seconds made available to the next attempt; paused/offline time is excluded.",
+			},
+			"extend_deadline_sec": map[string]any{
+				"type":        "integer",
+				"minimum":     0,
+				"description": "Seconds to add to the durable absolute deadline.",
+			},
+			"clear_turn_limit":           map[string]any{"type": "boolean"},
+			"clear_active_runtime_limit": map[string]any{"type": "boolean"},
+			"clear_absolute_deadline":    map[string]any{"type": "boolean"},
+			"reason": map[string]any{
+				"type":        "string",
+				"description": "Short parent rationale recorded in the durable extension event.",
+			},
+		},
 	}
 }
 
@@ -2304,12 +2341,19 @@ func defCreateGoal() Definition {
 					"enum":        []string{"goal", "mission"},
 					"description": "goal for a single long objective, mission for structured features/milestones.",
 				},
-				"token_budget":        map[string]any{"type": "integer", "description": "Optional positive token budget."},
-				"time_budget_minutes": map[string]any{"type": "integer", "description": "Optional positive time budget in minutes."},
-				"success_criteria":    withDescription(stringArraySchema(), "Optional concrete completion criteria."),
-				"validation_plan":     withDescription(stringArraySchema(), "Optional validation commands, artifacts, manual checks, browser checks, or review checks."),
-				"features":            withDescription(stringArraySchema(), "Optional mission features when mode is mission."),
-				"milestones":          withDescription(stringArraySchema(), "Optional mission milestones when mode is mission."),
+				"token_budget": map[string]any{"type": "integer", "description": "Optional positive token budget."},
+				"provider_time_budget_minutes": map[string]any{
+					"type":        "integer",
+					"description": "Optional positive provider-call elapsed-time budget in minutes. Paused time, queue wait, tools, and child active runtime are excluded.",
+				},
+				"time_budget_minutes": map[string]any{
+					"type":        "integer",
+					"description": "Deprecated compatibility alias for provider_time_budget_minutes.",
+				},
+				"success_criteria": withDescription(stringArraySchema(), "Optional concrete completion criteria."),
+				"validation_plan":  withDescription(stringArraySchema(), "Optional validation commands, artifacts, manual checks, browser checks, or review checks."),
+				"features":         withDescription(stringArraySchema(), "Optional mission features when mode is mission."),
+				"milestones":       withDescription(stringArraySchema(), "Optional mission milestones when mode is mission."),
 				"require_plan_approval": map[string]any{
 					"type":        "boolean",
 					"description": "When true, mission plan starts in needs_approval.",
@@ -2327,24 +2371,29 @@ func defCreateGoal() Definition {
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Objective           string   `json:"objective"`
-				Mode                string   `json:"mode"`
-				TokenBudget         *int64   `json:"token_budget"`
-				TimeBudgetMinutes   *int64   `json:"time_budget_minutes"`
-				SuccessCriteria     []string `json:"success_criteria"`
-				ValidationPlan      []string `json:"validation_plan"`
-				Features            []string `json:"features"`
-				Milestones          []string `json:"milestones"`
-				RequirePlanApproval bool     `json:"require_plan_approval"`
-				StopOnBudget        bool     `json:"stop_on_budget"`
-				CreateTasksFromPlan bool     `json:"create_tasks_from_plan"`
+				Objective                 string   `json:"objective"`
+				Mode                      string   `json:"mode"`
+				TokenBudget               *int64   `json:"token_budget"`
+				ProviderTimeBudgetMinutes *int64   `json:"provider_time_budget_minutes"`
+				TimeBudgetMinutes         *int64   `json:"time_budget_minutes"`
+				SuccessCriteria           []string `json:"success_criteria"`
+				ValidationPlan            []string `json:"validation_plan"`
+				Features                  []string `json:"features"`
+				Milestones                []string `json:"milestones"`
+				RequirePlanApproval       bool     `json:"require_plan_approval"`
+				StopOnBudget              bool     `json:"stop_on_budget"`
+				CreateTasksFromPlan       bool     `json:"create_tasks_from_plan"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("create_goal", err), nil
 			}
 			var seconds *int64
-			if input.TimeBudgetMinutes != nil {
-				value := *input.TimeBudgetMinutes * 60
+			providerTimeBudgetMinutes := input.ProviderTimeBudgetMinutes
+			if providerTimeBudgetMinutes == nil {
+				providerTimeBudgetMinutes = input.TimeBudgetMinutes
+			}
+			if providerTimeBudgetMinutes != nil {
+				value := *providerTimeBudgetMinutes * 60
 				seconds = &value
 			}
 			if err := requireToolSessionMetadata(execCtx); err != nil {
@@ -3814,16 +3863,19 @@ func defAgentWait(control ControlPlane) Definition {
 func defAgentStop(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_stop",
-		Description: "Stop a queued background child job before any worker claims it, or explicitly settle a linked blocked job whose child is paused by child_budget_turns_exceeded or child_budget_wallclock_exceeded. Settling a budget-paused job releases parent coordination without marking the child completed. Running jobs and blocked jobs with any other pause reason remain protected; inspect them with agent_status/agent_list or use agent_prompt/agent_wait.",
+		Description: "Cancel child work owned by the current parent. Target by session_id or queue_job_id. Queued jobs become cancelled immediately; running children first receive a durable cancel request and cooperative provider/tool/shell cancellation; budget-paused jobs can be settled as cancelled while preserving the child's paused budget evidence. Cancellation is distinct from execution failure.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"session_id": map[string]any{
+					"type":        "string",
+					"description": "Child session id returned by agent_spawn, agent_status, or agent_list. Provide session_id or queue_job_id.",
+				},
 				"queue_job_id": map[string]any{
 					"type":        "string",
-					"description": "Queued background job id returned by agent_spawn(background=true) or agent_list.",
+					"description": "Background job id returned by agent_spawn(background=true), agent_status, or agent_list. Provide queue_job_id or session_id.",
 				},
 			},
-			"required": []string{"queue_job_id"},
 		},
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			if control == nil {
@@ -3833,8 +3885,8 @@ func defAgentStop(control ControlPlane) Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("agent_stop", err), nil
 			}
-			if strings.TrimSpace(input.QueueJobID) == "" {
-				return errorResult("agent_stop", errors.New("queue_job_id is required")), nil
+			if strings.TrimSpace(input.SessionID) == "" && strings.TrimSpace(input.QueueJobID) == "" {
+				return errorResult("agent_stop", errors.New("session_id or queue_job_id is required")), nil
 			}
 			if err := requireToolSessionMetadata(execCtx); err != nil {
 				return errorResult("agent_stop", err), nil
@@ -3853,7 +3905,7 @@ func defAgentStop(control ControlPlane) Definition {
 func defAgentPrompt(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_prompt",
-		Description: "Send a prompt/steer to a child agent or background child job owned by the current parent session. Use this to refine scope, add evidence requirements, request a progress update, ask for a handoff, or redirect a sub-agent before waiting or synthesizing. For a child paused because the parent was stopped, this restarts the child with the prompt; for a pre-claim job blocked by parent stop, this requeues it. This does not mark child work complete or require it to stop. interrupt defaults to false; set interrupt=true only when the child should be preempted at the next best-effort boundary.",
+		Description: "Send a prompt/steer to a child agent or background child job owned by the current parent session. Use this to refine scope, add evidence requirements, request a progress update, ask for a handoff, or redirect a sub-agent before waiting or synthesizing. For a child paused because the parent was stopped, this restarts the child with the prompt; for a pre-claim job blocked by parent stop, this requeues it. A budget-paused child requires budget_extension that adds or clears the exhausted dimension; that explicit extension starts the next budget attempt. This does not mark child work complete or require it to stop. interrupt defaults to false; set interrupt=true only when the child should be preempted at the next best-effort boundary.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3873,6 +3925,7 @@ func defAgentPrompt(control ControlPlane) Definition {
 					"type":        "boolean",
 					"description": "Whether to request best-effort interruption of the child run. Defaults to false.",
 				},
+				"budget_extension": budgetExtensionSchema(),
 			},
 			"required": []string{"message"},
 		},

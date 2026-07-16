@@ -2,6 +2,38 @@ const settingsViewState = {
   requestSeq: 0
 };
 
+function formatSettingsDuration(seconds) {
+  const value = Number(seconds || 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return '';
+  }
+  if (value % 86400 === 0) return `${value / 86400}d`;
+  if (value % 3600 === 0) return `${value / 3600}h`;
+  if (value % 60 === 0) return `${value / 60}m`;
+  return `${value}s`;
+}
+
+function parseSettingsDuration(rawValue, label) {
+  const raw = String(rawValue || '').trim().toLowerCase();
+  if (raw === '' || raw === '0') {
+    return 0;
+  }
+  if (/^\d+$/.test(raw)) {
+    return Number.parseInt(raw, 10);
+  }
+  const unitSeconds = { d: 86400, h: 3600, m: 60, s: 1 };
+  let total = 0;
+  let consumed = '';
+  for (const match of raw.matchAll(/(\d+)\s*([dhms])/g)) {
+    total += Number.parseInt(match[1], 10) * unitSeconds[match[2]];
+    consumed += match[0].replace(/\s+/g, '');
+  }
+  if (total <= 0 || consumed !== raw.replace(/\s+/g, '')) {
+    throw new Error(`${label} must be a duration such as 30m, 2h, 1h30m, or seconds.`);
+  }
+  return total;
+}
+
 async function renderSettings() {
   const requestSeq = ++settingsViewState.requestSeq;
   const container = nodes.views.settings;
@@ -13,15 +45,17 @@ async function renderSettings() {
     }
     const providers = configData.providers || {};
     const defaultProvider = configData.default_provider || '';
-    const guardrailsMode = configData.guardrails_mode || 'yolo';
-    const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
-    const maxTurnsHard = Number(configData.max_turns_hard || 0);
-    const childBudget = configData.child_budget || {};
-    const childBudgetMaxWallClockSec = Number(childBudget.max_wall_clock_sec || 0);
-    const childBudgetMaxTurns = Number(childBudget.max_turns || 0);
-    const childBudgetDisabled = Object.prototype.hasOwnProperty.call(childBudget, 'disabled')
-      ? Boolean(childBudget.disabled)
-      : childBudgetMaxWallClockSec <= 0 && childBudgetMaxTurns <= 0;
+	    const guardrailsMode = configData.guardrails_mode || 'yolo';
+	    const maxTurnsSoft = Number(configData.max_turns_soft || 24);
+	    const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
+	    const maxTurnsHard = Number(configData.max_turns_hard || 0);
+	    const childBudget = configData.child_budget || {};
+	    const childBudgetMaxActiveRuntimeSec = Number(childBudget.max_active_runtime_sec || childBudget.max_wall_clock_sec || 0);
+	    const childBudgetMaxElapsedSec = Number(childBudget.max_elapsed_sec || 0);
+	    const childBudgetMaxTurnsPerAttempt = Number(childBudget.max_turns_per_attempt || childBudget.max_turns || 0);
+	    const childBudgetDisabled = Object.prototype.hasOwnProperty.call(childBudget, 'disabled')
+	      ? Boolean(childBudget.disabled)
+	      : childBudgetMaxActiveRuntimeSec <= 0 && childBudgetMaxElapsedSec <= 0 && childBudgetMaxTurnsPerAttempt <= 0;
     const roleProviders = configData.role_providers || {};
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
@@ -121,7 +155,7 @@ async function renderSettings() {
               <div>
                 <span class="field-label">Runtime Limits</span>
                 <p class="view-subtitle settings-help">
-                  Master sessions and delegated sub-agents have separate controls. Both are unlimited by default.
+                  The global turn guard applies to every session run. Child budgets are an additional delegated-work policy and are off by default.
                 </p>
               </div>
             </div>
@@ -129,28 +163,32 @@ async function renderSettings() {
               <section class="settings-limit-card">
                 <div class="settings-limit-header">
                   <div>
-                    <strong>Master session</strong>
-                    <small>Applies to root runs through <code>max_turns_hard</code>.</small>
+                    <strong>Global turn guard</strong>
+                    <small>Applies per run to master, foreground child, and background/queue child sessions.</small>
                   </div>
-                  <span id="settings-master-limit-state" class="settings-limit-state">${disableHardTurnLimit ? 'Off' : 'Enabled'}</span>
+                  <span id="settings-global-turn-limit-state" class="settings-limit-state">${disableHardTurnLimit ? 'Off' : 'Enabled'}</span>
                 </div>
+                <label class="field">
+                  <span class="field-label">Soft Checkpoint Turns</span>
+                  <input id="settings-max-turns-soft" class="settings-input" type="number" min="1" step="1">
+                </label>
                 <label class="field">
                   <span class="field-label">Hard Max Turns</span>
                   <input id="settings-max-turns-hard" class="settings-input" type="number" min="1" step="1">
                 </label>
                 <label class="check-row">
                   <input id="settings-disable-hard-turn-limit" type="checkbox">
-                  <span>Disable master hard turn limit</span>
+                  <span>Disable global hard turn limit</span>
                 </label>
                 <p class="view-subtitle settings-help">
-                  Disabled sessions will not fail with <code>max_turns_hard_exceeded</code>.
+                  Soft is a one-time checkpoint reminder and never stops execution. Hard is disabled by default; when enabled it fails the current run with <code>max_turns_hard_exceeded</code>.
                 </p>
               </section>
               <section class="settings-limit-card settings-child-budget-card">
                 <div class="settings-limit-header">
                   <div>
                     <strong>Sub-agent budget</strong>
-                    <small>Only delegated child and background sessions are affected.</small>
+                    <small>Only delegated child/background sessions are affected; the effective policy is snapshotted when work is created.</small>
                   </div>
                   <span id="settings-child-budget-state" class="settings-limit-state">Off</span>
                 </div>
@@ -160,16 +198,20 @@ async function renderSettings() {
                 </label>
                 <div class="settings-limit-fields">
                   <label class="field">
-                    <span class="field-label">Wall-clock Seconds</span>
-                    <input id="settings-child-budget-wall-clock" class="settings-input" type="number" min="0" step="1" placeholder="No wall-clock limit">
+                    <span class="field-label">Active Runtime</span>
+                    <input id="settings-child-budget-active-runtime" class="settings-input" type="text" placeholder="Off, or 30m / 2h">
                   </label>
                   <label class="field">
-                    <span class="field-label">Max Turns</span>
+                    <span class="field-label">Absolute Elapsed Deadline</span>
+                    <input id="settings-child-budget-elapsed" class="settings-input" type="text" placeholder="Off, or 2h / 1d">
+                  </label>
+                  <label class="field">
+                    <span class="field-label">Turns per Attempt</span>
                     <input id="settings-child-budget-max-turns" class="settings-input" type="number" min="0" step="1" placeholder="No turn limit">
                   </label>
                 </div>
                 <p class="view-subtitle settings-help">
-                  Leave a dimension blank or 0 to disable it. At least one positive limit is required when enabled. A parent may explicitly settle a child paused by this budget.
+                  Active runtime excludes paused/offline time. Absolute elapsed time includes queueing and pauses. Changes affect newly created child/job work only; existing work keeps its durable snapshot. A parent can extend/resume or cancel/settle a budget-paused child.
                 </p>
               </section>
             </div>
@@ -248,11 +290,13 @@ async function renderSettings() {
     const apiProviderSelect = document.getElementById('settings-api-provider');
     const apiProviderHelp = document.getElementById('settings-api-provider-help');
     const guardrailsSelect = document.getElementById('settings-guardrails');
+    const maxTurnsSoftInput = document.getElementById('settings-max-turns-soft');
     const maxTurnsHardInput = document.getElementById('settings-max-turns-hard');
     const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
-    const masterLimitState = document.getElementById('settings-master-limit-state');
+    const globalTurnLimitState = document.getElementById('settings-global-turn-limit-state');
     const enableChildBudgetInput = document.getElementById('settings-enable-child-budget');
-    const childBudgetWallClockInput = document.getElementById('settings-child-budget-wall-clock');
+    const childBudgetActiveRuntimeInput = document.getElementById('settings-child-budget-active-runtime');
+    const childBudgetElapsedInput = document.getElementById('settings-child-budget-elapsed');
     const childBudgetMaxTurnsInput = document.getElementById('settings-child-budget-max-turns');
     const childBudgetState = document.getElementById('settings-child-budget-state');
     const baseURLInput = document.getElementById('settings-baseurl');
@@ -343,21 +387,24 @@ async function renderSettings() {
       syncReasoningControls(providers[providerSelect.value], reasoningModeSelect.value, reasoningSummarySelect.value);
     });
     syncProviderFields();
+    maxTurnsSoftInput.value = maxTurnsSoft > 0 ? String(maxTurnsSoft) : '24';
     maxTurnsHardInput.value = maxTurnsHard > 0 ? String(maxTurnsHard) : '40';
     disableHardTurnLimitInput.checked = disableHardTurnLimit;
     const syncMasterLimitControls = () => {
       const disabled = disableHardTurnLimitInput.checked;
       maxTurnsHardInput.disabled = disabled;
-      masterLimitState.textContent = disabled ? 'Off' : 'Enabled';
+      globalTurnLimitState.textContent = disabled ? 'Off' : 'Enabled';
     };
     disableHardTurnLimitInput.addEventListener('change', syncMasterLimitControls);
     syncMasterLimitControls();
     enableChildBudgetInput.checked = !childBudgetDisabled;
-    childBudgetWallClockInput.value = childBudgetMaxWallClockSec > 0 ? String(childBudgetMaxWallClockSec) : '';
-    childBudgetMaxTurnsInput.value = childBudgetMaxTurns > 0 ? String(childBudgetMaxTurns) : '';
+    childBudgetActiveRuntimeInput.value = formatSettingsDuration(childBudgetMaxActiveRuntimeSec);
+    childBudgetElapsedInput.value = formatSettingsDuration(childBudgetMaxElapsedSec);
+    childBudgetMaxTurnsInput.value = childBudgetMaxTurnsPerAttempt > 0 ? String(childBudgetMaxTurnsPerAttempt) : '';
     const syncChildBudgetControls = () => {
       const enabled = enableChildBudgetInput.checked;
-      childBudgetWallClockInput.disabled = !enabled;
+      childBudgetActiveRuntimeInput.disabled = !enabled;
+      childBudgetElapsedInput.disabled = !enabled;
       childBudgetMaxTurnsInput.disabled = !enabled;
       childBudgetState.textContent = enabled ? 'Enabled' : 'Off';
     };
@@ -414,7 +461,7 @@ async function renderSettings() {
       }
       return parsed;
     };
-    const parseOptionalChildBudgetDimension = (input, label) => {
+    const parseOptionalNonNegativeInteger = (input, label) => {
       const raw = input.value.trim();
       if (raw === '') {
         return 0;
@@ -429,19 +476,22 @@ async function renderSettings() {
       if (!enableChildBudgetInput.checked) {
         return {
           disabled: true,
-          maxWallClockSec: 0,
-          maxTurns: 0
+          maxActiveRuntimeSec: 0,
+          maxElapsedSec: 0,
+          maxTurnsPerAttempt: 0
         };
       }
-      const maxWallClockSec = parseOptionalChildBudgetDimension(childBudgetWallClockInput, 'Sub-agent wall-clock seconds');
-      const maxTurns = parseOptionalChildBudgetDimension(childBudgetMaxTurnsInput, 'Sub-agent max turns');
-      if (maxWallClockSec === 0 && maxTurns === 0) {
+      const maxActiveRuntimeSec = parseSettingsDuration(childBudgetActiveRuntimeInput.value, 'Sub-agent active runtime');
+      const maxElapsedSec = parseSettingsDuration(childBudgetElapsedInput.value, 'Sub-agent absolute elapsed deadline');
+      const maxTurnsPerAttempt = parseOptionalNonNegativeInteger(childBudgetMaxTurnsInput, 'Sub-agent turns per attempt');
+      if (maxActiveRuntimeSec === 0 && maxElapsedSec === 0 && maxTurnsPerAttempt === 0) {
         throw new Error('Enable at least one positive sub-agent budget limit.');
       }
       return {
         disabled: false,
-        maxWallClockSec,
-        maxTurns
+        maxActiveRuntimeSec,
+        maxElapsedSec,
+        maxTurnsPerAttempt
       };
     };
     const buildProviderPayload = () => ({
@@ -457,6 +507,7 @@ async function renderSettings() {
     });
     const buildConfigPayload = () => ({
       guardrailsMode: guardrailsSelect.value,
+      maxTurnsSoft: Number.parseInt(maxTurnsSoftInput.value || '0', 10),
       maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
       disableHardTurnLimit: disableHardTurnLimitInput.checked,
       childBudget: currentChildBudget(),
@@ -495,6 +546,10 @@ async function renderSettings() {
 
     saveButton.addEventListener('click', async () => {
       try {
+        const softTurns = Number.parseInt(maxTurnsSoftInput.value, 10);
+        if (!Number.isFinite(softTurns) || softTurns <= 0) {
+          throw new Error('Soft checkpoint turns must be a positive integer.');
+        }
         if (!disableHardTurnLimitInput.checked) {
           const parsed = Number.parseInt(maxTurnsHardInput.value, 10);
           if (!Number.isFinite(parsed) || parsed <= 0) {

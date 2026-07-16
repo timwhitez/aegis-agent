@@ -228,6 +228,7 @@ func (r *Runner) acquireRunSlot(sessionID string) (func(), error) {
 }
 
 type StartRequest struct {
+	SessionID        string
 	Prompt           string
 	Provider         string
 	Model            string
@@ -244,23 +245,25 @@ type StartRequest struct {
 	QueueJobID       string
 	IsolationMode    string
 	IsolationRoot    string
+	EffectiveBudget  *session.EffectiveBudget
 }
 
 type ContinueRequest struct {
-	SessionID            string
-	Message              string
-	Provider             string
-	Model                string
-	ProviderOptions      session.ProviderOptions
-	SystemOverride       string
-	PlanMode             *session.PlanModeDraft
-	PlanInputHandler     PlanInputHandler
-	ApprovePlan          bool
-	OverrideGoalCoverage bool
-	CancelPlan           bool
-	PlanInputRequestID   string
-	PlanInputAnswers     []session.PlanModeInputAnswer
-	Source               string
+	SessionID              string
+	Message                string
+	Provider               string
+	Model                  string
+	ProviderOptions        session.ProviderOptions
+	SystemOverride         string
+	PlanMode               *session.PlanModeDraft
+	PlanInputHandler       PlanInputHandler
+	ApprovePlan            bool
+	OverrideGoalCoverage   bool
+	CancelPlan             bool
+	PlanInputRequestID     string
+	PlanInputAnswers       []session.PlanModeInputAnswer
+	Source                 string
+	BudgetExtensionApplied bool
 }
 
 const continueSourceBackground = "background"
@@ -328,7 +331,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err != nil {
 		return RunResult{}, err
 	}
-	sessionID := session.NewSessionID()
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = session.NewSessionID()
+	}
 	req, err = prepareStartGoalAndPlanModeDrafts(sessionID, req)
 	if err != nil {
 		return RunResult{}, err
@@ -402,10 +408,15 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			GitRepoRoot:   prepared.GitRepoRoot,
 		}
 	}
+	createdAt := time.Now().UTC()
+	effectiveBudget := session.CloneEffectiveBudget(req.EffectiveBudget)
+	if req.ParentSessionID != "" && effectiveBudget == nil {
+		effectiveBudget = newEffectiveChildBudget(r.cfg, session.BudgetSourceRuntimeChild, 0, createdAt)
+	}
 	meta := session.SessionMetadata{
 		SchemaVersion:    1,
 		ID:               sessionID,
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		CreatedAt:        createdAt.Format(time.RFC3339Nano),
 		Workdir:          effectiveWorkdir,
 		RequestedWorkdir: requestedWorkdir,
 		Mode:             mode,
@@ -420,6 +431,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		Depth:            depth,
 		Isolation:        isolationInfo,
 		ProviderOptions:  providerOptions,
+		EffectiveBudget:  effectiveBudget,
 	}
 	state := session.State{
 		Status:    session.StatusRunning,
@@ -452,6 +464,8 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
+	releaseActiveRegistration := registerActiveSessionRunner(r.store, meta.ID, r)
+	defer releaseActiveRegistration()
 	if err := r.notifySessionActive(meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
@@ -832,10 +846,18 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err != nil {
 		return RunResult{}, err
 	}
+	if strings.TrimSpace(meta.ParentSessionID) != "" && state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && !req.BudgetExtensionApplied {
+		return RunResult{}, fmt.Errorf("child session %s is paused by %s; only its parent can resume it with an explicit budget extension", meta.ID, state.PauseReason)
+	}
 	if err := ValidateContinueTarget(meta, state); err != nil {
 		return RunResult{}, err
 	}
 	resumedFrom := state.Status
+	if ensureChildEffectiveBudget(r.cfg, &meta, state, session.BudgetSourceLegacyResume) {
+		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+			return RunResult{}, err
+		}
+	}
 	releaseRunSlot, err := r.acquireRunSlot(meta.ID)
 	if err != nil {
 		return RunResult{}, err
@@ -997,6 +1019,8 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	if err := r.appendSessionResumedEvent(meta, resumedFrom, source); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
+	releaseActiveRegistration := registerActiveSessionRunner(r.store, meta.ID, r)
+	defer releaseActiveRegistration()
 	if err := r.notifySessionActive(meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
@@ -2043,17 +2067,34 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 		defer releaseAutoWorker()
 	}
 	watcherCtx, cancelWatcher := context.WithCancel(ctx)
-	watcherDone := make(chan struct{})
+	watcherDone := make(chan struct{}, 2)
 	defer func() {
 		cancelWatcher()
 		<-watcherDone
+		<-watcherDone
 	}()
 	go func() {
-		defer close(watcherDone)
+		defer func() { watcherDone <- struct{}{} }()
 		r.watchSteer(watcherCtx, meta.ID)
+	}()
+	go func() {
+		defer func() { watcherDone <- struct{}{} }()
+		r.watchSessionCancel(watcherCtx, meta.ID)
 	}()
 	r.setPlanInputHandler(meta.ID, planInputHandler)
 	defer r.clearPlanInputHandler(meta.ID)
+	if request, err := r.store.LoadSessionCancel(meta.ID); err == nil && request.Status == session.CancelRequestStatusRequested {
+		if err := r.appendEvent(meta.ID, "session.cancel_requested", "control", map[string]any{
+			"request_id":        request.ID,
+			"parent_session_id": request.ParentSessionID,
+			"queue_job_id":      request.QueueJobID,
+		}); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record pre-start session.cancel_requested event: %w", err))
+		}
+		r.control.requestPauseWithReason(agentCancelRequestedReason)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("load pre-start cancel request: %w", err))
+	}
 	if err := r.appendEvent(meta.ID, "session.started", "prepare", map[string]any{
 		"provider": meta.Provider,
 		"model":    meta.Model,

@@ -27,7 +27,7 @@ func goalPromptContext(goal session.SessionGoal) string {
 	if goal.TokenBudget != nil {
 		b.WriteString(fmt.Sprintf(" / %d", *goal.TokenBudget))
 	}
-	b.WriteString(fmt.Sprintf(", time %ds", goal.TimeUsedSeconds))
+	b.WriteString(fmt.Sprintf(", provider time %ds", goal.TimeUsedSeconds))
 	if goal.TimeBudgetSeconds != nil {
 		b.WriteString(fmt.Sprintf(" / %ds", *goal.TimeBudgetSeconds))
 	}
@@ -90,17 +90,21 @@ func goalPromptContext(goal session.SessionGoal) string {
 
 func goalEventData(goal session.SessionGoal) map[string]any {
 	data := map[string]any{
-		"goal_id":           goal.GoalID,
-		"mode":              goal.Mode,
-		"status":            goal.Status,
-		"objective":         goal.Objective,
-		"tokens_used":       goal.TokensUsed,
-		"time_used_seconds": goal.TimeUsedSeconds,
+		"goal_id":                    goal.GoalID,
+		"mode":                       goal.Mode,
+		"status":                     goal.Status,
+		"objective":                  goal.Objective,
+		"tokens_used":                goal.TokensUsed,
+		"provider_time_used_seconds": goal.TimeUsedSeconds,
+		"time_used_seconds":          goal.TimeUsedSeconds,
+		"accounting_scope":           "provider_time",
+		"measurement_source":         "provider_call_elapsed",
 	}
 	if goal.TokenBudget != nil {
 		data["token_budget"] = *goal.TokenBudget
 	}
 	if goal.TimeBudgetSeconds != nil {
+		data["provider_time_budget_seconds"] = *goal.TimeBudgetSeconds
 		data["time_budget_seconds"] = *goal.TimeBudgetSeconds
 	}
 	if goal.Mission != nil {
@@ -133,12 +137,16 @@ func (e *Engine) updateGoalAccounting(sessionID string, turn int, usage provider
 		return session.SessionGoal{}, false, nil
 	}
 	if err := e.appendEvent(sessionID, "goal.accounting.updated", "provider_call", map[string]any{
-		"goal_id":                 goal.GoalID,
-		"status":                  goal.Status,
-		"tokens_used_delta":       tokens,
-		"time_used_seconds_delta": elapsedSeconds,
-		"tokens_used":             goal.TokensUsed,
-		"time_used_seconds":       goal.TimeUsedSeconds,
+		"goal_id":                          goal.GoalID,
+		"status":                           goal.Status,
+		"tokens_used_delta":                tokens,
+		"provider_time_used_seconds_delta": elapsedSeconds,
+		"time_used_seconds_delta":          elapsedSeconds,
+		"tokens_used":                      goal.TokensUsed,
+		"provider_time_used_seconds":       goal.TimeUsedSeconds,
+		"time_used_seconds":                goal.TimeUsedSeconds,
+		"accounting_scope":                 "provider_time",
+		"measurement_source":               "provider_call_elapsed",
 	}); err != nil {
 		return session.SessionGoal{}, false, fmt.Errorf("record goal.accounting.updated event: %w", err)
 	}

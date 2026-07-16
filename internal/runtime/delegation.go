@@ -147,9 +147,23 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			AgentRole:  job.AgentRole,
 		}, nil
 	}
+	childSessionID := session.NewSessionID()
+	rootSessionID := strings.TrimSpace(parentMeta.RootSessionID)
+	if rootSessionID == "" {
+		rootSessionID = parentMeta.ID
+	}
+	limit := r.cfg.Runtime.MultiAgent.MaxActiveChildren
+	acquired, err := r.store.AcquireDirectChildSlot(parentMeta.ID, rootSessionID, childSessionID, limit)
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
+	if !acquired {
+		return tools.AgentSpawnResult{}, fmt.Errorf("max active children reached: %d", limit)
+	}
 	childRunner := NewRunner(r.cfg)
 	childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 	result, err := childRunner.Start(ctx, StartRequest{
+		SessionID:       childSessionID,
 		Prompt:          req.Prompt,
 		Provider:        providerName,
 		Model:           modelName,
@@ -163,6 +177,9 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		IsolationMode:   isolationMode,
 		IsolationRoot:   req.IsolationRoot,
 	})
+	if releaseErr := r.store.ReleaseDirectChildSlot(childSessionID); releaseErr != nil {
+		err = errors.Join(err, fmt.Errorf("release active child slot for %s: %w", childSessionID, releaseErr))
+	}
 	out := tools.AgentSpawnResult{
 		SessionID: result.SessionID,
 		Status:    result.Status,
@@ -218,13 +235,19 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		if snapshotErr != nil {
 			return out, errors.Join(err, fmt.Errorf("snapshot parent events for child session %s: %w", result.SessionID, snapshotErr))
 		}
-		if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, waitMode); coordinationErr != nil {
-			if restoreErr := r.restoreDirectChildParentFacts(req.ParentSessionID, coordinationSnapshot, eventsSnapshot); restoreErr != nil {
-				coordinationErr = fmt.Errorf("persist parent coordination for child session %s failed with %v; restore parent child facts: %w", result.SessionID, coordinationErr, restoreErr)
-			} else {
-				coordinationErr = fmt.Errorf("persist parent coordination for child session %s: %w", result.SessionID, coordinationErr)
+		// A concurrently issued agent_stop can cancel the child before this
+		// synchronous spawn call reaches its post-run handoff. Engine.cancel has
+		// already written the terminal parent fact in that case; do not re-add the
+		// same child to unresolved before resolving it again.
+		if !parentCoordinationSnapshotHasResolvedChild(coordinationSnapshot, result.SessionID) {
+			if coordinationErr := addParentChildSession(r.store, req.ParentSessionID, result.SessionID, waitMode); coordinationErr != nil {
+				if restoreErr := r.restoreDirectChildParentFacts(req.ParentSessionID, coordinationSnapshot, eventsSnapshot); restoreErr != nil {
+					coordinationErr = fmt.Errorf("persist parent coordination for child session %s failed with %v; restore parent child facts: %w", result.SessionID, coordinationErr, restoreErr)
+				} else {
+					coordinationErr = fmt.Errorf("persist parent coordination for child session %s: %w", result.SessionID, coordinationErr)
+				}
+				return out, errors.Join(err, coordinationErr)
 			}
-			return out, errors.Join(err, coordinationErr)
 		}
 		if coordinationErr := resolveParentChildSession(r.store, req.ParentSessionID, result.SessionID, coordinationStatus); coordinationErr != nil {
 			if restoreErr := r.restoreDirectChildParentFacts(req.ParentSessionID, coordinationSnapshot, eventsSnapshot); restoreErr != nil {
@@ -238,6 +261,53 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		_ = writeLongRunCheckpoint(r.store, req.ParentSessionID)
 	}
 	return out, err
+}
+
+func parentCoordinationSnapshotHasResolvedChild(snapshot session.ParentCoordinationSnapshot, childSessionID string) bool {
+	if !snapshot.HasCoordination || strings.TrimSpace(childSessionID) == "" {
+		return false
+	}
+	coordination := snapshot.Coordination
+	return containsStringValue(coordination.CompletedChildSessions, childSessionID) ||
+		containsStringValue(coordination.FailedChildSessions, childSessionID) ||
+		containsStringValue(coordination.CancelledChildSessions, childSessionID)
+}
+
+func containsStringValue(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) activeChildCount(parentSessionID string) (int, error) {
+	children, err := r.store.ListChildren(parentSessionID, -1)
+	if err != nil {
+		return 0, err
+	}
+	runningSessions := map[string]struct{}{}
+	for _, child := range children {
+		if child.Status == session.StatusRunning {
+			runningSessions[child.ID] = struct{}{}
+		}
+	}
+	jobs, err := r.store.ListJobsByParent(parentSessionID, -1)
+	if err != nil {
+		return 0, err
+	}
+	count := len(runningSessions)
+	for _, job := range jobs {
+		if job.Status != session.QueueStatusRunning {
+			continue
+		}
+		if _, exists := runningSessions[strings.TrimSpace(job.SessionID)]; exists && strings.TrimSpace(job.SessionID) != "" {
+			continue
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (r *Runner) restoreDirectChildParentFacts(parentSessionID string, coordinationSnapshot session.ParentCoordinationSnapshot, eventsSnapshot []events.Event) error {
@@ -270,16 +340,17 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 			return tools.AgentStatusResult{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentSessionID)
 		}
 		return tools.AgentStatusResult{
-			QueueJobID:    job.ID,
-			Status:        job.Status,
-			SessionID:     job.SessionID,
-			SessionStatus: job.SessionStatus,
-			FinalText:     job.FinalText,
-			StopReason:    job.StopReason,
-			LastError:     job.LastError,
-			Workdir:       firstNonEmpty(job.EffectiveWorkdir, job.RequestedWorkdir),
-			AgentName:     job.AgentName,
-			AgentRole:     job.AgentRole,
+			QueueJobID:      job.ID,
+			Status:          job.Status,
+			SessionID:       job.SessionID,
+			SessionStatus:   job.SessionStatus,
+			FinalText:       job.FinalText,
+			StopReason:      job.StopReason,
+			LastError:       job.LastError,
+			Workdir:         firstNonEmpty(job.EffectiveWorkdir, job.RequestedWorkdir),
+			AgentName:       job.AgentName,
+			AgentRole:       job.AgentRole,
+			EffectiveBudget: session.CloneEffectiveBudget(job.EffectiveBudget),
 		}, nil
 	}
 	sessionID := strings.TrimSpace(req.SessionID)
@@ -298,19 +369,20 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 		return tools.AgentStatusResult{}, err
 	}
 	return tools.AgentStatusResult{
-		SessionID:     meta.ID,
-		Status:        state.Status,
-		SessionStatus: state.Status,
-		FinalText:     state.LastAssistantExcerpt,
-		StopReason:    state.PauseReason,
-		LastError:     state.LastError,
-		Workdir:       meta.Workdir,
-		AgentName:     meta.AgentName,
-		AgentRole:     meta.AgentRole,
+		SessionID:       meta.ID,
+		Status:          state.Status,
+		SessionStatus:   state.Status,
+		FinalText:       state.LastAssistantExcerpt,
+		StopReason:      state.PauseReason,
+		LastError:       state.LastError,
+		Workdir:         meta.Workdir,
+		AgentName:       meta.AgentName,
+		AgentRole:       meta.AgentRole,
+		EffectiveBudget: session.CloneEffectiveBudget(meta.EffectiveBudget),
 	}, nil
 }
 
-func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools.AgentStopResult, error) {
+func (r *Runner) StopAgent(ctx context.Context, req tools.AgentStopRequest) (tools.AgentStopResult, error) {
 	parentSessionID := strings.TrimSpace(req.ParentSessionID)
 	if parentSessionID == "" {
 		return tools.AgentStopResult{}, errors.New("parent session id is required")
@@ -319,73 +391,278 @@ func (r *Runner) StopAgent(_ context.Context, req tools.AgentStopRequest) (tools
 	if err != nil {
 		return tools.AgentStopResult{}, err
 	}
+	childSessionID, job, err := r.resolveStopTarget(parentMeta.ID, req)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && job.Status == session.QueueStatusRunning && strings.TrimSpace(job.SessionID) != "" {
+			request, created, requestErr := r.store.RequestSessionCancel(job.SessionID, parentMeta.ID, job.ID, agentCancelRequestedReason)
+			if requestErr != nil {
+				return tools.AgentStopResult{}, requestErr
+			}
+			if created {
+				if eventErr := r.appendEvent(parentMeta.ID, "session.child.cancel_requested", "delegate", map[string]any{
+					"request_id": request.ID,
+					"session_id": job.SessionID,
+					"job_id":     job.ID,
+				}); eventErr != nil {
+					return tools.AgentStopResult{}, eventErr
+				}
+			}
+			return tools.AgentStopResult{
+				SessionID:  job.SessionID,
+				QueueJobID: job.ID,
+				Status:     session.CancelRequestStatusRequested,
+				Accepted:   true,
+				Behavior:   "cancel_requested_before_session_create",
+			}, nil
+		}
+		return tools.AgentStopResult{}, err
+	}
+	if childSessionID == "" {
+		if job.Status == session.QueueStatusCancelled {
+			return tools.AgentStopResult{QueueJobID: job.ID, Status: job.Status, Accepted: true, Behavior: "already_cancelled", LastError: job.LastError}, nil
+		}
+		if job.Status != session.QueueStatusQueued {
+			return tools.AgentStopResult{}, fmt.Errorf("queue job %s is %s and has no cancellable child session", job.ID, job.Status)
+		}
+		cancelled, err := r.store.StopQueuedJob(job.ID, parentMeta.ID, "cancelled by parent agent before worker claim")
+		if err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		if err := r.finalizeCancelledJob(parentMeta.ID, job, cancelled); err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		return tools.AgentStopResult{QueueJobID: cancelled.ID, Status: cancelled.Status, Accepted: true, Behavior: "cancelled_queued_job", LastError: cancelled.LastError}, nil
+	}
+
+	state, err := r.store.LoadState(childSessionID)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	if state.Status == session.StatusCancelled {
+		return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: job.ID, Status: state.Status, Accepted: true, Behavior: "already_cancelled"}, nil
+	}
+	if job.Status == session.QueueStatusCancelled && state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) {
+		return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: job.ID, Status: job.Status, Accepted: true, Behavior: "already_settled_budget_paused_job", LastError: job.LastError}, nil
+	}
+	if state.Status == session.StatusCompleted || state.Status == session.StatusFailed {
+		return tools.AgentStopResult{}, fmt.Errorf("child session %s is already terminal: %s", childSessionID, state.Status)
+	}
+	if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && job.ID != "" && job.Status == session.QueueStatusBlocked {
+		cancelled, err := r.store.StopBudgetPausedJob(job.ID, parentMeta.ID, "cancelled by parent after child budget pause: "+state.PauseReason)
+		if err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		if err := r.finalizeCancelledJob(parentMeta.ID, job, cancelled); err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: cancelled.ID, Status: cancelled.Status, Accepted: true, Behavior: "settled_budget_paused_job", LastError: cancelled.LastError}, nil
+	}
+
+	request, created, err := r.store.RequestSessionCancel(childSessionID, parentMeta.ID, job.ID, agentCancelRequestedReason)
+	if err != nil {
+		return tools.AgentStopResult{}, err
+	}
+	if created {
+		if err := r.appendEvent(childSessionID, "session.cancel_requested", "control", map[string]any{
+			"request_id":        request.ID,
+			"parent_session_id": parentMeta.ID,
+			"queue_job_id":      job.ID,
+		}); err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		if err := r.appendEvent(parentMeta.ID, "session.child.cancel_requested", "delegate", map[string]any{
+			"request_id": request.ID,
+			"session_id": childSessionID,
+			"job_id":     job.ID,
+		}); err != nil {
+			return tools.AgentStopResult{}, err
+		}
+	}
+	interrupted := interruptRegisteredChild(r.store, childSessionID)
+	if state.Status != session.StatusRunning && !interrupted {
+		if err := r.cancelInactiveChild(parentMeta.ID, childSessionID, job, request); err != nil {
+			return tools.AgentStopResult{}, err
+		}
+		return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: job.ID, Status: session.StatusCancelled, Accepted: true, Behavior: "cancelled_inactive_child"}, nil
+	}
+
+	deadline := time.Now().Add(time.Duration(r.cfg.Runtime.MultiAgent.CancelGraceSec) * time.Second)
+	for time.Now().Before(deadline) {
+		current, loadErr := r.store.LoadState(childSessionID)
+		if loadErr == nil && current.Status == session.StatusCancelled {
+			return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: job.ID, Status: current.Status, Accepted: true, Behavior: "cancelled_running_child"}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return tools.AgentStopResult{}, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	behavior := "cancel_requested_durable"
+	if interrupted {
+		behavior = "cancel_requested_active_handle"
+	}
+	return tools.AgentStopResult{SessionID: childSessionID, QueueJobID: job.ID, Status: session.CancelRequestStatusRequested, Accepted: true, Behavior: behavior}, nil
+}
+
+func (r *Runner) resolveStopTarget(parentSessionID string, req tools.AgentStopRequest) (string, session.QueueJob, error) {
+	sessionID := strings.TrimSpace(req.SessionID)
 	jobID := strings.TrimSpace(req.QueueJobID)
-	if jobID == "" {
-		return tools.AgentStopResult{}, errors.New("queue_job_id is required")
+	if sessionID == "" && jobID == "" {
+		return "", session.QueueJob{}, errors.New("session_id or queue_job_id is required")
 	}
-	job, err := r.store.LoadJob(jobID)
-	if err != nil {
-		return tools.AgentStopResult{}, err
-	}
-	if strings.TrimSpace(job.ParentSessionID) != parentMeta.ID {
-		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is not linked to parent session %s", job.ID, parentMeta.ID)
-	}
-	if job.Status != session.QueueStatusQueued && job.Status != session.QueueStatusBlocked {
-		return tools.AgentStopResult{}, fmt.Errorf("queue job %s is %s and cannot be safely stopped by parent; use agent_wait or inspect it with agent_status", job.ID, job.Status)
-	}
-	previousJob := job
-	coordinationSnapshot, err := r.store.SnapshotParentCoordination(parentMeta.ID)
-	if err != nil {
-		return tools.AgentStopResult{}, err
-	}
-	notificationSnapshot, err := r.store.SnapshotBackgroundNotification(parentMeta.ID, job.ID)
-	if err != nil {
-		return tools.AgentStopResult{}, err
-	}
-	if job.Status == session.QueueStatusBlocked {
-		job, err = r.store.StopBudgetPausedJob(job.ID, parentMeta.ID, "")
-	} else {
-		job, err = r.store.StopQueuedJob(job.ID, parentMeta.ID, "stopped by parent agent before worker claim")
-	}
-	if err != nil {
-		return tools.AgentStopResult{}, err
-	}
-	if err := resolveParentQueueJob(r.store, parentMeta.ID, job.ID, job.Status); err != nil {
-		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("resolve parent coordination after stopping job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
+	var job session.QueueJob
+	if jobID != "" {
+		loaded, err := r.store.LoadJob(jobID)
+		if err != nil {
+			return "", job, err
 		}
-		return tools.AgentStopResult{}, err
-	}
-	if err := r.store.EnsureBackgroundNotification(parentMeta.ID, session.NewBackgroundNotification(job)); err != nil {
-		if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, coordinationSnapshot); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("append stop notification for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)
+		if strings.TrimSpace(loaded.ParentSessionID) != parentSessionID {
+			return "", job, fmt.Errorf("queue job %s is not linked to parent session %s", loaded.ID, parentSessionID)
 		}
-		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("append stop notification for job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
+		job = loaded
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(job.SessionID)
 		}
-		return tools.AgentStopResult{}, err
 	}
-	if err := r.appendEvent(parentMeta.ID, "queue.job.stopped", "delegate", map[string]any{
-		"job_id":          job.ID,
-		"previous_status": previousJob.Status,
-		"status":          job.Status,
-		"stop_reason":     job.StopReason,
-		"last_error":      job.LastError,
+	if sessionID == "" {
+		return "", job, nil
+	}
+	meta, err := r.store.LoadMetadata(sessionID)
+	if err != nil {
+		return "", job, err
+	}
+	if strings.TrimSpace(meta.ParentSessionID) != parentSessionID {
+		return "", job, fmt.Errorf("child session %s is not linked to parent session %s", meta.ID, parentSessionID)
+	}
+	if strings.TrimSpace(meta.QueueJobID) != "" {
+		if job.ID == "" {
+			loaded, err := r.store.LoadJob(meta.QueueJobID)
+			if err != nil {
+				return "", job, err
+			}
+			job = loaded
+		}
+		if job.ID != meta.QueueJobID {
+			return "", job, fmt.Errorf("child session %s queue_job_id mismatch: got %q, want %q", meta.ID, meta.QueueJobID, job.ID)
+		}
+	}
+	if job.ID != "" && strings.TrimSpace(job.SessionID) != "" && strings.TrimSpace(job.SessionID) != meta.ID {
+		return "", job, fmt.Errorf("queue job %s session_id mismatch: got %q, want %q", job.ID, job.SessionID, meta.ID)
+	}
+	return meta.ID, job, nil
+}
+
+func (r *Runner) finalizeCancelledJob(parentSessionID string, previous, cancelled session.QueueJob) error {
+	coordinationSnapshot, err := r.store.SnapshotParentCoordination(parentSessionID)
+	if err != nil {
+		return err
+	}
+	notificationSnapshot, err := r.store.SnapshotBackgroundNotification(parentSessionID, cancelled.ID)
+	if err != nil {
+		return err
+	}
+	if err := resolveParentQueueJob(r.store, parentSessionID, cancelled.ID, cancelled.Status); err != nil {
+		_ = r.store.SaveJob(previous)
+		return err
+	}
+	if err := r.store.EnsureBackgroundNotification(parentSessionID, session.NewBackgroundNotification(cancelled)); err != nil {
+		_ = r.store.RestoreParentCoordination(parentSessionID, coordinationSnapshot)
+		_ = r.store.SaveJob(previous)
+		return err
+	}
+	if err := r.appendEvent(parentSessionID, "queue.job.cancelled", "delegate", map[string]any{
+		"job_id":           cancelled.ID,
+		"session_id":       cancelled.SessionID,
+		"previous_status":  previous.Status,
+		"status":           cancelled.Status,
+		"stop_reason":      cancelled.StopReason,
+		"last_error":       cancelled.LastError,
+		"effective_budget": effectiveBudgetEventData(cancelled.EffectiveBudget),
 	}); err != nil {
-		if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, coordinationSnapshot); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore parent coordination: %w", job.ID, err, restoreErr)
-		}
-		if restoreErr := r.store.RestoreBackgroundNotification(parentMeta.ID, notificationSnapshot); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore notification: %w", job.ID, err, restoreErr)
-		}
-		if restoreErr := r.store.SaveJob(previousJob); restoreErr != nil {
-			return tools.AgentStopResult{}, fmt.Errorf("append queue.job.stopped event for job %s failed with %v; restore job: %w", job.ID, err, restoreErr)
-		}
-		return tools.AgentStopResult{}, err
+		_ = r.store.RestoreParentCoordination(parentSessionID, coordinationSnapshot)
+		_ = r.store.RestoreBackgroundNotification(parentSessionID, notificationSnapshot)
+		_ = r.store.SaveJob(previous)
+		return err
 	}
-	_ = writeSessionSummary(r.store, parentMeta.ID)
-	_ = writeLongRunCheckpoint(r.store, parentMeta.ID)
-	return tools.AgentStopResult{QueueJobID: job.ID, Status: job.Status, LastError: job.LastError}, nil
+	_ = writeSessionSummary(r.store, parentSessionID)
+	_ = writeLongRunCheckpoint(r.store, parentSessionID)
+	return nil
+}
+
+func (r *Runner) cancelInactiveChild(parentSessionID, childSessionID string, job session.QueueJob, request session.CancelRequest) error {
+	state, err := r.store.LoadState(childSessionID)
+	if err != nil {
+		return err
+	}
+	state.Status = session.StatusCancelled
+	state.Phase = "cancelled"
+	state.PauseReason = ""
+	state.LastError = ""
+	state.IncompleteReason = ""
+	if err := r.store.SaveState(childSessionID, state); err != nil {
+		return err
+	}
+	meta, err := r.store.LoadMetadata(childSessionID)
+	if err != nil {
+		return err
+	}
+	var effectiveBudget *session.EffectiveBudget
+	if meta.EffectiveBudget != nil {
+		budget := session.CloneEffectiveBudget(meta.EffectiveBudget)
+		budget.Status = session.BudgetStatusCancelled
+		budget.LastReason = agentCancelRequestedReason
+		session.RefreshEffectiveBudget(budget, state.Turn)
+		if err := persistEffectiveBudget(r.store, meta, budget); err != nil {
+			return err
+		}
+		effectiveBudget = budget
+	}
+	if _, err := r.store.MarkSessionCancelApplied(childSessionID, request.ID); err != nil {
+		return err
+	}
+	if err := r.appendEvent(childSessionID, "session.cancelled", "cancelled", map[string]any{
+		"reason":            agentCancelRequestedReason,
+		"request_id":        request.ID,
+		"parent_session_id": parentSessionID,
+		"queue_job_id":      job.ID,
+		"effective_budget":  effectiveBudgetEventData(effectiveBudget),
+	}); err != nil {
+		return err
+	}
+	if job.ID != "" {
+		previous := job
+		job.Status = session.QueueStatusCancelled
+		job.SessionStatus = session.StatusCancelled
+		job.StopReason = session.QueueStopReasonAgentStop
+		job.LastError = "cancelled by parent agent"
+		job.ClaimedBy = ""
+		job.ClaimedAt = ""
+		job.HeartbeatAt = ""
+		job.WorkerPID = 0
+		job.ProcessStartID = ""
+		if err := r.store.SaveJob(job); err != nil {
+			return err
+		}
+		if err := r.finalizeCancelledJob(parentSessionID, previous, job); err != nil {
+			return err
+		}
+	} else if err := resolveParentChildSession(r.store, parentSessionID, childSessionID, session.StatusCancelled); err != nil {
+		return err
+	}
+	if err := r.appendEvent(parentSessionID, "session.child.cancelled", "delegate", map[string]any{
+		"session_id":       childSessionID,
+		"job_id":           job.ID,
+		"request_id":       request.ID,
+		"effective_budget": effectiveBudgetEventData(effectiveBudget),
+	}); err != nil {
+		return err
+	}
+	_ = writeSessionSummary(r.store, childSessionID)
+	_ = writeLongRunCheckpoint(r.store, childSessionID)
+	_ = writeSessionSummary(r.store, parentSessionID)
+	_ = writeLongRunCheckpoint(r.store, parentSessionID)
+	return nil
 }
 
 func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) (tools.AgentPromptResult, error) {
@@ -435,19 +712,80 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		return tools.AgentPromptResult{}, err
 	}
 	if state.Status != session.StatusRunning {
-		behavior, ok := childPromptContinueBehavior(r.store, childSessionID, queueJobID, state)
-		if !ok {
-			return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a blocked or parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
+		behavior := ""
+		var effectiveBudget *session.EffectiveBudget
+		budgetResumeAuthorized := false
+		if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) {
+			if strings.TrimSpace(queueJobID) != "" {
+				linkedJob, loadErr := r.store.LoadJob(queueJobID)
+				if loadErr != nil {
+					return tools.AgentPromptResult{}, loadErr
+				}
+				if linkedJob.Status != session.QueueStatusBlocked {
+					return tools.AgentPromptResult{}, fmt.Errorf("queue job %s is %s and cannot resume its budget-paused child", linkedJob.ID, linkedJob.Status)
+				}
+			}
+			if req.BudgetExtension == nil {
+				childMeta, loadErr := r.store.LoadMetadata(childSessionID)
+				if loadErr != nil {
+					return tools.AgentPromptResult{}, loadErr
+				}
+				effectiveBudget = session.CloneEffectiveBudget(childMeta.EffectiveBudget)
+				if effectiveBudget == nil || effectiveBudget.Status != session.BudgetStatusActive || session.EffectiveBudgetExceededReason(effectiveBudget, state.Turn, time.Now().UTC()) != "" {
+					return tools.AgentPromptResult{}, fmt.Errorf("child session %s is paused by %s; provide budget_extension that adds or clears the exhausted dimension before resuming", childSessionID, state.PauseReason)
+				}
+				behavior = "continued_previously_extended_child"
+			} else {
+				effectiveBudget, err = r.extendChildBudget(parentMeta.ID, childSessionID, queueJobID, state, *req.BudgetExtension)
+				if err != nil {
+					return tools.AgentPromptResult{}, err
+				}
+				behavior = "continued_budget_extended_child"
+			}
+			budgetResumeAuthorized = true
+		} else {
+			if req.BudgetExtension != nil {
+				return tools.AgentPromptResult{}, errors.New("budget_extension is only valid for a child paused by child budget exhaustion")
+			}
+			var ok bool
+			behavior, ok = childPromptContinueBehavior(r.store, childSessionID, queueJobID, state)
+			if !ok {
+				return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a blocked or parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
+			}
+		}
+		var previousJob session.QueueJob
+		if strings.TrimSpace(queueJobID) != "" {
+			previousJob, err = r.markPromptedJobRunning(parentMeta.ID, queueJobID, childSessionID)
+			if err != nil {
+				return tools.AgentPromptResult{}, err
+			}
 		}
 		childRunner := NewRunner(r.cfg)
 		childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 		result, err := childRunner.Continue(ctx, ContinueRequest{
-			SessionID: childSessionID,
-			Message:   message,
-			Source:    "agent",
+			SessionID:              childSessionID,
+			Message:                message,
+			Source:                 "agent",
+			BudgetExtensionApplied: budgetResumeAuthorized,
 		})
+		if previousJob.ID != "" {
+			if result.SessionID != "" && result.Status != "" {
+				if reconcileErr := r.reconcilePromptedChildJob(parentMeta.ID, previousJob, result); reconcileErr != nil {
+					return tools.AgentPromptResult{}, errors.Join(err, reconcileErr)
+				}
+			} else if err != nil {
+				_ = r.store.SaveJob(previousJob)
+			}
+		} else if result.SessionID != "" && result.Status != "" {
+			if reconcileErr := resolveParentChildSession(r.store, parentMeta.ID, result.SessionID, result.Status); reconcileErr != nil {
+				return tools.AgentPromptResult{}, errors.Join(err, reconcileErr)
+			}
+		}
 		if err != nil {
 			return tools.AgentPromptResult{}, err
+		}
+		if childMeta, loadErr := r.store.LoadMetadata(childSessionID); loadErr == nil {
+			effectiveBudget = session.CloneEffectiveBudget(childMeta.EffectiveBudget)
 		}
 		if err := r.appendEvent(parentMeta.ID, "session.child.prompted", "delegate", map[string]any{
 			"session_id":   childSessionID,
@@ -460,11 +798,15 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		_ = writeSessionSummary(r.store, parentMeta.ID)
 		_ = writeLongRunCheckpoint(r.store, parentMeta.ID)
 		return tools.AgentPromptResult{
-			SessionID:  childSessionID,
-			QueueJobID: queueJobID,
-			Accepted:   true,
-			Behavior:   behavior,
+			SessionID:       childSessionID,
+			QueueJobID:      queueJobID,
+			Accepted:        true,
+			Behavior:        behavior,
+			EffectiveBudget: effectiveBudget,
 		}, nil
+	}
+	if req.BudgetExtension != nil {
+		return tools.AgentPromptResult{}, errors.New("budget_extension cannot mutate a running child; wait for a budget pause or cancel the child")
 	}
 	interrupt := false
 	if req.Interrupt != nil {
@@ -493,6 +835,13 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		QueueJobID: queueJobID,
 		Accepted:   result.Accepted,
 		Behavior:   result.Behavior,
+		EffectiveBudget: func() *session.EffectiveBudget {
+			meta, loadErr := r.store.LoadMetadata(childSessionID)
+			if loadErr != nil {
+				return nil
+			}
+			return session.CloneEffectiveBudget(meta.EffectiveBudget)
+		}(),
 	}, nil
 }
 
@@ -506,6 +855,9 @@ func childPromptContinueBehavior(store *session.Store, childSessionID, queueJobI
 	switch state.Status {
 	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed:
 	default:
+		return "", false
+	}
+	if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) {
 		return "", false
 	}
 	if strings.TrimSpace(queueJobID) != "" {
@@ -528,6 +880,161 @@ func childPromptContinueBehavior(store *session.Store, childSessionID, queueJobI
 		return "continued_parent_stopped_child", true
 	}
 	return "", false
+}
+
+func (r *Runner) extendChildBudget(parentSessionID, childSessionID, queueJobID string, state session.State, extension session.BudgetExtension) (*session.EffectiveBudget, error) {
+	meta, err := r.store.LoadMetadata(childSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(meta.ParentSessionID) != parentSessionID {
+		return nil, fmt.Errorf("child session %s is not linked to parent session %s", childSessionID, parentSessionID)
+	}
+	if ensureChildEffectiveBudget(r.cfg, &meta, state, session.BudgetSourceLegacyResume) {
+		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+			return nil, err
+		}
+	}
+	previous := session.CloneEffectiveBudget(meta.EffectiveBudget)
+	next, err := session.ExtendEffectiveBudget(previous, extension, state.Turn, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	childEvents, err := r.store.LoadEvents(childSessionID)
+	if err != nil {
+		return nil, err
+	}
+	parentEvents, err := r.store.LoadEvents(parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := persistEffectiveBudget(r.store, meta, next); err != nil {
+		return nil, err
+	}
+	rollback := func(cause error) error {
+		var rollbackErrs []error
+		if err := persistEffectiveBudget(r.store, meta, previous); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore effective budget: %w", err))
+		}
+		if err := r.store.RestoreEvents(childSessionID, childEvents); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore child events: %w", err))
+		}
+		if err := r.store.RestoreEvents(parentSessionID, parentEvents); err != nil {
+			rollbackErrs = append(rollbackErrs, fmt.Errorf("restore parent events: %w", err))
+		}
+		return errors.Join(append([]error{cause}, rollbackErrs...)...)
+	}
+	childData := map[string]any{
+		"parent_session_id": parentSessionID,
+		"queue_job_id":      queueJobID,
+		"previous_budget":   effectiveBudgetEventData(previous),
+		"effective_budget":  effectiveBudgetEventData(next),
+		"extension":         extension,
+		"reason":            strings.TrimSpace(extension.Reason),
+	}
+	if err := r.appendEvent(childSessionID, "session.child_budget.extended", "control", childData); err != nil {
+		return nil, rollback(err)
+	}
+	if err := r.appendEvent(parentSessionID, "session.child.budget_extended", "delegate", map[string]any{
+		"session_id":       childSessionID,
+		"queue_job_id":     queueJobID,
+		"effective_budget": effectiveBudgetEventData(next),
+		"extension":        extension,
+	}); err != nil {
+		return nil, rollback(err)
+	}
+	return next, nil
+}
+
+func (r *Runner) markPromptedJobRunning(parentSessionID, queueJobID, childSessionID string) (session.QueueJob, error) {
+	job, err := r.store.LoadJob(queueJobID)
+	if err != nil {
+		return session.QueueJob{}, err
+	}
+	if strings.TrimSpace(job.ParentSessionID) != parentSessionID || strings.TrimSpace(job.SessionID) != childSessionID {
+		return session.QueueJob{}, fmt.Errorf("queue job %s is not linked to parent %s and child %s", job.ID, parentSessionID, childSessionID)
+	}
+	if job.Status != session.QueueStatusBlocked {
+		return session.QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be resumed by agent_prompt", job.ID, job.Status)
+	}
+	previous := job
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job.Status = session.QueueStatusRunning
+	job.SessionStatus = session.StatusRunning
+	job.StopReason = ""
+	job.LastError = ""
+	job.ClaimedBy = "agent_prompt:" + parentSessionID
+	job.ClaimedAt = now
+	job.HeartbeatAt = now
+	job.WorkerPID = os.Getpid()
+	job.ProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), now)
+	if err := r.store.SaveJob(job); err != nil {
+		return session.QueueJob{}, err
+	}
+	return previous, nil
+}
+
+func (r *Runner) reconcilePromptedChildJob(parentSessionID string, previous session.QueueJob, result RunResult) error {
+	job, err := r.store.LoadJob(previous.ID)
+	if err != nil {
+		return err
+	}
+	job.SessionID = result.SessionID
+	job.SessionStatus = result.Status
+	job.FinalText = result.FinalText
+	job.LastError = result.LastError
+	job.ClaimedBy = ""
+	job.ClaimedAt = ""
+	job.HeartbeatAt = ""
+	job.WorkerPID = 0
+	job.ProcessStartID = ""
+	switch result.Status {
+	case session.StatusCompleted:
+		job.Status = session.QueueStatusCompleted
+		job.StopReason = ""
+	case session.StatusCancelled:
+		job.Status = session.QueueStatusCancelled
+		job.StopReason = session.QueueStopReasonAgentStop
+	case session.StatusFailed:
+		job.Status = session.QueueStatusFailed
+		job.StopReason = ""
+	default:
+		job.Status = session.QueueStatusBlocked
+		job.StopReason = ""
+		if strings.TrimSpace(job.LastError) == "" {
+			job.LastError = "child session is resumable: " + result.Status
+		}
+	}
+	if meta, loadErr := r.store.LoadMetadata(result.SessionID); loadErr == nil {
+		job.EffectiveWorkdir = meta.Workdir
+		job.EffectiveBudget = session.CloneEffectiveBudget(meta.EffectiveBudget)
+	}
+	if err := r.store.SaveJob(job); err != nil {
+		return err
+	}
+	if isTerminalQueueStatus(job.Status) {
+		if err := resolveParentQueueJob(r.store, parentSessionID, job.ID, job.Status); err != nil {
+			return err
+		}
+	}
+	if err := r.store.EnsureBackgroundNotification(parentSessionID, session.NewBackgroundNotification(job)); err != nil {
+		return err
+	}
+	eventType := "queue.job.blocked"
+	switch job.Status {
+	case session.QueueStatusCompleted:
+		eventType = "queue.job.completed"
+	case session.QueueStatusCancelled:
+		eventType = "queue.job.cancelled"
+	case session.QueueStatusFailed:
+		eventType = "queue.job.failed"
+	}
+	if _, err := r.appendQueueJobEventOnce(parentSessionID, eventType, job); err != nil {
+		return err
+	}
+	_ = writeSessionSummary(r.store, parentSessionID)
+	_ = writeLongRunCheckpoint(r.store, parentSessionID)
+	return nil
 }
 
 func (r *Runner) resolvePromptTarget(parentSessionID string, req tools.AgentPromptRequest) (string, string, error) {
@@ -662,11 +1169,12 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	if err != nil {
 		return session.QueueJob{}, err
 	}
+	createdAt := time.Now().UTC()
 	job := session.QueueJob{
 		SchemaVersion:    1,
 		ID:               session.NewQueueJobID(),
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		CreatedAt:        createdAt.Format(time.RFC3339Nano),
+		UpdatedAt:        createdAt.Format(time.RFC3339Nano),
 		Status:           session.QueueStatusQueued,
 		ParentSessionID:  req.ParentSessionID,
 		RootSessionID:    rootSessionID,
@@ -684,6 +1192,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		ResumeParent:     req.ResumeParent,
 		IsolationMode:    isolationMode,
 		IsolationRoot:    req.IsolationRoot,
+		EffectiveBudget:  newEffectiveChildBudget(r.cfg, session.BudgetSourceRuntimeChild, 0, createdAt),
 	}
 	if err := r.store.EnqueueJob(job); err != nil {
 		return session.QueueJob{}, err
@@ -738,7 +1247,7 @@ func (r *Runner) QueueList(limit int) ([]session.QueueJob, error) {
 }
 
 func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, error) {
-	job, ok, err := r.store.ClaimNextQueuedJob()
+	job, ok, err := r.store.ClaimNextQueuedJobWithLimit(r.cfg.Runtime.MultiAgent.MaxActiveChildren)
 	if err != nil || !ok {
 		return job, ok, err
 	}
@@ -761,7 +1270,15 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	childRunner := NewRunner(r.cfg)
 	childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 	stopHeartbeat := r.startQueueJobHeartbeat(ctx, job.ID)
+	childSessionID := session.NewSessionID()
+	job.SessionID = childSessionID
+	job.SessionStatus = session.StatusRunning
+	if err := r.store.SaveJob(job); err != nil {
+		stopHeartbeat()
+		return job, true, err
+	}
 	result, runErr := childRunner.Start(ctx, StartRequest{
+		SessionID:       childSessionID,
 		Prompt:          job.Prompt,
 		Provider:        job.Provider,
 		Model:           job.Model,
@@ -775,6 +1292,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		QueueJobID:      job.ID,
 		IsolationMode:   job.IsolationMode,
 		IsolationRoot:   job.IsolationRoot,
+		EffectiveBudget: session.CloneEffectiveBudget(job.EffectiveBudget),
 	})
 	stopHeartbeat()
 	if heartbeatJob, heartbeatErr := r.store.RefreshQueueJobHeartbeat(job.ID); heartbeatErr == nil {
@@ -789,6 +1307,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	if result.SessionID != "" {
 		if meta, err := childRunner.store.LoadMetadata(result.SessionID); err == nil {
 			job.EffectiveWorkdir = meta.Workdir
+			job.EffectiveBudget = session.CloneEffectiveBudget(meta.EffectiveBudget)
 		} else {
 			handoffErr = fmt.Errorf("load child session metadata for queue job %s: %w", job.ID, err)
 		}
@@ -815,6 +1334,12 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		}
 	} else if result.Status == session.StatusCompleted {
 		job.Status = session.QueueStatusCompleted
+	} else if result.Status == session.StatusCancelled {
+		job.Status = session.QueueStatusCancelled
+		job.StopReason = session.QueueStopReasonAgentStop
+		if job.LastError == "" {
+			job.LastError = "cancelled by parent agent"
+		}
 	} else {
 		job.Status = session.QueueStatusBlocked
 		if job.LastError == "" {
@@ -877,6 +1402,9 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		eventType := "queue.job.blocked"
 		if job.Status == session.QueueStatusCompleted {
 			eventType = "queue.job.completed"
+		}
+		if job.Status == session.QueueStatusCancelled {
+			eventType = "queue.job.cancelled"
 		}
 		if job.Status == session.QueueStatusFailed {
 			eventType = "queue.job.failed"
@@ -941,7 +1469,7 @@ func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID string) func(
 }
 
 func isTerminalQueueStatus(status string) bool {
-	return status == session.QueueStatusCompleted || status == session.QueueStatusFailed
+	return status == session.QueueStatusCompleted || status == session.QueueStatusCancelled || status == session.QueueStatusFailed
 }
 
 func (r *Runner) appendQueueJobEventOnce(parentSessionID, eventType string, job session.QueueJob) (bool, error) {
@@ -973,12 +1501,18 @@ func (r *Runner) queueJobEventExists(parentSessionID, eventType, jobID string) (
 }
 
 func (r *Runner) appendQueueJobEvent(parentSessionID, eventType string, job session.QueueJob) error {
-	return r.appendEvent(parentSessionID, eventType, "queue", map[string]any{
-		"job_id":     job.ID,
-		"session_id": job.SessionID,
-		"status":     job.Status,
-		"agent_role": job.AgentRole,
-	})
+	data := map[string]any{
+		"job_id":      job.ID,
+		"session_id":  job.SessionID,
+		"status":      job.Status,
+		"agent_role":  job.AgentRole,
+		"stop_reason": job.StopReason,
+		"last_error":  job.LastError,
+	}
+	if job.EffectiveBudget != nil {
+		data["effective_budget"] = effectiveBudgetEventData(job.EffectiveBudget)
+	}
+	return r.appendEvent(parentSessionID, eventType, "queue", data)
 }
 
 func (r *Runner) queueJobHeartbeatInterval() time.Duration {

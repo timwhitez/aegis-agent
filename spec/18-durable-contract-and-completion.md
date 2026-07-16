@@ -30,7 +30,7 @@ The goal snapshot records:
 - `objective`
 - `mode`: persisted for compatibility; default user-facing creation uses unified `goal`
 - `status`: `active`, `paused`, `budget_limited`, or `complete`
-- token / time budgets and usage
+- token / provider-time budgets and usage；兼容字段 `time_budget_seconds` 明确只累计成功或失败 provider call 的 elapsed provider time，不代表 session active runtime 或 wall clock
 - success criteria
 - validation plan
 - user control settings
@@ -228,7 +228,7 @@ The coordination file records:
 - `wait-all` or `wait-any`
 - unresolved child sessions
 - unresolved queue jobs
-- completed and failed children/jobs
+- completed、cancelled 与 failed children/jobs
 - parked/resumed state
 
 The completion controller blocks parent `finish` while any unresolved child/queue work remains. `wait-any` can let the parent continue after one child/job result is available, but it is not a completion exemption: before the parent exits, every remaining child/job must either finish, produce a durable stopped/failed result, or be explicitly resolved through a real control action such as stopping an unclaimed queued job.

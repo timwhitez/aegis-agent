@@ -120,8 +120,11 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 		coordination.UnresolvedChildSessions = removeString(coordination.UnresolvedChildSessions, childSessionID)
 		coordination.CompletedChildSessions = removeString(coordination.CompletedChildSessions, childSessionID)
 		coordination.FailedChildSessions = removeString(coordination.FailedChildSessions, childSessionID)
+		coordination.CancelledChildSessions = removeString(coordination.CancelledChildSessions, childSessionID)
 		if status == session.StatusFailed {
 			coordination.FailedChildSessions = appendUnique(coordination.FailedChildSessions, childSessionID)
+		} else if status == session.StatusCancelled {
+			coordination.CancelledChildSessions = appendUnique(coordination.CancelledChildSessions, childSessionID)
 		} else {
 			coordination.CompletedChildSessions = appendUnique(coordination.CompletedChildSessions, childSessionID)
 		}
@@ -138,7 +141,7 @@ func resolveParentChildSession(store *session.Store, parentSessionID, childSessi
 }
 
 func isTerminalSessionStatus(status string) bool {
-	return status == session.StatusCompleted || status == session.StatusFailed
+	return status == session.StatusCompleted || status == session.StatusCancelled || status == session.StatusFailed
 }
 
 func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status string) error {
@@ -158,8 +161,11 @@ func resolveParentQueueJob(store *session.Store, parentSessionID, jobID, status 
 		coordination.UnresolvedQueueJobs = removeString(coordination.UnresolvedQueueJobs, jobID)
 		coordination.CompletedQueueJobs = removeString(coordination.CompletedQueueJobs, jobID)
 		coordination.FailedQueueJobs = removeString(coordination.FailedQueueJobs, jobID)
+		coordination.CancelledQueueJobs = removeString(coordination.CancelledQueueJobs, jobID)
 		if status == session.QueueStatusFailed {
 			coordination.FailedQueueJobs = appendUnique(coordination.FailedQueueJobs, jobID)
+		} else if status == session.QueueStatusCancelled {
+			coordination.CancelledQueueJobs = appendUnique(coordination.CancelledQueueJobs, jobID)
 		} else {
 			coordination.CompletedQueueJobs = appendUnique(coordination.CompletedQueueJobs, jobID)
 		}
@@ -287,7 +293,7 @@ func coordinationDeadlockState(store *session.Store, parentSessionID string) (co
 	}
 	stalledJobs := make([]string, 0, len(coordination.UnresolvedQueueJobs))
 	for _, jobID := range coordination.UnresolvedQueueJobs {
-		job, err := store.LoadJob(jobID)
+		job, err := store.LoadJobCoordinationSnapshot(jobID)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				stalledJobs = append(stalledJobs, jobID)
@@ -335,7 +341,7 @@ func coordinationDeadlockState(store *session.Store, parentSessionID string) (co
 
 func parentCoordinationUnresolvedCanProgress(store *session.Store, coordination session.ParentCoordination) (bool, error) {
 	for _, jobID := range coordination.UnresolvedQueueJobs {
-		job, err := store.LoadJob(jobID)
+		job, err := store.LoadJobCoordinationSnapshot(jobID)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -61,6 +62,8 @@ const QueueRunningStaleAfter = 15 * time.Minute
 const queueRunningStaleAfter = QueueRunningStaleAfter
 const invalidStoreIDPathSegment = ".invalid-id"
 const harnessReminderIndexSchemaVersion = 1
+const sessionSummaryStateReadAttempts = 6
+const sessionSummaryStateReadRetryDelay = 20 * time.Millisecond
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
@@ -357,6 +360,114 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 		return State{}, err
 	}
 	return claimed, nil
+}
+
+func (s *Store) RequestSessionCancel(sessionID, parentSessionID, queueJobID, reason string) (CancelRequest, bool, error) {
+	if err := validateStoreID("session", sessionID); err != nil {
+		return CancelRequest{}, false, err
+	}
+	if err := validateStoreID("parent session", parentSessionID); err != nil {
+		return CancelRequest{}, false, err
+	}
+	if strings.TrimSpace(queueJobID) != "" {
+		if err := validateStoreID("queue job", queueJobID); err != nil {
+			return CancelRequest{}, false, err
+		}
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = QueueStopReasonAgentStop
+	}
+	path, err := s.sessionPath(sessionID, "control", "cancel.json")
+	if err != nil {
+		return CancelRequest{}, false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "cancel.lock")
+	if err != nil {
+		return CancelRequest{}, false, err
+	}
+	var request CancelRequest
+	created := false
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		var existing CancelRequest
+		if readErr := readJSONFile(path, &existing); readErr == nil {
+			if err := validateCancelRequest(existing, sessionID); err != nil {
+				return fmt.Errorf("validate cancel.json: %w", err)
+			}
+			if existing.ParentSessionID != parentSessionID {
+				return fmt.Errorf("existing cancel request belongs to parent session %s", existing.ParentSessionID)
+			}
+			request = existing
+			return nil
+		} else if !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		request = CancelRequest{
+			SchemaVersion:   1,
+			ID:              newRecordID("cancel"),
+			SessionID:       sessionID,
+			ParentSessionID: parentSessionID,
+			QueueJobID:      strings.TrimSpace(queueJobID),
+			Reason:          reason,
+			Status:          CancelRequestStatusRequested,
+			RequestedAt:     now,
+		}
+		if err := validateCancelRequest(request, sessionID); err != nil {
+			return err
+		}
+		created = true
+		return s.writeJSONFile(path, request)
+	})
+	return request, created, err
+}
+
+func (s *Store) LoadSessionCancel(sessionID string) (CancelRequest, error) {
+	var request CancelRequest
+	path, err := s.sessionPath(sessionID, "control", "cancel.json")
+	if err != nil {
+		return request, err
+	}
+	if err := readJSONFile(path, &request); err != nil {
+		return request, err
+	}
+	if err := validateCancelRequest(request, sessionID); err != nil {
+		return request, fmt.Errorf("validate cancel.json: %w", err)
+	}
+	return request, nil
+}
+
+func (s *Store) MarkSessionCancelApplied(sessionID, requestID string) (CancelRequest, error) {
+	path, err := s.sessionPath(sessionID, "control", "cancel.json")
+	if err != nil {
+		return CancelRequest{}, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "control", "cancel.lock")
+	if err != nil {
+		return CancelRequest{}, err
+	}
+	var request CancelRequest
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &request); err != nil {
+			return err
+		}
+		if request.ID != strings.TrimSpace(requestID) {
+			return fmt.Errorf("cancel request id mismatch: got %q, want %q", request.ID, strings.TrimSpace(requestID))
+		}
+		if request.Status == CancelRequestStatusApplied {
+			return nil
+		}
+		request.Status = CancelRequestStatusApplied
+		request.AppliedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := validateCancelRequest(request, sessionID); err != nil {
+			return err
+		}
+		return s.writeJSONFile(path, request)
+	})
+	return request, err
 }
 
 func (s *Store) AppendMessage(sessionID string, message Message) error {
@@ -1742,7 +1853,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			}
 			continue
 		}
-		state, err := s.LoadState(entry.Name())
+		state, err := s.loadSessionSummaryState(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("state.json: %w", err)
 		}
@@ -1754,6 +1865,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			CreatedAt:       meta.CreatedAt,
 			UpdatedAt:       state.UpdatedAt,
 			Phase:           state.Phase,
+			PauseReason:     state.PauseReason,
 			LastError:       state.LastError,
 			Workdir:         meta.Workdir,
 			ParentSessionID: meta.ParentSessionID,
@@ -1762,6 +1874,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			AgentRole:       meta.AgentRole,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
+			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
 		}
 		result = append(result, summary)
 	}
@@ -1810,7 +1923,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 		if meta.ParentSessionID != parentSessionID {
 			continue
 		}
-		state, err := s.LoadState(entry.Name())
+		state, err := s.loadSessionSummaryState(entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("state.json: %w", err)
 		}
@@ -1822,6 +1935,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			CreatedAt:       meta.CreatedAt,
 			UpdatedAt:       state.UpdatedAt,
 			Phase:           state.Phase,
+			PauseReason:     state.PauseReason,
 			LastError:       state.LastError,
 			Workdir:         meta.Workdir,
 			ParentSessionID: meta.ParentSessionID,
@@ -1830,6 +1944,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			AgentRole:       meta.AgentRole,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
+			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
 		}
 		result = append(result, summary)
 	}
@@ -1851,6 +1966,26 @@ func sessionMetadataFileExists(root, sessionID string) bool {
 	}
 	info, err := os.Lstat(filepath.Join(root, sessionID, "session.json"))
 	return err == nil && info != nil
+}
+
+// loadSessionSummaryState tolerates the bounded session.json/state.json write
+// window during session creation. Listing a parent while a child is being
+// created must not turn the whole parent detail into a transient 404; a
+// persistently missing or malformed state still returns an error after the
+// stability window so durable corruption remains visible.
+func (s *Store) loadSessionSummaryState(sessionID string) (State, error) {
+	var lastErr error
+	for attempt := 0; attempt < sessionSummaryStateReadAttempts; attempt++ {
+		state, err := s.LoadState(sessionID)
+		if err == nil || !errors.Is(err, fs.ErrNotExist) {
+			return state, err
+		}
+		lastErr = err
+		if attempt+1 < sessionSummaryStateReadAttempts {
+			time.Sleep(sessionSummaryStateReadRetryDelay)
+		}
+	}
+	return State{}, lastErr
 }
 
 func (s *Store) populateGoalSummary(summary *SessionSummary) error {
@@ -2150,12 +2285,12 @@ func (s *Store) StopBudgetPausedJob(jobID, parentSessionID, lastError string) (Q
 	if err != nil {
 		return QueueJob{}, fmt.Errorf("load child session %s for queue job %s: %w", childSessionID, job.ID, err)
 	}
-	if state.Status != StatusPaused || !isChildBudgetPauseReason(state.PauseReason) {
+	if state.Status != StatusPaused || !IsChildBudgetPauseReason(state.PauseReason) {
 		return QueueJob{}, fmt.Errorf("queue job %s child session %s is %s with pause reason %q; only budget-paused blocked jobs can be explicitly settled", job.ID, childSessionID, state.Status, state.PauseReason)
 	}
 
 	job = clearReapedQueueLease(job)
-	job.Status = QueueStatusFailed
+	job.Status = QueueStatusCancelled
 	job.SessionStatus = state.Status
 	job.StopReason = QueueStopReasonAgentStop
 	job.LastError = strings.TrimSpace(lastError)
@@ -2166,15 +2301,6 @@ func (s *Store) StopBudgetPausedJob(jobID, parentSessionID, lastError string) (Q
 		return QueueJob{}, err
 	}
 	return job, nil
-}
-
-func isChildBudgetPauseReason(reason string) bool {
-	switch strings.TrimSpace(reason) {
-	case "child_budget_turns_exceeded", "child_budget_wallclock_exceeded":
-		return true
-	default:
-		return false
-	}
 }
 
 func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopReason string) (QueueJob, error) {
@@ -2193,7 +2319,7 @@ func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopR
 		}
 	}
 	queuedPath := s.queueJobPath(QueueStatusQueued, jobID)
-	failedPath := s.queueJobPath(QueueStatusFailed, jobID)
+	cancelledPath := s.queueJobPath(QueueStatusCancelled, jobID)
 	var job QueueJob
 	if err := readJSONFile(queuedPath, &job); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2226,7 +2352,7 @@ func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopR
 	}
 	previous := job
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job.Status = QueueStatusFailed
+	job.Status = QueueStatusCancelled
 	job.UpdatedAt = now
 	job.StopReason = strings.TrimSpace(stopReason)
 	job.LastError = strings.TrimSpace(lastError)
@@ -2236,7 +2362,7 @@ func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopR
 	if err := validateQueueJob(job); err != nil {
 		return QueueJob{}, err
 	}
-	if err := fileutil.RenamePathNoSymlink(queuedPath, failedPath); err != nil {
+	if err := fileutil.RenamePathNoSymlink(queuedPath, cancelledPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			copies, loadErr := s.loadQueueJobCopiesStable(jobID)
 			if loadErr != nil {
@@ -2250,8 +2376,8 @@ func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopR
 		}
 		return QueueJob{}, err
 	}
-	if err := s.writeJSONFile(failedPath, job); err != nil {
-		if rollbackErr := fileutil.RenamePathNoSymlink(failedPath, queuedPath); rollbackErr != nil {
+	if err := s.writeJSONFile(cancelledPath, job); err != nil {
+		if rollbackErr := fileutil.RenamePathNoSymlink(cancelledPath, queuedPath); rollbackErr != nil {
 			return QueueJob{}, fmt.Errorf("%w; rollback stopped job: %v", err, rollbackErr)
 		}
 		if restoreErr := s.writeJSONFile(queuedPath, previous); restoreErr != nil {
@@ -2261,7 +2387,7 @@ func (s *Store) StopQueuedJobWithReason(jobID, parentSessionID, lastError, stopR
 	}
 	for _, status := range queueStatuses() {
 		path := s.queueJobPath(status, job.ID)
-		if path == failedPath {
+		if path == cancelledPath {
 			continue
 		}
 		_ = fileutil.RemoveFileNoSymlink(path)
@@ -2482,6 +2608,28 @@ func (s *Store) LoadJob(jobID string) (QueueJob, error) {
 		job = repaired
 	}
 	return job, nil
+}
+
+// LoadJobCoordinationSnapshot reads the canonical queue fact while holding the
+// same durable claim lock as ClaimNextQueuedJob. The returned snapshot does not
+// reconcile the linked child session or rewrite queue files; it is intended for
+// parent coordination checks that must not observe the queued -> running rename
+// before the claimed lease snapshot has been written.
+func (s *Store) LoadJobCoordinationSnapshot(jobID string) (QueueJob, error) {
+	if err := validateStoreID("queue job", jobID); err != nil {
+		return QueueJob{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
+	var job QueueJob
+	err := s.withFileLock(lockPath, func() error {
+		var err error
+		job, err = s.loadQueueJobForCoordinationLocked(jobID)
+		return err
+	})
+	return job, err
 }
 
 func (s *Store) ListJobs(limit int) ([]QueueJob, error) {
@@ -2760,7 +2908,7 @@ func compareQueueJobCopies(a, b queueJobCopy) int {
 
 func queueStatusPrecedence(status string) int {
 	switch status {
-	case QueueStatusCompleted, QueueStatusFailed:
+	case QueueStatusCompleted, QueueStatusCancelled, QueueStatusFailed:
 		return 4
 	case QueueStatusBlocked:
 		return 3
@@ -2983,6 +3131,7 @@ func (s *Store) removeDeletedJobFromParentCoordinationLocked(job QueueJob) error
 		coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, jobID)
 		coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, jobID)
 		coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, jobID)
+		coordination.CancelledQueueJobs = removeStringValue(coordination.CancelledQueueJobs, jobID)
 		coordination.Parked = shouldParkParentCoordination(coordination)
 		coordination.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		if err := normalizeAndValidateParentCoordination(parentSessionID, &coordination); err != nil {
@@ -2993,11 +3142,27 @@ func (s *Store) removeDeletedJobFromParentCoordinationLocked(job QueueJob) error
 }
 
 func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
+	return s.ClaimNextQueuedJobWithLimit(0)
+}
+
+func (s *Store) ClaimNextQueuedJobWithLimit(maxActiveChildren int) (QueueJob, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureQueueDirs(); err != nil {
 		return QueueJob{}, false, err
 	}
+	var claimed QueueJob
+	var ok bool
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
+	err := s.withFileLock(lockPath, func() error {
+		var claimErr error
+		claimed, ok, claimErr = s.claimNextQueuedJobLocked(maxActiveChildren)
+		return claimErr
+	})
+	return claimed, ok, err
+}
+
+func (s *Store) claimNextQueuedJobLocked(maxActiveChildren int) (QueueJob, bool, error) {
 	dir := s.queueStatusDir(QueueStatusQueued)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -3043,7 +3208,22 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 		}
 		return candidates[i].job.CreatedAt < candidates[j].job.CreatedAt
 	})
+	activeByRoot, err := s.activeRunningQueueJobsByRootLocked()
+	if err != nil {
+		return QueueJob{}, false, err
+	}
+	directByRoot, err := s.activeDirectChildReservationsByRootLocked()
+	if err != nil {
+		return QueueJob{}, false, err
+	}
 	for _, candidate := range candidates {
+		rootID := strings.TrimSpace(candidate.job.RootSessionID)
+		if rootID == "" {
+			rootID = strings.TrimSpace(candidate.job.ParentSessionID)
+		}
+		if maxActiveChildren > 0 && activeByRoot[rootID]+directByRoot[rootID] >= maxActiveChildren {
+			continue
+		}
 		from := filepath.Join(dir, candidate.name)
 		to := filepath.Join(s.queueStatusDir(QueueStatusRunning), candidate.name)
 		if s.beforeQueueClaimRename != nil {
@@ -3076,9 +3256,43 @@ func (s *Store) ClaimNextQueuedJob() (QueueJob, bool, error) {
 			}
 			return QueueJob{}, false, err
 		}
+		activeByRoot[rootID]++
 		return job, true, nil
 	}
 	return QueueJob{}, false, nil
+}
+
+func (s *Store) activeRunningQueueJobsByRootLocked() (map[string]int, error) {
+	counts := map[string]int{}
+	dir := s.queueStatusDir(QueueStatusRunning)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return counts, nil
+		}
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var job QueueJob
+		if err := readJSONFile(filepath.Join(dir, entry.Name()), &job); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		if job.Status != QueueStatusRunning {
+			continue
+		}
+		rootID := strings.TrimSpace(job.RootSessionID)
+		if rootID == "" {
+			rootID = strings.TrimSpace(job.ParentSessionID)
+		}
+		counts[rootID]++
+	}
+	return counts, nil
 }
 
 func (s *Store) rollbackFailedQueueClaim(runningPath string, queuedJob QueueJob) error {
@@ -3262,7 +3476,7 @@ func NewSteerRequestWithSource(source, text string, interrupt bool) SteerRequest
 }
 
 func NewBackgroundNotification(job QueueJob) BackgroundNotification {
-	return BackgroundNotification{
+	notification := BackgroundNotification{
 		ID:               newRecordID("bg"),
 		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
 		Source:           "queue",
@@ -3280,7 +3494,12 @@ func NewBackgroundNotification(job QueueJob) BackgroundNotification {
 		LastError:        job.LastError,
 		ResumeParent:     job.ResumeParent,
 		DeliveryStatus:   BackgroundNotificationPending,
+		EffectiveBudget:  CloneEffectiveBudget(job.EffectiveBudget),
 	}
+	if job.Status == QueueStatusBlocked && job.EffectiveBudget != nil && job.EffectiveBudget.Status == BudgetStatusExhausted {
+		notification.AvailableActions = []string{"extend_resume", "cancel_settle", "inspect"}
+	}
+	return notification
 }
 
 // NewCoordinationDeadlockNotification builds a pending background notification
@@ -3783,6 +4002,12 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			return job, false, fmt.Errorf("persist linked session state for queue job %s: %w", job.ID, err)
 		}
 	}
+	if job.Status == QueueStatusCancelled && job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && IsChildBudgetPauseReason(state.PauseReason) {
+		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
+			return job, false, fmt.Errorf("persist parent coordination for settled budget queue job %s: %w", job.ID, err)
+		}
+		return job, false, nil
+	}
 	failedWithQueueError := job.Status == QueueStatusFailed && strings.TrimSpace(job.LastError) != ""
 	queueError := job.LastError
 	changed := syncRunningQueueJobSession(&job, meta, state)
@@ -3804,10 +4029,15 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		return job, changed, nil
 	}
 	switch state.Status {
-	case StatusCompleted, StatusFailed:
+	case StatusCompleted, StatusCancelled, StatusFailed:
 		if state.Status == StatusFailed {
 			if job.Status != QueueStatusFailed {
 				job.Status = QueueStatusFailed
+				changed = true
+			}
+		} else if state.Status == StatusCancelled {
+			if job.Status != QueueStatusCancelled {
+				job.Status = QueueStatusCancelled
 				changed = true
 			}
 		} else if job.Status != QueueStatusCompleted {
@@ -3918,19 +4148,27 @@ func (s *Store) ReconcileSessionQueueJob(sessionID string) (QueueJob, bool, erro
 }
 
 func isTerminalQueueStatus(status string) bool {
-	return status == QueueStatusCompleted || status == QueueStatusFailed
+	return status == QueueStatusCompleted || status == QueueStatusCancelled || status == QueueStatusFailed
 }
 
 func reconcileStateFromTerminalQueueJob(state State, job QueueJob) (State, bool) {
 	switch job.Status {
-	case QueueStatusFailed:
-		if job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && isChildBudgetPauseReason(state.PauseReason) {
-			// Parent settlement closes only the queue/coordination fact. Preserve
-			// the child's durable budget pause so operators can still inspect why
-			// execution stopped instead of rewriting it as a runtime failure.
+	case QueueStatusCancelled:
+		if job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && IsChildBudgetPauseReason(state.PauseReason) {
+			// Settling a budget-paused job closes queue/coordination only. Preserve
+			// the child pause so the original budget evidence remains inspectable.
 			return state, false
 		}
-		if state.Status == StatusCompleted || state.Status == StatusFailed {
+		if state.Status == StatusCompleted || state.Status == StatusCancelled || state.Status == StatusFailed {
+			return state, false
+		}
+		state.Status = StatusCancelled
+		state.Phase = "cancelled"
+		state.PauseReason = ""
+		state.LastError = ""
+		return state, true
+	case QueueStatusFailed:
+		if state.Status == StatusCompleted || state.Status == StatusCancelled || state.Status == StatusFailed {
 			return state, false
 		}
 		state.Status = StatusFailed
@@ -3942,7 +4180,7 @@ func reconcileStateFromTerminalQueueJob(state State, job QueueJob) (State, bool)
 		}
 		return state, true
 	case QueueStatusCompleted:
-		if state.Status == StatusCompleted || state.Status == StatusFailed {
+		if state.Status == StatusCompleted || state.Status == StatusCancelled || state.Status == StatusFailed {
 			return state, false
 		}
 		state.Status = StatusCompleted
@@ -3966,9 +4204,12 @@ func (s *Store) reconcileParentQueueJobStatus(job QueueJob) error {
 		coordination.UnresolvedQueueJobs = removeStringValue(coordination.UnresolvedQueueJobs, job.ID)
 		coordination.CompletedQueueJobs = removeStringValue(coordination.CompletedQueueJobs, job.ID)
 		coordination.FailedQueueJobs = removeStringValue(coordination.FailedQueueJobs, job.ID)
+		coordination.CancelledQueueJobs = removeStringValue(coordination.CancelledQueueJobs, job.ID)
 		switch job.Status {
 		case QueueStatusCompleted:
 			coordination.CompletedQueueJobs = appendUniqueString(coordination.CompletedQueueJobs, job.ID)
+		case QueueStatusCancelled:
+			coordination.CancelledQueueJobs = appendUniqueString(coordination.CancelledQueueJobs, job.ID)
 		case QueueStatusFailed:
 			coordination.FailedQueueJobs = appendUniqueString(coordination.FailedQueueJobs, job.ID)
 		default:
@@ -4243,6 +4484,9 @@ func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *
 	if err != nil {
 		return job, nil
 	}
+	if job.Status == QueueStatusCancelled && job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && IsChildBudgetPauseReason(state.PauseReason) {
+		return job, nil
+	}
 	if job.Status == QueueStatusRunning && state.Status == StatusRunning {
 		syncLeasedQueueJobSession(&job, meta, state)
 		if queueJobIsStale(job, now) {
@@ -4266,6 +4510,9 @@ func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *
 	case StatusCompleted:
 		job.Status = QueueStatusCompleted
 		job.StopReason = ""
+	case StatusCancelled:
+		job.Status = QueueStatusCancelled
+		job.StopReason = QueueStopReasonAgentStop
 	case StatusFailed:
 		job.Status = QueueStatusFailed
 		job.StopReason = ""
@@ -4383,12 +4630,16 @@ func (s *Store) ensureTerminalQueueJobParentState(job QueueJob) error {
 		}
 		return nil
 	}
-	if err := s.ensureQueueLifecycleEvent(job, "queue.job.completed"); err != nil {
+	eventType := "queue.job.completed"
+	if job.Status == QueueStatusCancelled {
+		eventType = "queue.job.cancelled"
+	}
+	if err := s.ensureQueueLifecycleEvent(job, eventType); err != nil {
 		if restoreErr := s.RestoreParentCoordination(job.ParentSessionID, coordinationSnapshot); restoreErr != nil {
-			return fmt.Errorf("ensure queue completed event failed with %v; restore parent coordination: %w", err, restoreErr)
+			return fmt.Errorf("ensure queue terminal event failed with %v; restore parent coordination: %w", err, restoreErr)
 		}
 		if restoreErr := s.RestoreBackgroundNotification(job.ParentSessionID, notificationSnapshot); restoreErr != nil {
-			return fmt.Errorf("ensure queue completed event failed with %v; restore background notification: %w", err, restoreErr)
+			return fmt.Errorf("ensure queue terminal event failed with %v; restore background notification: %w", err, restoreErr)
 		}
 		return err
 	}
@@ -4410,10 +4661,15 @@ func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) error 
 		}
 	}
 	data := map[string]any{
-		"job_id":     job.ID,
-		"session_id": job.SessionID,
-		"status":     job.Status,
-		"agent_role": job.AgentRole,
+		"job_id":      job.ID,
+		"session_id":  job.SessionID,
+		"status":      job.Status,
+		"agent_role":  job.AgentRole,
+		"stop_reason": job.StopReason,
+		"last_error":  job.LastError,
+	}
+	if job.EffectiveBudget != nil {
+		data["effective_budget"] = CloneEffectiveBudget(job.EffectiveBudget)
 	}
 	return s.AppendEvent(job.ParentSessionID, events.New(job.ParentSessionID, eventType, "queue", data))
 }
@@ -4923,12 +5179,15 @@ func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
 	if err := validateProviderOptions(meta.ProviderOptions); err != nil {
 		return err
 	}
+	if err := ValidateEffectiveBudget(meta.EffectiveBudget); err != nil {
+		return fmt.Errorf("validate effective_budget: %w", err)
+	}
 	return nil
 }
 
 func validateState(state State) error {
 	switch state.Status {
-	case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+	case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusCancelled, StatusFailed:
 	default:
 		if strings.TrimSpace(state.Status) == "" {
 			return errors.New("state status is required")
@@ -5247,11 +5506,11 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 		return fmt.Errorf("invalid background notification status %q", notification.Status)
 	}
 	if !isBackgroundResultQueueStatus(notification.Status) {
-		return fmt.Errorf("background notification status must be blocked, completed, or failed, got %q", notification.Status)
+		return fmt.Errorf("background notification status must be blocked, completed, cancelled, or failed, got %q", notification.Status)
 	}
 	if strings.TrimSpace(notification.SessionStatus) != "" {
 		switch notification.SessionStatus {
-		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusCancelled, StatusFailed:
 		default:
 			return fmt.Errorf("invalid background notification session_status %q", notification.SessionStatus)
 		}
@@ -5261,7 +5520,7 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	}
 	if strings.TrimSpace(notification.StopReason) != "" {
 		switch notification.StopReason {
-		case QueueStopReasonParentStop, QueueStopReasonAgentStop:
+		case QueueStopReasonParentStop, QueueStopReasonAgentStop, QueueStopReasonCancelled:
 		default:
 			return fmt.Errorf("invalid background notification stop_reason %q", notification.StopReason)
 		}
@@ -5275,6 +5534,9 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 		return fmt.Errorf("invalid background notification delivery_status %q", notification.DeliveryStatus)
 	}
 	if err := validateStringList("background notification visible_paths", notification.VisiblePaths); err != nil {
+		return err
+	}
+	if err := validateStringList("background notification available_actions", notification.AvailableActions); err != nil {
 		return err
 	}
 	for _, visiblePath := range notification.VisiblePaths {
@@ -5294,6 +5556,10 @@ func validateBackgroundNotificationResultStatus(notification BackgroundNotificat
 	case QueueStatusCompleted:
 		if sessionStatus != StatusCompleted {
 			return fmt.Errorf("completed background notification session_status must be completed, got %q", notification.SessionStatus)
+		}
+	case QueueStatusCancelled:
+		if sessionStatus != StatusCancelled && !(notification.StopReason == QueueStopReasonAgentStop && sessionStatus == StatusPaused) {
+			return fmt.Errorf("cancelled background notification session_status must be cancelled or a budget-paused settlement, got %q", notification.SessionStatus)
 		}
 	case QueueStatusFailed:
 		if strings.TrimSpace(notification.LastError) == "" && sessionStatus != StatusFailed {
@@ -5378,7 +5644,7 @@ func validateQueueJob(job QueueJob) error {
 	}
 	if strings.TrimSpace(job.SessionStatus) != "" {
 		switch job.SessionStatus {
-		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusFailed:
+		case StatusRunning, StatusAwaitingInput, StatusPaused, StatusCompleted, StatusCancelled, StatusFailed:
 		default:
 			return fmt.Errorf("invalid queue job session_status %q", job.SessionStatus)
 		}
@@ -5404,7 +5670,7 @@ func validateQueueJob(job QueueJob) error {
 	}
 	if strings.TrimSpace(job.StopReason) != "" {
 		switch job.StopReason {
-		case QueueStopReasonParentStop, QueueStopReasonAgentStop:
+		case QueueStopReasonParentStop, QueueStopReasonAgentStop, QueueStopReasonCancelled:
 		default:
 			return fmt.Errorf("invalid queue job stop_reason %q", job.StopReason)
 		}
@@ -5418,6 +5684,9 @@ func validateQueueJob(job QueueJob) error {
 	}
 	if err := validateStringList("queue job visible_paths", job.VisiblePaths); err != nil {
 		return err
+	}
+	if err := ValidateEffectiveBudget(job.EffectiveBudget); err != nil {
+		return fmt.Errorf("validate queue job effective_budget: %w", err)
 	}
 	for _, visiblePath := range job.VisiblePaths {
 		if _, err := validateStoreRelativePath("queue job visible_paths", visiblePath); err != nil {
@@ -5440,6 +5709,10 @@ func validateQueueJobResultStatus(job QueueJob) error {
 	case QueueStatusFailed:
 		if strings.TrimSpace(job.LastError) == "" && sessionStatus != StatusFailed {
 			return fmt.Errorf("failed queue job session_status must be failed unless last_error is set, got %q", job.SessionStatus)
+		}
+	case QueueStatusCancelled:
+		if sessionStatus != StatusCancelled && !(job.StopReason == QueueStopReasonAgentStop && sessionStatus == StatusPaused) {
+			return fmt.Errorf("cancelled queue job session_status must be cancelled or a budget-paused settlement, got %q", job.SessionStatus)
 		}
 	case QueueStatusBlocked:
 		switch sessionStatus {
@@ -5547,6 +5820,9 @@ func validateParentCoordination(sessionID string, coordination ParentCoordinatio
 	if err := validateParentCoordinationIDList("child session", "failed_child_sessions", coordination.FailedChildSessions, seenChildSessions); err != nil {
 		return err
 	}
+	if err := validateParentCoordinationIDList("child session", "cancelled_child_sessions", coordination.CancelledChildSessions, seenChildSessions); err != nil {
+		return err
+	}
 	seenQueueJobs := map[string]string{}
 	if err := validateParentCoordinationIDList("queue job", "unresolved_queue_jobs", coordination.UnresolvedQueueJobs, seenQueueJobs); err != nil {
 		return err
@@ -5556,6 +5832,49 @@ func validateParentCoordination(sessionID string, coordination ParentCoordinatio
 	}
 	if err := validateParentCoordinationIDList("queue job", "failed_queue_jobs", coordination.FailedQueueJobs, seenQueueJobs); err != nil {
 		return err
+	}
+	if err := validateParentCoordinationIDList("queue job", "cancelled_queue_jobs", coordination.CancelledQueueJobs, seenQueueJobs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateCancelRequest(request CancelRequest, sessionID string) error {
+	if request.SchemaVersion <= 0 {
+		return errors.New("cancel request schema_version must be positive")
+	}
+	if strings.TrimSpace(request.ID) == "" {
+		return errors.New("cancel request id is required")
+	}
+	if request.SessionID != sessionID {
+		return fmt.Errorf("cancel request session_id %q does not match session %q", request.SessionID, sessionID)
+	}
+	if err := validateStoreID("cancel request session", request.SessionID); err != nil {
+		return err
+	}
+	if err := validateStoreID("cancel request parent session", request.ParentSessionID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.QueueJobID) != "" {
+		if err := validateStoreID("cancel request queue job", request.QueueJobID); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(request.Reason) == "" {
+		return errors.New("cancel request reason is required")
+	}
+	switch request.Status {
+	case CancelRequestStatusRequested, CancelRequestStatusApplied, CancelRequestStatusSuperseded:
+	default:
+		return fmt.Errorf("invalid cancel request status %q", request.Status)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, request.RequestedAt); err != nil {
+		return fmt.Errorf("cancel request requested_at must be RFC3339Nano: %w", err)
+	}
+	if strings.TrimSpace(request.AppliedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, request.AppliedAt); err != nil {
+			return fmt.Errorf("cancel request applied_at must be RFC3339Nano: %w", err)
+		}
 	}
 	return nil
 }
@@ -6278,7 +6597,10 @@ func backgroundNotificationFactsEqual(a, b BackgroundNotification) bool {
 		equalStringSlices(a.VisiblePaths, b.VisiblePaths) &&
 		a.FinalText == b.FinalText &&
 		a.StopReason == b.StopReason &&
-		a.LastError == b.LastError
+		a.LastError == b.LastError &&
+		a.ResumeParent == b.ResumeParent &&
+		reflect.DeepEqual(a.EffectiveBudget, b.EffectiveBudget) &&
+		equalStringSlices(a.AvailableActions, b.AvailableActions)
 }
 
 func backgroundNotificationDeliveryRank(status string) int {
@@ -6345,6 +6667,9 @@ func mergeBackgroundNotification(existing, next BackgroundNotification) Backgrou
 	} else if shouldClearBackgroundNotificationError(existing, next) {
 		merged.LastError = ""
 	}
+	merged.ResumeParent = next.ResumeParent
+	merged.EffectiveBudget = CloneEffectiveBudget(next.EffectiveBudget)
+	merged.AvailableActions = append([]string(nil), next.AvailableActions...)
 	if strings.TrimSpace(next.DeliveryStatus) != "" {
 		merged.DeliveryStatus = next.DeliveryStatus
 	}
@@ -6401,6 +6726,15 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 	if shouldClearBackgroundNotificationError(existing, next) {
 		return true
 	}
+	if existing.ResumeParent != next.ResumeParent {
+		return true
+	}
+	if !reflect.DeepEqual(existing.EffectiveBudget, next.EffectiveBudget) {
+		return true
+	}
+	if !equalStringSlices(existing.AvailableActions, next.AvailableActions) {
+		return true
+	}
 	return false
 }
 
@@ -6443,6 +6777,9 @@ func (s *Store) ensureQueueDirs() error {
 			return err
 		}
 	}
+	if err := s.ensureDir(s.directChildReservationDir()); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -6452,6 +6789,7 @@ func queueStatuses() []string {
 		QueueStatusRunning,
 		QueueStatusBlocked,
 		QueueStatusCompleted,
+		QueueStatusCancelled,
 		QueueStatusFailed,
 	}
 }
@@ -6467,7 +6805,7 @@ func isQueueStatus(status string) bool {
 
 func isBackgroundResultQueueStatus(status string) bool {
 	switch status {
-	case QueueStatusBlocked, QueueStatusCompleted, QueueStatusFailed:
+	case QueueStatusBlocked, QueueStatusCompleted, QueueStatusCancelled, QueueStatusFailed:
 		return true
 	default:
 		return false

@@ -360,6 +360,7 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 - Workspace browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取或下载 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
 - Workspace 上传、文件重命名、创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；写操作只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成修改服务 cwd 或仓库元数据的入口。上传采用 multipart 单文件请求，文件内容和整个请求都有硬上限，目标已存在时拒绝覆盖，并通过同目录临时文件 + no-replace rename 原子发布。文件重命名只允许普通文件在原目录内改名，拒绝覆盖、目录移动、symlink、敏感源/目标名与越界路径。批量删除必须先完成所有选中路径的安全预检，再执行删除事务；任一选中路径越界、指向敏感路径、为 symlink 或其目录子树包含敏感路径时，整个批量删除失败且不得删除其他已选项。
 - Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
+- parent detail 在 child 创建期间读取 children 时必须容忍 `session.json` 已发布而 `state.json` 尚未发布的短暂窗口；固定 inspector 隐藏的 compact layout 仍必须把同一 inspector HTML 渲染到 slide-out，不能打开空面板。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载/上传/重命名 workspace 文件，以及在 workspace 内创建文件夹或删除单个/多个文件夹和文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - 配置写入、API key 写入、session 删除/清理、skill 安装/卸载必须写入可检索审计事件；API key 事件只记录操作元数据、env key 与路径，不采集 secret 值。skill upload 必须有请求体、zip entry 数量、单 entry 解压大小和总解压大小上限，避免本地控制台被 zip bomb 或超大 multipart 请求拖垮。
 - 单个 session tree 删除必须先完成 active handle、stale running owner、running session/job 与 audit writability 检查；审计事件写入成功后直接调用 session store 删除目标 session tree 和 linked queue jobs。不要在请求路径上先把整棵 session tree 搬到历史备份目录再删除，因为大型 master/child 会话会让删除响应被大目录 I/O 阻塞。全量 clear history 仍可使用 history mutation transaction 提供 audit 失败回滚。
@@ -368,9 +369,11 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 
 Settings API：
 
-- `GET /api/config` 返回当前默认 provider、guardrails、master hard turn limit、`child_budget { disabled, max_wall_clock_sec, max_turns }`，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、`reasoning_mode`、`reasoning_modes`、`reasoning_summary`、`reasoning_summary_modes`、`reasoning_effort`、`thinking_budget`、`include_thoughts`、`max_output_tokens`
-- `POST /api/config` 保存 provider 默认值、API Provider、base URL、model、API key、guardrails、master hard turn limit、optional child budget、reasoning / thinking mode 和 reasoning summary，并写入审计事件；`child_budget.disabled=true` 持久化为 `0/0`，启用时两个维度必须非负且至少一个为正数
-- Settings 将 root/master hard turn limit 与 Sub-agent Budget 分组展示；两者默认均关闭。Sub-agent Budget 不进入 provider test payload，也不在普通 session start / `agent_spawn` 表单增加逐 child budget 字段
+- `GET /api/config` 返回当前默认 provider、guardrails、全局 soft/hard turn guard、`child_budget { disabled, max_active_runtime_sec, max_elapsed_sec, max_turns_per_attempt }`，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、reasoning/thinking 字段
+- `POST /api/config` 保存 provider 默认值、guardrails、全局 soft/hard turn guard、optional child budget 和 provider options，并写入审计事件；`child_budget.disabled=true` 持久化为三个维度全 `0`，启用时各维度必须非负且至少一个为正数。API 在兼容窗口内接受旧 `max_wall_clock_sec` / `max_turns`，新响应和新写配置使用 canonical 字段
+- Settings 将 Global Turn Guard 与 Sub-agent Budget 分组展示。hard limit 明确说明适用于 master、foreground child 与 background/queue child，并按每次 run 计数；soft 只做一次 reminder。Sub-agent Budget 的 active runtime、absolute elapsed deadline、per-attempt turns 分开显示，并明确修改只影响新 child/job
+- duration 输入接受并回显人类可读格式（例如 `30m`、`2h`），API/config 内部规范化为秒。Sub-agent Budget 不进入 provider test payload，也不在普通 session start / `agent_spawn` 表单增加逐 child budget字段
+- Session detail 的只读 budget inspector 从 child `metadata.effective_budget` / linked job snapshot 展示 configured/effective/used/remaining、attempt、policy source 与 last reason；parent notification 提示 inspect、extend/resume 或 cancel/settle
 - `POST /api/config/test` 接收同一 provider 表单子集，执行 probe 后返回 `success`、`provider`、`api_provider`、`effective_api_provider`、`model`、`reasoning_mode`、`reasoning_summary`、`thinking_visible_observed`、`thinking_replay_observed`、`reasoning_summary_observed`、`reasoning_encrypted_observed`、`reasoning_tokens`、`thinking_strategy`、`thinking_detail` 与实际 provider option 摘要
 
 ### 7.1 `GET /api/meta`
@@ -752,7 +755,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- headless browser UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history clear 留在 Sessions 视图；API 提交 queue job 后只验证后端 queue detail / 文件事实源，不再要求当前 session Background inspector 或 selected job facts 前端面板；worker API 缩放、queue notification dedup 和 retry proof 由 follow-up shell 脚本及服务层断言覆盖
+- 通用 headless browser UI smoke 覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history clear 留在 Sessions 视图；API 提交 queue job 后只验证后端 queue detail / 文件事实源。另有不依赖外部 API key 的 deterministic budget browser smoke，使用本地 scripted Responses provider 验证 Settings 默认/保存语义、config/API/audit canonical round-trip、真实 foreground extend/resume、background cancel/settle、compact inspector telemetry 与 cancelled-not-failed 统计
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：

@@ -231,8 +231,10 @@
 - 当 parent session 被显式 stop 时，未 claim 的 parent-linked queued job 应转为 `blocked` 并标记 `stop_reason=parent_stop`，已 linked 且因 parent stop 暂停的 child session 对应 job 也应收敛为 `blocked` / `stop_reason=parent_stop`；这类 job 不阻断删除，但仍保留在 parent coordination 的 unresolved 集合中
 - parent 继续运行后，模型可用 `agent_prompt` 主动恢复这些 parent-stopped 子任务：有 linked child session 的 job 通过 child `continue` 恢复，尚未 claim 的 pre-claim job 重新进入 queued，由 worker 后续领取；runtime 不应自动无条件恢复所有 paused child，避免误启动用户单独暂停的子任务
 - 周期性回收孤儿 job（liveness reaper）：持有进程已死（`process_start_id`/`worker_pid` 经 `/proc` 探测不存在）或心跳超 `lease_stale_after` 的 `running`/`blocked` job 必须被回收，否则其 parent 会永久 parked。回收按混合策略——linked child 终态→结算终态、未建会话→重新入队、其余→`blocked` 并写 parent notification——只做 liveness 恢复，不替模型决定 workflow。`web` 进程同时把无存活 owner 的僵尸 `running` session reconcile 为 `paused`
-- child / background（有 `parent_session_id`）会话可选择启用兜底预算（`runtime.child_budget.max_wall_clock_sec` / `max_turns`，默认 `0/0` 关闭），超限以可恢复 `paused` 收敛（→ job `blocked`）并通知 parent；root master session 不受此限。Settings 必须允许 operator 显式配置这两个维度
-- parent 可用 `agent_stop` 显式结算因 `child_budget_*_exceeded` 暂停的 blocked job：job 进入 failed terminal 状态、从 parent coordination unresolved 集合移除并写 notification；child session 保留 paused 与原始预算原因，不伪造 completed。running 或其他 blocked child 仍不能被该工具越权停止
+- 全局 `runtime.max_turns_hard` 是 per-run hard limit，显式启用后对 root、foreground child 与 background/queue child 一致生效；默认 `-1` 关闭。child / background（有 `parent_session_id`）还可选择启用独立兜底预算：`max_turns_per_attempt`、`max_active_runtime_sec`、`max_elapsed_sec` 默认全部为 `0`，分别表示 per-attempt turn、仅执行期 active runtime 与从 job/session 创建时起计算的 absolute deadline
+- child effective budget 必须在 queue job 与 child `session.json` 中版本化快照；Settings 热更新只影响新 child/job。active runtime 通过带 cause 的 deadline context 传播到 provider、tool、hook、shell 与 nested execution，paused/offline/background wait 不消耗 active runtime；absolute deadline 以持久化 `deadline_at` 跨进程重启继续生效
+- budget 触顶以可恢复 `paused` 收敛（→ job `blocked`）并通知 parent。parent 可通过 `agent_prompt.budget_extension` 显式追加下一 attempt 的 turns/active runtime、延长 absolute deadline 或清除对应维度后恢复；没有有效 extension 的 budget-paused resume 必须拒绝，不能立即再次 pause
+- parent 可用 `agent_stop` 按 `session_id` 或 `queue_job_id` 取消自己名下的 queued/running/paused child work。running child 先写 durable `cancel_requested`，再 cooperative cancel active context；queued job、已停止 child 和最终 queue outcome 使用 `cancelled`，不得计入 execution failure。对 budget-paused blocked job 的 settle 只把 job 标记为 `cancelled` 并释放 coordination，child session 保留 paused 与原始预算事实
 - parent 在 `background_wait` 等待时，若 unresolved 工作全部不可推进，runtime 写 `parent.coordination.deadlock` 事件并注入 `coordination_deadlock` background notification 唤醒模型决策；`runtime.queue.background_wait_timeout_sec` 提供墙钟兜底。两者都只把事实交还模型，不自动解决 unresolved 工作
 
 ### 2.19 TerminalDashboard
@@ -455,6 +457,7 @@ while true:
 - `awaiting_input`
 - `paused`
 - `completed`
+- `cancelled`
 - `failed`
 
 状态转换：
@@ -464,6 +467,7 @@ new -> running
 running -> awaiting_input
 running -> paused
 running -> completed
+running -> cancelled
 running -> failed
 awaiting_input -> running
 paused -> running
@@ -486,6 +490,8 @@ completed(root) -> running
 - `session.awaiting_input`
 - `session.paused`
 - `session.completed`
+- `session.cancel_requested`
+- `session.cancelled`
 - `session.failed`
 - `user.message`
 - `assistant.delta`
@@ -497,6 +503,7 @@ completed(root) -> running
 - `session.child.queued`
 - `queue.job.claimed`
 - `queue.job.completed`
+- `queue.job.cancelled`
 - `queue.job.failed`
 - `session.steer.requested`
 - `session.steer.queued`

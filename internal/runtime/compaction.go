@@ -532,17 +532,19 @@ func semanticSummaryInputText(messages []session.Message, maxChars int) string {
 
 func compactGoalSnapshot(goal session.SessionGoal) map[string]any {
 	out := map[string]any{
-		"goal_id":           goal.GoalID,
-		"mode":              goal.Mode,
-		"status":            goal.Status,
-		"objective":         goal.Objective,
-		"tokens_used":       goal.TokensUsed,
-		"time_used_seconds": goal.TimeUsedSeconds,
+		"goal_id":                    goal.GoalID,
+		"mode":                       goal.Mode,
+		"status":                     goal.Status,
+		"objective":                  goal.Objective,
+		"tokens_used":                goal.TokensUsed,
+		"provider_time_used_seconds": goal.TimeUsedSeconds,
+		"time_used_seconds":          goal.TimeUsedSeconds,
 	}
 	if goal.TokenBudget != nil {
 		out["token_budget"] = *goal.TokenBudget
 	}
 	if goal.TimeBudgetSeconds != nil {
+		out["provider_time_budget_seconds"] = *goal.TimeBudgetSeconds
 		out["time_budget_seconds"] = *goal.TimeBudgetSeconds
 	}
 	if len(goal.SuccessCriteria) > 0 {

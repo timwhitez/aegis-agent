@@ -129,11 +129,11 @@ func TestDefaultDisablesHardTurnLimitAndUsesFiveMinuteTimeouts(t *testing.T) {
 
 func TestDefaultDisablesChildBudgetAndConfiguresQueueReaper(t *testing.T) {
 	cfg := Default()
-	if cfg.Runtime.ChildBudget.MaxWallClockSec != 0 {
-		t.Fatalf("expected default child wall-clock budget disabled, got %d", cfg.Runtime.ChildBudget.MaxWallClockSec)
+	if cfg.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || cfg.Runtime.ChildBudget.MaxElapsedSec != 0 || cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
+		t.Fatalf("expected canonical child budgets disabled, got %#v", cfg.Runtime.ChildBudget)
 	}
-	if cfg.Runtime.ChildBudget.MaxTurns != 0 {
-		t.Fatalf("expected default child turn budget disabled, got %d", cfg.Runtime.ChildBudget.MaxTurns)
+	if cfg.Runtime.MultiAgent.MaxDepth != 1 || cfg.Runtime.MultiAgent.MaxActiveChildren != 4 || cfg.Runtime.MultiAgent.CancelGraceSec != 5 {
+		t.Fatalf("unexpected default multi-agent resource policy: %#v", cfg.Runtime.MultiAgent)
 	}
 	if cfg.Runtime.Queue.ReaperIntervalMS != 60000 {
 		t.Fatalf("expected default reaper interval 60000ms, got %d", cfg.Runtime.Queue.ReaperIntervalMS)
@@ -148,17 +148,29 @@ func TestDefaultDisablesChildBudgetAndConfiguresQueueReaper(t *testing.T) {
 
 func TestNormalizeClampsNegativeChildBudgetAndQueueReaper(t *testing.T) {
 	cfg := Default()
-	cfg.Runtime.ChildBudget.MaxWallClockSec = -5
-	cfg.Runtime.ChildBudget.MaxTurns = -5
+	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = -5
+	cfg.Runtime.ChildBudget.MaxElapsedSec = -5
+	cfg.Runtime.ChildBudget.MaxTurnsPerAttempt = -5
 	cfg.Runtime.Queue.ReaperIntervalMS = -5
 	cfg.Runtime.Queue.LeaseStaleAfterSec = -5
 	cfg.Runtime.Queue.BackgroundWaitTimeoutSec = -5
 	normalizeConfig(cfg, "/tmp/work")
-	if cfg.Runtime.ChildBudget.MaxWallClockSec != 0 || cfg.Runtime.ChildBudget.MaxTurns != 0 {
+	if cfg.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || cfg.Runtime.ChildBudget.MaxElapsedSec != 0 || cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
 		t.Fatalf("expected negative child budgets clamped to 0, got %#v", cfg.Runtime.ChildBudget)
 	}
 	if cfg.Runtime.Queue.ReaperIntervalMS != 0 || cfg.Runtime.Queue.LeaseStaleAfterSec != 0 || cfg.Runtime.Queue.BackgroundWaitTimeoutSec != 0 {
 		t.Fatalf("expected negative queue reaper values clamped to 0, got %#v", cfg.Runtime.Queue)
+	}
+}
+
+func TestNormalizeMigratesLegacyChildBudgetAliasesToCanonicalFields(t *testing.T) {
+	budget := ChildBudgetConfig{MaxWallClockSec: 1800, MaxTurns: 40}
+	normalizeChildBudget(&budget)
+	if budget.MaxActiveRuntimeSec != 1800 || budget.MaxTurnsPerAttempt != 40 || budget.MaxElapsedSec != 0 {
+		t.Fatalf("legacy child budget did not migrate: %#v", budget)
+	}
+	if budget.MaxWallClockSec != 0 || budget.MaxTurns != 0 {
+		t.Fatalf("legacy aliases must be cleared after normalization: %#v", budget)
 	}
 }
 

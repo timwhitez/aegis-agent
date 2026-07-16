@@ -61,6 +61,7 @@
 - running session `steer` -> 下一安全边界接纳
 - running session `steer --interrupt` -> provider cancel / tool defer
 - cancel -> `paused`
+- parent child cancel -> durable `cancel_requested` -> provider/tool/shell cooperative cancel -> `cancelled`
 - `continue` 恢复
 
 ### 2.5 CLI Tests
@@ -157,6 +158,18 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `Esc` 逻辑触发 interrupt API
 - tool cancel 后写入中断错误结果
 - `steer --interrupt` 对不可取消工具退化为 deferred
+- child active-runtime/absolute deadline 能取消 provider、tool 与 shell，不等待 operation timeout
+- parent 按 session/job 取消 running foreground/background child，cross-parent 请求被拒绝，重复 cancel 幂等
+
+### 4.4.1 Budget matrix
+
+- 全局 `max_turns_hard` finite/unlimited 同时覆盖 root、foreground child 与 queue child，并验证 per-run reset
+- child per-attempt turn、active runtime、absolute deadline 的 pause/extension/resume/cancel/settle
+- effective budget 在 job/session 创建时快照，Settings 热更新不改变旧 job，restart/reconcile 后不漂移
+- budget exceeded/extended/resumed/cancelled event 与 notification 幂等，usage/remaining/overrun/attempt/source 可由 durable files 还原
+- legacy child budget config 可以读取并迁移，new config/API/Settings round-trip 使用 canonical names
+- deterministic local-provider + headless Chrome smoke 验证 Settings 默认 hard Off / child Off、duration 保存与 config/API/audit round-trip、foreground budget pause -> parent extend/resume -> complete、background budget pause -> parent cancel/settle，以及 inspector telemetry / cancelled-not-failed 展示
+- queue claim rename/write 与 child session metadata/state 创建窗口不得让 parent 误报 coordination deadlock，也不得让 session detail 因短暂缺少 queue/state fact 返回 404
 
 ### 4.5 Compaction
 

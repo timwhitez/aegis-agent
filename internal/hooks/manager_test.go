@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"go-cli-agent/internal/config"
@@ -120,6 +121,27 @@ func TestManagerEmitsCommandExitCodeOnFailure(t *testing.T) {
 	}
 	if failed["command_exit_code"] != 3 {
 		t.Fatalf("expected exit code 3, got %#v", failed["command_exit_code"])
+	}
+}
+
+func TestManagerPropagatesCallerCancellationForFailOpenHook(t *testing.T) {
+	manager := New(config.HooksConfig{
+		UserMessage: []config.HookDefinition{
+			{
+				Name:    "cancelled-command",
+				Command: []string{"/bin/sh", "-c", "sleep 30"},
+			},
+		},
+	}, t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	started := time.Now()
+	_, err := manager.Trigger(ctx, "user.message", map[string]any{"text": "hello"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected caller cancellation, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 3*time.Second {
+		t.Fatalf("cancelled fail-open hook returned too slowly: %s", elapsed)
 	}
 }
 

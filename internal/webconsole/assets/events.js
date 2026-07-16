@@ -47,6 +47,7 @@ function isCompactFlowEvent(eventType) {
     'session.child.queued',
     'queue.job.claimed',
     'queue.job.completed',
+    'queue.job.cancelled',
     'queue.job.failed',
     'goal.created',
     'goal.updated',
@@ -68,6 +69,7 @@ function isCompactFlowEvent(eventType) {
     'mission.validation.updated',
     'provider.cancelled',
     'session.paused',
+    'session.cancelled',
     'session.completed',
     'session.failed'
   ].includes(eventType || '');
@@ -167,13 +169,14 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         data: ''
       };
     case 'queue.job.completed':
+    case 'queue.job.cancelled':
     case 'queue.job.failed':
       return {
-        icon: eventType === 'queue.job.failed' ? 'x-circle' : 'check-check',
-        title: eventType === 'queue.job.failed' ? 'Background job failed' : 'Background job completed',
+        icon: eventType === 'queue.job.failed' ? 'x-circle' : eventType === 'queue.job.cancelled' ? 'ban' : 'check-check',
+        title: eventType === 'queue.job.failed' ? 'Background job failed' : eventType === 'queue.job.cancelled' ? 'Background job cancelled' : 'Background job completed',
         copy: data?.agent_role ? `Role: ${data.agent_role}` : 'Background queue state changed.',
         meta: data?.job_id ? shortId(data.job_id) : phaseHeadline(phase),
-        tone: eventType === 'queue.job.failed' ? 'danger' : 'live',
+        tone: eventType === 'queue.job.completed' ? 'live' : 'danger',
         data: ''
       };
     case 'queue.job.notified':
@@ -267,6 +270,15 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         tone: 'queued',
         data: ''
       };
+    case 'session.cancelled':
+      return {
+        icon: 'ban',
+        title: 'Run cancelled',
+        copy: data?.reason || 'The session was cancelled by its parent or operator.',
+        meta: phaseHeadline(phase),
+        tone: 'danger',
+        data: ''
+      };
     case 'session.completed':
       return {
         icon: 'check-check',
@@ -340,6 +352,7 @@ function shouldPromoteLiveActivity(type) {
     'session.child.queued',
     'queue.job.claimed',
     'queue.job.completed',
+    'queue.job.cancelled',
     'queue.job.failed',
     'planmode.input_requested',
     'planmode.input_answered',
@@ -351,6 +364,7 @@ function shouldPromoteLiveActivity(type) {
     'planmode.execution_started',
     'provider.cancelled',
     'session.paused',
+    'session.cancelled',
     'session.completed',
     'session.failed'
   ].includes(type || '');

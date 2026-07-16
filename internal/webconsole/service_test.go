@@ -6628,7 +6628,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(apiBody, "class APIError") || !strings.Contains(apiBody, "function requestJSON") || !strings.Contains(apiBody, "function startSession") || !strings.Contains(apiBody, "function continueSession") || !strings.Contains(apiBody, "function steerSession") {
 		t.Fatalf("unexpected api.js body: %s", apiBody)
 	}
-	if !strings.Contains(apiBody, "child_budget") || !strings.Contains(apiBody, "max_wall_clock_sec: payload.childBudget.maxWallClockSec") {
+	if !strings.Contains(apiBody, "child_budget") || !strings.Contains(apiBody, "max_active_runtime_sec: payload.childBudget.maxActiveRuntimeSec") || !strings.Contains(apiBody, "max_elapsed_sec: payload.childBudget.maxElapsedSec") || !strings.Contains(apiBody, "max_turns_per_attempt: payload.childBudget.maxTurnsPerAttempt") {
 		t.Fatalf("expected api.js to persist optional child budget settings, got api.js body: %s", apiBody)
 	}
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
@@ -9801,7 +9801,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		t.Fatalf("unexpected default guardrails mode: %#v", before)
 	}
 	beforeChildBudget, _ := before["child_budget"].(map[string]any)
-	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_wall_clock_sec"] != float64(0) || beforeChildBudget["max_turns"] != float64(0) {
+	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_active_runtime_sec"] != float64(0) || beforeChildBudget["max_elapsed_sec"] != float64(0) || beforeChildBudget["max_turns_per_attempt"] != float64(0) {
 		t.Fatalf("expected default child budget disabled, got %#v", beforeChildBudget)
 	}
 
@@ -9813,11 +9813,13 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		"reasoning_mode":          "xhigh",
 		"api_key":                 "secret-key",
 		"guardrails_mode":         "standard",
+		"max_turns_soft":          32,
 		"disable_hard_turn_limit": true,
 		"child_budget": map[string]any{
-			"disabled":           false,
-			"max_wall_clock_sec": 3600,
-			"max_turns":          250,
+			"disabled":               false,
+			"max_active_runtime_sec": 3600,
+			"max_elapsed_sec":        7200,
+			"max_turns_per_attempt":  250,
 		},
 	}, http.StatusOK, nil)
 
@@ -9833,7 +9835,10 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		t.Fatalf("expected hard turn limit to be disabled, got %#v", after)
 	}
 	afterChildBudget, _ := after["child_budget"].(map[string]any)
-	if afterChildBudget["disabled"] != false || afterChildBudget["max_wall_clock_sec"] != float64(3600) || afterChildBudget["max_turns"] != float64(250) {
+	if after["max_turns_soft"] != float64(32) {
+		t.Fatalf("expected soft turn checkpoint update, got %#v", after)
+	}
+	if afterChildBudget["disabled"] != false || afterChildBudget["max_active_runtime_sec"] != float64(3600) || afterChildBudget["max_elapsed_sec"] != float64(7200) || afterChildBudget["max_turns_per_attempt"] != float64(250) {
 		t.Fatalf("expected enabled child budget after update, got %#v", afterChildBudget)
 	}
 	providers, _ := after["providers"].(map[string]any)
@@ -9876,7 +9881,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if !strings.Contains(string(configBytes), "context_window_tokens: 272000") {
 		t.Fatalf("expected context window to persist to config, got %q", string(configBytes))
 	}
-	if !strings.Contains(string(configBytes), "max_wall_clock_sec: 3600") || !strings.Contains(string(configBytes), "max_turns: 250") {
+	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 3600") || !strings.Contains(string(configBytes), "max_elapsed_sec: 7200") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 250") || strings.Contains(string(configBytes), "max_wall_clock_sec:") || strings.Contains(string(configBytes), "\n        max_turns:") {
 		t.Fatalf("expected child budget to persist to config, got %q", string(configBytes))
 	}
 }
@@ -9907,20 +9912,75 @@ func TestServiceConfigRejectsInvalidChildBudget(t *testing.T) {
 			"max_turns":          20,
 		},
 	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":               true,
+			"max_active_runtime_sec": -1,
+		},
+	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":               false,
+			"max_active_runtime_sec": 60,
+			"max_wall_clock_sec":     120,
+		},
+	}, http.StatusBadRequest, nil)
 
 	updated, err := svc.configSnapshot()
 	if err != nil {
 		t.Fatalf("config snapshot: %v", err)
 	}
-	if updated.Runtime.ChildBudget.MaxWallClockSec != 0 || updated.Runtime.ChildBudget.MaxTurns != 0 {
+	if updated.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || updated.Runtime.ChildBudget.MaxElapsedSec != 0 || updated.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
 		t.Fatalf("invalid child budget requests must not mutate config, got %#v", updated.Runtime.ChildBudget)
+	}
+}
+
+func TestServiceConfigAcceptsLegacyChildBudgetAndReturnsCanonicalShape(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":           false,
+			"max_wall_clock_sec": 1800,
+			"max_turns":          40,
+		},
+	}, http.StatusOK, nil)
+
+	var response map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &response)
+	childBudget, _ := response["child_budget"].(map[string]any)
+	if childBudget["disabled"] != false || childBudget["max_active_runtime_sec"] != float64(1800) || childBudget["max_elapsed_sec"] != float64(0) || childBudget["max_turns_per_attempt"] != float64(40) {
+		t.Fatalf("unexpected canonical child budget response: %#v", childBudget)
+	}
+	if _, exists := childBudget["max_wall_clock_sec"]; exists {
+		t.Fatalf("canonical response must not emit legacy max_wall_clock_sec: %#v", childBudget)
+	}
+	if _, exists := childBudget["max_turns"]; exists {
+		t.Fatalf("canonical response must not emit legacy max_turns: %#v", childBudget)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	text := string(configBytes)
+	if !strings.Contains(text, "max_active_runtime_sec: 1800") || !strings.Contains(text, "max_turns_per_attempt: 40") || strings.Contains(text, "max_wall_clock_sec:") || strings.Contains(text, "\n        max_turns:") {
+		t.Fatalf("legacy request was not canonicalized on write: %q", text)
 	}
 }
 
 func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
 	cfg := testConfig(t, "")
-	cfg.Runtime.ChildBudget.MaxWallClockSec = 7200
-	cfg.Runtime.ChildBudget.MaxTurns = 500
+	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = 7200
+	cfg.Runtime.ChildBudget.MaxElapsedSec = 14400
+	cfg.Runtime.ChildBudget.MaxTurnsPerAttempt = 500
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {
@@ -9933,9 +9993,10 @@ func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
 
 	postJSON(t, ts.URL+"/api/config", map[string]any{
 		"child_budget": map[string]any{
-			"disabled":           true,
-			"max_wall_clock_sec": 7200,
-			"max_turns":          500,
+			"disabled":               true,
+			"max_active_runtime_sec": 7200,
+			"max_elapsed_sec":        14400,
+			"max_turns_per_attempt":  500,
 		},
 	}, http.StatusOK, nil)
 
@@ -9943,15 +10004,126 @@ func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config snapshot: %v", err)
 	}
-	if updated.Runtime.ChildBudget.MaxWallClockSec != 0 || updated.Runtime.ChildBudget.MaxTurns != 0 {
-		t.Fatalf("disabled child budget must persist as 0/0, got %#v", updated.Runtime.ChildBudget)
+	if updated.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || updated.Runtime.ChildBudget.MaxElapsedSec != 0 || updated.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
+		t.Fatalf("disabled child budget must persist as 0/0/0, got %#v", updated.Runtime.ChildBudget)
 	}
 	configBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read persisted config: %v", err)
 	}
-	if !strings.Contains(string(configBytes), "max_wall_clock_sec: 0") || !strings.Contains(string(configBytes), "max_turns: 0") {
-		t.Fatalf("expected disabled child budget persisted as 0/0, got %q", string(configBytes))
+	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 0") || !strings.Contains(string(configBytes), "max_elapsed_sec: 0") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 0") {
+		t.Fatalf("expected disabled child budget persisted as 0/0/0, got %q", string(configBytes))
+	}
+}
+
+func TestGoalDraftFromWebRequestUsesCanonicalProviderTimeAndLegacyAlias(t *testing.T) {
+	canonicalMinutes := int64(2)
+	legacyMinutes := int64(1)
+	draft, err := goalDraftFromWebRequest(&GoalDraftRequest{
+		Enabled:                   true,
+		Objective:                 "canonical provider time",
+		ProviderTimeBudgetMinutes: &canonicalMinutes,
+		TimeBudgetMinutes:         &legacyMinutes,
+	}, session.GoalSourceWeb)
+	if err != nil || draft == nil || draft.TimeBudgetSeconds == nil || *draft.TimeBudgetSeconds != 120 {
+		t.Fatalf("canonical provider time must win: draft=%#v err=%v", draft, err)
+	}
+	draft, err = goalDraftFromWebRequest(&GoalDraftRequest{
+		Enabled:           true,
+		Objective:         "legacy provider time",
+		TimeBudgetMinutes: &legacyMinutes,
+	}, session.GoalSourceWeb)
+	if err != nil || draft == nil || draft.TimeBudgetSeconds == nil || *draft.TimeBudgetSeconds != 60 {
+		t.Fatalf("legacy provider time alias must remain readable: draft=%#v err=%v", draft, err)
+	}
+}
+
+func TestServiceSessionDetailAndOverviewDistinguishBudgetPausedCancelledAndFailed(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	now := time.Now().UTC()
+	pausedMeta := testSessionMetadata(t, "session_budget_paused_api")
+	pausedMeta.EffectiveBudget = session.NewEffectiveBudget(session.BudgetSourceRuntimeChild, 2, 60, 120, 0, now)
+	session.RefreshEffectiveBudget(pausedMeta.EffectiveBudget, 2)
+	pausedMeta.EffectiveBudget.Status = session.BudgetStatusExhausted
+	pausedMeta.EffectiveBudget.LastReason = session.ChildBudgetTurnsExceededReason
+	if err := svc.store.Create(pausedMeta, session.State{
+		Status:      session.StatusPaused,
+		Phase:       "interrupt",
+		PauseReason: session.ChildBudgetTurnsExceededReason,
+		Turn:        2,
+		UpdatedAt:   now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create budget-paused session: %v", err)
+	}
+	for _, item := range []struct {
+		id     string
+		status string
+		error  string
+	}{
+		{id: "session_cancelled_api", status: session.StatusCancelled},
+		{id: "session_failed_api", status: session.StatusFailed, error: "execution failed"},
+	} {
+		meta := testSessionMetadata(t, item.id)
+		if err := svc.store.Create(meta, session.State{Status: item.status, Phase: item.status, LastError: item.error, UpdatedAt: now.Format(time.RFC3339Nano)}); err != nil {
+			t.Fatalf("create %s session: %v", item.status, err)
+		}
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_cancelled_api",
+		CreatedAt:     now.Format(time.RFC3339Nano),
+		UpdatedAt:     now.Format(time.RFC3339Nano),
+		Status:        session.QueueStatusCancelled,
+		Prompt:        "cancelled",
+		Mode:          session.ModeExec,
+		Background:    true,
+		StopReason:    session.QueueStopReasonAgentStop,
+		LastError:     "cancelled by parent",
+	}); err != nil {
+		t.Fatalf("save cancelled job: %v", err)
+	}
+	if err := svc.store.SaveJob(session.QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_failed_api",
+		CreatedAt:     now.Format(time.RFC3339Nano),
+		UpdatedAt:     now.Format(time.RFC3339Nano),
+		Status:        session.QueueStatusFailed,
+		Prompt:        "failed",
+		Mode:          session.ModeExec,
+		Background:    true,
+		LastError:     "execution failed",
+	}); err != nil {
+		t.Fatalf("save failed job: %v", err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+pausedMeta.ID, &detail)
+	if detail.State.Status != session.StatusPaused || detail.State.PauseReason != session.ChildBudgetTurnsExceededReason || detail.Metadata.EffectiveBudget == nil {
+		t.Fatalf("session detail lost budget pause facts: %#v", detail)
+	}
+	budget := detail.Metadata.EffectiveBudget
+	if budget.Attempt != 1 || budget.UsedTurns != 2 || budget.RemainingTurns == nil || *budget.RemainingTurns != 0 || budget.Status != session.BudgetStatusExhausted || budget.LastReason != session.ChildBudgetTurnsExceededReason {
+		t.Fatalf("session detail lost effective/used/remaining budget facts: %#v", budget)
+	}
+	var overview OverviewResponse
+	postGetJSON(t, ts.URL+"/api/overview", &overview)
+	if overview.SessionCounters[session.StatusPaused] != 1 || overview.SessionCounters[session.StatusCancelled] != 1 || overview.SessionCounters[session.StatusFailed] != 1 {
+		t.Fatalf("session counters do not distinguish paused/cancelled/failed: %#v", overview.SessionCounters)
+	}
+	if overview.QueueCounters[session.QueueStatusCancelled] != 1 || overview.QueueCounters[session.QueueStatusFailed] != 1 {
+		t.Fatalf("queue counters do not distinguish cancelled/failed: %#v", overview.QueueCounters)
+	}
+	for _, failure := range overview.RecentFailures {
+		if failure.Status == session.StatusCancelled || failure.Status == session.QueueStatusCancelled {
+			t.Fatalf("cancelled work must not pollute recent failures: %#v", overview.RecentFailures)
+		}
 	}
 }
 

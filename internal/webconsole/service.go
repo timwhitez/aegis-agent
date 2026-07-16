@@ -1284,6 +1284,7 @@ func webQueueStatuses() []string {
 		session.QueueStatusRunning,
 		session.QueueStatusBlocked,
 		session.QueueStatusCompleted,
+		session.QueueStatusCancelled,
 		session.QueueStatusFailed,
 	}
 }
@@ -4387,12 +4388,14 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"default_provider":        cfg.DefaultProvider,
 		"guardrails_mode":         cfg.Runtime.GuardrailsMode,
+		"max_turns_soft":          cfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
 		"child_budget": map[string]any{
-			"disabled":           cfg.Runtime.ChildBudget.MaxWallClockSec <= 0 && cfg.Runtime.ChildBudget.MaxTurns <= 0,
-			"max_wall_clock_sec": cfg.Runtime.ChildBudget.MaxWallClockSec,
-			"max_turns":          cfg.Runtime.ChildBudget.MaxTurns,
+			"disabled":               cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
+			"max_active_runtime_sec": cfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
+			"max_elapsed_sec":        cfg.Runtime.ChildBudget.MaxElapsedSec,
+			"max_turns_per_attempt":  cfg.Runtime.ChildBudget.MaxTurnsPerAttempt,
 		},
 		"providers":      provs,
 		"role_providers": roleProviderOverridesResponse(cfg),
@@ -4460,26 +4463,63 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
 	}
+	if req.MaxTurnsSoft != nil {
+		if *req.MaxTurnsSoft <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("max_turns_soft must be positive"))
+			return
+		}
+		updatedCfg.Runtime.MaxTurnsSoft = *req.MaxTurnsSoft
+	}
 	if req.ChildBudget != nil {
 		childBudget := *req.ChildBudget
+		if childBudget.MaxActiveRuntimeSec < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_active_runtime_sec must be non-negative"))
+			return
+		}
+		if childBudget.MaxElapsedSec < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_elapsed_sec must be non-negative"))
+			return
+		}
+		if childBudget.MaxTurnsPerAttempt < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns_per_attempt must be non-negative"))
+			return
+		}
+		if childBudget.MaxWallClockSec < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_wall_clock_sec must be non-negative"))
+			return
+		}
+		if childBudget.MaxTurns < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns must be non-negative"))
+			return
+		}
+		if childBudget.MaxActiveRuntimeSec > 0 && childBudget.MaxWallClockSec > 0 && childBudget.MaxActiveRuntimeSec != childBudget.MaxWallClockSec {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_active_runtime_sec conflicts with legacy max_wall_clock_sec"))
+			return
+		}
+		if childBudget.MaxTurnsPerAttempt > 0 && childBudget.MaxTurns > 0 && childBudget.MaxTurnsPerAttempt != childBudget.MaxTurns {
+			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns_per_attempt conflicts with legacy max_turns"))
+			return
+		}
+		maxActiveRuntimeSec := childBudget.MaxActiveRuntimeSec
+		if maxActiveRuntimeSec <= 0 && childBudget.MaxWallClockSec > 0 {
+			maxActiveRuntimeSec = childBudget.MaxWallClockSec
+		}
+		maxTurnsPerAttempt := childBudget.MaxTurnsPerAttempt
+		if maxTurnsPerAttempt <= 0 && childBudget.MaxTurns > 0 {
+			maxTurnsPerAttempt = childBudget.MaxTurns
+		}
 		if childBudget.Disabled {
-			updatedCfg.Runtime.ChildBudget.MaxWallClockSec = 0
-			updatedCfg.Runtime.ChildBudget.MaxTurns = 0
+			updatedCfg.Runtime.ChildBudget = config.ChildBudgetConfig{}
 		} else {
-			if childBudget.MaxWallClockSec < 0 {
-				writeError(w, http.StatusBadRequest, errors.New("child_budget.max_wall_clock_sec must be non-negative"))
+			if maxActiveRuntimeSec == 0 && childBudget.MaxElapsedSec == 0 && maxTurnsPerAttempt == 0 {
+				writeError(w, http.StatusBadRequest, errors.New("enabled child_budget requires max_active_runtime_sec, max_elapsed_sec, or max_turns_per_attempt to be positive"))
 				return
 			}
-			if childBudget.MaxTurns < 0 {
-				writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns must be non-negative"))
-				return
+			updatedCfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+				MaxActiveRuntimeSec: maxActiveRuntimeSec,
+				MaxElapsedSec:       childBudget.MaxElapsedSec,
+				MaxTurnsPerAttempt:  maxTurnsPerAttempt,
 			}
-			if childBudget.MaxWallClockSec == 0 && childBudget.MaxTurns == 0 {
-				writeError(w, http.StatusBadRequest, errors.New("enabled child_budget requires max_wall_clock_sec or max_turns to be positive"))
-				return
-			}
-			updatedCfg.Runtime.ChildBudget.MaxWallClockSec = childBudget.MaxWallClockSec
-			updatedCfg.Runtime.ChildBudget.MaxTurns = childBudget.MaxTurns
 		}
 	}
 
@@ -4640,18 +4680,20 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 func configAuditData(updatedCfg *config.Config, configPath string) map[string]any {
 	return map[string]any{
-		"provider":               updatedCfg.DefaultProvider,
-		"config_path":            configPath,
-		"guardrails_mode":        updatedCfg.Runtime.GuardrailsMode,
-		"max_turns_hard":         updatedCfg.Runtime.MaxTurnsHard,
-		"hard_turn_limit_active": updatedCfg.Runtime.MaxTurnsHard > 0,
-		"child_budget_active":    updatedCfg.Runtime.ChildBudget.MaxWallClockSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurns > 0,
-		"child_budget_wall_sec":  updatedCfg.Runtime.ChildBudget.MaxWallClockSec,
-		"child_budget_max_turns": updatedCfg.Runtime.ChildBudget.MaxTurns,
-		"api_provider":           updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
-		"reasoning_mode":         providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
-		"reasoning_summary":      providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
-		"role_provider_count":    roleProviderOverrideCount(updatedCfg.RoleProviders),
+		"provider":                        updatedCfg.DefaultProvider,
+		"config_path":                     configPath,
+		"guardrails_mode":                 updatedCfg.Runtime.GuardrailsMode,
+		"max_turns_soft":                  updatedCfg.Runtime.MaxTurnsSoft,
+		"max_turns_hard":                  updatedCfg.Runtime.MaxTurnsHard,
+		"hard_turn_limit_active":          updatedCfg.Runtime.MaxTurnsHard > 0,
+		"child_budget_active":             updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec > 0 || updatedCfg.Runtime.ChildBudget.MaxElapsedSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt > 0,
+		"child_budget_active_runtime_sec": updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
+		"child_budget_elapsed_sec":        updatedCfg.Runtime.ChildBudget.MaxElapsedSec,
+		"child_budget_turns_per_attempt":  updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt,
+		"api_provider":                    updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
+		"reasoning_mode":                  providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
+		"reasoning_summary":               providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),
+		"role_provider_count":             roleProviderOverrideCount(updatedCfg.RoleProviders),
 	}
 }
 
@@ -4668,6 +4710,7 @@ func configRequestHasProviderScopedFields(req UpdateConfigRequest) bool {
 func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
 	return strings.TrimSpace(req.Provider) != "" ||
 		strings.TrimSpace(req.GuardrailsMode) != "" ||
+		req.MaxTurnsSoft != nil ||
 		req.MaxTurnsHard != nil ||
 		req.DisableHardTurnLimit ||
 		req.ChildBudget != nil ||
@@ -6795,7 +6838,7 @@ func (s *Service) pruneInactiveHandles() {
 }
 
 func currentProcessHandleCanBePruned(status string) bool {
-	return status == session.StatusCompleted || status == session.StatusFailed
+	return status == session.StatusCompleted || status == session.StatusCancelled || status == session.StatusFailed
 }
 
 func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string) error {
@@ -7169,11 +7212,15 @@ func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.Goa
 		tokenBudget = &value
 	}
 	var timeBudgetSeconds *int64
-	if req.TimeBudgetMinutes != nil {
-		if *req.TimeBudgetMinutes <= 0 {
-			return nil, errors.New("goal time budget must be positive")
+	timeBudgetMinutes := req.ProviderTimeBudgetMinutes
+	if timeBudgetMinutes == nil {
+		timeBudgetMinutes = req.TimeBudgetMinutes
+	}
+	if timeBudgetMinutes != nil {
+		if *timeBudgetMinutes <= 0 {
+			return nil, errors.New("goal provider time budget must be positive")
 		}
-		value := *req.TimeBudgetMinutes * 60
+		value := *timeBudgetMinutes * 60
 		timeBudgetSeconds = &value
 	}
 	draft := &session.GoalDraft{
@@ -7208,6 +7255,7 @@ func isGoalClientError(err error) bool {
 	return strings.Contains(text, "goal objective") ||
 		strings.Contains(text, "objective exceeds") ||
 		strings.Contains(text, "goal token budget") ||
+		strings.Contains(text, "goal provider time budget") ||
 		strings.Contains(text, "goal time budget") ||
 		strings.Contains(text, "invalid goal mode") ||
 		strings.Contains(text, "invalid goal status") ||
@@ -7717,7 +7765,7 @@ func (s *Service) unresolvedLinkedChildren(ids []string, children []session.Sess
 			}
 			status = state.Status
 		}
-		if status == "" || (status != session.StatusCompleted && status != session.StatusFailed) {
+		if status == "" || (status != session.StatusCompleted && status != session.StatusCancelled && status != session.StatusFailed) {
 			out = append(out, id)
 		}
 	}
@@ -7743,7 +7791,7 @@ func (s *Service) unresolvedLinkedJobs(ids []string, jobs []session.QueueJob) ([
 			}
 			status = job.Status
 		}
-		if status == "" || (status != session.QueueStatusCompleted && status != session.QueueStatusFailed) {
+		if status == "" || (status != session.QueueStatusCompleted && status != session.QueueStatusCancelled && status != session.QueueStatusFailed) {
 			out = append(out, id)
 		}
 	}
@@ -7773,17 +7821,21 @@ func appendUniqueString(values []string, value string) []string {
 
 func webGoalEventData(goal session.SessionGoal) map[string]any {
 	data := map[string]any{
-		"goal_id":           goal.GoalID,
-		"mode":              goal.Mode,
-		"status":            goal.Status,
-		"objective":         goal.Objective,
-		"tokens_used":       goal.TokensUsed,
-		"time_used_seconds": goal.TimeUsedSeconds,
+		"goal_id":                    goal.GoalID,
+		"mode":                       goal.Mode,
+		"status":                     goal.Status,
+		"objective":                  goal.Objective,
+		"tokens_used":                goal.TokensUsed,
+		"provider_time_used_seconds": goal.TimeUsedSeconds,
+		"time_used_seconds":          goal.TimeUsedSeconds,
+		"accounting_scope":           "provider_time",
+		"measurement_source":         "provider_call_elapsed",
 	}
 	if goal.TokenBudget != nil {
 		data["token_budget"] = *goal.TokenBudget
 	}
 	if goal.TimeBudgetSeconds != nil {
+		data["provider_time_budget_seconds"] = *goal.TimeBudgetSeconds
 		data["time_budget_seconds"] = *goal.TimeBudgetSeconds
 	}
 	if goal.CompletedAt != "" {

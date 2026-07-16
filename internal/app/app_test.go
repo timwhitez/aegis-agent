@@ -22,6 +22,12 @@ import (
 	"go-cli-agent/internal/session"
 )
 
+func TestCancelledSessionEventIsTerminalForRenderer(t *testing.T) {
+	if !isTerminalSessionEvent(events.Event{Type: "session.cancelled"}) {
+		t.Fatal("session.cancelled must stop renderer wait loops")
+	}
+}
+
 type fakeRunner struct {
 	bus            *events.Bus
 	startResult    runtime.RunResult

@@ -59,6 +59,7 @@ child session 使用独立工作目录执行。当前支持：
 - `requested_workdir`
 - `queue_job_id`
 - `isolation`
+- `effective_budget`：versioned child policy snapshot，包含 source、turn/time scope、limits、attempt、used/remaining 与 status
 
 其中 `isolation` 结构：
 
@@ -167,17 +168,17 @@ child session 使用独立工作目录执行。当前支持：
 
 输入：
 
-- `queue_job_id`
+- `session_id?`
+- `queue_job_id?`
 
 行为：
 
-- parent agent 显式停止一个尚未被 worker claim 的 queued background child job
-- parent agent 也可显式停止并结算一个 linked child 已因 `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded` 暂停的 blocked job
-- stopped job 进入 failed terminal queue 状态，并从 parent coordination 的 unresolved job 集合中移除
+- parent agent 可显式取消自己名下的 foreground/background child，目标可按 child session 或 queue job 指定
+- queued job 直接进入 `cancelled`；running child 先落盘 `cancel_requested`，再 cooperative cancel active provider/tool/hook/shell context；无本进程 handle 时 request 继续作为 durable fact，由 owner watcher 或 recovery safe boundary 接纳
+- parent agent 也可显式停止并结算一个 linked child 已因 `child_budget_*_exceeded` 暂停的 blocked job；job 进入 `cancelled` terminal queue 状态并从 unresolved 集合移除，child 保留 paused/budget evidence
 - runtime 写入 background notification，使 parent transcript 后续可看到该 job 已被停止
-- budget-paused blocked job 被结算后，child session 保留 `paused` 与原始预算原因；runtime 不把它伪造为 completed
-- 该工具不能安全停止 `running` child，也不能停止 awaiting input、manual stop 或其他原因形成的 blocked child；这些情况仍应使用 `agent_prompt` / `agent_wait` 或交给拥有 active handle 的控制面处理
-- 不允许把 running child 仅在 parent coordination 中标记为 resolved；停止必须有真实 durable 结果或可验证的控制动作
+- execution failure 继续使用 `failed`；parent/operator cancellation 不得进入 failed counters/retry/alert 语义
+- 重放同一 cancel request 必须幂等，不重复终止、通知或 terminal event；不允许只改 parent coordination 而没有真实 cancel request/terminal durable fact
 
 #### `agent_prompt`
 
@@ -187,12 +188,21 @@ child session 使用独立工作目录执行。当前支持：
 - `queue_job_id?`
 - `message`
 - `interrupt?`
+- `budget_extension?`
+  - `add_turns?`
+  - `add_active_runtime_sec?`
+  - `extend_deadline_sec?`
+  - `clear_turn_limit?`
+  - `clear_active_runtime_limit?`
+  - `clear_absolute_deadline?`
+  - `reason?`
 
 行为：
 
 - parent agent 可以向当前 parent 名下的 running child session 或已启动 / blocked 且可恢复的 background child job 发送一条 durable steer prompt
 - prompt 通过 child session 的 `control/steer.jsonl` 进入现有 Live Steer 流程，最终以普通 user message 进入 child transcript，而不是引入第二套控制状态
 - 对 running child，`agent_prompt` 走 steer；对已 linked child 且 child session 为 `paused` / `awaiting_input` / `failed`、queue job 为 `blocked` 的可恢复 work，`agent_prompt` 可显式 continue 该 child 并把 prompt 作为 parent intervention 追加进去
+- 对 budget-paused child，普通 prompt 不足以恢复：parent 必须提供能解除已耗尽维度的 `budget_extension`。runtime 基于上一 attempt 的 remaining + extension 创建新 attempt，记录 previous/effective budget、parent、reason 和 audit event；未提供有效 extension 时明确拒绝
 - `interrupt` 默认 `false`，普通 parent prompt 只作为 durable steer 进入 child，避免抢占仍在自主探索的 sub-agent
 - 当 parent 明确发现 child 长时间重复 discovery、重复 read/grep/load_skill、范围漂移或需要立即交付当前证据时，可以显式传 `interrupt=true` 请求 best-effort 抢占
 - 该工具不会创建、取消、停止或标记 child work 完成；parent 仍需用 `agent_status` / `agent_list` / `agent_wait` 回收结果，或用 `agent_stop` 停止尚未启动的 queued job以及显式结算 budget-paused blocked job
@@ -311,7 +321,7 @@ parent 通过 tool 或 CLI 获取结构化结果，不直接复用 child 的 std
 
 ### 9.1 depth limit
 
-默认 `enabled = true`，`max_depth = 4`。默认暴露 `agent_spawn` / `agent_status` / `agent_list`，operator 可通过 `runtime.multi_agent.enabled=false` 显式收窄。
+默认 `enabled = true`、`max_depth = 1`、`max_active_children = 4`。当前产品只允许 root master 创建 child，因此默认深度与真实能力一致；advanced profile 后续若放开 nesting，仍必须受显式 depth limit。active child cap 同时覆盖 foreground 与 background，queue worker count 不能绕过它。默认暴露 `agent_spawn` / `agent_status` / `agent_list`，operator 可通过 `runtime.multi_agent.enabled=false` 显式收窄。
 
 超过时：
 

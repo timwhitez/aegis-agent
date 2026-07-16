@@ -850,6 +850,7 @@ func doctorQueueStatuses() []string {
 		session.QueueStatusRunning,
 		session.QueueStatusBlocked,
 		session.QueueStatusCompleted,
+		session.QueueStatusCancelled,
 		session.QueueStatusFailed,
 	}
 }

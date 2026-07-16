@@ -95,15 +95,15 @@ func TestEngineChildBudgetTurnsExceededPausesChild(t *testing.T) {
 	}
 }
 
-func TestEngineChildBudgetWallClockExceededPausesChild(t *testing.T) {
+func TestEngineChildBudgetAbsoluteDeadlineExceededPausesChild(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
 	cfg.Runtime.MaxTurnsHard = -1
 	cfg.Runtime.ChildBudget.MaxTurns = 0
-	cfg.Runtime.ChildBudget.MaxWallClockSec = 3600
+	cfg.Runtime.ChildBudget.MaxElapsedSec = 3600
 	engine, childMeta, state, registry, hookManager, catalog := childEngineWithConfig(t, cfg)
 
-	// Backdate creation so the wall-clock budget is already exceeded at run start.
+	// Backdate creation so the durable absolute deadline is already exceeded at run start.
 	childMeta.CreatedAt = time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
 
 	if err := engine.store.AppendMessage(childMeta.ID, session.NewMessage("user", "go")); err != nil {
@@ -124,8 +124,8 @@ func TestEngineChildBudgetWallClockExceededPausesChild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if persisted.PauseReason != "child_budget_wallclock_exceeded" {
-		t.Fatalf("expected child_budget_wallclock_exceeded, got %q", persisted.PauseReason)
+	if persisted.PauseReason != session.ChildBudgetAbsoluteDeadlineExceededReason {
+		t.Fatalf("expected %s, got %q", session.ChildBudgetAbsoluteDeadlineExceededReason, persisted.PauseReason)
 	}
 }
 
@@ -407,6 +407,14 @@ func TestEngineBackgroundWaitInterventionReminderIsNotRepeated(t *testing.T) {
 	}
 	if err := engine.store.SaveJob(job); err != nil {
 		t.Fatalf("save job: %v", err)
+	}
+	reconciledJob, err := engine.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("reconcile blocked job before accepting notifications: %v", err)
+	}
+	job = reconciledJob
+	if err := engine.store.EnsureBackgroundNotification(parent.ID, session.NewBackgroundNotification(job)); err != nil {
+		t.Fatalf("seed blocked job notification: %v", err)
 	}
 	if err := addParentQueueJob(engine.store, parent.ID, job.ID, parentWaitAll); err != nil {
 		t.Fatalf("seed coordination: %v", err)

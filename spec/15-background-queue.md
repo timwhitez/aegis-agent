@@ -25,6 +25,8 @@
     job_*.json
   completed/
     job_*.json
+  cancelled/
+    job_*.json
   failed/
     job_*.json
 
@@ -73,7 +75,8 @@
   "isolation_mode": "auto",
   "isolation_root": "",
   "last_error": "",
-  "final_text": ""
+  "final_text": "",
+  "effective_budget": {}
 }
 ```
 
@@ -176,6 +179,7 @@ worker 启动真实 `Runner.Start(...)`，不是伪执行或 dry-run。
 状态映射：
 
 - child `completed` -> queue `completed`
+- child `cancelled` -> queue `cancelled`
 - child `failed` -> queue `failed`
 - child `paused` / `awaiting_input` / 其他可恢复非终态 -> queue `blocked`，保留 `session_id`、`session_status` 与 `last_error` 方便后续 `continue`
 - 只有仍由 worker 持有并心跳更新的执行中 job 保持 `running`
@@ -210,6 +214,12 @@ parent-linked queue job 只能由 root master session 创建。`depth > 0` 或�
 - child session 最终状态为 `failed`
 - worktree 隔离准备失败
 
+以下情况标记 job `cancelled`：
+
+- parent/operator 在 worker claim 前取消 queued job
+- running child 接纳 durable cancel request 并以 `cancelled` 终止
+- parent 明确 settle 不再需要的 budget-paused blocked job；linked child 保留 paused budget evidence
+
 以下情况标记 job `blocked`：
 
 - child session 停在 `paused`
@@ -239,18 +249,27 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 当 parent 因 `agent_wait` / `resume_parent` 停车（`background_wait`）等待后台结果时，如果其全部 unresolved 工作都无法再自行前进，parent 会无限等待。runtime 必须检测并唤醒：
 
 - 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死、终态但仍挂在 unresolved、或 unresolved job 文件已缺失），同时每个 unresolved child session 都为非 `running` 的非终态或文件已缺失。
+- queue claim 使用 `queued -> running` rename 后再落盘带 lease 的 running snapshot；parent coordination / deadlock 检测必须在同一 durable `claim.lock` 下读取不触发 reconcile 的 canonical snapshot，等 rename + lease write 临界区结束后再判断。锁内仍缺失才可按 orphan/stalled 处理，不能靠任意 sleep 窗口猜测，也不能在健康 worker 刚 claim 时提前唤醒 parent。
 - 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
 - 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 或人工 / Web `continue` 旧 parked/failed parent session 时不再重复写入同一 liveness notification，也不能静默重新停车，而是向 parent transcript 写入需要 master 介入的 reminder 并继续 parent loop。该 master-intervention reminder 也必须按排序后的 stalled children/jobs 语义事实去重；已提醒过但事实未变化时，runtime 不应刷屏。实现上去重应使用轻量持久索引或尾部有界扫描，避免在 parent loop 热路径对长 `messages.jsonl` 做每次全量扫描；历史无 signature 的 reminder 可用 bounded tail 文本匹配兼容。
 - 兜底超时：`runtime.queue.background_wait_timeout_sec`（默认 `0` 不超时）为等待墙钟上界，超时写 `session.background.wait_timeout` 并回到 `awaiting_input`。
 
 ### 5.8 child / background 会话兜底预算
 
-为防止单个委派会话无限 loop（只烧 token 不产出），runtime 对 child / background（有 `parent_session_id`）会话施加兜底预算：
+为防止单个委派会话无限 loop（只烧 token 不产出），runtime 对 child / background（有 `parent_session_id`）会话提供默认关闭的兜底预算：
 
-- `runtime.child_budget.max_wall_clock_sec` 与 `max_turns` 默认均为 `0`（关闭）；Settings / config 可显式启用任一维度。墙钟从会话 `created_at` 计（跨恢复累计）。
-- root master session 不受此预算约束，仍沿用 `runtime.max_turns_hard`（默认 `-1` 关闭）。
-- 超限时 child 以可恢复方式 `paused`（reason `child_budget_turns_exceeded` / `child_budget_wallclock_exceeded`），并记录 `session.child_budget.exceeded` 事件；其 linked queue job 随之 reconcile 为 `blocked` 并写 parent notification，由模型决定续跑、停止或结算。
-- parent 对 budget-paused linked blocked job 调用 `agent_stop` 时，runtime 将 job 转为 `failed` terminal、写 `stop_reason=agent_stop`、从 unresolved queue jobs 移除并更新 notification；child session 保留原始 paused/budget reason。其他 blocked 原因与 running job 继续拒绝该操作。
+- canonical 配置为 `max_turns_per_attempt`、`max_active_runtime_sec`、`max_elapsed_sec`，默认全部 `0`。旧 `max_turns` / `max_wall_clock_sec` 只做兼容读取。
+- `max_turns_per_attempt` 只在当前 budget attempt 内计数；普通 continue 不重置 attempt。`max_active_runtime_sec` 只累计 runtime 活跃执行时间；paused、awaiting input、queue wait 和进程离线不消耗。`max_elapsed_sec` 在 job/session 创建时固化为 `absolute_deadline_at`，上述等待时间都会推进该绝对边界。
+- job 创建时快照 `effective_budget`，worker 创建 child 时原样传入 `session.json`。Settings 热更新只影响新 job；running/paused job 继续使用自己的 snapshot。
+- 全局 `max_turns_hard` 是独立的 per-run hard limit，显式启用后也适用于 child；child effective budget 与全局/operation timeout 同时存在时，以最先到达的边界为准并记录准确 reason。
+- active-runtime 与 absolute deadline 通过 `context.WithDeadlineCause` 或 `context.WithTimeoutCause` 进入 provider/tool/hook/shell cancellation chain。超限时 child 以 `paused` 收敛，reason 为 `child_budget_turns_exceeded`、`child_budget_active_runtime_exceeded` 或 `child_budget_absolute_deadline_exceeded`，并记录 limit/used/remaining/overrun/attempt/source。
+- parent 通过 `agent_prompt.budget_extension` 才能开始下一 attempt；extension 可追加 turns/active runtime、延长 deadline 或清除维度，并写 durable extension/resume events。没有解除 exhausted dimension 的 resume 直接拒绝。
+- parent 对 budget-paused linked blocked job 调用 `agent_stop` 时，job 转为 `cancelled` terminal、从 unresolved jobs 移除并更新 notification；child 保留原始 paused/budget reason。
+
+### 5.9 active child cap 与取消
+
+- `runtime.multi_agent.max_active_children` 默认 `4`，queue claim 必须在 durable claim lock 下核对 active foreground/background child，不能因多个 worker 或大量 queued jobs越过上限。
+- parent 可按 `session_id` / `queue_job_id` 取消 queued、running 或 paused child；running cancellation 先写 durable request，再 cooperative cancel active context。worker/reconcile 只在 child 已写 `cancelled` 或 job 已安全 terminalize 后释放 parent coordination。
 
 ## 6. 与 delegation 的关系
 

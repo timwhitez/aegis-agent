@@ -153,11 +153,51 @@ type RunResult struct {
 
 const modelDegenerationNoProgressReason = "model_degeneration_no_progress"
 
-func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, adapter provider.Adapter, catalog *skills.Catalog, registry *tools.Registry, hookManager *hooks.Manager) (RunResult, error) {
+func (e *Engine) triggerActiveHook(ctx context.Context, hookManager *hooks.Manager, point string, payload map[string]any) (map[string]any, error) {
+	callCtx, cancel := context.WithCancel(ctx)
+	e.control.setCancel(cancel)
+	defer func() {
+		e.control.clearCancel(cancel)
+		cancel()
+	}()
+	return hookManager.Trigger(callCtx, point, payload)
+}
+
+func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, adapter provider.Adapter, catalog *skills.Catalog, registry *tools.Registry, hookManager *hooks.Manager) (runResult RunResult, runErr error) {
+	if ensureChildEffectiveBudget(e.cfg, &meta, state, session.BudgetSourceLegacyResume) {
+		if err := e.store.SaveMetadata(meta.ID, meta); err != nil {
+			return RunResult{}, err
+		}
+	}
+	runCtx, cancelBudgetContext, budgetRun := e.beginChildBudgetRun(ctx, meta, state)
+	ctx = runCtx
+	defer cancelBudgetContext()
+	defer func() {
+		if budgetRun == nil {
+			return
+		}
+		if _, err := budgetRun.finish(state.Turn, ""); err != nil {
+			if runErr == nil {
+				runErr = fmt.Errorf("persist child budget usage: %w", err)
+			}
+			if runResult.SessionID == "" {
+				runResult = RunResult{SessionID: meta.ID, Status: state.Status, LastError: runErr.Error()}
+			}
+		}
+	}()
 	hookManager.SetEmitter(func(eventType string, data map[string]any) error {
 		return e.appendEvent(meta.ID, eventType, state.Phase, data)
 	})
-	if _, err := hookManager.Trigger(ctx, "session.start", sessionHookPayload(meta, session.StatusRunning)); err != nil {
+	if reason := session.EffectiveBudgetExceededReason(session.CloneEffectiveBudget(meta.EffectiveBudget), state.Turn, timeNow()); reason != "" {
+		return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+	}
+	if e.control.consumePause() {
+		return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+	}
+	if _, err := e.triggerActiveHook(ctx, hookManager, "session.start", sessionHookPayload(meta, session.StatusRunning)); err != nil {
+		if result, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+			return result, handleErr
+		}
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	doneCandidates := 0
@@ -166,13 +206,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	allowResolutionTurn := false
 	hardTurnLimit := e.cfg.Runtime.MaxTurnsHard
 	hardTurnLimitEnabled := hardTurnLimit > 0
+	softTurnLimit := e.cfg.Runtime.MaxTurnsSoft
+	softTurnReminderWritten := false
 	runStartTurn := state.Turn
-	childBudget := e.childBudgetContext(meta)
 	for turn := state.Turn; ; turn++ {
 		usingResolutionTurn := false
 		runTurn := turn - runStartTurn
-		if reason, exceeded := childBudget.exceeded(turn); exceeded {
-			return e.pauseChildBudget(ctx, meta, state, reason, hookManager)
+		if reason := session.EffectiveBudgetExceededReason(session.CloneEffectiveBudget(meta.EffectiveBudget), turn, timeNow()); reason != "" {
+			return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
 		}
 		if hardTurnLimitEnabled && runTurn >= hardTurnLimit {
 			if !allowResolutionTurn {
@@ -193,6 +234,19 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			usingResolutionTurn = true
 			allowResolutionTurn = false
 		}
+		if softTurnLimit > 0 && !softTurnReminderWritten && runTurn >= softTurnLimit {
+			softTurnReminderWritten = true
+			if err := e.appendEvent(meta.ID, "session.turn_limit.soft_reached", "prepare", map[string]any{
+				"max_turns_soft": softTurnLimit,
+				"run_turn":       runTurn,
+				"scope":          "per_run_global",
+			}); err != nil {
+				return RunResult{}, err
+			}
+			if _, err := e.appendHarnessReminder(meta, "prepare", fmt.Sprintf("Global soft turn checkpoint reached at %d turns in this run. Reassess progress, update durable handoff facts if useful, and continue autonomously; this is not a stop condition.", softTurnLimit), "max_turns_soft_reached"); err != nil {
+				return RunResult{}, err
+			}
+		}
 		state.Turn = turn + 1
 		state.Status = session.StatusRunning
 		state.Phase = "prepare"
@@ -204,7 +258,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return RunResult{}, err
 		}
 		if e.control.consumePause() {
-			return e.pause(ctx, meta, state, e.control.takePauseReason(), hookManager)
+			return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 		}
 
 		if err := e.deferPendingInterrupts(meta.ID); err != nil {
@@ -213,6 +267,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		acceptedBackgroundAtTurnStart, err := e.drainBackground(ctx, meta, hookManager)
 		if err != nil {
+			if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+				return boundaryResult, handleErr
+			}
 			return RunResult{}, err
 		}
 		if acceptedBackgroundAtTurnStart > 0 {
@@ -223,6 +280,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		acceptedAtTurnStart, stopAfterSteer, err := e.drainSteer(ctx, meta, hookManager)
 		if err != nil {
+			if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+				return boundaryResult, handleErr
+			}
 			return RunResult{}, err
 		}
 		if acceptedAtTurnStart > 0 {
@@ -373,7 +433,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return RunResult{}, fmt.Errorf("record provider.request.prepared event: %w", err)
 		}
 		if e.control.consumePause() {
-			return e.pause(ctx, meta, state, e.control.takePauseReason(), hookManager)
+			return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 		}
 		callCtx, cancel := context.WithCancel(ctx)
 		e.control.setCancel(cancel)
@@ -426,14 +486,20 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return e.fail(ctx, meta, state, providerAttemptErr, hookManager)
 		}
 		if err != nil {
-			if errors.Is(err, context.Canceled) {
+			if isContextCancellation(ctx, err) {
+				if reason := childBudgetReasonFromContext(ctx); reason != "" {
+					if appendErr := e.appendProviderCancelled(meta.ID, reason); appendErr != nil {
+						return RunResult{}, appendErr
+					}
+					return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+				}
 				switch {
 				case e.control.consumePause():
 					reason := e.control.takePauseReason()
 					if appendErr := e.appendProviderCancelled(meta.ID, reason); appendErr != nil {
 						return RunResult{}, appendErr
 					}
-					return e.pause(ctx, meta, state, reason, hookManager)
+					return e.pauseForReason(ctx, meta, state, reason, hookManager, budgetRun)
 				case e.control.consumeSteerInterrupt():
 					if appendErr := e.appendProviderCancelled(meta.ID, "steer_interrupt"); appendErr != nil {
 						return RunResult{}, appendErr
@@ -461,6 +527,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, appendErr
 				}
 				if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+					if reason := childBudgetReasonFromContext(ctx); reason != "" {
+						return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+					}
 					return RunResult{}, sleepErr
 				}
 				continue
@@ -536,12 +605,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 
 		result.ProviderContentBlocks = stampProviderContentBlocks(meta, result.ProviderContentBlocks)
 		if shouldPersistAssistantResult(result) {
-			assistantPayload, err := hookManager.Trigger(ctx, "assistant.message", map[string]any{
+			assistantPayload, err := e.triggerActiveHook(ctx, hookManager, "assistant.message", map[string]any{
 				"session_id": meta.ID,
 				"text":       result.Text,
 				"status":     state.Status,
 			})
 			if err != nil {
+				if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+					return boundaryResult, handleErr
+				}
 				return e.fail(ctx, meta, state, err, hookManager)
 			}
 			assistantText := result.Text
@@ -590,6 +662,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						return RunResult{}, appendErr
 					}
 					if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+						if reason := childBudgetReasonFromContext(ctx); reason != "" {
+							return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+						}
 						return RunResult{}, sleepErr
 					}
 					continue
@@ -626,6 +701,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if len(result.ToolCalls) == 0 {
 			acceptedBackgroundAfterProvider, err := e.drainBackground(ctx, meta, hookManager)
 			if err != nil {
+				if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+					return boundaryResult, handleErr
+				}
 				return RunResult{}, err
 			}
 			if acceptedBackgroundAfterProvider > 0 {
@@ -635,6 +713,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}
 			acceptedAfterProvider, stopAfterSteer, err := e.drainSteer(ctx, meta, hookManager)
 			if err != nil {
+				if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+					return boundaryResult, handleErr
+				}
 				return RunResult{}, err
 			}
 			if stopAfterSteer {
@@ -670,11 +751,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					"mode":       meta.Mode,
 					"arguments":  argumentsText,
 				}
-				updatedBeforePayload, err := hookManager.Trigger(ctx, "tool.before", beforePayload)
+				updatedBeforePayload, err := e.triggerActiveHook(ctx, hookManager, "tool.before", beforePayload)
 				if err != nil {
 					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex:], "Error: tool.before hook failed: "+err.Error())...)
 					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
 						return RunResult{}, appendErr
+					}
+					if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+						return boundaryResult, handleErr
 					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
@@ -829,7 +913,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				toolResult.ToolCallID = call.ID
 				toolResult.Name = call.Name
 				if toolErr != nil {
-					if errors.Is(toolErr, context.Canceled) {
+					if isContextCancellation(ctx, toolErr) {
 						interruptedErr := e.appendEvent(meta.ID, "tool.interrupted", "tool_execute", map[string]any{
 							"tool_name":                call.Name,
 							tools.MetadataFailureClass: tools.FailureClassInterrupted,
@@ -862,8 +946,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if afterErr != nil {
 							return RunResult{}, fmt.Errorf("record interrupted tool.after event for %s: %w", call.Name, afterErr)
 						}
+						if reason := childBudgetReasonFromContext(ctx); reason != "" {
+							return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+						}
 						if e.control.consumePause() {
-							return e.pause(ctx, meta, state, e.control.takePauseReason(), hookManager)
+							return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 						}
 						if e.control.consumeSteerInterrupt() {
 							goto nextTurn
@@ -902,7 +989,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if failureClass != "" {
 					afterPayload[tools.MetadataFailureClass] = failureClass
 				}
-				updatedPayload, err := hookManager.Trigger(ctx, "tool.after", afterPayload)
+				updatedPayload, err := e.triggerActiveHook(ctx, hookManager, "tool.after", afterPayload)
 				if err != nil {
 					toolResult.IsError = true
 					if strings.TrimSpace(toolResult.LLMOutput) == "" {
@@ -915,6 +1002,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after hook failed before this call ran: "+err.Error())...)
 					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
 						return RunResult{}, appendErr
+					}
+					if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+						return boundaryResult, handleErr
 					}
 					return e.fail(ctx, meta, state, err, hookManager)
 				}
@@ -1003,7 +1093,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 					continue
 				}
-				return e.awaitingBackground(ctx, meta, state, hookManager)
+				return e.awaitingBackground(ctx, meta, state, hookManager, budgetRun)
 			}
 			allowResolutionTurn = hardTurnLimitEnabled && !usingResolutionTurn && turn+1 >= hardTurnLimit
 		nextTurn:
@@ -1553,9 +1643,12 @@ func backgroundWaitNeedsInterventionPrompt(reason string) string {
 	return "Harness reminder: agent_wait cannot make progress because the same blocked child/background deadlock was already reported and there is no pending background result to consume. The master agent must intervene now: inspect agent_list/agent_status, use agent_prompt to continue or redirect a blocked child, use agent_stop for queued or budget-paused blocked work that is no longer needed, or continue with an explicit unresolved-work handoff if no runtime control can resolve it. Deadlock detail: " + reason
 }
 
-func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
+func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, error) {
 	text := "Waiting for background agent result. The parent session will resume automatically when any child reports a result."
-	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+	if _, err := e.triggerActiveHook(ctx, hookManager, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
+		if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+			return boundaryResult, handleErr
+		}
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	state.Status = session.StatusAwaitingInput
@@ -1569,7 +1662,21 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	if count, err := e.waitForBackgroundResult(ctx, meta, hookManager); err != nil {
+	if budgetRun != nil {
+		if _, err := budgetRun.pauseActive(state.Turn); err != nil {
+			return RunResult{}, fmt.Errorf("persist child active runtime before background wait: %w", err)
+		}
+	}
+	waitCtx, cancelWait := context.WithCancel(ctx)
+	e.control.setCancel(cancelWait)
+	count, waitErr := e.waitForBackgroundResult(waitCtx, meta, hookManager)
+	e.control.clearCancel(cancelWait)
+	cancelWait()
+	if waitErr != nil {
+		if boundaryResult, handled, handleErr := e.handleCancelledBoundary(waitCtx, meta, state, waitErr, hookManager, budgetRun); handled {
+			return boundaryResult, handleErr
+		}
+		err := waitErr
 		if errors.Is(err, context.Canceled) {
 			return RunResult{SessionID: meta.ID, Status: state.Status, FinalText: text}, nil
 		}
@@ -1864,8 +1971,37 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 	return result, nil
 }
 
+func (e *Engine) pauseForReason(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, error) {
+	if session.IsChildBudgetPauseReason(reason) {
+		return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+	}
+	if reason == agentCancelRequestedReason {
+		return e.cancel(ctx, meta, state, reason, hookManager)
+	}
+	return e.pause(ctx, meta, state, reason, hookManager)
+}
+
+func (e *Engine) handleCancelledBoundary(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, bool, error) {
+	if !isContextCancellation(ctx, err) {
+		return RunResult{}, false, nil
+	}
+	if reason := childBudgetReasonFromContext(ctx); reason != "" {
+		result, pauseErr := e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
+		return result, true, pauseErr
+	}
+	if e.control.consumePause() {
+		result, pauseErr := e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+		return result, true, pauseErr
+	}
+	return RunResult{}, false, nil
+}
+
 func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager) (RunResult, error) {
-	if _, err := hookManager.Trigger(ctx, "session.pause", sessionHookPayload(meta, session.StatusPaused)); err != nil {
+	hookCtx := ctx
+	if ctx.Err() != nil {
+		hookCtx = context.WithoutCancel(ctx)
+	}
+	if _, err := hookManager.Trigger(hookCtx, "session.pause", sessionHookPayload(meta, session.StatusPaused)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
 	state.Status = session.StatusPaused
@@ -1886,73 +2022,126 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 	return result, nil
 }
 
-// childBudgetTracker bounds a single child/background run so it cannot loop
-// indefinitely. It is only active for sessions that have a parent (i.e. spawned
-// child / background queue work); root master sessions are never budget-limited
-// here and continue to rely on max_turns_hard (default off).
-type childBudgetTracker struct {
-	active       bool
-	maxTurns     int
-	runStartTurn int
-	deadline     time.Time
-}
-
-// exceeded reports whether the given absolute turn counter has crossed either
-// the wall-clock or per-run turn budget. The returned reason is a stable,
-// machine-readable token recorded as the pause reason.
-func (b childBudgetTracker) exceeded(turn int) (string, bool) {
-	if !b.active {
-		return "", false
-	}
-	if b.maxTurns > 0 && turn-b.runStartTurn >= b.maxTurns {
-		return "child_budget_turns_exceeded", true
-	}
-	if !b.deadline.IsZero() && timeNow().After(b.deadline) {
-		return "child_budget_wallclock_exceeded", true
-	}
-	return "", false
-}
-
-// childBudgetContext builds the per-run budget tracker. Wall-clock is measured
-// from the session creation time when parseable so that the budget bounds the
-// whole child lifetime across resumes, not just the current process run.
-func (e *Engine) childBudgetContext(meta session.SessionMetadata) childBudgetTracker {
-	if strings.TrimSpace(meta.ParentSessionID) == "" {
-		return childBudgetTracker{}
-	}
-	budget := e.cfg.Runtime.ChildBudget
-	tracker := childBudgetTracker{
-		active:       budget.MaxWallClockSec > 0 || budget.MaxTurns > 0,
-		maxTurns:     budget.MaxTurns,
-		runStartTurn: 0,
-	}
-	if budget.MaxWallClockSec > 0 {
-		start := timeNow()
-		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(meta.CreatedAt)); err == nil {
-			start = parsed
-		}
-		tracker.deadline = start.Add(time.Duration(budget.MaxWallClockSec) * time.Second)
-	}
-	return tracker
-}
-
 // pauseChildBudget pauses an over-budget child as a resumable stop and records
 // the reason. The linked queue job reconciles to blocked and a parent
 // background notification is written, so the master model can decide whether to
 // re-prompt the child to converge, stop it, or continue itself. This is liveness
 // recovery, not a workflow decision: the runtime never resolves the work itself.
-func (e *Engine) pauseChildBudget(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager) (RunResult, error) {
-	if err := e.appendEvent(meta.ID, "session.child_budget.exceeded", "interrupt", map[string]any{
-		"reason":             reason,
-		"max_turns":          e.cfg.Runtime.ChildBudget.MaxTurns,
-		"max_wall_clock_sec": e.cfg.Runtime.ChildBudget.MaxWallClockSec,
-		"turn":               state.Turn,
-		"parent_session_id":  meta.ParentSessionID,
-		"queue_job_id":       meta.QueueJobID,
-	}); err != nil {
-		return RunResult{}, fmt.Errorf("record session.child_budget.exceeded event: %w", err)
+func (e *Engine) pauseChildBudget(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, error) {
+	budget := session.CloneEffectiveBudget(meta.EffectiveBudget)
+	var err error
+	if budgetRun != nil {
+		budget, err = budgetRun.finish(state.Turn, reason)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("persist exhausted child budget: %w", err)
+		}
+	}
+	data := effectiveBudgetEventData(budget)
+	data["reason"] = reason
+	data["turn"] = state.Turn
+	data["parent_session_id"] = meta.ParentSessionID
+	data["queue_job_id"] = meta.QueueJobID
+	attempt := 0
+	if budget != nil {
+		attempt = budget.Attempt
+	}
+	exists, err := e.childBudgetExceededEventExists(meta.ID, reason, attempt)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("check session.child_budget.exceeded event: %w", err)
+	}
+	if !exists {
+		if err := e.appendEvent(meta.ID, "session.child_budget.exceeded", "interrupt", data); err != nil {
+			return RunResult{}, fmt.Errorf("record session.child_budget.exceeded event: %w", err)
+		}
 	}
 	return e.pause(ctx, meta, state, reason, hookManager)
+}
+
+func (e *Engine) childBudgetExceededEventExists(sessionID, reason string, attempt int) (bool, error) {
+	eventsList, err := e.store.LoadEvents(sessionID)
+	if err != nil {
+		return false, err
+	}
+	wantAttempt := fmt.Sprint(attempt)
+	for _, evt := range eventsList {
+		if evt.Type != "session.child_budget.exceeded" || strings.TrimSpace(fmt.Sprint(evt.Data["reason"])) != strings.TrimSpace(reason) {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(evt.Data["attempt"])) == wantAttempt {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (e *Engine) cancel(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager) (RunResult, error) {
+	hookCtx := ctx
+	if ctx.Err() != nil {
+		hookCtx = context.WithoutCancel(ctx)
+	}
+	if hookManager != nil {
+		if _, err := hookManager.Trigger(hookCtx, "session.cancel", sessionHookPayload(meta, session.StatusCancelled)); err != nil {
+			return e.fail(hookCtx, meta, state, err, hookManager)
+		}
+	}
+	state.Status = session.StatusCancelled
+	state.Phase = "cancelled"
+	state.PauseReason = ""
+	state.LastError = ""
+	state.IncompleteReason = ""
+	if err := e.store.SaveState(meta.ID, state); err != nil {
+		return RunResult{}, err
+	}
+	cancelData := map[string]any{"reason": reason}
+	request, requestErr := e.store.LoadSessionCancel(meta.ID)
+	if requestErr == nil && request.Status != session.CancelRequestStatusApplied {
+		if _, err := e.store.MarkSessionCancelApplied(meta.ID, request.ID); err != nil {
+			return RunResult{}, err
+		}
+	}
+	if requestErr == nil {
+		cancelData["request_id"] = request.ID
+		cancelData["parent_session_id"] = request.ParentSessionID
+		cancelData["queue_job_id"] = request.QueueJobID
+	}
+	latestMeta, err := e.store.LoadMetadata(meta.ID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if latestMeta.EffectiveBudget != nil {
+		budget := session.CloneEffectiveBudget(latestMeta.EffectiveBudget)
+		budget.Status = session.BudgetStatusCancelled
+		budget.LastReason = reason
+		session.RefreshEffectiveBudget(budget, state.Turn)
+		if err := persistEffectiveBudget(e.store, latestMeta, budget); err != nil {
+			return RunResult{}, err
+		}
+		cancelData["effective_budget"] = effectiveBudgetEventData(budget)
+	}
+	if err := e.appendEvent(meta.ID, "session.cancelled", state.Phase, cancelData); err != nil {
+		return RunResult{}, fmt.Errorf("record session.cancelled event: %w", err)
+	}
+	if strings.TrimSpace(meta.ParentSessionID) != "" && strings.TrimSpace(meta.QueueJobID) == "" {
+		if err := resolveParentChildSession(e.store, meta.ParentSessionID, meta.ID, session.StatusCancelled); err != nil {
+			return RunResult{}, fmt.Errorf("resolve parent coordination after child cancellation: %w", err)
+		}
+		if err := e.appendEvent(meta.ParentSessionID, "session.child.cancelled", "delegate", map[string]any{
+			"session_id":       meta.ID,
+			"reason":           reason,
+			"effective_budget": cancelData["effective_budget"],
+		}); err != nil {
+			return RunResult{}, fmt.Errorf("record parent child cancellation event: %w", err)
+		}
+		_ = writeSessionSummary(e.store, meta.ParentSessionID)
+		_ = writeLongRunCheckpoint(e.store, meta.ParentSessionID)
+	}
+	result := RunResult{SessionID: meta.ID, Status: state.Status}
+	if err := e.reconcileLinkedQueueJob(meta.ID); err != nil {
+		return result, err
+	}
+	_ = writeSessionSummary(e.store, meta.ID)
+	_ = writeLongRunCheckpoint(e.store, meta.ID)
+	return result, nil
 }
 
 func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager) (RunResult, error) {
@@ -2370,7 +2559,7 @@ func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, h
 		if requests[i].Status != session.SteerStatusPending && requests[i].Status != session.SteerStatusDeferred {
 			continue
 		}
-		payload, err := hookManager.Trigger(ctx, "user.message", map[string]any{
+		payload, err := e.triggerActiveHook(ctx, hookManager, "user.message", map[string]any{
 			"session_id": sessionID,
 			"text":       requests[i].Text,
 			"mode":       meta.Mode,
@@ -2544,7 +2733,7 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
 	text := "<background-agent-results>\n" + string(data) + "\n</background-agent-results>"
-	hookPayload, err := hookManager.Trigger(ctx, "user.message", map[string]any{
+	hookPayload, err := e.triggerActiveHook(ctx, hookManager, "user.message", map[string]any{
 		"session_id": meta.ID,
 		"text":       text,
 		"mode":       meta.Mode,

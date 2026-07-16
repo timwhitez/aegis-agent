@@ -51,12 +51,16 @@ func (r *Renderer) Handle(evt events.Event) {
 		fmt.Fprintf(r.out, "== queue:claimed ==\njob: %v\n", evt.Data["job_id"])
 	case "queue.job.completed":
 		fmt.Fprintf(r.out, "== queue:completed ==\njob: %v\n", evt.Data["job_id"])
+	case "queue.job.cancelled":
+		fmt.Fprintf(r.out, "== queue:cancelled ==\njob: %v\n", evt.Data["job_id"])
 	case "queue.job.failed":
 		fmt.Fprintf(r.out, "== queue:failed ==\njob: %v\n", evt.Data["job_id"])
 	case "session.background.accepted":
 		fmt.Fprintf(r.out, "== background:accepted ==\ncount: %v\n", evt.Data["count"])
 	case "session.paused":
 		fmt.Fprintf(r.out, "== paused ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
+	case "session.cancelled":
+		fmt.Fprintf(r.out, "== cancelled ==\nsession: %s\n", evt.SessionID)
 	case "session.failed":
 		fmt.Fprintf(r.out, "== failed ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "session.steer.accepted":

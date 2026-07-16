@@ -182,7 +182,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
 - `node --test validation/scripts/webconsole_utils_test.mjs` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、master hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
@@ -208,7 +208,9 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - operator session summary：`session.md`
 - long-run checkpoint：`checkpoints/longrun-latest.json`
 - explicit parent coordination：`parent-coordination.json`
-- optional child budget：默认 `0/0` 关闭，Settings 可持久化配置；budget-paused blocked job 可由 parent 显式 `agent_stop` 结算且不得伪造 child completed
+- global per-run hard/soft turn guard：hard 默认 `-1`，显式启用后覆盖 root 与 child；soft 只做一次 checkpoint reminder
+- optional child budget：per-attempt turns、active runtime 与 absolute deadline 默认全部关闭，Settings 可持久化配置；effective policy 按 job/session 快照，budget-paused child 可由 parent 显式 extension/resume 或 `agent_stop` cancel/settle，且不得伪造 child completed
+- parent child cancellation：queued/running/paused child 均有 durable cancel request、cooperative context propagation 与独立 `cancelled` outcome，不污染 failed 指标
 - workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
 - optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
 

@@ -1,10 +1,13 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
+	"go-cli-agent/internal/events"
 )
 
 // ReapResult summarizes a single reaper pass over the queue. It is returned for
@@ -14,12 +17,13 @@ type ReapResult struct {
 	Requeued  []string
 	Blocked   []string
 	Completed []string
+	Cancelled []string
 	Failed    []string
 }
 
 // Total reports how many jobs the reaper transitioned in this pass.
 func (r ReapResult) Total() int {
-	return len(r.Requeued) + len(r.Blocked) + len(r.Completed) + len(r.Failed)
+	return len(r.Requeued) + len(r.Blocked) + len(r.Completed) + len(r.Cancelled) + len(r.Failed)
 }
 
 // ReapStaleQueueJobs reclaims orphaned queue jobs whose owning process has died
@@ -28,7 +32,7 @@ func (r ReapResult) Total() int {
 // forever and keeps its parent session parked in wait-all coordination.
 //
 // Policy (hybrid, liveness-only — the runtime never decides workflow):
-//   - terminal child session (completed/failed): settle the job to the matching
+//   - terminal child session (completed/cancelled/failed): settle the job to the matching
 //     terminal queue status so the parent coordination gate is released.
 //   - no child session yet (crashed before Start): requeue so a worker re-runs it.
 //   - non-terminal child session (paused/awaiting_input/running-but-orphaned):
@@ -100,6 +104,8 @@ func (s *Store) ReapStaleQueueJobs(staleAfter time.Duration) (ReapResult, error)
 			result.Blocked = append(result.Blocked, job.ID)
 		case QueueStatusCompleted:
 			result.Completed = append(result.Completed, job.ID)
+		case QueueStatusCancelled:
+			result.Cancelled = append(result.Cancelled, job.ID)
 		case QueueStatusFailed:
 			result.Failed = append(result.Failed, job.ID)
 		}
@@ -132,10 +138,22 @@ func queueJobIsOrphaned(job QueueJob, now time.Time, staleAfter time.Duration) b
 // returns the queue status it transitioned to.
 func (s *Store) reapOrphanedQueueJob(job QueueJob) (string, error) {
 	childStatus, hasChild := s.orphanChildSessionStatus(job)
+	if hasChild {
+		cancelled, err := s.applyOrphanedQueueCancelRequest(job)
+		if err != nil {
+			return "", err
+		}
+		if cancelled {
+			job.StopReason = QueueStopReasonAgentStop
+			return s.settleReapedJob(job, QueueStatusCancelled, "cancelled by parent agent after worker owner exited")
+		}
+	}
 
 	switch {
 	case hasChild && childStatus == StatusCompleted:
 		return s.settleReapedJob(job, QueueStatusCompleted, "")
+	case hasChild && childStatus == StatusCancelled:
+		return s.settleReapedJob(job, QueueStatusCancelled, firstNonEmptyQueueValue(job.LastError, "child session cancelled; reclaimed orphaned job"))
 	case hasChild && childStatus == StatusFailed:
 		return s.settleReapedJob(job, QueueStatusFailed, firstNonEmptyQueueValue(job.LastError, "child session failed; reclaimed orphaned job"))
 	case !hasChild && strings.TrimSpace(job.SessionID) == "":
@@ -165,6 +183,15 @@ func (s *Store) orphanChildSessionStatus(job QueueJob) (string, bool) {
 func (s *Store) settleReapedJob(job QueueJob, status, lastError string) (string, error) {
 	updated := clearReapedQueueLease(job)
 	updated.Status = status
+	if strings.TrimSpace(updated.SessionID) != "" {
+		if state, err := s.LoadState(updated.SessionID); err == nil {
+			updated.SessionStatus = state.Status
+		}
+		if meta, err := s.LoadMetadata(updated.SessionID); err == nil {
+			updated.EffectiveWorkdir = meta.Workdir
+			updated.EffectiveBudget = CloneEffectiveBudget(meta.EffectiveBudget)
+		}
+	}
 	if strings.TrimSpace(lastError) != "" {
 		updated.LastError = lastError
 	}
@@ -186,6 +213,74 @@ func (s *Store) settleReapedJob(job QueueJob, status, lastError string) (string,
 		}
 	}
 	return status, nil
+}
+
+func (s *Store) applyOrphanedQueueCancelRequest(job QueueJob) (bool, error) {
+	sessionID := strings.TrimSpace(job.SessionID)
+	if sessionID == "" {
+		return false, nil
+	}
+	request, err := s.LoadSessionCancel(sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if request.Status != CancelRequestStatusRequested {
+		return request.Status == CancelRequestStatusApplied, nil
+	}
+	state, err := s.LoadState(sessionID)
+	if err != nil {
+		return false, err
+	}
+	state.Status = StatusCancelled
+	state.Phase = "cancelled"
+	state.PauseReason = ""
+	state.LastError = ""
+	state.IncompleteReason = ""
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := s.SaveState(sessionID, state); err != nil {
+		return false, err
+	}
+	if meta, err := s.LoadMetadata(sessionID); err == nil && meta.EffectiveBudget != nil {
+		budget := CloneEffectiveBudget(meta.EffectiveBudget)
+		budget.Status = BudgetStatusCancelled
+		budget.LastReason = request.Reason
+		RefreshEffectiveBudget(budget, state.Turn)
+		meta.EffectiveBudget = budget
+		if err := s.SaveMetadata(sessionID, meta); err != nil {
+			return false, err
+		}
+	} else if err != nil {
+		return false, err
+	}
+	if _, err := s.MarkSessionCancelApplied(sessionID, request.ID); err != nil {
+		return false, err
+	}
+	if err := s.ensureSessionCancelledEvent(sessionID, request); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) ensureSessionCancelledEvent(sessionID string, request CancelRequest) error {
+	eventsList, err := s.LoadEvents(sessionID)
+	if err != nil {
+		return err
+	}
+	for _, evt := range eventsList {
+		if evt.Type == "session.cancelled" {
+			return nil
+		}
+	}
+	return s.AppendEvent(sessionID, events.New(sessionID, "session.cancelled", "cancelled", map[string]any{
+		"reason":            request.Reason,
+		"request_id":        request.ID,
+		"parent_session_id": request.ParentSessionID,
+		"queue_job_id":      request.QueueJobID,
+		"recovered":         true,
+	}))
 }
 
 // requeueReapedJob returns a pre-Start orphan to the queued pool so a worker can

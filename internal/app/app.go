@@ -1117,7 +1117,7 @@ func printGoal(stdout io.Writer, goal session.SessionGoal) {
 		fmt.Fprintf(stdout, " / %d", *goal.TokenBudget)
 	}
 	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "time_seconds: %d", goal.TimeUsedSeconds)
+	fmt.Fprintf(stdout, "provider_time_seconds: %d", goal.TimeUsedSeconds)
 	if goal.TimeBudgetSeconds != nil {
 		fmt.Fprintf(stdout, " / %d", *goal.TimeBudgetSeconds)
 	}
@@ -2289,7 +2289,7 @@ func waitForRenderer(done <-chan struct{}, cancel context.CancelFunc, drain bool
 
 func isTerminalSessionEvent(evt events.Event) bool {
 	switch evt.Type {
-	case "session.completed", "session.failed", "session.paused", "session.awaiting_input":
+	case "session.completed", "session.cancelled", "session.failed", "session.paused", "session.awaiting_input":
 		return true
 	default:
 		return false
@@ -2477,7 +2477,7 @@ func mapStatusToExitCode(status, lastError string) int {
 	switch status {
 	case session.StatusCompleted, session.StatusAwaitingInput:
 		return 0
-	case session.StatusPaused:
+	case session.StatusPaused, session.StatusCancelled:
 		return 130
 	case session.StatusFailed:
 		if strings.Contains(lastError, "incomplete_no_finish") {

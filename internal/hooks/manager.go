@@ -124,6 +124,13 @@ func (m *Manager) Trigger(ctx context.Context, point string, payload map[string]
 			if emitErr := m.emit("hook.failed", data); emitErr != nil {
 				return next, fmt.Errorf("record hook.failed event for %s/%s after %v: %w", point, hook.Name, err, emitErr)
 			}
+			// Cancellation from the caller is a control boundary, not an ordinary
+			// fail-open hook error. Propagate it even when the hook itself is not
+			// fail-closed so runtime budget/interrupt/cancel semantics cannot be
+			// delayed until the hook timeout expires.
+			if ctx.Err() != nil {
+				return next, ctx.Err()
+			}
 			if hook.FailClosed {
 				return next, &FailClosedError{
 					Point: point,

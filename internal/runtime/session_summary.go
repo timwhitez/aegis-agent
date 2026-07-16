@@ -96,7 +96,7 @@ func writeSessionSummary(store *session.Store, sessionID string) error {
 			b.WriteString(fmt.Sprintf(" / `%d`", *goal.TokenBudget))
 		}
 		b.WriteString("\n")
-		b.WriteString(fmt.Sprintf("- time usage: `%ds`", goal.TimeUsedSeconds))
+		b.WriteString(fmt.Sprintf("- provider time usage: `%ds`", goal.TimeUsedSeconds))
 		if goal.TimeBudgetSeconds != nil {
 			b.WriteString(fmt.Sprintf(" / `%ds`", *goal.TimeBudgetSeconds))
 		}
@@ -448,7 +448,7 @@ func writeLongRunCheckpoint(store *session.Store, sessionID string) error {
 		checkpoint.PlanModeSnapshot = &planModeCopy
 	}
 	for _, child := range children {
-		if child.Status != session.StatusCompleted && child.Status != session.StatusFailed {
+		if child.Status != session.StatusCompleted && child.Status != session.StatusCancelled && child.Status != session.StatusFailed {
 			checkpoint.UnresolvedChildSessions = append(checkpoint.UnresolvedChildSessions, child.ID)
 		}
 	}

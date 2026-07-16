@@ -2894,6 +2894,13 @@ function sessionActivityForState(sessionState = {}) {
       tone: 'queued'
     };
   }
+  if (status === 'cancelled') {
+    return {
+      title: 'Cancelled',
+      copy: 'The child or queued run was explicitly cancelled. Durable events and partial tool results remain available for inspection.',
+      tone: 'danger'
+    };
+  }
   if (status === 'failed') {
     return {
       title: 'Failed',

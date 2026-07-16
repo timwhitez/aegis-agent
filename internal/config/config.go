@@ -141,8 +141,10 @@ type SteerConfig struct {
 }
 
 type MultiAgentConfig struct {
-	Enabled  bool `yaml:"enabled"`
-	MaxDepth int  `yaml:"max_depth"`
+	Enabled           bool `yaml:"enabled"`
+	MaxDepth          int  `yaml:"max_depth"`
+	MaxActiveChildren int  `yaml:"max_active_children"`
+	CancelGraceSec    int  `yaml:"cancel_grace_sec"`
 }
 
 type IsolationConfig struct {
@@ -160,12 +162,15 @@ type QueueConfig struct {
 
 // ChildBudgetConfig optionally bounds child/background sessions so a single
 // delegated run cannot loop indefinitely. It does not apply to root master
-// sessions. Both dimensions default to zero (disabled); a non-positive value
-// disables that dimension. When a child exceeds a budget it is paused
-// (resumable -> queue blocked) and the parent is notified.
+// sessions. Canonical dimensions default to zero (disabled). MaxWallClockSec
+// and MaxTurns are deprecated read-compatibility aliases migrated during
+// normalization; new config writes use the explicit accounting names.
 type ChildBudgetConfig struct {
-	MaxWallClockSec int `yaml:"max_wall_clock_sec"`
-	MaxTurns        int `yaml:"max_turns"`
+	MaxActiveRuntimeSec int `yaml:"max_active_runtime_sec"`
+	MaxElapsedSec       int `yaml:"max_elapsed_sec"`
+	MaxTurnsPerAttempt  int `yaml:"max_turns_per_attempt"`
+	MaxWallClockSec     int `yaml:"max_wall_clock_sec,omitempty"`
+	MaxTurns            int `yaml:"max_turns,omitempty"`
 }
 
 type ShellConfig struct {
@@ -365,8 +370,10 @@ func Default() *Config {
 				DefaultBehavior: "queue",
 			},
 			MultiAgent: MultiAgentConfig{
-				Enabled:  true,
-				MaxDepth: 4,
+				Enabled:           true,
+				MaxDepth:          1,
+				MaxActiveChildren: 4,
+				CancelGraceSec:    5,
 			},
 			Isolation: IsolationConfig{
 				DefaultMode: "off",
@@ -380,8 +387,9 @@ func Default() *Config {
 				BackgroundWaitTimeoutSec: 0,
 			},
 			ChildBudget: ChildBudgetConfig{
-				MaxWallClockSec: 0,
-				MaxTurns:        0,
+				MaxActiveRuntimeSec: 0,
+				MaxElapsedSec:       0,
+				MaxTurnsPerAttempt:  0,
 			},
 			ExecPolicy: ExecPolicyConfig{
 				Mode: "warn",
@@ -521,7 +529,13 @@ func normalizeConfig(cfg *Config, cwd string) {
 		cfg.Runtime.Steer.PollIntervalMS = 250
 	}
 	if cfg.Runtime.MultiAgent.MaxDepth <= 0 {
-		cfg.Runtime.MultiAgent.MaxDepth = 4
+		cfg.Runtime.MultiAgent.MaxDepth = 1
+	}
+	if cfg.Runtime.MultiAgent.MaxActiveChildren <= 0 {
+		cfg.Runtime.MultiAgent.MaxActiveChildren = 4
+	}
+	if cfg.Runtime.MultiAgent.CancelGraceSec <= 0 {
+		cfg.Runtime.MultiAgent.CancelGraceSec = 5
 	}
 	if strings.TrimSpace(cfg.Runtime.Isolation.DefaultMode) == "" {
 		cfg.Runtime.Isolation.DefaultMode = "off"
@@ -538,12 +552,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.Queue.BackgroundWaitTimeoutSec < 0 {
 		cfg.Runtime.Queue.BackgroundWaitTimeoutSec = 0
 	}
-	if cfg.Runtime.ChildBudget.MaxWallClockSec < 0 {
-		cfg.Runtime.ChildBudget.MaxWallClockSec = 0
-	}
-	if cfg.Runtime.ChildBudget.MaxTurns < 0 {
-		cfg.Runtime.ChildBudget.MaxTurns = 0
-	}
+	normalizeChildBudget(&cfg.Runtime.ChildBudget)
 	cfg.Runtime.Shell.Sandbox = strings.ToLower(strings.TrimSpace(cfg.Runtime.Shell.Sandbox))
 	cfg.Runtime.ExecPolicy.Mode = normalizeExecPolicyMode(cfg.Runtime.ExecPolicy.Mode)
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
@@ -584,6 +593,38 @@ func normalizeConfig(cfg *Config, cwd string) {
 	for i, dir := range cfg.Skills.Dirs {
 		cfg.Skills.Dirs[i] = resolveMaybeRelative(cwd, dir)
 	}
+}
+
+func normalizeChildBudget(budget *ChildBudgetConfig) {
+	if budget == nil {
+		return
+	}
+	if budget.MaxActiveRuntimeSec <= 0 && budget.MaxWallClockSec > 0 {
+		budget.MaxActiveRuntimeSec = budget.MaxWallClockSec
+	}
+	if budget.MaxTurnsPerAttempt <= 0 && budget.MaxTurns > 0 {
+		budget.MaxTurnsPerAttempt = budget.MaxTurns
+	}
+	if budget.MaxActiveRuntimeSec < 0 {
+		budget.MaxActiveRuntimeSec = 0
+	}
+	if budget.MaxElapsedSec < 0 {
+		budget.MaxElapsedSec = 0
+	}
+	if budget.MaxTurnsPerAttempt < 0 {
+		budget.MaxTurnsPerAttempt = 0
+	}
+	if budget.MaxWallClockSec < 0 {
+		budget.MaxWallClockSec = 0
+	}
+	if budget.MaxTurns < 0 {
+		budget.MaxTurns = 0
+	}
+	// Legacy aliases are read-only compatibility inputs. Once normalized, keep a
+	// single canonical in-memory policy so subsequent writes cannot emit both
+	// names with diverging values.
+	budget.MaxWallClockSec = 0
+	budget.MaxTurns = 0
 }
 
 func normalizeRoleProviderOverride(override *RoleProviderOverride) {

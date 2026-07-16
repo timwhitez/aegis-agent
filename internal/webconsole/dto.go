@@ -31,6 +31,7 @@ type GoalDraftRequest struct {
 	SuccessCriteria           []string `json:"success_criteria,omitempty"`
 	ValidationPlan            []string `json:"validation_plan,omitempty"`
 	TokenBudget               *int64   `json:"token_budget,omitempty"`
+	ProviderTimeBudgetMinutes *int64   `json:"provider_time_budget_minutes,omitempty"`
 	TimeBudgetMinutes         *int64   `json:"time_budget_minutes,omitempty"`
 	Autonomy                  string   `json:"autonomy,omitempty"`
 	RequirePlanApproval       bool     `json:"require_plan_approval,omitempty"`
@@ -117,6 +118,7 @@ type UpdateConfigRequest struct {
 	ReasoningMode        *string                                `json:"reasoning_mode"`
 	ReasoningSummary     *string                                `json:"reasoning_summary"`
 	GuardrailsMode       string                                 `json:"guardrails_mode"`
+	MaxTurnsSoft         *int                                   `json:"max_turns_soft"`
 	MaxTurnsHard         *int                                   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool                                   `json:"disable_hard_turn_limit"`
 	ChildBudget          *ChildBudgetSettingsRequest            `json:"child_budget"`
@@ -124,9 +126,12 @@ type UpdateConfigRequest struct {
 }
 
 type ChildBudgetSettingsRequest struct {
-	Disabled        bool `json:"disabled"`
-	MaxWallClockSec int  `json:"max_wall_clock_sec"`
-	MaxTurns        int  `json:"max_turns"`
+	Disabled            bool `json:"disabled"`
+	MaxActiveRuntimeSec int  `json:"max_active_runtime_sec"`
+	MaxElapsedSec       int  `json:"max_elapsed_sec"`
+	MaxTurnsPerAttempt  int  `json:"max_turns_per_attempt"`
+	MaxWallClockSec     int  `json:"max_wall_clock_sec"`
+	MaxTurns            int  `json:"max_turns"`
 }
 
 type TestConfigRequest struct {

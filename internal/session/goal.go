@@ -66,6 +66,44 @@ type SessionGoal struct {
 	CompletedAt               string               `json:"completed_at,omitempty"`
 }
 
+// MarshalJSON keeps the historical time_* fields readable while exposing the
+// canonical provider_time_* names. Goal time accounting only measures elapsed
+// provider calls; it is not child active runtime or wall-clock time.
+func (goal SessionGoal) MarshalJSON() ([]byte, error) {
+	type goalAlias SessionGoal
+	return json.Marshal(struct {
+		goalAlias
+		ProviderTimeBudgetSeconds *int64 `json:"provider_time_budget_seconds,omitempty"`
+		ProviderTimeUsedSeconds   int64  `json:"provider_time_used_seconds"`
+	}{
+		goalAlias:                 goalAlias(goal),
+		ProviderTimeBudgetSeconds: cloneInt64Ptr(goal.TimeBudgetSeconds),
+		ProviderTimeUsedSeconds:   goal.TimeUsedSeconds,
+	})
+}
+
+// UnmarshalJSON accepts both canonical provider_time_* fields and historical
+// time_* fields. Canonical values win when both are present.
+func (goal *SessionGoal) UnmarshalJSON(data []byte) error {
+	type goalAlias SessionGoal
+	var wire struct {
+		goalAlias
+		ProviderTimeBudgetSeconds *int64 `json:"provider_time_budget_seconds,omitempty"`
+		ProviderTimeUsedSeconds   *int64 `json:"provider_time_used_seconds,omitempty"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*goal = SessionGoal(wire.goalAlias)
+	if wire.ProviderTimeBudgetSeconds != nil {
+		goal.TimeBudgetSeconds = cloneInt64Ptr(wire.ProviderTimeBudgetSeconds)
+	}
+	if wire.ProviderTimeUsedSeconds != nil {
+		goal.TimeUsedSeconds = *wire.ProviderTimeUsedSeconds
+	}
+	return nil
+}
+
 type GoalCriterion struct {
 	ID        string   `json:"id"`
 	Text      string   `json:"text"`
@@ -329,7 +367,7 @@ func NewSessionGoalFromDraft(sessionID string, draft GoalDraft) (SessionGoal, er
 		return SessionGoal{}, errors.New("goal token budget must be positive")
 	}
 	if draft.TimeBudgetSeconds != nil && *draft.TimeBudgetSeconds <= 0 {
-		return SessionGoal{}, errors.New("goal time budget must be positive")
+		return SessionGoal{}, errors.New("goal provider time budget must be positive")
 	}
 	mode := normalizeGoalMode(draft.Mode)
 	source := normalizeGoalSource(draft.Source)
@@ -401,7 +439,7 @@ func ValidateGoal(goal SessionGoal) error {
 		return errors.New("goal token budget must be positive")
 	}
 	if goal.TimeBudgetSeconds != nil && *goal.TimeBudgetSeconds <= 0 {
-		return errors.New("goal time budget must be positive")
+		return errors.New("goal provider time budget must be positive")
 	}
 	if err := validateGoalRequiredTimestamp("goal created_at", goal.CreatedAt); err != nil {
 		return err
@@ -1445,11 +1483,15 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 		Source: GoalSourceSystem,
 		Status: goal.Status,
 		Data: map[string]any{
-			"source_turn":             delta.SourceTurn,
-			"tokens_used_delta":       maxInt64(0, delta.TokensUsedDelta),
-			"time_used_seconds_delta": maxInt64(0, delta.TimeUsedSecondsDelta),
-			"tokens_used":             goal.TokensUsed,
-			"time_used_seconds":       goal.TimeUsedSeconds,
+			"source_turn":                      delta.SourceTurn,
+			"tokens_used_delta":                maxInt64(0, delta.TokensUsedDelta),
+			"provider_time_used_seconds_delta": maxInt64(0, delta.TimeUsedSecondsDelta),
+			"time_used_seconds_delta":          maxInt64(0, delta.TimeUsedSecondsDelta),
+			"tokens_used":                      goal.TokensUsed,
+			"provider_time_used_seconds":       goal.TimeUsedSeconds,
+			"time_used_seconds":                goal.TimeUsedSeconds,
+			"accounting_scope":                 "provider_time",
+			"measurement_source":               "provider_call_elapsed",
 		},
 	}); err != nil {
 		if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {
@@ -1463,11 +1505,15 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 			Source: GoalSourceSystem,
 			Status: goal.Status,
 			Data: map[string]any{
-				"tokens_used":       goal.TokensUsed,
-				"token_budget":      goal.TokenBudget,
-				"time_used_seconds": goal.TimeUsedSeconds,
-				"time_budget":       goal.TimeBudgetSeconds,
-				"stop_on_budget":    goal.Control.StopOnBudget,
+				"tokens_used":                  goal.TokensUsed,
+				"token_budget":                 goal.TokenBudget,
+				"provider_time_used_seconds":   goal.TimeUsedSeconds,
+				"provider_time_budget_seconds": goal.TimeBudgetSeconds,
+				"time_used_seconds":            goal.TimeUsedSeconds,
+				"time_budget":                  goal.TimeBudgetSeconds,
+				"accounting_scope":             "provider_time",
+				"measurement_source":           "provider_call_elapsed",
+				"stop_on_budget":               goal.Control.StopOnBudget,
 			},
 		}); err != nil {
 			if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {

@@ -76,10 +76,14 @@ function renderCurrentSession() {
   if (nodes.sessionRail && window.getComputedStyle(nodes.sessionRail).display !== 'none') {
     mutated = patchAuxSlot(nodes.sessionRail, 'rail', renderSessionRail()) || mutated;
   }
-  if (nodes.inspectorPanel && window.getComputedStyle(nodes.inspectorPanel).display !== 'none') {
+  const fixedInspectorVisible = Boolean(nodes.inspectorPanel && window.getComputedStyle(nodes.inspectorPanel).display !== 'none');
+  const compactInspectorVisible = Boolean(isCompactLayout() && nodes.inspectorSlideOut);
+  if (fixedInspectorVisible || compactInspectorVisible) {
     const inspectorHTML = renderInspectorPanel();
-    mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
-    if (isCompactLayout() && nodes.inspectorSlideOut) {
+    if (fixedInspectorVisible) {
+      mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
+    }
+    if (compactInspectorVisible) {
       patchAuxSlot(nodes.inspectorSlideOut, 'inspector', inspectorHTML);
     }
   }
@@ -452,7 +456,7 @@ function renderSessionGoalLine(detail) {
     facts.runStatus ? `session ${humanizeStatus(facts.runStatus)}` : '',
     facts.runPhase ? phaseHeadline(facts.runPhase) : '',
     `tokens ${formatBudget(goal.tokens_used, goal.token_budget)}`,
-    `time ${formatSecondsBudget(goal.time_used_seconds, goal.time_budget_seconds)}`,
+    `provider time ${formatSecondsBudget(goal.provider_time_used_seconds ?? goal.time_used_seconds, goal.provider_time_budget_seconds ?? goal.time_budget_seconds)}`,
     facts.latestType ? `latest ${facts.latestType}` : '',
     facts.latestAt ? formatTimestamp(facts.latestAt) : ''
   ].filter(Boolean);
@@ -982,7 +986,7 @@ function summarizeGoalToolResult(result, parsed, payloadText) {
       parsed.status ? humanizeStatus(parsed.status) : '',
       parsed.goal_id ? shortId(parsed.goal_id) : '',
       Number.isFinite(Number(parsed.tokens_used)) ? `tokens ${Number(parsed.tokens_used)}` : '',
-      Number.isFinite(Number(parsed.time_used_seconds)) ? `time ${Number(parsed.time_used_seconds)}s` : ''
+      Number.isFinite(Number(parsed.provider_time_used_seconds ?? parsed.time_used_seconds)) ? `provider time ${Number(parsed.provider_time_used_seconds ?? parsed.time_used_seconds)}s` : ''
     ].filter(Boolean);
     if (result.name === 'record_goal_progress') {
       const latest = maybeArray(parsed.progress).slice(-1)[0];
@@ -1147,7 +1151,7 @@ function renderGoalToolSpecialResult(result, parsed) {
   const latestProgress = progress.length ? progress[progress.length - 1] : null;
   const metricParts = [
     `tokens ${formatBudget(parsed.tokens_used, parsed.token_budget)}`,
-    `time ${formatSecondsBudget(parsed.time_used_seconds, parsed.time_budget_seconds)}`,
+    `provider time ${formatSecondsBudget(parsed.provider_time_used_seconds ?? parsed.time_used_seconds, parsed.provider_time_budget_seconds ?? parsed.time_budget_seconds)}`,
     parsed.updated_at ? `updated ${formatTimestamp(parsed.updated_at)}` : ''
   ].filter(Boolean);
   const counts = [
@@ -1195,7 +1199,7 @@ function renderGoalToolCallBody(call) {
     parsed.status ? `status ${parsed.status}` : '',
     parsed.kind ? `kind ${parsed.kind}` : '',
     parsed.token_budget ? `token budget ${parsed.token_budget}` : '',
-    parsed.time_budget_minutes ? `time budget ${parsed.time_budget_minutes}m` : '',
+    parsed.provider_time_budget_minutes ? `provider time budget ${parsed.provider_time_budget_minutes}m` : parsed.time_budget_minutes ? `provider time budget ${parsed.time_budget_minutes}m` : '',
     maybeArray(parsed.success_criteria).length ? `${maybeArray(parsed.success_criteria).length} criteria` : '',
     maybeArray(parsed.validation_plan).length ? `${maybeArray(parsed.validation_plan).length} validation` : '',
     maybeArray(parsed.evidence).length ? `${maybeArray(parsed.evidence).length} evidence` : '',
@@ -1289,6 +1293,7 @@ function renderSummaryPanel(detail) {
         ${renderKVRow('Workdir', detail.metadata.workdir || 'n/a')}
         ${detail.metadata.requested_workdir ? renderKVRow('Requested workdir', detail.metadata.requested_workdir) : ''}
         ${detail.metadata.isolation?.mode ? renderKVRow('Isolation', `${detail.metadata.isolation.mode}${detail.metadata.isolation.requested_mode ? ` (requested ${detail.metadata.isolation.requested_mode})` : ''}`) : ''}
+        ${detail.metadata.effective_budget ? renderKVRow('Child budget', effectiveBudgetSummary(detail.metadata.effective_budget, detail.state.pause_reason)) : ''}
         ${loadedSkills.length ? renderKVRow('Loaded skills', loadedSkills.join(', ')) : ''}
         ${detail.active_handle ? renderKVRow('Webconsole handle', 'active') : ''}
         ${failureSummary ? renderKVRow('Failure class', failureSummary.label) : ''}
@@ -1339,6 +1344,8 @@ function parentCoordinationFacts(detail) {
   const completedJobs = maybeArray(coordination.completed_queue_jobs);
   const failedChildren = maybeArray(coordination.failed_child_sessions);
   const failedJobs = maybeArray(coordination.failed_queue_jobs);
+  const cancelledChildren = maybeArray(coordination.cancelled_child_sessions);
+  const cancelledJobs = maybeArray(coordination.cancelled_queue_jobs);
   const waitMode = coordination.wait_mode || 'wait-all';
   const waitState = coordination.parked
     ? 'parked'
@@ -1350,6 +1357,7 @@ function parentCoordinationFacts(detail) {
     waitState,
     unresolvedChildren.length || unresolvedJobs.length ? `unresolved ${unresolvedChildren.length}/${unresolvedJobs.length}` : '',
     completedChildren.length || completedJobs.length ? `completed ${completedChildren.length}/${completedJobs.length}` : '',
+    cancelledChildren.length || cancelledJobs.length ? `cancelled ${cancelledChildren.length}/${cancelledJobs.length}` : '',
     failedChildren.length || failedJobs.length ? `failed ${failedChildren.length}/${failedJobs.length}` : ''
   ].filter(Boolean);
   return {
@@ -1359,6 +1367,8 @@ function parentCoordinationFacts(detail) {
     unresolvedJobs,
     completedChildren,
     completedJobs,
+    cancelledChildren,
+    cancelledJobs,
     failedChildren,
     failedJobs,
     updatedAt: coordination.updated_at || '',
@@ -2280,7 +2290,7 @@ function renderGoalPanel(detail) {
       ${renderGoalRuntimeStatus(facts)}
       <div class="goal-budget-row">
         ${renderMiniMetric('Tokens', formatBudget(goal.tokens_used, goal.token_budget))}
-        ${renderMiniMetric('Time', formatSecondsBudget(goal.time_used_seconds, goal.time_budget_seconds))}
+        ${renderMiniMetric('Provider time', formatSecondsBudget(goal.provider_time_used_seconds ?? goal.time_used_seconds, goal.provider_time_budget_seconds ?? goal.time_budget_seconds))}
       </div>
       <div class="goal-actions">
         ${canPause ? '<button class="mini-link-btn" type="button" data-goal-action="pause">Pause</button>' : ''}
@@ -2592,6 +2602,8 @@ function renderBackgroundNotificationsPreview(items) {
         </div>
         <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 180))}</div>
         ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
+        ${maybeArray(item.available_actions).length ? `<div class="goal-meta-line">Parent actions: ${escapeHTML(maybeArray(item.available_actions).map(humanizeStatus).join(' · '))}</div>` : ''}
+        ${item.effective_budget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(item.effective_budget, item.effective_budget.last_reason))}</div>` : ''}
         <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
         ${item.session_id ? `
           <div class="card-actions">
@@ -2635,6 +2647,8 @@ function renderSubAgentCard(row) {
   const jobId = job?.id || sessionItem?.queue_job_id || '';
   const error = sessionItem?.last_error || job?.last_error || '';
   const finalText = job?.final_text || sessionItem?.final_text || sessionItem?.last_assistant_excerpt || '';
+  const effectiveBudget = sessionItem?.effective_budget || job?.effective_budget || null;
+  const budgetReason = sessionItem?.pause_reason || effectiveBudget?.last_reason || '';
   return `
     <div class="agent-card">
       <div class="agent-card-top">
@@ -2644,6 +2658,7 @@ function renderSubAgentCard(row) {
       <div class="agent-card-copy">${escapeHTML(model)} · ${escapeHTML(phase)}</div>
       ${error ? `<div class="notification-copy danger">${escapeHTML(truncateText(error, 180))}</div>` : ''}
       ${!error && finalText ? `<div class="agent-card-copy">${escapeHTML(truncateText(finalText, 180))}</div>` : ''}
+      ${effectiveBudget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(effectiveBudget, budgetReason))}</div>` : ''}
       <div class="agent-card-meta">${sessionId ? escapeHTML(shortId(sessionId)) : ''}${jobId ? `${sessionId ? ' · ' : ''}job ${escapeHTML(shortId(jobId))}` : ''}</div>
       ${renderVisiblePaths(sessionItem?.visible_paths || job?.visible_paths)}
       <div class="card-actions">
@@ -2664,7 +2679,45 @@ function subAgentDisplayStatus(sessionItem, job) {
 }
 
 function isTerminalStatus(status) {
-  return status === 'completed' || status === 'failed';
+  return status === 'completed' || status === 'cancelled' || status === 'failed';
+}
+
+function effectiveBudgetSummary(budget, pauseReason = '') {
+  if (!budget || typeof budget !== 'object') {
+    return 'unknown';
+  }
+  if (budget.status === 'disabled') {
+    return 'Off (snapshotted)';
+  }
+  const parts = [];
+  if (Number(budget.attempt || 0) > 0) {
+    parts.push(`attempt ${Number(budget.attempt)}`);
+  }
+  if (Number(budget.max_turns_per_attempt || 0) > 0) {
+    const used = Number(budget.used_turns || 0);
+    const limit = Number(budget.max_turns_per_attempt);
+    const remaining = budget.remaining_turns === undefined ? Math.max(0, limit - used) : Number(budget.remaining_turns || 0);
+    parts.push(`turns ${used}/${limit}, ${remaining} left`);
+  }
+  if (Number(budget.max_active_runtime_ms || 0) > 0) {
+    const usedSec = Math.ceil(Number(budget.used_active_runtime_ms || 0) / 1000);
+    const limitSec = Math.ceil(Number(budget.max_active_runtime_ms) / 1000);
+    const remainingMS = budget.remaining_active_runtime_ms === undefined
+      ? Math.max(0, Number(budget.max_active_runtime_ms) - Number(budget.used_active_runtime_ms || 0))
+      : Number(budget.remaining_active_runtime_ms || 0);
+    parts.push(`active ${usedSec}s/${limitSec}s, ${Math.ceil(remainingMS / 1000)}s left`);
+  }
+  if (budget.absolute_deadline_at) {
+    parts.push(`deadline ${formatTimestamp(budget.absolute_deadline_at)}`);
+  }
+  const reason = String(pauseReason || budget.last_reason || '').trim();
+  if (reason) {
+    parts.push(reason);
+  }
+  if (budget.source) {
+    parts.push(String(budget.source));
+  }
+  return parts.length ? parts.join(' · ') : humanizeStatus(budget.status || 'active');
 }
 
 function renderChildSessionCard(item) {
@@ -2741,6 +2794,8 @@ function renderNotificationCard(item) {
       </div>
       <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 200))}</div>
       ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
+      ${maybeArray(item.available_actions).length ? `<div class="goal-meta-line">Parent actions: ${escapeHTML(maybeArray(item.available_actions).map(humanizeStatus).join(' · '))}</div>` : ''}
+      ${item.effective_budget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(item.effective_budget, item.effective_budget.last_reason))}</div>` : ''}
       <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">

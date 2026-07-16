@@ -15,8 +15,12 @@ type runControl struct {
 
 func (c *runControl) setCancel(cancel context.CancelFunc) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.cancel = cancel
+	shouldCancel := c.pauseRequested || c.steerRequested
+	c.mu.Unlock()
+	if shouldCancel && cancel != nil {
+		cancel()
+	}
 }
 
 func (c *runControl) clearCancel(cancel context.CancelFunc) {

@@ -26,6 +26,7 @@ session 系统保证下面四件事同时成立：
       task_0001.json
     control/
       steer.jsonl
+      cancel.json
     artifacts/
       goal-history.jsonl
       compactions/
@@ -121,6 +122,7 @@ session 系统保证下面四件事同时成立：
 - `awaiting_input`
 - `paused`
 - `completed`
+- `cancelled`
 - `failed`
 
 ### 5.1 `awaiting_input`
@@ -143,6 +145,10 @@ session 系统保证下面四件事同时成立：
 root session 的 `completed` 也是可恢复状态：用户在 finish 之后补充信息时，应当在原 session 上 `continue`，把新的 user message 追加进既有历史并把状态切回 `running`，而不是新开一个丢失上下文的 session。这样“任务已 finish 但需要补充信息”的场景可以延续原始上下文。
 
 completed child / queue session 不允许走通用 `continue`。child 完成时 queue job、parent coordination 和 background notification 已经结算；后续 child 工作必须由 parent 通过 `agent_prompt` 的可恢复路径处理，或提交新的 queue job 重新排队，不能只把 child `state.json` 改回 `running`。
+
+### 5.3 `cancelled`
+
+表示 parent/operator 已明确终止该 child/job；它是 terminal control outcome，不是 execution failure，也不能通过通用 `continue` 恢复。running child 的取消先写 `control/cancel.json` durable request，再 cooperative cancel 当前 provider/tool/hook/shell context，最后写 `session.cancelled`。budget-paused child 被 parent settle 时可以继续保留 `paused`，但 linked queue job 必须使用 `cancelled`。
 
 ## 6. 创建规则
 
@@ -203,7 +209,7 @@ completed child / queue session 不允许走通用 `continue`。child 完成时 
 2. 读取 `state.json`
 3. 重建消息历史
 4. 追加新的 user message（如果提供）
-5. 重置本次恢复 run 的 bounded turn budget（避免沿用上一次 run 已耗尽的 `state.turn`）
+5. 重置全局 `max_turns_hard` / `max_turns_soft` 的 per-run 计数；child budget attempt 不因普通 continue 自动重置，只有显式 budget extension 才开始新 attempt
 6. 将状态切回 `running`
 7. 追加 durable `session.resumed` 事件，`data.resumed_from` 记录原状态
 8. 继续 loop

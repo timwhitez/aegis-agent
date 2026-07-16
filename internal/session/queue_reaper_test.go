@@ -160,6 +160,75 @@ func TestReapStaleQueueJobsSettlesTerminalChild(t *testing.T) {
 	}
 }
 
+func TestReapStaleQueueJobsSettlesCancelledChild(t *testing.T) {
+	store := reaperTestStore(t)
+	parent := reaperParentMeta(t, store)
+	child := reaperChildSession(t, store, parent.ID, StatusCancelled)
+	job := deadOwnerJob("job_cancelled", parent.ID, child.ID, QueueStatusRunning, StatusRunning)
+	seedParentJob(t, store, parent.ID, job)
+
+	result, err := store.ReapStaleQueueJobs(time.Minute)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(result.Cancelled) != 1 || result.Cancelled[0] != job.ID {
+		t.Fatalf("expected cancelled settlement, got %#v", result)
+	}
+	reloaded, err := store.LoadJob(job.ID)
+	if err != nil || reloaded.Status != QueueStatusCancelled || reloaded.SessionStatus != StatusCancelled {
+		t.Fatalf("unexpected cancelled reaped job: job=%#v err=%v", reloaded, err)
+	}
+	coordination, err := store.LoadParentCoordination(parent.ID)
+	if err != nil || sliceHasString(coordination.UnresolvedQueueJobs, job.ID) || !sliceHasString(coordination.CancelledQueueJobs, job.ID) || coordination.Parked {
+		t.Fatalf("cancelled reaped job did not resolve parent: coordination=%#v err=%v", coordination, err)
+	}
+}
+
+func TestReapStaleQueueJobsAppliesPendingCancelRequestAfterOwnerExit(t *testing.T) {
+	store := reaperTestStore(t)
+	parent := reaperParentMeta(t, store)
+	child := reaperChildSession(t, store, parent.ID, StatusRunning)
+	job := deadOwnerJob("job_pending_cancel", parent.ID, child.ID, QueueStatusRunning, StatusRunning)
+	child.QueueJobID = job.ID
+	if err := store.SaveMetadata(child.ID, child); err != nil {
+		t.Fatalf("link child metadata to job: %v", err)
+	}
+	seedParentJob(t, store, parent.ID, job)
+	request, created, err := store.RequestSessionCancel(child.ID, parent.ID, job.ID, "agent_cancel_requested")
+	if err != nil || !created {
+		t.Fatalf("request cancellation: request=%#v created=%t err=%v", request, created, err)
+	}
+
+	result, err := store.ReapStaleQueueJobs(time.Minute)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(result.Cancelled) != 1 || result.Cancelled[0] != job.ID {
+		t.Fatalf("pending cancel request did not converge: %#v", result)
+	}
+	state, err := store.LoadState(child.ID)
+	if err != nil || state.Status != StatusCancelled {
+		t.Fatalf("child session was not cancelled: state=%#v err=%v", state, err)
+	}
+	request, err = store.LoadSessionCancel(child.ID)
+	if err != nil || request.Status != CancelRequestStatusApplied || request.AppliedAt == "" {
+		t.Fatalf("cancel request was not marked applied: request=%#v err=%v", request, err)
+	}
+	eventsList, err := store.LoadEvents(child.ID)
+	if err != nil {
+		t.Fatalf("load child events: %v", err)
+	}
+	cancelledEvents := 0
+	for _, event := range eventsList {
+		if event.Type == "session.cancelled" {
+			cancelledEvents++
+		}
+	}
+	if cancelledEvents != 1 {
+		t.Fatalf("expected one recovered session.cancelled event, got %d events=%#v", cancelledEvents, eventsList)
+	}
+}
+
 func TestReapStaleQueueJobsBlocksNonTerminalOrphanAndNotifiesParent(t *testing.T) {
 	store := reaperTestStore(t)
 	parent := reaperParentMeta(t, store)

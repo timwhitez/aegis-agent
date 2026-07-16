@@ -167,12 +167,14 @@ function patchMissionValidation(sessionID, payload = {}) {
 function saveConfig(payload) {
   return requestJSON('/api/config', jsonRequest({
     guardrails_mode: payload.guardrailsMode,
+    max_turns_soft: payload.maxTurnsSoft,
     max_turns_hard: payload.maxTurnsHard,
     disable_hard_turn_limit: payload.disableHardTurnLimit,
     child_budget: {
       disabled: payload.childBudget.disabled,
-      max_wall_clock_sec: payload.childBudget.maxWallClockSec,
-      max_turns: payload.childBudget.maxTurns
+      max_active_runtime_sec: payload.childBudget.maxActiveRuntimeSec,
+      max_elapsed_sec: payload.childBudget.maxElapsedSec,
+      max_turns_per_attempt: payload.childBudget.maxTurnsPerAttempt
     },
     provider: payload.provider,
     api_provider: payload.apiProvider,

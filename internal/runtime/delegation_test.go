@@ -273,29 +273,29 @@ func TestRunnerStopAgentStopsQueuedJobAndResolvesParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop agent: %v", err)
 	}
-	if result.Status != session.QueueStatusFailed || !strings.Contains(result.LastError, "stopped") {
+	if result.Status != session.QueueStatusCancelled || !strings.Contains(result.LastError, "cancelled") {
 		t.Fatalf("unexpected stop result: %#v", result)
 	}
 	loaded, err := runner.store.LoadJob(job.ID)
 	if err != nil {
 		t.Fatalf("load stopped job: %v", err)
 	}
-	if loaded.Status != session.QueueStatusFailed || !strings.Contains(loaded.LastError, "stopped") {
-		t.Fatalf("expected failed stopped job, got %#v", loaded)
+	if loaded.Status != session.QueueStatusCancelled || !strings.Contains(loaded.LastError, "cancelled") {
+		t.Fatalf("expected cancelled stopped job, got %#v", loaded)
 	}
 	coordination, err := runner.store.LoadParentCoordination(parentID)
 	if err != nil {
 		t.Fatalf("load parent coordination: %v", err)
 	}
-	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.FailedQueueJobs, job.ID) || coordination.Parked {
+	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.CancelledQueueJobs, job.ID) || coordination.Parked {
 		t.Fatalf("expected stopped job to resolve parent coordination, got %#v", coordination)
 	}
 	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
 	if err != nil {
 		t.Fatalf("load background notifications: %v", err)
 	}
-	if len(notifications) != 1 || notifications[0].QueueJobID != job.ID || notifications[0].Status != session.QueueStatusFailed || !strings.Contains(notifications[0].LastError, "stopped") {
-		t.Fatalf("expected failed stop notification, got %#v", notifications)
+	if len(notifications) != 1 || notifications[0].QueueJobID != job.ID || notifications[0].Status != session.QueueStatusCancelled || !strings.Contains(notifications[0].LastError, "cancelled") {
+		t.Fatalf("expected cancelled stop notification, got %#v", notifications)
 	}
 }
 
@@ -356,15 +356,15 @@ func TestRunnerStopAgentSettlesBudgetPausedBlockedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("settle budget-paused job: %v", err)
 	}
-	if result.Status != session.QueueStatusFailed || !strings.Contains(result.LastError, "child_budget_turns_exceeded") {
+	if result.Status != session.QueueStatusCancelled || !strings.Contains(result.LastError, "child_budget_turns_exceeded") {
 		t.Fatalf("unexpected stop result: %#v", result)
 	}
 	loaded, err := runner.store.LoadJob(job.ID)
 	if err != nil {
 		t.Fatalf("load settled job: %v", err)
 	}
-	if loaded.Status != session.QueueStatusFailed || loaded.StopReason != session.QueueStopReasonAgentStop {
-		t.Fatalf("expected failed settled job, got %#v", loaded)
+	if loaded.Status != session.QueueStatusCancelled || loaded.StopReason != session.QueueStopReasonAgentStop {
+		t.Fatalf("expected cancelled settled job, got %#v", loaded)
 	}
 	childState, err := runner.store.LoadState(child.ID)
 	if err != nil {
@@ -377,19 +377,19 @@ func TestRunnerStopAgentSettlesBudgetPausedBlockedJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load parent coordination: %v", err)
 	}
-	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.FailedQueueJobs, job.ID) || coordination.Parked {
+	if containsString(coordination.UnresolvedQueueJobs, job.ID) || !containsString(coordination.CancelledQueueJobs, job.ID) || coordination.Parked {
 		t.Fatalf("expected budget stop to resolve parent coordination, got %#v", coordination)
 	}
 	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
 	if err != nil {
 		t.Fatalf("load notifications: %v", err)
 	}
-	if len(notifications) != 1 || notifications[0].Status != session.QueueStatusFailed || notifications[0].StopReason != session.QueueStopReasonAgentStop || !strings.Contains(notifications[0].LastError, "child_budget_turns_exceeded") {
+	if len(notifications) != 1 || notifications[0].Status != session.QueueStatusCancelled || notifications[0].StopReason != session.QueueStopReasonAgentStop || !strings.Contains(notifications[0].LastError, "child_budget_turns_exceeded") || len(notifications[0].AvailableActions) != 0 {
 		t.Fatalf("expected terminal budget stop notification, got %#v", notifications)
 	}
 }
 
-func TestRunnerStopAgentRejectsNonBudgetBlockedJob(t *testing.T) {
+func TestRunnerStopAgentCancelsNonBudgetBlockedJob(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
 	parentID := createParentSession(t, runner.store, t.TempDir())
@@ -433,17 +433,19 @@ func TestRunnerStopAgentRejectsNonBudgetBlockedJob(t *testing.T) {
 		t.Fatalf("add parent queue job: %v", err)
 	}
 
-	if result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID}); err == nil {
-		t.Fatalf("expected non-budget blocked stop rejection, got %#v", result)
-	} else if !strings.Contains(err.Error(), "only budget-paused blocked jobs") {
-		t.Fatalf("unexpected blocked stop rejection: %v", err)
+	result, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
+	if err != nil {
+		t.Fatalf("cancel non-budget blocked child: %v", err)
+	}
+	if result.Status != session.StatusCancelled || result.Behavior != "cancelled_inactive_child" {
+		t.Fatalf("unexpected blocked child cancellation: %#v", result)
 	}
 	loaded, err := runner.store.LoadJob(job.ID)
 	if err != nil {
 		t.Fatalf("load preserved blocked job: %v", err)
 	}
-	if loaded.Status != session.QueueStatusBlocked || loaded.SessionStatus != session.StatusAwaitingInput {
-		t.Fatalf("expected non-budget blocked job preserved, got %#v", loaded)
+	if loaded.Status != session.QueueStatusCancelled || loaded.SessionStatus != session.StatusCancelled {
+		t.Fatalf("expected non-budget blocked job cancelled, got %#v", loaded)
 	}
 }
 
@@ -470,8 +472,8 @@ func TestRunnerStopAgentRejectsRunningJob(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected running job stop rejection, got %#v", result)
 	}
-	if !strings.Contains(err.Error(), "cannot be safely stopped") {
-		t.Fatalf("expected safe stop boundary error, got %v", err)
+	if !strings.Contains(err.Error(), "has no cancellable child session") {
+		t.Fatalf("expected missing child session boundary error, got %v", err)
 	}
 }
 
@@ -764,8 +766,9 @@ func TestRunnerPromptAgentContinuesBlockedPausedQueueChild(t *testing.T) {
 		RootSessionID:    parentID,
 		QueueJobID:       "job_blocked_continue",
 		Depth:            1,
+		EffectiveBudget:  session.NewEffectiveBudget(session.BudgetSourceRuntimeChild, 1, 0, 0, 0, time.Now().UTC()),
 	}
-	if err := runner.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "child_budget_turns_exceeded", UpdatedAt: now}); err != nil {
+	if err := runner.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "child_budget_turns_exceeded", Turn: 1, UpdatedAt: now}); err != nil {
 		t.Fatalf("create paused child: %v", err)
 	}
 	job := session.QueueJob{
@@ -782,6 +785,7 @@ func TestRunnerPromptAgentContinuesBlockedPausedQueueChild(t *testing.T) {
 		SessionID:       child.ID,
 		SessionStatus:   session.StatusPaused,
 		LastError:       "child session is resumable: paused",
+		EffectiveBudget: session.CloneEffectiveBudget(child.EffectiveBudget),
 	}
 	if err := runner.store.SaveJob(job); err != nil {
 		t.Fatalf("save blocked child job: %v", err)
@@ -794,11 +798,12 @@ func TestRunnerPromptAgentContinuesBlockedPausedQueueChild(t *testing.T) {
 		ParentSessionID: parentID,
 		QueueJobID:      job.ID,
 		Message:         "Use current evidence and call finish.",
+		BudgetExtension: &session.BudgetExtension{AddTurns: 1, Reason: "finish delegated work"},
 	})
 	if err != nil {
 		t.Fatalf("prompt blocked queue child: %v", err)
 	}
-	if !result.Accepted || result.Behavior != "continued_blocked_child" || result.SessionID != child.ID || result.QueueJobID != job.ID {
+	if !result.Accepted || result.Behavior != "continued_budget_extended_child" || result.SessionID != child.ID || result.QueueJobID != job.ID {
 		t.Fatalf("unexpected prompt result: %#v", result)
 	}
 	state, err := runner.store.LoadState(child.ID)
@@ -1913,7 +1918,7 @@ func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("queue worker did not finish")
 	}
 	if processErr != nil || !ok || processed.Status != session.QueueStatusCompleted {

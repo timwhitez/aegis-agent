@@ -2608,6 +2608,16 @@ func TestStoreGoalLifecycleAccountingAndSummary(t *testing.T) {
 	if len(history) < 3 {
 		t.Fatalf("expected create/accounting/budget history, got %#v", history)
 	}
+	var accountingEntry *GoalHistoryEntry
+	for i := range history {
+		if history[i].Type == "goal.accounting.updated" {
+			accountingEntry = &history[i]
+			break
+		}
+	}
+	if accountingEntry == nil || accountingEntry.Data["accounting_scope"] != "provider_time" || accountingEntry.Data["measurement_source"] != "provider_call_elapsed" || accountingEntry.Data["provider_time_used_seconds"] != float64(2) {
+		t.Fatalf("expected explicit provider-time accounting history, got %#v", accountingEntry)
+	}
 	if cleared, err := store.ClearGoal(meta.ID); err != nil || !cleared {
 		t.Fatalf("clear goal cleared=%v err=%v", cleared, err)
 	}
@@ -3001,6 +3011,43 @@ func TestStoreListReportsCorruptStateSnapshot(t *testing.T) {
 	}
 	if _, err := store.ListChildren(parentID, 10); err == nil || !strings.Contains(err.Error(), "state.json") {
 		t.Fatalf("expected ListChildren to report state.json, got %v", err)
+	}
+}
+
+func TestStoreListChildrenToleratesTransientStateCreationWindow(t *testing.T) {
+	store := NewStore(t.TempDir())
+	parentID := "transient_state_parent"
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		Depth:            1,
+	}
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	saved := make(chan error, 1)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		saved <- store.SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"})
+	}()
+
+	children, err := store.ListChildren(parentID, 10)
+	if err != nil {
+		t.Fatalf("list children during state creation: %v", err)
+	}
+	if saveErr := <-saved; saveErr != nil {
+		t.Fatalf("save state: %v", saveErr)
+	}
+	if len(children) != 1 || children[0].ID != meta.ID || children[0].Status != StatusRunning {
+		t.Fatalf("expected newly completed child snapshot, got %#v", children)
 	}
 }
 
@@ -4599,6 +4646,87 @@ func TestEnsureBackgroundNotificationRefreshesChangedQueueFacts(t *testing.T) {
 	}
 }
 
+func TestEnsureBackgroundNotificationRefreshesBudgetAndClearsTerminalActions(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC()
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now.Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: meta.CreatedAt}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	exhausted := NewEffectiveBudget(BudgetSourceRuntimeChild, 1, 0, 0, 0, now)
+	RefreshEffectiveBudget(exhausted, 1)
+	exhausted.Status = BudgetStatusExhausted
+	exhausted.LastReason = "child_budget_turns_exceeded"
+	blocked := NewBackgroundNotification(QueueJob{
+		ID:              "job_background_budget_refresh",
+		Status:          QueueStatusBlocked,
+		SessionID:       "child_background_budget_refresh",
+		SessionStatus:   StatusPaused,
+		LastError:       exhausted.LastReason,
+		EffectiveBudget: exhausted,
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, blocked); err != nil {
+		t.Fatalf("ensure blocked notification: %v", err)
+	}
+	loaded, err := store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load blocked notification: %v", err)
+	}
+	if len(loaded) != 1 || len(loaded[0].AvailableActions) != 3 {
+		t.Fatalf("expected actionable budget notification, got %#v", loaded)
+	}
+	loaded[0].DeliveryStatus = BackgroundNotificationAccepted
+	if err := store.UpdateBackgroundNotifications(meta.ID, loaded); err != nil {
+		t.Fatalf("accept blocked notification: %v", err)
+	}
+
+	cancelledBudget := CloneEffectiveBudget(exhausted)
+	cancelledBudget.TotalActiveRuntimeMS++
+	cancelledBudget.UpdatedAt = now.Add(time.Second).Format(time.RFC3339Nano)
+	cancelled := NewBackgroundNotification(QueueJob{
+		ID:              "job_background_budget_refresh",
+		Status:          QueueStatusCancelled,
+		SessionID:       "child_background_budget_refresh",
+		SessionStatus:   StatusCancelled,
+		StopReason:      QueueStopReasonAgentStop,
+		LastError:       exhausted.LastReason,
+		EffectiveBudget: cancelledBudget,
+	})
+	if err := store.EnsureBackgroundNotification(meta.ID, cancelled); err != nil {
+		t.Fatalf("ensure cancelled notification: %v", err)
+	}
+
+	loaded, err = store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load cancelled notification: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one refreshed notification, got %#v", loaded)
+	}
+	if loaded[0].Status != QueueStatusCancelled || loaded[0].SessionStatus != StatusCancelled {
+		t.Fatalf("expected cancelled terminal facts, got %#v", loaded[0])
+	}
+	if loaded[0].EffectiveBudget == nil || loaded[0].EffectiveBudget.Status != BudgetStatusExhausted || loaded[0].EffectiveBudget.TotalActiveRuntimeMS != cancelledBudget.TotalActiveRuntimeMS || loaded[0].EffectiveBudget.UpdatedAt != cancelledBudget.UpdatedAt {
+		t.Fatalf("expected refreshed exhausted budget snapshot, got %#v", loaded[0].EffectiveBudget)
+	}
+	if len(loaded[0].AvailableActions) != 0 {
+		t.Fatalf("expected terminal notification to clear stale budget actions, got %#v", loaded[0].AvailableActions)
+	}
+	if loaded[0].DeliveryStatus != BackgroundNotificationPending {
+		t.Fatalf("expected changed budget facts to be re-delivered, got %#v", loaded[0])
+	}
+}
+
 func TestEnsureBackgroundNotificationDoesNotRedeliverUnchangedFailedFacts(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -4928,7 +5056,7 @@ func TestLoadBackgroundNotificationsRejectsMalformedSnapshot(t *testing.T) {
 	if err := store.writeJSONL(backgroundPath, []BackgroundNotification{runningResult}); err != nil {
 		t.Fatalf("write running background result: %v", err)
 	}
-	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
+	if _, err := store.LoadBackgroundNotifications(meta.ID); err == nil || !strings.Contains(err.Error(), "validate background.jsonl") || !strings.Contains(err.Error(), "background notification status must be blocked, completed, cancelled, or failed") {
 		t.Fatalf("expected running background result validation error, got %v", err)
 	}
 
@@ -5051,7 +5179,7 @@ func TestBackgroundNotificationWritesRejectMalformedFacts(t *testing.T) {
 		SessionID:     "child_background_running",
 		SessionStatus: StatusRunning,
 	})
-	if err := store.AppendBackgroundNotification(meta.ID, runningResult); err == nil || !strings.Contains(err.Error(), "background notification status must be blocked, completed, or failed") {
+	if err := store.AppendBackgroundNotification(meta.ID, runningResult); err == nil || !strings.Contains(err.Error(), "background notification status must be blocked, completed, cancelled, or failed") {
 		t.Fatalf("expected append to reject running background result, got %v", err)
 	}
 	completedWithFailedSession := NewBackgroundNotification(QueueJob{
@@ -5397,7 +5525,87 @@ func TestClaimNextQueuedJobWritesLease(t *testing.T) {
 	}
 }
 
-func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
+func TestLoadJobCoordinationSnapshotWaitsForClaimLeaseWrite(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	claimStore := NewStore(root)
+	readStore := NewStore(root)
+	job := QueueJob{
+		SchemaVersion: 1,
+		ID:            "job_coordination_claim_snapshot",
+		Status:        QueueStatusQueued,
+		Prompt:        "do work",
+		Mode:          ModeExec,
+		Background:    true,
+	}
+	if err := claimStore.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+
+	claimPaused := make(chan struct{})
+	releaseClaim := make(chan struct{})
+	claimStore.beforeQueueClaimLeaseWrite = func(from, to string, claimed QueueJob) error {
+		if claimed.ID != job.ID || claimed.Status != QueueStatusRunning {
+			return fmt.Errorf("unexpected claimed job: %#v", claimed)
+		}
+		close(claimPaused)
+		<-releaseClaim
+		return nil
+	}
+
+	type claimResult struct {
+		job QueueJob
+		ok  bool
+		err error
+	}
+	claimDone := make(chan claimResult, 1)
+	go func() {
+		claimed, ok, err := claimStore.ClaimNextQueuedJob()
+		claimDone <- claimResult{job: claimed, ok: ok, err: err}
+	}()
+	select {
+	case <-claimPaused:
+	case <-time.After(2 * time.Second):
+		t.Fatal("claim did not reach the rename/lease-write critical section")
+	}
+
+	type snapshotResult struct {
+		job QueueJob
+		err error
+	}
+	snapshotDone := make(chan snapshotResult, 1)
+	go func() {
+		snapshot, err := readStore.LoadJobCoordinationSnapshot(job.ID)
+		snapshotDone <- snapshotResult{job: snapshot, err: err}
+	}()
+	select {
+	case result := <-snapshotDone:
+		t.Fatalf("coordination snapshot escaped the claim lock: %#v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseClaim)
+	select {
+	case result := <-claimDone:
+		if result.err != nil || !result.ok || result.job.Status != QueueStatusRunning {
+			t.Fatalf("claim result: %#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("claim did not finish after release")
+	}
+	select {
+	case result := <-snapshotDone:
+		if result.err != nil {
+			t.Fatalf("load coordination snapshot: %v", result.err)
+		}
+		if result.job.Status != QueueStatusRunning || result.job.ClaimedAt == "" || result.job.HeartbeatAt == "" {
+			t.Fatalf("expected stable running lease snapshot, got %#v", result.job)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("coordination snapshot remained blocked after claim completed")
+	}
+}
+
+func TestStopQueuedJobMovesQueuedJobToCancelled(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	job := QueueJob{
 		SchemaVersion: 1,
@@ -5415,8 +5623,8 @@ func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stop queued job: %v", err)
 	}
-	if stopped.Status != QueueStatusFailed || stopped.LastError != "stopped before claim" || stopped.StopReason != QueueStopReasonAgentStop {
-		t.Fatalf("expected failed stopped job, got %#v", stopped)
+	if stopped.Status != QueueStatusCancelled || stopped.LastError != "stopped before claim" || stopped.StopReason != QueueStopReasonAgentStop {
+		t.Fatalf("expected cancelled stopped job, got %#v", stopped)
 	}
 	if _, err := os.Stat(store.queueJobPath(QueueStatusQueued, job.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected queued job to be removed, got %v", err)
@@ -5425,8 +5633,8 @@ func TestStopQueuedJobMovesQueuedJobToFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load stopped job: %v", err)
 	}
-	if loaded.Status != QueueStatusFailed || loaded.LastError != stopped.LastError || loaded.StopReason != QueueStopReasonAgentStop {
-		t.Fatalf("expected stopped failed job to load, got %#v", loaded)
+	if loaded.Status != QueueStatusCancelled || loaded.LastError != stopped.LastError || loaded.StopReason != QueueStopReasonAgentStop {
+		t.Fatalf("expected stopped cancelled job to load, got %#v", loaded)
 	}
 }
 
@@ -5486,8 +5694,8 @@ func TestStopBudgetPausedJobSettlesBlockedJobAndPreservesChildPause(t *testing.T
 	if err != nil {
 		t.Fatalf("stop budget-paused job: %v", err)
 	}
-	if stopped.Status != QueueStatusFailed || stopped.StopReason != QueueStopReasonAgentStop {
-		t.Fatalf("expected terminal failed budget stop, got %#v", stopped)
+	if stopped.Status != QueueStatusCancelled || stopped.StopReason != QueueStopReasonAgentStop {
+		t.Fatalf("expected terminal cancelled budget stop, got %#v", stopped)
 	}
 	if !strings.Contains(stopped.LastError, "child_budget_wallclock_exceeded") {
 		t.Fatalf("expected durable budget reason in stop error, got %#v", stopped)
@@ -5499,8 +5707,8 @@ func TestStopBudgetPausedJobSettlesBlockedJobAndPreservesChildPause(t *testing.T
 	if err != nil {
 		t.Fatalf("load settled budget job: %v", err)
 	}
-	if loaded.Status != QueueStatusFailed || loaded.StopReason != QueueStopReasonAgentStop || loaded.LastError != stopped.LastError {
-		t.Fatalf("expected settled terminal job to remain failed, got %#v", loaded)
+	if loaded.Status != QueueStatusCancelled || loaded.StopReason != QueueStopReasonAgentStop || loaded.LastError != stopped.LastError {
+		t.Fatalf("expected settled terminal job to remain cancelled, got %#v", loaded)
 	}
 	state, err := store.LoadState(childID)
 	if err != nil {

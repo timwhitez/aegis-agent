@@ -262,6 +262,8 @@ async function main() {
   const chromePath = args.chrome || process.env.CHROME_BIN || 'google-chrome';
   const timeoutMs = Number(args['timeout-ms'] || '240000');
   const debugPort = Number(args['debug-port'] || `${36000 + Math.floor(Math.random() * 1000)}`);
+  const budgetLifecycle = args['budget-lifecycle'] === 'true';
+  const keepHistory = args['keep-history'] === 'true';
 
   if (!baseURL || !workdir || !outputPath || !domPath) {
     throw new Error('--base-url, --workdir, --output, and --dom-output are required');
@@ -371,37 +373,94 @@ async function main() {
     results.interactions.settings_loaded = true;
     const childBudgetDefaults = await browserClient.evaluate(`(() => {
       const enabled = document.getElementById('settings-enable-child-budget');
-      const wallClock = document.getElementById('settings-child-budget-wall-clock');
+      const activeRuntime = document.getElementById('settings-child-budget-active-runtime');
+      const elapsed = document.getElementById('settings-child-budget-elapsed');
       const maxTurns = document.getElementById('settings-child-budget-max-turns');
       const state = document.getElementById('settings-child-budget-state');
+      const hardDisabled = document.getElementById('settings-disable-hard-turn-limit');
+      const hardTurns = document.getElementById('settings-max-turns-hard');
+      const hardState = document.getElementById('settings-global-turn-limit-state');
+      const settingsText = document.querySelector('[data-view-panel="settings"], #settings-view')?.textContent || document.body.textContent || '';
       return {
         enabled: Boolean(enabled?.checked),
-        wall_clock_disabled: Boolean(wallClock?.disabled),
+        active_runtime_disabled: Boolean(activeRuntime?.disabled),
+        elapsed_disabled: Boolean(elapsed?.disabled),
         max_turns_disabled: Boolean(maxTurns?.disabled),
-        state: state?.textContent || ''
+        state: state?.textContent || '',
+        hard_disabled: Boolean(hardDisabled?.checked),
+        hard_input_disabled: Boolean(hardTurns?.disabled),
+        hard_state: hardState?.textContent || '',
+        global_scope_copy: settingsText.includes('master, foreground child, and background/queue child sessions'),
+        soft_copy: settingsText.includes('Soft is a one-time checkpoint reminder and never stops execution'),
+        snapshot_copy: settingsText.includes('Changes affect newly created child/job work only'),
+        parent_actions_copy: settingsText.includes('A parent can extend/resume or cancel/settle a budget-paused child')
       };
     })()`);
-    if (childBudgetDefaults.enabled || !childBudgetDefaults.wall_clock_disabled || !childBudgetDefaults.max_turns_disabled || childBudgetDefaults.state !== 'Off') {
+    if (childBudgetDefaults.enabled || !childBudgetDefaults.active_runtime_disabled || !childBudgetDefaults.elapsed_disabled || !childBudgetDefaults.max_turns_disabled || childBudgetDefaults.state !== 'Off') {
       throw new Error(`expected default child budget controls to be disabled: ${JSON.stringify(childBudgetDefaults)}`);
+    }
+    if (budgetLifecycle && (!childBudgetDefaults.hard_disabled || !childBudgetDefaults.hard_input_disabled || childBudgetDefaults.hard_state !== 'Off' || !childBudgetDefaults.global_scope_copy || !childBudgetDefaults.soft_copy || !childBudgetDefaults.snapshot_copy || !childBudgetDefaults.parent_actions_copy)) {
+      throw new Error(`expected global/default budget semantics in Settings: ${JSON.stringify(childBudgetDefaults)}`);
     }
     await click('#settings-enable-child-budget', 'sub-agent budget toggle');
     const childBudgetEnabled = await browserClient.evaluate(`(() => ({
-      wall_clock_enabled: !document.getElementById('settings-child-budget-wall-clock')?.disabled,
+      active_runtime_enabled: !document.getElementById('settings-child-budget-active-runtime')?.disabled,
+      elapsed_enabled: !document.getElementById('settings-child-budget-elapsed')?.disabled,
       max_turns_enabled: !document.getElementById('settings-child-budget-max-turns')?.disabled,
       state: document.getElementById('settings-child-budget-state')?.textContent || ''
     }))()`);
-    if (!childBudgetEnabled.wall_clock_enabled || !childBudgetEnabled.max_turns_enabled || childBudgetEnabled.state !== 'Enabled') {
+    if (!childBudgetEnabled.active_runtime_enabled || !childBudgetEnabled.elapsed_enabled || !childBudgetEnabled.max_turns_enabled || childBudgetEnabled.state !== 'Enabled') {
       throw new Error(`expected child budget controls to enable together: ${JSON.stringify(childBudgetEnabled)}`);
     }
-    await click('#settings-enable-child-budget', 'sub-agent budget reset');
     results.interactions.child_budget_defaults_off = true;
     results.interactions.child_budget_toggle_works = true;
+    results.interactions.global_turn_guard_default_off = childBudgetDefaults.hard_disabled && childBudgetDefaults.hard_input_disabled && childBudgetDefaults.hard_state === 'Off';
+    results.interactions.global_turn_guard_scope_copy = childBudgetDefaults.global_scope_copy;
+    results.interactions.soft_checkpoint_copy = childBudgetDefaults.soft_copy;
+    results.interactions.child_budget_snapshot_copy = childBudgetDefaults.snapshot_copy;
+    results.interactions.child_budget_parent_actions_copy = childBudgetDefaults.parent_actions_copy;
+
+    if (budgetLifecycle) {
+      await setValue('#settings-child-budget-active-runtime', '30m');
+      await setValue('#settings-child-budget-elapsed', '2h');
+      await setValue('#settings-child-budget-max-turns', '1');
+      await click('#settings-save-btn', 'save budget settings');
+      await waitFor(
+        () => browserClient.evaluate(`Boolean(document.querySelector('.confirm-dialog-confirm'))`),
+        5000,
+        'settings save confirmation'
+      );
+      await click('.confirm-dialog-confirm', 'confirm budget settings save');
+      await waitFor(
+        () => browserClient.evaluate(`Array.from(document.querySelectorAll('.toast')).some((item) => item.textContent.includes('Settings saved.'))`),
+        15000,
+        'settings saved toast'
+      );
+      const savedConfig = await fetchJSON(`${baseURL}/api/config`);
+      const savedBudget = savedConfig?.child_budget || {};
+      if (savedConfig?.max_turns_hard !== -1 || savedConfig?.disable_hard_turn_limit !== true || savedBudget.disabled !== false || savedBudget.max_active_runtime_sec !== 1800 || savedBudget.max_elapsed_sec !== 7200 || savedBudget.max_turns_per_attempt !== 1 || Object.prototype.hasOwnProperty.call(savedBudget, 'max_wall_clock_sec') || Object.prototype.hasOwnProperty.call(savedBudget, 'max_turns')) {
+        throw new Error(`unexpected canonical Settings round-trip: ${JSON.stringify(savedConfig)}`);
+      }
+      results.interactions.settings_budget_saved = true;
+      results.interactions.settings_canonical_round_trip = true;
+      results.saved_budget = savedBudget;
+    } else {
+      await click('#settings-enable-child-budget', 'sub-agent budget reset');
+    }
 
     await click('[data-view="workspace"]', 'workspace nav');
     await waitFor(
       () => browserClient.evaluate(`Boolean(document.getElementById('file-tree')) && Boolean(document.getElementById('editor-content'))`),
       15000,
       'workspace pane'
+    );
+    await waitFor(
+      () => browserClient.evaluate(`(() => {
+        const tree = document.getElementById('file-tree');
+        return Boolean(tree) && !tree.querySelector('.view-loading') && (tree.querySelectorAll('.tree-node').length > 0 || tree.textContent.includes('empty'));
+      })()`),
+      15000,
+      'workspace directory listing'
     );
     results.interactions.workspace_loaded = true;
 
@@ -528,15 +587,22 @@ async function main() {
 
     const initialSessionChip = await browserClient.evaluate(`document.getElementById('session-id-display')?.textContent || ''`);
     const initialEphemeralPrefix = normalizeWhitespace(initialSessionChip);
-    const prompt = [
-      'This is a frontend smoke validation.',
-      'Do not inspect the workspace.',
-      'Call todo_write with exactly one completed todo item content "frontend smoke".',
-      'Then call agent_spawn with background=false, agent_name="ui-smoke-reviewer", agent_role="evaluator", prompt="Immediately call finish with exact message: ui smoke child ok".',
-      'If agent_spawn returns a session_id, call agent_status for that child session.',
-      'Then call agent_list.',
-      'Finally call finish with exact message: ui smoke parent ok.'
-    ].join(' ');
+    const prompt = budgetLifecycle
+      ? [
+          'BUDGET_BROWSER_SMOKE.',
+          'Exercise one foreground child budget pause, explicit parent extension/resume, and completion.',
+          'Then exercise one background child budget pause followed by explicit parent cancel/settle.',
+          'Keep durable evidence and finish with exact message: budget browser parent complete.'
+        ].join(' ')
+      : [
+          'This is a frontend smoke validation.',
+          'Do not inspect the workspace.',
+          'Call todo_write with exactly one completed todo item content "frontend smoke".',
+          'Then call agent_spawn with background=false, agent_name="ui-smoke-reviewer", agent_role="evaluator", prompt="Immediately call finish with exact message: ui smoke child ok".',
+          'If agent_spawn returns a session_id, call agent_status for that child session.',
+          'Then call agent_list.',
+          'Finally call finish with exact message: ui smoke parent ok.'
+        ].join(' ');
     await setValue('#chat-input', prompt);
     await waitFor(
       () => browserClient.evaluate(`(() => {
@@ -625,6 +691,14 @@ async function main() {
         liveSessionDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(sessionId)}?limit=80`);
         const status = liveSessionDetail.state?.status || '';
         const toolNames = sessionToolNames(liveSessionDetail);
+        if (budgetLifecycle) {
+          const children = liveSessionDetail.children?.sessions || [];
+          const jobs = liveSessionDetail.children?.jobs || [];
+          return ['completed', 'awaiting_input', 'paused'].includes(status) &&
+            ['todo_write', 'agent_spawn', 'agent_prompt', 'agent_stop', 'agent_list', 'finish'].every((name) => toolNames.includes(name)) &&
+            children.some((item) => item.agent_name === 'budget-resume-child' && item.status === 'completed') &&
+            jobs.some((item) => item.agent_name === 'budget-cancel-child' && item.status === 'cancelled');
+        }
         if (toolNames.includes('todo_write') && toolNames.includes('agent_spawn') && toolNames.includes('agent_list') && ['completed', 'awaiting_input', 'paused'].includes(status)) {
           return true;
         }
@@ -717,7 +791,13 @@ async function main() {
       return other?.dataset?.openSession || '';
     })()`);
 
-    if (!usedFallback) {
+    if (budgetLifecycle) {
+      queueDetail = (liveSessionDetail.children?.jobs || []).find((item) => item.agent_name === 'budget-cancel-child') || null;
+      results.queue_job_id = queueDetail?.id || '';
+      results.interactions.queue_job_submitted = false;
+      results.interactions.queue_job_completed = false;
+      results.interactions.queue_job_cancelled = Boolean(queueDetail && queueDetail.status === 'cancelled');
+    } else if (!usedFallback) {
       queueJob = await fetchJSON(`${baseURL}/api/queue/jobs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -765,6 +845,96 @@ async function main() {
     results.interactions.child_session_visible = Boolean(childSessionId) || (activeSessionDetail.children?.sessions || []).length > 0;
     results.interactions.tasks_tab_visible = (activeSessionDetail.task_board?.tasks || []).length > 0 || (activeSessionDetail.task_board?.todo || []).length > 0;
 
+    if (budgetLifecycle) {
+      const childSessions = activeSessionDetail.children?.sessions || [];
+      const childJobs = activeSessionDetail.children?.jobs || [];
+      const resumeChild = childSessions.find((item) => item.agent_name === 'budget-resume-child');
+      const cancelledChild = childSessions.find((item) => item.agent_name === 'budget-cancel-child');
+      const cancelledJob = childJobs.find((item) => item.agent_name === 'budget-cancel-child');
+      const cancelledNotification = (activeSessionDetail.background_notifications || []).find((item) => item.agent_name === 'budget-cancel-child');
+      if (!resumeChild?.id || !cancelledChild?.id || !cancelledJob?.id || !cancelledNotification) {
+        throw new Error(`budget lifecycle children are incomplete: ${JSON.stringify({ childSessions, childJobs, notifications: activeSessionDetail.background_notifications || [] })}`);
+      }
+      const resumeDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(resumeChild.id)}?limit=80`);
+      const cancelledDetail = await fetchJSON(`${baseURL}/api/sessions/${encodeURIComponent(cancelledChild.id)}?limit=80`);
+      const resumeBudget = resumeDetail.metadata?.effective_budget || {};
+      const cancelledBudget = cancelledJob.effective_budget || {};
+      const resumeDetailText = JSON.stringify(resumeDetail);
+      if (resumeDetail.state?.status !== 'completed' || Number(resumeBudget.attempt || 0) < 2 || !resumeDetailText.includes('session.child_budget.exceeded') || !resumeDetailText.includes('session.child_budget.extended')) {
+        throw new Error(`foreground child did not preserve pause/extend/resume completion evidence: ${resumeDetailText}`);
+      }
+      if (cancelledJob.status !== 'cancelled' || cancelledJob.session_status !== 'paused' || cancelledJob.stop_reason !== 'agent_stop' || cancelledDetail.state?.status !== 'paused' || cancelledDetail.state?.pause_reason !== 'child_budget_turns_exceeded' || cancelledBudget.status !== 'exhausted') {
+        throw new Error(`background child did not preserve cancel/settle semantics: ${JSON.stringify({ cancelledJob, cancelledDetail })}`);
+      }
+      if (cancelledNotification.status !== 'cancelled' || (cancelledNotification.available_actions || []).length !== 0 || cancelledNotification.effective_budget?.status !== 'exhausted') {
+        throw new Error(`terminal budget notification retained stale actions or facts: ${JSON.stringify(cancelledNotification)}`);
+      }
+      const overview = await fetchJSON(`${baseURL}/api/overview`);
+      if (Number(overview.queue_counters?.cancelled || 0) < 1 || (overview.recent_failures || []).some((item) => item.status === 'cancelled' || item.id === cancelledJob.id)) {
+        throw new Error(`cancelled work polluted failure telemetry: ${JSON.stringify(overview)}`);
+      }
+
+      await waitFor(
+        () => browserClient.evaluate(`(() => {
+          const sessions = state?.sessionDetail?.children?.sessions || [];
+          const jobs = state?.sessionDetail?.children?.jobs || [];
+          return sessions.some((item) => item.agent_name === 'budget-resume-child') && jobs.some((item) => item.agent_name === 'budget-cancel-child' && item.status === 'cancelled');
+        })()`),
+        20000,
+        'budget lifecycle child facts in browser state'
+      );
+      const inspectorRendered = await browserClient.evaluate(`Boolean(document.querySelector('[data-inspector-tab="agents"]'))`);
+      if (!inspectorRendered) {
+        await click('#inspector-toggle-btn', 'open inspector');
+        await waitFor(
+          () => browserClient.evaluate(`Boolean(document.querySelector('[data-inspector-tab="agents"]'))`),
+          5000,
+          'inspector tabs'
+        );
+      }
+      await click('[data-inspector-tab="agents"]', 'agents inspector tab');
+      await waitFor(
+        () => browserClient.evaluate(`(() => {
+          const text = [document.getElementById('inspector-panel')?.textContent || '', document.getElementById('inspector-slide-out')?.textContent || ''].join(' ');
+          return text.includes('budget-resume-child') && text.includes('budget-cancel-child') && text.includes('attempt 2') && text.includes('turns') && text.includes('left') && text.includes('deadline') && text.includes('runtime.child_budget') && text.includes('Cancelled');
+        })()`),
+        15000,
+        'budget lifecycle inspector telemetry'
+      );
+      const inspectorFacts = await browserClient.evaluate(`(() => {
+        const panel = [document.getElementById('inspector-slide-out'), document.getElementById('inspector-panel')]
+          .find((item) => (item?.textContent || '').includes('budget-resume-child'));
+        const text = panel?.textContent || '';
+        const cancelledCard = Array.from(panel?.querySelectorAll('.agent-card, .notification-card') || []).find((item) => item.textContent.includes('budget-cancel-child') && item.textContent.includes('Cancelled'));
+        return {
+          has_attempt: text.includes('attempt 2'),
+          has_usage: text.includes('turns') && text.includes('left'),
+          has_deadline: text.includes('deadline'),
+          has_reason: text.includes('child_budget_turns_exceeded'),
+          has_source: text.includes('runtime.child_budget'),
+          cancelled_visible: Boolean(cancelledCard),
+          terminal_actions_cleared: Boolean(cancelledCard) && !cancelledCard.textContent.includes('Parent actions:')
+        };
+      })()`);
+      if (!Object.values(inspectorFacts).every(Boolean)) {
+        throw new Error(`budget inspector facts are incomplete: ${JSON.stringify(inspectorFacts)}`);
+      }
+      results.interactions.foreground_budget_pause_extend_resume_complete = true;
+      results.interactions.background_budget_pause_cancel_settle = true;
+      results.interactions.cancelled_excluded_from_failures = true;
+      results.interactions.budget_inspector_telemetry_visible = true;
+      results.interactions.terminal_budget_actions_cleared = true;
+      results.budget_lifecycle = {
+        resume_child_id: resumeChild.id,
+        resume_attempt: resumeBudget.attempt,
+        cancelled_child_id: cancelledChild.id,
+        cancelled_job_id: cancelledJob.id,
+        cancelled_job_status: cancelledJob.status,
+        cancelled_child_status: cancelledDetail.state?.status || '',
+        cancelled_child_pause_reason: cancelledDetail.state?.pause_reason || ''
+      };
+    }
+
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(
       () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear sessions') && document.getElementById('history-view')?.textContent?.includes('Page')`),
@@ -772,12 +942,14 @@ async function main() {
       'history view visible after activity'
     );
     results.interactions.history_data_visible = true;
-    results.interactions.queue_job_visible = Boolean(queueDetail && (queueDetail.status === 'completed' || queueDetail.status === 'failed'));
-    results.interactions.queue_job_detail_api_verified = Boolean(
-      queueDetail &&
-      queueDetail.status === 'completed' &&
-      String(queueDetail.final_text || '').includes('ui smoke queue ok')
-    );
+    results.interactions.queue_job_visible = Boolean(queueDetail && ['completed', 'cancelled', 'failed'].includes(queueDetail.status));
+    results.interactions.queue_job_detail_api_verified = budgetLifecycle
+      ? Boolean(queueDetail && queueDetail.status === 'cancelled' && queueDetail.stop_reason === 'agent_stop')
+      : Boolean(
+          queueDetail &&
+          queueDetail.status === 'completed' &&
+          String(queueDetail.final_text || '').includes('ui smoke queue ok')
+        );
     results.interactions.frontend_queue_surface_skipped = true;
 
     await click('[data-view="chat"]', 'return to chat');
@@ -820,59 +992,63 @@ async function main() {
       todo_items: (sessionDetail.task_board?.todo || []).length,
     };
 
-    await click('[data-view="history"]', 'history nav before clear');
-    await waitFor(
-      () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear sessions')`),
-      15000,
-      'history view before clear'
-    );
-    await browserClient.evaluate(`(() => {
-      window.__codexOriginalConfirm = window.confirm;
-      window.confirm = () => true;
-    })()`);
-    let historyCleared = false;
-    let usedLocalClearConfirm = false;
-    const historyEmpty = () => browserClient.evaluate(`(() => {
-      const active = document.querySelector('.nav-item.active[data-view="history"]');
-      const text = document.getElementById('history-view')?.textContent || '';
-      return Boolean(active) && (text.includes('No history yet.') || text.includes('No saved sessions yet.'));
-    })()`);
-    for (let attempt = 0; attempt < 3 && !historyCleared; attempt += 1) {
-      await click('[data-history-clear]', `clear history attempt ${attempt + 1}`);
+    if (!keepHistory) {
+      await click('[data-view="history"]', 'history nav before clear');
       await waitFor(
-        () => browserClient.evaluate(`(() => {
-          const active = document.querySelector('.nav-item.active[data-view="history"]');
-          const text = document.getElementById('history-view')?.textContent || '';
-          const empty = Boolean(active) && (text.includes('No history yet.') || text.includes('No saved sessions yet.'));
-          return empty || Boolean(document.querySelector('.confirm-dialog-confirm'));
-        })()`),
-        5000,
-        'history clear confirmation'
+        () => browserClient.evaluate(`document.getElementById('history-view')?.textContent?.includes('Clear sessions')`),
+        15000,
+        'history view before clear'
       );
-      usedLocalClearConfirm = await browserClient.evaluate(`(() => {
-        const button = document.querySelector('.confirm-dialog-confirm');
-        if (!button) return false;
-        button.click();
-        return true;
-      })()`) || usedLocalClearConfirm;
-      try {
-        await waitFor(historyEmpty, 5000, 'history stays active after clear');
-        historyCleared = true;
-      } catch (err) {
-        if (attempt === 2) {
-          throw err;
+      await browserClient.evaluate(`(() => {
+        window.__codexOriginalConfirm = window.confirm;
+        window.confirm = () => true;
+      })()`);
+      let historyCleared = false;
+      let usedLocalClearConfirm = false;
+      const historyEmpty = () => browserClient.evaluate(`(() => {
+        const active = document.querySelector('.nav-item.active[data-view="history"]');
+        const text = document.getElementById('history-view')?.textContent || '';
+        return Boolean(active) && (text.includes('No history yet.') || text.includes('No saved sessions yet.'));
+      })()`);
+      for (let attempt = 0; attempt < 3 && !historyCleared; attempt += 1) {
+        await click('[data-history-clear]', `clear history attempt ${attempt + 1}`);
+        await waitFor(
+          () => browserClient.evaluate(`(() => {
+            const active = document.querySelector('.nav-item.active[data-view="history"]');
+            const text = document.getElementById('history-view')?.textContent || '';
+            const empty = Boolean(active) && (text.includes('No history yet.') || text.includes('No saved sessions yet.'));
+            return empty || Boolean(document.querySelector('.confirm-dialog-confirm'));
+          })()`),
+          5000,
+          'history clear confirmation'
+        );
+        usedLocalClearConfirm = await browserClient.evaluate(`(() => {
+          const button = document.querySelector('.confirm-dialog-confirm');
+          if (!button) return false;
+          button.click();
+          return true;
+        })()`) || usedLocalClearConfirm;
+        try {
+          await waitFor(historyEmpty, 5000, 'history stays active after clear');
+          historyCleared = true;
+        } catch (err) {
+          if (attempt === 2) {
+            throw err;
+          }
+          await sleep(500);
         }
-        await sleep(500);
       }
+      results.interactions.history_clear_local_confirm = usedLocalClearConfirm;
+      await browserClient.evaluate(`(() => {
+        if (window.__codexOriginalConfirm) {
+          window.confirm = window.__codexOriginalConfirm;
+          delete window.__codexOriginalConfirm;
+        }
+      })()`);
+      results.interactions.history_clear_keeps_view = true;
+    } else {
+      results.interactions.history_preserved_for_durable_audit = true;
     }
-    results.interactions.history_clear_local_confirm = usedLocalClearConfirm;
-    await browserClient.evaluate(`(() => {
-      if (window.__codexOriginalConfirm) {
-        window.confirm = window.__codexOriginalConfirm;
-        delete window.__codexOriginalConfirm;
-      }
-    })()`);
-    results.interactions.history_clear_keeps_view = true;
 
     if ((results.runtime_exceptions || []).length > 0) {
       throw new Error(`runtime exceptions detected: ${results.runtime_exceptions.join(' | ')}`);

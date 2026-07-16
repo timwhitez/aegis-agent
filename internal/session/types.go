@@ -7,6 +7,7 @@ const (
 	StatusAwaitingInput = "awaiting_input"
 	StatusPaused        = "paused"
 	StatusCompleted     = "completed"
+	StatusCancelled     = "cancelled"
 	StatusFailed        = "failed"
 
 	ModeRun  = "run"
@@ -25,10 +26,12 @@ const (
 	QueueStatusRunning   = "running"
 	QueueStatusBlocked   = "blocked"
 	QueueStatusCompleted = "completed"
+	QueueStatusCancelled = "cancelled"
 	QueueStatusFailed    = "failed"
 
 	QueueStopReasonParentStop = "parent_stop"
 	QueueStopReasonAgentStop  = "agent_stop"
+	QueueStopReasonCancelled  = "cancelled"
 
 	BackgroundNotificationPending  = "pending"
 	BackgroundNotificationAccepted = "accepted"
@@ -80,24 +83,100 @@ type ProviderOptions struct {
 	TimeoutPolicy       *ProviderTimeoutPolicy `json:"timeout_policy,omitempty"`
 }
 
+const (
+	BudgetPolicyVersion           = 1
+	BudgetSourceRuntimeChild      = "runtime.child_budget"
+	BudgetSourceLegacyResume      = "legacy_resume_runtime_config"
+	BudgetTurnScopePerAttempt     = "per_attempt"
+	BudgetTimeScopeActiveRuntime  = "active_runtime"
+	BudgetStatusDisabled          = "disabled"
+	BudgetStatusActive            = "active"
+	BudgetStatusExhausted         = "exhausted"
+	BudgetStatusCancelled         = "cancelled"
+	CancelRequestStatusRequested  = "requested"
+	CancelRequestStatusApplied    = "applied"
+	CancelRequestStatusSuperseded = "superseded"
+)
+
+// EffectiveBudget is the durable child budget snapshot shared by session.json
+// and queue jobs. Limits are snapshotted when child work is created; Settings
+// changes do not silently reinterpret existing work.
+type EffectiveBudget struct {
+	SchemaVersion          int    `json:"schema_version"`
+	PolicyVersion          int    `json:"policy_version"`
+	Source                 string `json:"source"`
+	TurnScope              string `json:"turn_scope"`
+	TimeScope              string `json:"time_scope"`
+	MaxTurnsPerAttempt     int    `json:"max_turns_per_attempt,omitempty"`
+	MaxActiveRuntimeMS     int64  `json:"max_active_runtime_ms,omitempty"`
+	AbsoluteDeadlineAt     string `json:"absolute_deadline_at,omitempty"`
+	Attempt                int    `json:"attempt"`
+	AttemptStartTurn       int    `json:"attempt_start_turn"`
+	AttemptStartedAt       string `json:"attempt_started_at,omitempty"`
+	UsedTurns              int    `json:"used_turns"`
+	UsedActiveRuntimeMS    int64  `json:"used_active_runtime_ms"`
+	TotalUsedTurns         int    `json:"total_used_turns"`
+	TotalActiveRuntimeMS   int64  `json:"total_active_runtime_ms"`
+	RemainingTurns         *int   `json:"remaining_turns,omitempty"`
+	RemainingActiveRuntime *int64 `json:"remaining_active_runtime_ms,omitempty"`
+	OverrunTurns           int    `json:"overrun_turns,omitempty"`
+	OverrunActiveRuntimeMS int64  `json:"overrun_active_runtime_ms,omitempty"`
+	Status                 string `json:"status"`
+	LastReason             string `json:"last_reason,omitempty"`
+	UpdatedAt              string `json:"updated_at"`
+}
+
+type BudgetExtension struct {
+	AddTurns              int    `json:"add_turns,omitempty"`
+	AddActiveRuntimeSec   int    `json:"add_active_runtime_sec,omitempty"`
+	ExtendDeadlineSec     int    `json:"extend_deadline_sec,omitempty"`
+	ClearTurnLimit        bool   `json:"clear_turn_limit,omitempty"`
+	ClearActiveRuntime    bool   `json:"clear_active_runtime_limit,omitempty"`
+	ClearAbsoluteDeadline bool   `json:"clear_absolute_deadline,omitempty"`
+	Reason                string `json:"reason,omitempty"`
+}
+
+type CancelRequest struct {
+	SchemaVersion   int    `json:"schema_version"`
+	ID              string `json:"id"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	QueueJobID      string `json:"queue_job_id,omitempty"`
+	Reason          string `json:"reason"`
+	Status          string `json:"status"`
+	RequestedAt     string `json:"requested_at"`
+	AppliedAt       string `json:"applied_at,omitempty"`
+}
+
+type ChildRunReservation struct {
+	SchemaVersion   int    `json:"schema_version"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id"`
+	RootSessionID   string `json:"root_session_id"`
+	WorkerPID       int    `json:"worker_pid"`
+	ProcessStartID  string `json:"process_start_id"`
+	CreatedAt       string `json:"created_at"`
+}
+
 type SessionMetadata struct {
-	SchemaVersion    int             `json:"schema_version"`
-	ID               string          `json:"id"`
-	CreatedAt        string          `json:"created_at"`
-	Workdir          string          `json:"workdir"`
-	RequestedWorkdir string          `json:"requested_workdir,omitempty"`
-	Mode             string          `json:"mode"`
-	Provider         string          `json:"provider"`
-	Model            string          `json:"model"`
-	CompletionPolicy string          `json:"completion_policy"`
-	ParentSessionID  string          `json:"parent_session_id,omitempty"`
-	RootSessionID    string          `json:"root_session_id,omitempty"`
-	AgentName        string          `json:"agent_name,omitempty"`
-	AgentRole        string          `json:"agent_role,omitempty"`
-	QueueJobID       string          `json:"queue_job_id,omitempty"`
-	Depth            int             `json:"depth,omitempty"`
-	Isolation        *IsolationInfo  `json:"isolation,omitempty"`
-	ProviderOptions  ProviderOptions `json:"provider_options,omitempty"`
+	SchemaVersion    int              `json:"schema_version"`
+	ID               string           `json:"id"`
+	CreatedAt        string           `json:"created_at"`
+	Workdir          string           `json:"workdir"`
+	RequestedWorkdir string           `json:"requested_workdir,omitempty"`
+	Mode             string           `json:"mode"`
+	Provider         string           `json:"provider"`
+	Model            string           `json:"model"`
+	CompletionPolicy string           `json:"completion_policy"`
+	ParentSessionID  string           `json:"parent_session_id,omitempty"`
+	RootSessionID    string           `json:"root_session_id,omitempty"`
+	AgentName        string           `json:"agent_name,omitempty"`
+	AgentRole        string           `json:"agent_role,omitempty"`
+	QueueJobID       string           `json:"queue_job_id,omitempty"`
+	Depth            int              `json:"depth,omitempty"`
+	Isolation        *IsolationInfo   `json:"isolation,omitempty"`
+	ProviderOptions  ProviderOptions  `json:"provider_options,omitempty"`
+	EffectiveBudget  *EffectiveBudget `json:"effective_budget,omitempty"`
 }
 
 type ArtifactSnapshot struct {
@@ -232,6 +311,8 @@ type ParentCoordination struct {
 	CompletedQueueJobs      []string `json:"completed_queue_jobs,omitempty"`
 	FailedChildSessions     []string `json:"failed_child_sessions,omitempty"`
 	FailedQueueJobs         []string `json:"failed_queue_jobs,omitempty"`
+	CancelledChildSessions  []string `json:"cancelled_child_sessions,omitempty"`
+	CancelledQueueJobs      []string `json:"cancelled_queue_jobs,omitempty"`
 	Parked                  bool     `json:"parked,omitempty"`
 	UpdatedAt               string   `json:"updated_at"`
 }
@@ -353,23 +434,25 @@ type SteerRequest struct {
 }
 
 type BackgroundNotification struct {
-	ID               string   `json:"id"`
-	CreatedAt        string   `json:"created_at"`
-	Source           string   `json:"source"`
-	QueueJobID       string   `json:"queue_job_id,omitempty"`
-	SessionID        string   `json:"session_id,omitempty"`
-	AgentName        string   `json:"agent_name,omitempty"`
-	AgentRole        string   `json:"agent_role,omitempty"`
-	Status           string   `json:"status"`
-	SessionStatus    string   `json:"session_status,omitempty"`
-	RequestedWorkdir string   `json:"requested_workdir,omitempty"`
-	EffectiveWorkdir string   `json:"effective_workdir,omitempty"`
-	VisiblePaths     []string `json:"visible_paths,omitempty"`
-	FinalText        string   `json:"final_text,omitempty"`
-	StopReason       string   `json:"stop_reason,omitempty"`
-	LastError        string   `json:"last_error,omitempty"`
-	ResumeParent     bool     `json:"resume_parent,omitempty"`
-	DeliveryStatus   string   `json:"delivery_status"`
+	ID               string           `json:"id"`
+	CreatedAt        string           `json:"created_at"`
+	Source           string           `json:"source"`
+	QueueJobID       string           `json:"queue_job_id,omitempty"`
+	SessionID        string           `json:"session_id,omitempty"`
+	AgentName        string           `json:"agent_name,omitempty"`
+	AgentRole        string           `json:"agent_role,omitempty"`
+	Status           string           `json:"status"`
+	SessionStatus    string           `json:"session_status,omitempty"`
+	RequestedWorkdir string           `json:"requested_workdir,omitempty"`
+	EffectiveWorkdir string           `json:"effective_workdir,omitempty"`
+	VisiblePaths     []string         `json:"visible_paths,omitempty"`
+	FinalText        string           `json:"final_text,omitempty"`
+	StopReason       string           `json:"stop_reason,omitempty"`
+	LastError        string           `json:"last_error,omitempty"`
+	ResumeParent     bool             `json:"resume_parent,omitempty"`
+	DeliveryStatus   string           `json:"delivery_status"`
+	EffectiveBudget  *EffectiveBudget `json:"effective_budget,omitempty"`
+	AvailableActions []string         `json:"available_actions,omitempty"`
 }
 
 type BackgroundNotificationSnapshot struct {
@@ -379,27 +462,29 @@ type BackgroundNotificationSnapshot struct {
 }
 
 type SessionSummary struct {
-	ID              string `json:"id"`
-	Status          string `json:"status"`
-	Provider        string `json:"provider"`
-	Model           string `json:"model"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
-	Phase           string `json:"phase"`
-	LastError       string `json:"last_error,omitempty"`
-	Workdir         string `json:"workdir"`
-	ParentSessionID string `json:"parent_session_id,omitempty"`
-	RootSessionID   string `json:"root_session_id,omitempty"`
-	AgentName       string `json:"agent_name,omitempty"`
-	AgentRole       string `json:"agent_role,omitempty"`
-	Depth           int    `json:"depth,omitempty"`
-	QueueJobID      string `json:"queue_job_id,omitempty"`
-	GoalStatus      string `json:"goal_status,omitempty"`
-	GoalMode        string `json:"goal_mode,omitempty"`
-	GoalObjective   string `json:"goal_objective,omitempty"`
-	PlanModeStatus  string `json:"plan_mode_status,omitempty"`
-	PlanModeVersion int    `json:"plan_mode_version,omitempty"`
-	PlanModeSummary string `json:"plan_mode_summary,omitempty"`
+	ID              string           `json:"id"`
+	Status          string           `json:"status"`
+	Provider        string           `json:"provider"`
+	Model           string           `json:"model"`
+	CreatedAt       string           `json:"created_at"`
+	UpdatedAt       string           `json:"updated_at"`
+	Phase           string           `json:"phase"`
+	PauseReason     string           `json:"pause_reason,omitempty"`
+	LastError       string           `json:"last_error,omitempty"`
+	Workdir         string           `json:"workdir"`
+	ParentSessionID string           `json:"parent_session_id,omitempty"`
+	RootSessionID   string           `json:"root_session_id,omitempty"`
+	AgentName       string           `json:"agent_name,omitempty"`
+	AgentRole       string           `json:"agent_role,omitempty"`
+	Depth           int              `json:"depth,omitempty"`
+	QueueJobID      string           `json:"queue_job_id,omitempty"`
+	EffectiveBudget *EffectiveBudget `json:"effective_budget,omitempty"`
+	GoalStatus      string           `json:"goal_status,omitempty"`
+	GoalMode        string           `json:"goal_mode,omitempty"`
+	GoalObjective   string           `json:"goal_objective,omitempty"`
+	PlanModeStatus  string           `json:"plan_mode_status,omitempty"`
+	PlanModeVersion int              `json:"plan_mode_version,omitempty"`
+	PlanModeSummary string           `json:"plan_mode_summary,omitempty"`
 }
 
 type TaskBoard struct {
@@ -424,37 +509,38 @@ type FeatureList struct {
 }
 
 type QueueJob struct {
-	SchemaVersion    int             `json:"schema_version"`
-	ID               string          `json:"id"`
-	CreatedAt        string          `json:"created_at"`
-	UpdatedAt        string          `json:"updated_at"`
-	Status           string          `json:"status"`
-	ClaimedBy        string          `json:"claimed_by,omitempty"`
-	ClaimedAt        string          `json:"claimed_at,omitempty"`
-	HeartbeatAt      string          `json:"heartbeat_at,omitempty"`
-	WorkerPID        int             `json:"worker_pid,omitempty"`
-	ProcessStartID   string          `json:"process_start_id,omitempty"`
-	ParentSessionID  string          `json:"parent_session_id,omitempty"`
-	RootSessionID    string          `json:"root_session_id,omitempty"`
-	AgentName        string          `json:"agent_name,omitempty"`
-	AgentRole        string          `json:"agent_role,omitempty"`
-	Prompt           string          `json:"prompt"`
-	Mode             string          `json:"mode"`
-	Provider         string          `json:"provider,omitempty"`
-	Model            string          `json:"model,omitempty"`
-	ProviderOptions  ProviderOptions `json:"provider_options,omitempty"`
-	RequestedWorkdir string          `json:"requested_workdir,omitempty"`
-	EffectiveWorkdir string          `json:"effective_workdir,omitempty"`
-	VisiblePaths     []string        `json:"visible_paths,omitempty"`
-	SessionID        string          `json:"session_id,omitempty"`
-	SessionStatus    string          `json:"session_status,omitempty"`
-	SystemOverride   string          `json:"system_override,omitempty"`
-	Background       bool            `json:"background"`
-	WaitMode         string          `json:"wait_mode,omitempty"`
-	ResumeParent     bool            `json:"resume_parent,omitempty"`
-	IsolationMode    string          `json:"isolation_mode,omitempty"`
-	IsolationRoot    string          `json:"isolation_root,omitempty"`
-	StopReason       string          `json:"stop_reason,omitempty"`
-	LastError        string          `json:"last_error,omitempty"`
-	FinalText        string          `json:"final_text,omitempty"`
+	SchemaVersion    int              `json:"schema_version"`
+	ID               string           `json:"id"`
+	CreatedAt        string           `json:"created_at"`
+	UpdatedAt        string           `json:"updated_at"`
+	Status           string           `json:"status"`
+	ClaimedBy        string           `json:"claimed_by,omitempty"`
+	ClaimedAt        string           `json:"claimed_at,omitempty"`
+	HeartbeatAt      string           `json:"heartbeat_at,omitempty"`
+	WorkerPID        int              `json:"worker_pid,omitempty"`
+	ProcessStartID   string           `json:"process_start_id,omitempty"`
+	ParentSessionID  string           `json:"parent_session_id,omitempty"`
+	RootSessionID    string           `json:"root_session_id,omitempty"`
+	AgentName        string           `json:"agent_name,omitempty"`
+	AgentRole        string           `json:"agent_role,omitempty"`
+	Prompt           string           `json:"prompt"`
+	Mode             string           `json:"mode"`
+	Provider         string           `json:"provider,omitempty"`
+	Model            string           `json:"model,omitempty"`
+	ProviderOptions  ProviderOptions  `json:"provider_options,omitempty"`
+	RequestedWorkdir string           `json:"requested_workdir,omitempty"`
+	EffectiveWorkdir string           `json:"effective_workdir,omitempty"`
+	VisiblePaths     []string         `json:"visible_paths,omitempty"`
+	SessionID        string           `json:"session_id,omitempty"`
+	SessionStatus    string           `json:"session_status,omitempty"`
+	SystemOverride   string           `json:"system_override,omitempty"`
+	Background       bool             `json:"background"`
+	WaitMode         string           `json:"wait_mode,omitempty"`
+	ResumeParent     bool             `json:"resume_parent,omitempty"`
+	IsolationMode    string           `json:"isolation_mode,omitempty"`
+	IsolationRoot    string           `json:"isolation_root,omitempty"`
+	StopReason       string           `json:"stop_reason,omitempty"`
+	LastError        string           `json:"last_error,omitempty"`
+	FinalText        string           `json:"final_text,omitempty"`
+	EffectiveBudget  *EffectiveBudget `json:"effective_budget,omitempty"`
 }
