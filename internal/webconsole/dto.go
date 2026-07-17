@@ -126,12 +126,13 @@ type UpdateConfigRequest struct {
 }
 
 type ChildBudgetSettingsRequest struct {
-	Disabled            bool `json:"disabled"`
-	MaxActiveRuntimeSec int  `json:"max_active_runtime_sec"`
-	MaxElapsedSec       int  `json:"max_elapsed_sec"`
-	MaxTurnsPerAttempt  int  `json:"max_turns_per_attempt"`
-	MaxWallClockSec     int  `json:"max_wall_clock_sec"`
-	MaxTurns            int  `json:"max_turns"`
+	Disabled                  bool `json:"disabled"`
+	MaxActiveRuntimeSec       int  `json:"max_active_runtime_sec"`
+	MaxElapsedSec             int  `json:"max_elapsed_sec"`
+	MaxTurnsPerAttempt        int  `json:"max_turns_per_attempt"`
+	ActiveRuntimeCheckpointMS *int `json:"active_runtime_checkpoint_ms"`
+	MaxWallClockSec           int  `json:"max_wall_clock_sec"`
+	MaxTurns                  int  `json:"max_turns"`
 }
 
 type TestConfigRequest struct {

@@ -896,7 +896,7 @@ async function main() {
       await waitFor(
         () => browserClient.evaluate(`(() => {
           const text = [document.getElementById('inspector-panel')?.textContent || '', document.getElementById('inspector-slide-out')?.textContent || ''].join(' ');
-          return text.includes('budget-resume-child') && text.includes('budget-cancel-child') && text.includes('attempt 2') && text.includes('turns') && text.includes('left') && text.includes('deadline') && text.includes('runtime.child_budget') && text.includes('Cancelled');
+          return text.includes('budget-resume-child') && text.includes('budget-cancel-child') && text.includes('attempt 2') && text.includes('turns') && text.includes('left') && text.includes('deadline') && text.includes('checkpoint') && text.includes('lease closed') && text.includes('runtime.child_budget') && text.includes('Cancelled');
         })()`),
         15000,
         'budget lifecycle inspector telemetry'
@@ -910,6 +910,8 @@ async function main() {
           has_attempt: text.includes('attempt 2'),
           has_usage: text.includes('turns') && text.includes('left'),
           has_deadline: text.includes('deadline'),
+          has_checkpoint: text.includes('checkpoint'),
+          lease_closed: text.includes('lease closed'),
           has_reason: text.includes('child_budget_turns_exceeded'),
           has_source: text.includes('runtime.child_budget'),
           cancelled_visible: Boolean(cancelledCard),

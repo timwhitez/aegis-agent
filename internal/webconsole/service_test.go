@@ -9801,7 +9801,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		t.Fatalf("unexpected default guardrails mode: %#v", before)
 	}
 	beforeChildBudget, _ := before["child_budget"].(map[string]any)
-	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_active_runtime_sec"] != float64(0) || beforeChildBudget["max_elapsed_sec"] != float64(0) || beforeChildBudget["max_turns_per_attempt"] != float64(0) {
+	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_active_runtime_sec"] != float64(0) || beforeChildBudget["max_elapsed_sec"] != float64(0) || beforeChildBudget["max_turns_per_attempt"] != float64(0) || beforeChildBudget["active_runtime_checkpoint_ms"] != float64(config.DefaultChildBudgetActiveRuntimeCheckpointMS) {
 		t.Fatalf("expected default child budget disabled, got %#v", beforeChildBudget)
 	}
 
@@ -9816,10 +9816,11 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 		"max_turns_soft":          32,
 		"disable_hard_turn_limit": true,
 		"child_budget": map[string]any{
-			"disabled":               false,
-			"max_active_runtime_sec": 3600,
-			"max_elapsed_sec":        7200,
-			"max_turns_per_attempt":  250,
+			"disabled":                     false,
+			"max_active_runtime_sec":       3600,
+			"max_elapsed_sec":              7200,
+			"max_turns_per_attempt":        250,
+			"active_runtime_checkpoint_ms": 2500,
 		},
 	}, http.StatusOK, nil)
 
@@ -9838,7 +9839,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if after["max_turns_soft"] != float64(32) {
 		t.Fatalf("expected soft turn checkpoint update, got %#v", after)
 	}
-	if afterChildBudget["disabled"] != false || afterChildBudget["max_active_runtime_sec"] != float64(3600) || afterChildBudget["max_elapsed_sec"] != float64(7200) || afterChildBudget["max_turns_per_attempt"] != float64(250) {
+	if afterChildBudget["disabled"] != false || afterChildBudget["max_active_runtime_sec"] != float64(3600) || afterChildBudget["max_elapsed_sec"] != float64(7200) || afterChildBudget["max_turns_per_attempt"] != float64(250) || afterChildBudget["active_runtime_checkpoint_ms"] != float64(2500) {
 		t.Fatalf("expected enabled child budget after update, got %#v", afterChildBudget)
 	}
 	providers, _ := after["providers"].(map[string]any)
@@ -9881,7 +9882,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if !strings.Contains(string(configBytes), "context_window_tokens: 272000") {
 		t.Fatalf("expected context window to persist to config, got %q", string(configBytes))
 	}
-	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 3600") || !strings.Contains(string(configBytes), "max_elapsed_sec: 7200") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 250") || strings.Contains(string(configBytes), "max_wall_clock_sec:") || strings.Contains(string(configBytes), "\n        max_turns:") {
+	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 3600") || !strings.Contains(string(configBytes), "max_elapsed_sec: 7200") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 250") || !strings.Contains(string(configBytes), "active_runtime_checkpoint_ms: 2500") || strings.Contains(string(configBytes), "max_wall_clock_sec:") || strings.Contains(string(configBytes), "\n        max_turns:") {
 		t.Fatalf("expected child budget to persist to config, got %q", string(configBytes))
 	}
 }
@@ -9925,6 +9926,20 @@ func TestServiceConfigRejectsInvalidChildBudget(t *testing.T) {
 			"max_wall_clock_sec":     120,
 		},
 	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":                     false,
+			"max_active_runtime_sec":       60,
+			"active_runtime_checkpoint_ms": config.MinChildBudgetActiveRuntimeCheckpointMS - 1,
+		},
+	}, http.StatusBadRequest, nil)
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"child_budget": map[string]any{
+			"disabled":                     false,
+			"max_active_runtime_sec":       60,
+			"active_runtime_checkpoint_ms": config.MaxChildBudgetActiveRuntimeCheckpointMS + 1,
+		},
+	}, http.StatusBadRequest, nil)
 
 	updated, err := svc.configSnapshot()
 	if err != nil {
@@ -9937,6 +9952,7 @@ func TestServiceConfigRejectsInvalidChildBudget(t *testing.T) {
 
 func TestServiceConfigAcceptsLegacyChildBudgetAndReturnsCanonicalShape(t *testing.T) {
 	cfg := testConfig(t, "")
+	cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS = 2400
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {
@@ -9957,7 +9973,7 @@ func TestServiceConfigAcceptsLegacyChildBudgetAndReturnsCanonicalShape(t *testin
 	var response map[string]any
 	postGetJSON(t, ts.URL+"/api/config", &response)
 	childBudget, _ := response["child_budget"].(map[string]any)
-	if childBudget["disabled"] != false || childBudget["max_active_runtime_sec"] != float64(1800) || childBudget["max_elapsed_sec"] != float64(0) || childBudget["max_turns_per_attempt"] != float64(40) {
+	if childBudget["disabled"] != false || childBudget["max_active_runtime_sec"] != float64(1800) || childBudget["max_elapsed_sec"] != float64(0) || childBudget["max_turns_per_attempt"] != float64(40) || childBudget["active_runtime_checkpoint_ms"] != float64(2400) {
 		t.Fatalf("unexpected canonical child budget response: %#v", childBudget)
 	}
 	if _, exists := childBudget["max_wall_clock_sec"]; exists {
@@ -9971,7 +9987,7 @@ func TestServiceConfigAcceptsLegacyChildBudgetAndReturnsCanonicalShape(t *testin
 		t.Fatalf("read persisted config: %v", err)
 	}
 	text := string(configBytes)
-	if !strings.Contains(text, "max_active_runtime_sec: 1800") || !strings.Contains(text, "max_turns_per_attempt: 40") || strings.Contains(text, "max_wall_clock_sec:") || strings.Contains(text, "\n        max_turns:") {
+	if !strings.Contains(text, "max_active_runtime_sec: 1800") || !strings.Contains(text, "max_turns_per_attempt: 40") || !strings.Contains(text, "active_runtime_checkpoint_ms: 2400") || strings.Contains(text, "max_wall_clock_sec:") || strings.Contains(text, "\n        max_turns:") {
 		t.Fatalf("legacy request was not canonicalized on write: %q", text)
 	}
 }
@@ -9981,6 +9997,7 @@ func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
 	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = 7200
 	cfg.Runtime.ChildBudget.MaxElapsedSec = 14400
 	cfg.Runtime.ChildBudget.MaxTurnsPerAttempt = 500
+	cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS = 2400
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {
@@ -10007,11 +10024,14 @@ func TestServiceConfigDisablesChildBudgetAsZeroDimensions(t *testing.T) {
 	if updated.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || updated.Runtime.ChildBudget.MaxElapsedSec != 0 || updated.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
 		t.Fatalf("disabled child budget must persist as 0/0/0, got %#v", updated.Runtime.ChildBudget)
 	}
+	if updated.Runtime.ChildBudget.ActiveRuntimeCheckpointMS != 2400 {
+		t.Fatalf("disabling dimensions must preserve checkpoint tuning, got %#v", updated.Runtime.ChildBudget)
+	}
 	configBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read persisted config: %v", err)
 	}
-	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 0") || !strings.Contains(string(configBytes), "max_elapsed_sec: 0") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 0") {
+	if !strings.Contains(string(configBytes), "max_active_runtime_sec: 0") || !strings.Contains(string(configBytes), "max_elapsed_sec: 0") || !strings.Contains(string(configBytes), "max_turns_per_attempt: 0") || !strings.Contains(string(configBytes), "active_runtime_checkpoint_ms: 2400") {
 		t.Fatalf("expected disabled child budget persisted as 0/0/0, got %q", string(configBytes))
 	}
 }

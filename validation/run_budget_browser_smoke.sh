@@ -234,10 +234,12 @@ grep -Fq 'max_turns_hard: -1' "$CONFIG_PATH"
 grep -Fq 'max_active_runtime_sec: 1800' "$CONFIG_PATH"
 grep -Fq 'max_elapsed_sec: 7200' "$CONFIG_PATH"
 grep -Fq 'max_turns_per_attempt: 1' "$CONFIG_PATH"
+grep -Fq 'active_runtime_checkpoint_ms: 1000' "$CONFIG_PATH"
 
 grep -Fq '"type":"web.config.write"' "$AUDIT_LOG"
 grep -Fq '"max_turns_hard":-1' "$AUDIT_LOG"
 grep -Fq '"child_budget_active_runtime_sec":1800' "$AUDIT_LOG"
+grep -Fq '"child_budget_checkpoint_ms":1000' "$AUDIT_LOG"
 grep -Fq '"child_budget_elapsed_sec":7200' "$AUDIT_LOG"
 grep -Fq '"child_budget_turns_per_attempt":1' "$AUDIT_LOG"
 

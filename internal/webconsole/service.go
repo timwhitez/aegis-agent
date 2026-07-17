@@ -4385,6 +4385,10 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"max_output_tokens":               p.MaxOutputTokens,
 		}
 	}
+	childBudgetCheckpointMS := cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS
+	if childBudgetCheckpointMS <= 0 {
+		childBudgetCheckpointMS = config.DefaultChildBudgetActiveRuntimeCheckpointMS
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"default_provider":        cfg.DefaultProvider,
 		"guardrails_mode":         cfg.Runtime.GuardrailsMode,
@@ -4392,10 +4396,11 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
 		"child_budget": map[string]any{
-			"disabled":               cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
-			"max_active_runtime_sec": cfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
-			"max_elapsed_sec":        cfg.Runtime.ChildBudget.MaxElapsedSec,
-			"max_turns_per_attempt":  cfg.Runtime.ChildBudget.MaxTurnsPerAttempt,
+			"disabled":                     cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
+			"max_active_runtime_sec":       cfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
+			"max_elapsed_sec":              cfg.Runtime.ChildBudget.MaxElapsedSec,
+			"max_turns_per_attempt":        cfg.Runtime.ChildBudget.MaxTurnsPerAttempt,
+			"active_runtime_checkpoint_ms": childBudgetCheckpointMS,
 		},
 		"providers":      provs,
 		"role_providers": roleProviderOverridesResponse(cfg),
@@ -4492,6 +4497,17 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_turns must be non-negative"))
 			return
 		}
+		checkpointMS := updatedCfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS
+		if checkpointMS <= 0 {
+			checkpointMS = config.DefaultChildBudgetActiveRuntimeCheckpointMS
+		}
+		if childBudget.ActiveRuntimeCheckpointMS != nil {
+			checkpointMS = *childBudget.ActiveRuntimeCheckpointMS
+			if checkpointMS < config.MinChildBudgetActiveRuntimeCheckpointMS || checkpointMS > config.MaxChildBudgetActiveRuntimeCheckpointMS {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("child_budget.active_runtime_checkpoint_ms must be between %d and %d", config.MinChildBudgetActiveRuntimeCheckpointMS, config.MaxChildBudgetActiveRuntimeCheckpointMS))
+				return
+			}
+		}
 		if childBudget.MaxActiveRuntimeSec > 0 && childBudget.MaxWallClockSec > 0 && childBudget.MaxActiveRuntimeSec != childBudget.MaxWallClockSec {
 			writeError(w, http.StatusBadRequest, errors.New("child_budget.max_active_runtime_sec conflicts with legacy max_wall_clock_sec"))
 			return
@@ -4509,16 +4525,17 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			maxTurnsPerAttempt = childBudget.MaxTurns
 		}
 		if childBudget.Disabled {
-			updatedCfg.Runtime.ChildBudget = config.ChildBudgetConfig{}
+			updatedCfg.Runtime.ChildBudget = config.ChildBudgetConfig{ActiveRuntimeCheckpointMS: checkpointMS}
 		} else {
 			if maxActiveRuntimeSec == 0 && childBudget.MaxElapsedSec == 0 && maxTurnsPerAttempt == 0 {
 				writeError(w, http.StatusBadRequest, errors.New("enabled child_budget requires max_active_runtime_sec, max_elapsed_sec, or max_turns_per_attempt to be positive"))
 				return
 			}
 			updatedCfg.Runtime.ChildBudget = config.ChildBudgetConfig{
-				MaxActiveRuntimeSec: maxActiveRuntimeSec,
-				MaxElapsedSec:       childBudget.MaxElapsedSec,
-				MaxTurnsPerAttempt:  maxTurnsPerAttempt,
+				MaxActiveRuntimeSec:       maxActiveRuntimeSec,
+				MaxElapsedSec:             childBudget.MaxElapsedSec,
+				MaxTurnsPerAttempt:        maxTurnsPerAttempt,
+				ActiveRuntimeCheckpointMS: checkpointMS,
 			}
 		}
 	}
@@ -4690,6 +4707,7 @@ func configAuditData(updatedCfg *config.Config, configPath string) map[string]an
 		"child_budget_active_runtime_sec": updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
 		"child_budget_elapsed_sec":        updatedCfg.Runtime.ChildBudget.MaxElapsedSec,
 		"child_budget_turns_per_attempt":  updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt,
+		"child_budget_checkpoint_ms":      updatedCfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS,
 		"api_provider":                    updatedCfg.Providers[updatedCfg.DefaultProvider].APIProvider,
 		"reasoning_mode":                  providerReasoningMode(updatedCfg.DefaultProvider, updatedCfg.Providers[updatedCfg.DefaultProvider]),
 		"reasoning_summary":               providerReasoningSummary(updatedCfg.Providers[updatedCfg.DefaultProvider]),

@@ -2466,6 +2466,11 @@ test('sub-agent budget summary exposes attempt usage remaining deadline and reas
     max_active_runtime_ms: 60000,
     used_active_runtime_ms: 45000,
     remaining_active_runtime_ms: 15000,
+    active_runtime_checkpoint_interval_ms: 1000,
+    active_runtime_checkpoint_at: '2026-07-15T11:59:59Z',
+    active_runtime_lease_open: true,
+    active_runtime_last_recovery_ms: 1000,
+    active_runtime_last_recovery_at: '2026-07-15T11:00:00Z',
     absolute_deadline_at: '2026-07-15T12:00:00Z',
     last_reason: 'child_budget_active_runtime_exceeded',
     source: 'runtime.child_budget'
@@ -2473,6 +2478,9 @@ test('sub-agent budget summary exposes attempt usage remaining deadline and reas
   assert.match(summary, /attempt 2/);
   assert.match(summary, /turns 4\/5, 1 left/);
   assert.match(summary, /active 45s\/60s, 15s left/);
+  assert.match(summary, /checkpoint/);
+  assert.match(summary, /lease open/);
+  assert.match(summary, /crash recovery \+1s/);
   assert.match(summary, /deadline/);
   assert.match(summary, /child_budget_active_runtime_exceeded/);
   assert.match(summary, /runtime.child_budget/);

@@ -15,12 +15,15 @@ import (
 )
 
 const (
-	legacyIsolationRootDir              = ".go-cli-agent/_worktrees"
-	defaultProviderRequestTimeoutSec    = 300
-	defaultProviderStreamIdleTimeoutMS  = 300000
-	defaultRetryMaxAttempts             = 5
-	defaultRetryBaseDelayMS             = 1000
-	defaultProviderAutoResumeMaxAttempt = 2
+	legacyIsolationRootDir                      = ".go-cli-agent/_worktrees"
+	defaultProviderRequestTimeoutSec            = 300
+	defaultProviderStreamIdleTimeoutMS          = 300000
+	defaultRetryMaxAttempts                     = 5
+	defaultRetryBaseDelayMS                     = 1000
+	defaultProviderAutoResumeMaxAttempt         = 2
+	DefaultChildBudgetActiveRuntimeCheckpointMS = 1000
+	MinChildBudgetActiveRuntimeCheckpointMS     = 100
+	MaxChildBudgetActiveRuntimeCheckpointMS     = 60000
 )
 
 type Config struct {
@@ -166,11 +169,12 @@ type QueueConfig struct {
 // and MaxTurns are deprecated read-compatibility aliases migrated during
 // normalization; new config writes use the explicit accounting names.
 type ChildBudgetConfig struct {
-	MaxActiveRuntimeSec int `yaml:"max_active_runtime_sec"`
-	MaxElapsedSec       int `yaml:"max_elapsed_sec"`
-	MaxTurnsPerAttempt  int `yaml:"max_turns_per_attempt"`
-	MaxWallClockSec     int `yaml:"max_wall_clock_sec,omitempty"`
-	MaxTurns            int `yaml:"max_turns,omitempty"`
+	MaxActiveRuntimeSec       int `yaml:"max_active_runtime_sec"`
+	MaxElapsedSec             int `yaml:"max_elapsed_sec"`
+	MaxTurnsPerAttempt        int `yaml:"max_turns_per_attempt"`
+	ActiveRuntimeCheckpointMS int `yaml:"active_runtime_checkpoint_ms"`
+	MaxWallClockSec           int `yaml:"max_wall_clock_sec,omitempty"`
+	MaxTurns                  int `yaml:"max_turns,omitempty"`
 }
 
 type ShellConfig struct {
@@ -387,9 +391,10 @@ func Default() *Config {
 				BackgroundWaitTimeoutSec: 0,
 			},
 			ChildBudget: ChildBudgetConfig{
-				MaxActiveRuntimeSec: 0,
-				MaxElapsedSec:       0,
-				MaxTurnsPerAttempt:  0,
+				MaxActiveRuntimeSec:       0,
+				MaxElapsedSec:             0,
+				MaxTurnsPerAttempt:        0,
+				ActiveRuntimeCheckpointMS: DefaultChildBudgetActiveRuntimeCheckpointMS,
 			},
 			ExecPolicy: ExecPolicyConfig{
 				Mode: "warn",
@@ -613,6 +618,15 @@ func normalizeChildBudget(budget *ChildBudgetConfig) {
 	}
 	if budget.MaxTurnsPerAttempt < 0 {
 		budget.MaxTurnsPerAttempt = 0
+	}
+	if budget.ActiveRuntimeCheckpointMS <= 0 {
+		budget.ActiveRuntimeCheckpointMS = DefaultChildBudgetActiveRuntimeCheckpointMS
+	}
+	if budget.ActiveRuntimeCheckpointMS < MinChildBudgetActiveRuntimeCheckpointMS {
+		budget.ActiveRuntimeCheckpointMS = MinChildBudgetActiveRuntimeCheckpointMS
+	}
+	if budget.ActiveRuntimeCheckpointMS > MaxChildBudgetActiveRuntimeCheckpointMS {
+		budget.ActiveRuntimeCheckpointMS = MaxChildBudgetActiveRuntimeCheckpointMS
 	}
 	if budget.MaxWallClockSec < 0 {
 		budget.MaxWallClockSec = 0

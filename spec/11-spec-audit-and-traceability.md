@@ -138,6 +138,7 @@
 - Codex 当前公开的普通 sub-agent 配置提供并发数、嵌套深度、steer/stop 等控制；`agents.job_max_runtime_seconds` 只对应 `spawn_agents_on_csv` worker，未提供通用的逐 child parent budget 字段。因此本项目不新增 `agent_spawn` 的逐 child budget 参数，只保留 Settings / config 中默认关闭的全局 optional child budget
 - child budget 一旦启用，必须同时提供可收敛控制：parent 能对 budget-paused foreground/background child 追加下一 attempt 的 turns/active runtime、延长 absolute deadline或清除对应限制，也能显式 cancel/settle 不再需要的 work；settle 只结算 queue / parent coordination，不把 paused child 伪造为 completed
 - Codex 当前没有普通 `agent_spawn` 的通用 parent-provided budget，因此本项目也不在初始 spawn schema 加逐 child budget；全局默认 policy 在创建时快照，parent extension 只处理已经预算暂停的 child
+- active-runtime budget 若只在 graceful exit 记账，会让 running telemetry 陈旧并允许 crash 退还资源，因此 v1 使用低频 durable open lease/checkpoint。recovery 对最后一个未闭合 interval 采用单 interval conservative charge，既给重复 crash 设成本，又不把 offline wall time混入 active runtime；ledger 写失败时 fail closed 并 cooperative cancel 当前 active operation
 - token/cost child budget 当前不进入 v1：provider usage 缺失时不能把 unknown 当 0，成本也没有跨 provider 的稳定精确来源。成本治理继续使用 provider usage/Goal accounting 与外部配额，待有可靠 usage contract 再单独设计
 
 ### 2.10 Session Goals

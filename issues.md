@@ -2,7 +2,7 @@
 
 审计目标：`9cbb8c8672d38b524dfa00cff66705c8816c5b9c`（`feat(runtime): unify global turn guards and child budgets`）。
 
-审计结论：当前方案的总体分层和大部分预算语义已经达到较高水平，包括全局 per-run turn guard、child 三维预算、effective policy 快照、显式 extension/resume、durable cancel request、`cancelled` 与 `failed` 分离、shell 进程组取消和 queue claim lock。但当前实现仍有以下可复现缺陷，因此不能判定为“已达到或超越行业最佳实践且不存在可见 bug”。
+审计结论：方案的总体分层与预算语义达到较高水平，包括全局 per-run turn guard、child 三维预算、effective policy 快照、显式 extension/resume、durable cancel request、`cancelled` 与 `failed` 分离、shell 进程组取消、统一 active-child capacity 和 queue claim lock。审计发现的六项可复现缺陷现已全部修复并进入永久回归；在本文件覆盖的 master/child budget、agent loop、provider/tool/hook/shell cancellation、queue claim/settle、resume 与 crash-recovery 范围内，当前未保留已知可见 bug。该结论基于当前自动化与真实浏览器/进程 kill 证据，不等同于对未来变更作绝对无缺陷保证。
 
 已有基线验证仍然通过：
 
@@ -198,7 +198,7 @@ reservation cleanup 把 durable session status 当成 owner liveness 的替代�
 
 - Severity: P2
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -223,7 +223,18 @@ operator 在 child 运行期间看到的 active usage/remaining 不是真实当�
 - Web inspector 在 running child 上应展示近实时 used/remaining，并明确 last-updated/heartbeat 时间。
 - 永久 subprocess 测试应覆盖：provider 执行中 kill、tool/shell 执行中 kill、重启后 resume、offline interval 不计入、重复 crash 不能无限刷新 active budget。
 
-## Recommended fix order
+### Resolution and validation
+
+- `runtime.child_budget.active_runtime_checkpoint_ms` 作为 effective policy 的一部分在 child/job 创建时快照，默认 `1000`、允许 `100..60000`；只有 active-runtime dimension 启用时才启动周期 checkpoint。
+- 每次 child run 在任何 provider/tool/hook/shell 或 harness active work 之前先持久化 owner-tagged open lease；周期 checkpoint 增量同步 session metadata 与 linked queue job，稳定 awaiting/pause/cancel/fail/complete 先结清并关闭 lease，再写 terminal/session 状态，消除了 terminal fact 已落盘但 lease 仍 open 的 crash window。
+- recovery 看到未闭合 lease 时只保守补记一个 snapshot checkpoint interval，记录 `active_runtime_last_recovery_ms/at` 与 durable recovery event；不会使用 `now - checkpoint_at`，因此 offline wall time 不进入 active runtime。连续 open-lease recovery 每次都会再收取一个 interval，重复 crash 不能免费刷新预算。
+- 周期或 terminal settlement 无法同步持久化 session/job ledger 时采用 fail-closed：cooperative cancel 当前 provider/tool/hook/shell，记录 checkpoint failure event，并按 execution failure 收敛；不会静默停止 heartbeat 后继续产生副作用，也不会伪装成 budget pause。handled failure 会清理 run-control pause request，避免污染下一次 run。
+- Web Settings/API 返回并持久化 `active_runtime_checkpoint_ms`，省略字段时保留现有 tuning；disabled budget 仍保留该 tuning。Session/child inspector 展示 checkpoint 时间、lease open/closed 与最近 bounded recovery charge，budget events 同步暴露 interval/checkpoint/lease/recovery/last reason telemetry。
+- 永久测试覆盖 running session/job 近实时同步、graceful settle、single/repeated crash recovery、recovery 后立即触顶、checkpoint persistence fail-closed、terminal settlement failure 阻止 completed fact，以及真实 Linux subprocess 在 provider 阻塞和 shell 执行中被 `SIGKILL` 后 resume；shell 场景同时验证 dangling tool-call recovery。
+- Focused validation: `go test ./internal/config ./internal/session ./internal/runtime ./internal/webconsole -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime -count=1 -timeout=300s`；`go vet ./internal/config ./internal/session ./internal/provider ./internal/runtime ./internal/tools ./internal/webconsole`；`node --check internal/webconsole/assets/*.js`；`node --check validation/scripts/webconsole_ui_smoke.mjs`；`node --test validation/scripts/webconsole_utils_test.mjs`；`bash -n validation/run_budget_browser_smoke.sh`。
+- Real browser validation: `bash validation/run_budget_browser_smoke.sh /tmp/go-cli-agent-budget-browser-bud006`，证据 `/tmp/go-cli-agent-budget-browser-bud006/budget-browser-smoke.json`；结果包含 `active_runtime_checkpoint_ms=1000`、budget inspector `checkpoint` / `lease closed`，且无 runtime exception 或 console error。
+
+## Completed fix order
 
 1. `BUD-001`：先恢复 budget cause fidelity，避免错误终态和失败统计污染。
 2. `QUEUE-002`：修复 blocked lease，消除默认可达的 parent 长时间挂起。

@@ -132,6 +132,9 @@ func TestDefaultDisablesChildBudgetAndConfiguresQueueReaper(t *testing.T) {
 	if cfg.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || cfg.Runtime.ChildBudget.MaxElapsedSec != 0 || cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
 		t.Fatalf("expected canonical child budgets disabled, got %#v", cfg.Runtime.ChildBudget)
 	}
+	if cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS != DefaultChildBudgetActiveRuntimeCheckpointMS {
+		t.Fatalf("unexpected child active-runtime checkpoint default: %#v", cfg.Runtime.ChildBudget)
+	}
 	if cfg.Runtime.MultiAgent.MaxDepth != 1 || cfg.Runtime.MultiAgent.MaxActiveChildren != 4 || cfg.Runtime.MultiAgent.CancelGraceSec != 5 {
 		t.Fatalf("unexpected default multi-agent resource policy: %#v", cfg.Runtime.MultiAgent)
 	}
@@ -151,12 +154,16 @@ func TestNormalizeClampsNegativeChildBudgetAndQueueReaper(t *testing.T) {
 	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = -5
 	cfg.Runtime.ChildBudget.MaxElapsedSec = -5
 	cfg.Runtime.ChildBudget.MaxTurnsPerAttempt = -5
+	cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS = -5
 	cfg.Runtime.Queue.ReaperIntervalMS = -5
 	cfg.Runtime.Queue.LeaseStaleAfterSec = -5
 	cfg.Runtime.Queue.BackgroundWaitTimeoutSec = -5
 	normalizeConfig(cfg, "/tmp/work")
 	if cfg.Runtime.ChildBudget.MaxActiveRuntimeSec != 0 || cfg.Runtime.ChildBudget.MaxElapsedSec != 0 || cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 0 {
 		t.Fatalf("expected negative child budgets clamped to 0, got %#v", cfg.Runtime.ChildBudget)
+	}
+	if cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS != DefaultChildBudgetActiveRuntimeCheckpointMS {
+		t.Fatalf("expected invalid child checkpoint to use default, got %#v", cfg.Runtime.ChildBudget)
 	}
 	if cfg.Runtime.Queue.ReaperIntervalMS != 0 || cfg.Runtime.Queue.LeaseStaleAfterSec != 0 || cfg.Runtime.Queue.BackgroundWaitTimeoutSec != 0 {
 		t.Fatalf("expected negative queue reaper values clamped to 0, got %#v", cfg.Runtime.Queue)
@@ -171,6 +178,22 @@ func TestNormalizeMigratesLegacyChildBudgetAliasesToCanonicalFields(t *testing.T
 	}
 	if budget.MaxWallClockSec != 0 || budget.MaxTurns != 0 {
 		t.Fatalf("legacy aliases must be cleared after normalization: %#v", budget)
+	}
+	if budget.ActiveRuntimeCheckpointMS != DefaultChildBudgetActiveRuntimeCheckpointMS {
+		t.Fatalf("legacy child budget must gain checkpoint default: %#v", budget)
+	}
+}
+
+func TestNormalizeClampsChildActiveRuntimeCheckpointBounds(t *testing.T) {
+	low := ChildBudgetConfig{ActiveRuntimeCheckpointMS: 1}
+	normalizeChildBudget(&low)
+	if low.ActiveRuntimeCheckpointMS != MinChildBudgetActiveRuntimeCheckpointMS {
+		t.Fatalf("expected minimum checkpoint clamp, got %#v", low)
+	}
+	high := ChildBudgetConfig{ActiveRuntimeCheckpointMS: MaxChildBudgetActiveRuntimeCheckpointMS + 1}
+	normalizeChildBudget(&high)
+	if high.ActiveRuntimeCheckpointMS != MaxChildBudgetActiveRuntimeCheckpointMS {
+		t.Fatalf("expected maximum checkpoint clamp, got %#v", high)
 	}
 }
 

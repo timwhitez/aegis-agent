@@ -574,6 +574,320 @@ func TestPausedOfflineTimeDoesNotConsumeChildActiveRuntime(t *testing.T) {
 	}
 }
 
+func TestChildActiveRuntimeCheckpointUpdatesRunningSessionAndLinkedJob(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.MaxTurnsHard = -1
+	cfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+		MaxActiveRuntimeSec:       5,
+		ActiveRuntimeCheckpointMS: 100,
+	}
+	engine, meta, state, registry, hookManager, catalog := childEngineWithConfig(t, cfg)
+	job := attachRunningBudgetJob(t, engine.store, &meta)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "wait for checkpoint")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+
+	started := make(chan struct{}, 1)
+	fake := provider.NewFake(func(ctx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return provider.TurnResult{}, ctx.Err()
+	})
+	type runOutcome struct {
+		result RunResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+		done <- runOutcome{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not start")
+	}
+
+	var liveBudget *session.EffectiveBudget
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		loadedMeta, err := engine.store.LoadMetadata(meta.ID)
+		if err != nil {
+			t.Fatalf("load running child metadata: %v", err)
+		}
+		loadedJob, err := engine.store.LoadJob(job.ID)
+		if err != nil {
+			t.Fatalf("load running queue job: %v", err)
+		}
+		if loadedMeta.EffectiveBudget != nil && loadedMeta.EffectiveBudget.UsedActiveRuntimeMS >= 100 &&
+			loadedMeta.EffectiveBudget.ActiveRuntimeLeaseOpen && loadedMeta.EffectiveBudget.ActiveRuntimeCheckpointAt != "" &&
+			loadedJob.EffectiveBudget != nil && loadedJob.EffectiveBudget.UsedActiveRuntimeMS == loadedMeta.EffectiveBudget.UsedActiveRuntimeMS &&
+			loadedJob.EffectiveBudget.ActiveRuntimeCheckpointAt == loadedMeta.EffectiveBudget.ActiveRuntimeCheckpointAt {
+			liveBudget = session.CloneEffectiveBudget(loadedMeta.EffectiveBudget)
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if liveBudget == nil {
+		t.Fatal("running active-runtime checkpoint did not reach the session and linked job")
+	}
+	if liveBudget.ActiveRuntimeCheckpointIntervalMS != 100 || liveBudget.ActiveRuntimeLeaseOwner == "" {
+		t.Fatalf("unexpected running checkpoint telemetry: %#v", liveBudget)
+	}
+
+	engine.control.requestPauseWithReason("manual_stop")
+	select {
+	case outcome := <-done:
+		if outcome.err != nil || outcome.result.Status != session.StatusPaused {
+			t.Fatalf("stop checkpointed child: result=%#v err=%v", outcome.result, outcome.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("checkpointed child did not stop")
+	}
+	finalMeta, err := engine.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load settled child metadata: %v", err)
+	}
+	finalJob, err := engine.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load settled queue job: %v", err)
+	}
+	if finalMeta.EffectiveBudget == nil || finalMeta.EffectiveBudget.ActiveRuntimeLeaseOpen || finalMeta.EffectiveBudget.ActiveRuntimeLeaseOwner != "" || finalMeta.EffectiveBudget.UsedActiveRuntimeMS < liveBudget.UsedActiveRuntimeMS {
+		t.Fatalf("graceful settlement did not close and settle active-runtime lease: before=%#v after=%#v", liveBudget, finalMeta.EffectiveBudget)
+	}
+	if finalJob.EffectiveBudget == nil || finalJob.EffectiveBudget.ActiveRuntimeLeaseOpen || finalJob.EffectiveBudget.UsedActiveRuntimeMS != finalMeta.EffectiveBudget.UsedActiveRuntimeMS {
+		t.Fatalf("linked job did not receive final active-runtime settlement: session=%#v job=%#v", finalMeta.EffectiveBudget, finalJob.EffectiveBudget)
+	}
+}
+
+func TestChildActiveRuntimeCrashRecoveryChargesOneBoundedIntervalPerOpenLease(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+		MaxActiveRuntimeSec:       5,
+		ActiveRuntimeCheckpointMS: 100,
+	}
+	engine, meta, state, _, _, _ := childEngineWithConfig(t, cfg)
+	now := time.Now().UTC()
+	budget := newEffectiveChildBudget(cfg, session.BudgetSourceRuntimeChild, state.Turn, now.Add(-time.Hour))
+	budget.UsedActiveRuntimeMS = 250
+	budget.TotalActiveRuntimeMS = 250
+	budget.ActiveRuntimeCheckpointAt = now.Add(-time.Hour).Format(time.RFC3339Nano)
+	budget.ActiveRuntimeLeaseOpen = true
+	budget.ActiveRuntimeLeaseOwner = "dead-owner-1"
+	session.RefreshEffectiveBudget(budget, state.Turn)
+	meta.EffectiveBudget = budget
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("seed crashed active lease: %v", err)
+	}
+
+	_, cancelFirst, _, err := engine.beginChildBudgetRun(context.Background(), meta, state)
+	if err != nil {
+		t.Fatalf("recover first crashed lease: %v", err)
+	}
+	cancelFirst()
+	first, err := engine.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load first recovery: %v", err)
+	}
+	if first.EffectiveBudget == nil || first.EffectiveBudget.UsedActiveRuntimeMS != 350 || first.EffectiveBudget.ActiveRuntimeLastRecoveryMS != 100 || !first.EffectiveBudget.ActiveRuntimeLeaseOpen || first.EffectiveBudget.ActiveRuntimeLeaseOwner == "dead-owner-1" {
+		t.Fatalf("first recovery must charge exactly one interval and open a new lease: %#v", first.EffectiveBudget)
+	}
+
+	_, cancelSecond, secondRun, err := engine.beginChildBudgetRun(context.Background(), first, state)
+	if err != nil {
+		t.Fatalf("recover second crashed lease: %v", err)
+	}
+	cancelSecond()
+	second, err := engine.store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load second recovery: %v", err)
+	}
+	if second.EffectiveBudget == nil || second.EffectiveBudget.UsedActiveRuntimeMS != 450 || second.EffectiveBudget.TotalActiveRuntimeMS != 450 || second.EffectiveBudget.ActiveRuntimeLastRecoveryMS != 100 || !second.EffectiveBudget.ActiveRuntimeLeaseOpen {
+		t.Fatalf("repeated crash must pay another bounded interval without counting offline wall time: %#v", second.EffectiveBudget)
+	}
+	if _, err := secondRun.finish(state.Turn, ""); err != nil {
+		t.Fatalf("close recovered test lease: %v", err)
+	}
+	eventsList, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load recovery events: %v", err)
+	}
+	if countEventType(eventsList, "session.child_budget.active_runtime_recovered") != 2 {
+		t.Fatalf("expected one durable event per recovered open lease, events=%#v", eventsList)
+	}
+}
+
+func TestRecoveredActiveRuntimeExhaustionPausesBeforeProviderCall(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.MaxTurnsHard = -1
+	cfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+		MaxActiveRuntimeSec:       1,
+		ActiveRuntimeCheckpointMS: 100,
+	}
+	engine, meta, state, registry, hookManager, catalog := childEngineWithConfig(t, cfg)
+	now := time.Now().UTC()
+	budget := newEffectiveChildBudget(cfg, session.BudgetSourceRuntimeChild, state.Turn, now)
+	budget.MaxActiveRuntimeMS = 150
+	budget.UsedActiveRuntimeMS = 100
+	budget.TotalActiveRuntimeMS = 100
+	budget.ActiveRuntimeCheckpointAt = now.Add(-time.Hour).Format(time.RFC3339Nano)
+	budget.ActiveRuntimeLeaseOpen = true
+	budget.ActiveRuntimeLeaseOwner = "dead-owner"
+	session.RefreshEffectiveBudget(budget, state.Turn)
+	meta.EffectiveBudget = budget
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("seed nearly exhausted crashed lease: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "must not call provider")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	var providerCalls atomic.Int64
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		providerCalls.Add(1)
+		return provider.TurnResult{}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run recovered exhausted child: %v", err)
+	}
+	assertBudgetPauseReason(t, engine.store, result, session.ChildBudgetActiveRuntimeExceededReason)
+	if providerCalls.Load() != 0 {
+		t.Fatalf("recovery-exhausted budget must pause before provider call, calls=%d", providerCalls.Load())
+	}
+}
+
+func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.MaxTurnsHard = -1
+	cfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+		MaxActiveRuntimeSec:       5,
+		ActiveRuntimeCheckpointMS: 100,
+	}
+	engine, meta, state, registry, hookManager, catalog := childEngineWithConfig(t, cfg)
+	job := attachRunningBudgetJob(t, engine.store, &meta)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "checkpoint failure")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	started := make(chan struct{}, 1)
+	fake := provider.NewFake(func(ctx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return provider.TurnResult{}, ctx.Err()
+	})
+	type runOutcome struct {
+		result RunResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+		done <- runOutcome{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("provider did not start")
+	}
+	if err := engine.store.DeleteJob(job.ID); err != nil {
+		t.Fatalf("delete linked job to inject checkpoint persistence failure: %v", err)
+	}
+	select {
+	case outcome := <-done:
+		if outcome.result.Status != session.StatusFailed || outcome.err == nil || !strings.Contains(outcome.err.Error(), "persist child active-runtime checkpoint") {
+			t.Fatalf("checkpoint persistence failure must fail closed: result=%#v err=%v", outcome.result, outcome.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("checkpoint persistence failure did not cancel provider")
+	}
+	persistedState, err := engine.store.LoadState(meta.ID)
+	if err != nil || persistedState.Status != session.StatusFailed || !strings.Contains(persistedState.LastError, "persist child active-runtime checkpoint") {
+		t.Fatalf("checkpoint failure was not persisted as session failure: state=%#v err=%v", persistedState, err)
+	}
+	if engine.control.consumePause() {
+		t.Fatal("handled checkpoint failure left a stale pause request for the next run")
+	}
+	eventsList, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load checkpoint failure events: %v", err)
+	}
+	if countEventType(eventsList, "session.child_budget.active_runtime_checkpoint_failed") != 1 {
+		t.Fatalf("missing checkpoint failure event: %#v", eventsList)
+	}
+}
+
+func TestActiveRuntimeSettlementFailurePreventsCompletedTerminalFact(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.ChildBudget = config.ChildBudgetConfig{
+		MaxActiveRuntimeSec:       5,
+		ActiveRuntimeCheckpointMS: config.MaxChildBudgetActiveRuntimeCheckpointMS,
+	}
+	engine, meta, state, _, hookManager, _ := childEngineWithConfig(t, cfg)
+	job := attachRunningBudgetJob(t, engine.store, &meta)
+	meta.EffectiveBudget = newEffectiveChildBudget(cfg, session.BudgetSourceRuntimeChild, state.Turn, time.Now().UTC())
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save terminal settlement budget: %v", err)
+	}
+	runCtx, cancel, _, err := engine.beginChildBudgetRun(context.Background(), meta, state)
+	if err != nil {
+		t.Fatalf("start terminal settlement lease: %v", err)
+	}
+	defer cancel()
+	if err := engine.store.DeleteJob(job.ID); err != nil {
+		t.Fatalf("delete linked job before terminal settlement: %v", err)
+	}
+	result, err := engine.complete(runCtx, meta, state, "must not complete", hookManager)
+	if err == nil || result.Status != session.StatusFailed || !strings.Contains(err.Error(), "settle child active runtime before completion") {
+		t.Fatalf("terminal budget settlement failure must prevent completion: result=%#v err=%v", result, err)
+	}
+	persisted, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil || persisted.Status != session.StatusFailed {
+		t.Fatalf("terminal settlement failure did not persist failed state: state=%#v err=%v", persisted, loadErr)
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load terminal settlement events: %v", loadErr)
+	}
+	if countEventType(eventsList, "session.completed") != 0 || countEventType(eventsList, "session.failed") != 1 {
+		t.Fatalf("completion fact escaped before budget settlement: %#v", eventsList)
+	}
+}
+
+func TestEffectiveBudgetEventDataIncludesActiveRuntimeCheckpointTelemetry(t *testing.T) {
+	now := time.Now().UTC()
+	budget := session.NewEffectiveBudget(session.BudgetSourceRuntimeChild, 2, 5, 10, 0, now)
+	budget.ActiveRuntimeCheckpointIntervalMS = 1000
+	budget.ActiveRuntimeCheckpointAt = now.Format(time.RFC3339Nano)
+	budget.ActiveRuntimeLeaseOpen = true
+	budget.ActiveRuntimeLeaseOwner = "lease-owner"
+	budget.ActiveRuntimeLastRecoveryMS = 1000
+	budget.ActiveRuntimeLastRecoveryAt = now.Add(-time.Minute).Format(time.RFC3339Nano)
+	budget.LastReason = session.ChildBudgetActiveRuntimeExceededReason
+	data := effectiveBudgetEventData(budget)
+	for key, want := range map[string]any{
+		"active_runtime_checkpoint_interval_ms": int64(1000),
+		"active_runtime_checkpoint_at":          budget.ActiveRuntimeCheckpointAt,
+		"active_runtime_lease_open":             true,
+		"active_runtime_lease_owner":            "lease-owner",
+		"active_runtime_last_recovery_ms":       int64(1000),
+		"active_runtime_last_recovery_at":       budget.ActiveRuntimeLastRecoveryAt,
+		"last_reason":                           session.ChildBudgetActiveRuntimeExceededReason,
+	} {
+		if got := data[key]; got != want {
+			t.Fatalf("event telemetry %s mismatch: got=%#v want=%#v data=%#v", key, got, want, data)
+		}
+	}
+}
+
 func TestDirectAndQueueChildrenSnapshotBudgetAtCreation(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -1159,9 +1473,45 @@ func assertBudgetPolicySnapshotEqual(t *testing.T, want, got *session.EffectiveB
 	if want == nil || got == nil {
 		t.Fatalf("budget snapshot missing: want=%#v got=%#v", want, got)
 	}
-	if got.PolicyVersion != want.PolicyVersion || got.Source != want.Source || got.TurnScope != want.TurnScope || got.TimeScope != want.TimeScope || got.MaxTurnsPerAttempt != want.MaxTurnsPerAttempt || got.MaxActiveRuntimeMS != want.MaxActiveRuntimeMS || got.AbsoluteDeadlineAt != want.AbsoluteDeadlineAt {
+	if got.PolicyVersion != want.PolicyVersion || got.Source != want.Source || got.TurnScope != want.TurnScope || got.TimeScope != want.TimeScope || got.MaxTurnsPerAttempt != want.MaxTurnsPerAttempt || got.MaxActiveRuntimeMS != want.MaxActiveRuntimeMS || got.AbsoluteDeadlineAt != want.AbsoluteDeadlineAt || got.ActiveRuntimeCheckpointIntervalMS != want.ActiveRuntimeCheckpointIntervalMS {
 		t.Fatalf("budget policy snapshot drifted: want=%#v got=%#v", want, got)
 	}
+}
+
+func attachRunningBudgetJob(t *testing.T, store *session.Store, meta *session.SessionMetadata) session.QueueJob {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              session.NewQueueJobID(),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusRunning,
+		ClaimedBy:       "test-worker",
+		ClaimedAt:       now,
+		HeartbeatAt:     now,
+		WorkerPID:       os.Getpid(),
+		ProcessStartID:  fmt.Sprintf("%d:%s", os.Getpid(), now),
+		ParentSessionID: meta.ParentSessionID,
+		RootSessionID:   meta.RootSessionID,
+		Prompt:          "budget checkpoint test",
+		Mode:            session.ModeExec,
+		SessionID:       meta.ID,
+		SessionStatus:   session.StatusRunning,
+		Background:      true,
+		WaitMode:        parentWaitAll,
+	}
+	meta.QueueJobID = job.ID
+	if err := store.SaveMetadata(meta.ID, *meta); err != nil {
+		t.Fatalf("link child metadata to queue job: %v", err)
+	}
+	if err := store.SaveJob(job); err != nil {
+		t.Fatalf("save running queue job: %v", err)
+	}
+	if err := addParentQueueJob(store, meta.ParentSessionID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("add parent queue coordination: %v", err)
+	}
+	return job
 }
 
 func newBudgetLifecycleResponsesServer(t *testing.T, mode *atomic.Int64) *httptest.Server {

@@ -81,6 +81,36 @@ func TestEffectiveBudgetExtensionMustClearEveryExhaustedDimension(t *testing.T) 
 	}
 }
 
+func TestValidateEffectiveBudgetEnforcesActiveRuntimeLeaseConsistency(t *testing.T) {
+	now := time.Now().UTC()
+	valid := NewEffectiveBudget(BudgetSourceRuntimeChild, 0, 5, 0, 0, now)
+	valid.ActiveRuntimeCheckpointIntervalMS = 1000
+	valid.ActiveRuntimeCheckpointAt = now.Format(time.RFC3339Nano)
+	valid.ActiveRuntimeLeaseOpen = true
+	valid.ActiveRuntimeLeaseOwner = "owner"
+	valid.ActiveRuntimeLastRecoveryMS = 1000
+	valid.ActiveRuntimeLastRecoveryAt = now.Format(time.RFC3339Nano)
+	if err := ValidateEffectiveBudget(valid); err != nil {
+		t.Fatalf("validate consistent active-runtime lease: %v", err)
+	}
+
+	closedWithOwner := CloneEffectiveBudget(valid)
+	closedWithOwner.ActiveRuntimeLeaseOpen = false
+	if err := ValidateEffectiveBudget(closedWithOwner); err == nil || !strings.Contains(err.Error(), "cannot retain an owner") {
+		t.Fatalf("expected closed lease owner rejection, got %v", err)
+	}
+	missingRecoveryTime := CloneEffectiveBudget(valid)
+	missingRecoveryTime.ActiveRuntimeLastRecoveryAt = ""
+	if err := ValidateEffectiveBudget(missingRecoveryTime); err == nil || !strings.Contains(err.Error(), "recorded together") {
+		t.Fatalf("expected recovery telemetry consistency rejection, got %v", err)
+	}
+	openWithoutLimit := CloneEffectiveBudget(valid)
+	openWithoutLimit.MaxActiveRuntimeMS = 0
+	if err := ValidateEffectiveBudget(openWithoutLimit); err == nil || !strings.Contains(err.Error(), "active-runtime limit") {
+		t.Fatalf("expected open lease without active-runtime dimension rejection, got %v", err)
+	}
+}
+
 func TestDirectChildReservationSharesCapacityWithQueueClaims(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	parentID := "parent_slot_shared"

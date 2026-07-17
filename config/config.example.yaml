@@ -203,11 +203,14 @@ runtime:
   # Active runtime excludes paused/offline time. Absolute elapsed time starts
   # when the child/job is created and includes queueing and pauses. Turns are
   # counted per budget attempt; only an explicit parent budget extension starts
-  # the next attempt. Settings changes affect newly created child/job work only.
+  # the next attempt. active_runtime_checkpoint_ms bounds live telemetry lag and
+  # the single conservative charge for a crash-open interval; it does not count
+  # offline wall time. Settings changes affect newly created child/job work only.
   child_budget:
     max_active_runtime_sec: 0
     max_elapsed_sec: 0
     max_turns_per_attempt: 0
+    active_runtime_checkpoint_ms: 1000
 
 output:
   format: text

@@ -2706,6 +2706,18 @@ function effectiveBudgetSummary(budget, pauseReason = '') {
       ? Math.max(0, Number(budget.max_active_runtime_ms) - Number(budget.used_active_runtime_ms || 0))
       : Number(budget.remaining_active_runtime_ms || 0);
     parts.push(`active ${usedSec}s/${limitSec}s, ${Math.ceil(remainingMS / 1000)}s left`);
+    if (budget.active_runtime_checkpoint_at) {
+      const leaseState = budget.active_runtime_lease_open ? 'lease open' : 'lease closed';
+      parts.push(`checkpoint ${formatTimestamp(budget.active_runtime_checkpoint_at)}, ${leaseState}`);
+    }
+    const recoveryMS = Number(budget.active_runtime_last_recovery_ms || 0);
+    if (recoveryMS > 0) {
+      const recoveryValue = recoveryMS < 1000 ? `${recoveryMS}ms` : `${Number((recoveryMS / 1000).toFixed(3))}s`;
+      const recoveryAt = budget.active_runtime_last_recovery_at
+        ? ` at ${formatTimestamp(budget.active_runtime_last_recovery_at)}`
+        : '';
+      parts.push(`crash recovery +${recoveryValue}${recoveryAt}`);
+    }
   }
   if (budget.absolute_deadline_at) {
     parts.push(`deadline ${formatTimestamp(budget.absolute_deadline_at)}`);

@@ -505,7 +505,10 @@ func TestBackgroundWaitDoesNotConsumeActiveRuntimeAndRemainsCancellable(t *testi
 	if err := addParentChildSession(runner.store, parentID, child.ID, parentWaitAll); err != nil {
 		t.Fatalf("add parent child coordination: %v", err)
 	}
-	runCtx, cancelBudget, budgetRun := runner.engine.beginChildBudgetRun(context.Background(), child, state)
+	runCtx, cancelBudget, budgetRun, err := runner.engine.beginChildBudgetRun(context.Background(), child, state)
+	if err != nil {
+		t.Fatalf("begin child budget run: %v", err)
+	}
 	defer cancelBudget()
 	release := registerActiveSessionRunner(runner.store, child.ID, runner)
 	defer release()

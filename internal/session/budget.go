@@ -208,6 +208,9 @@ func ExtendEffectiveBudget(current *EffectiveBudget, extension BudgetExtension, 
 	next.UsedActiveRuntimeMS = 0
 	next.OverrunTurns = 0
 	next.OverrunActiveRuntimeMS = 0
+	next.ActiveRuntimeCheckpointAt = ""
+	next.ActiveRuntimeLeaseOpen = false
+	next.ActiveRuntimeLeaseOwner = ""
 	next.LastReason = ""
 	next.Status = BudgetStatusActive
 	RefreshEffectiveBudget(next, absoluteTurn)
@@ -245,7 +248,7 @@ func ValidateEffectiveBudget(budget *EffectiveBudget) error {
 	if budget.TimeScope != BudgetTimeScopeActiveRuntime {
 		return fmt.Errorf("invalid effective budget time_scope %q", budget.TimeScope)
 	}
-	if budget.MaxTurnsPerAttempt < 0 || budget.MaxActiveRuntimeMS < 0 || budget.Attempt < 1 || budget.AttemptStartTurn < 0 || budget.UsedTurns < 0 || budget.UsedActiveRuntimeMS < 0 || budget.TotalUsedTurns < 0 || budget.TotalActiveRuntimeMS < 0 {
+	if budget.MaxTurnsPerAttempt < 0 || budget.MaxActiveRuntimeMS < 0 || budget.Attempt < 1 || budget.AttemptStartTurn < 0 || budget.UsedTurns < 0 || budget.UsedActiveRuntimeMS < 0 || budget.TotalUsedTurns < 0 || budget.TotalActiveRuntimeMS < 0 || budget.ActiveRuntimeCheckpointIntervalMS < 0 || budget.ActiveRuntimeLastRecoveryMS < 0 {
 		return errors.New("effective budget counters and limits must be non-negative and attempt must be positive")
 	}
 	if strings.TrimSpace(budget.AbsoluteDeadlineAt) != "" {
@@ -257,6 +260,25 @@ func ValidateEffectiveBudget(budget *EffectiveBudget) error {
 		if _, err := time.Parse(time.RFC3339Nano, budget.AttemptStartedAt); err != nil {
 			return fmt.Errorf("effective budget attempt_started_at must be RFC3339Nano: %w", err)
 		}
+	}
+	if strings.TrimSpace(budget.ActiveRuntimeCheckpointAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, budget.ActiveRuntimeCheckpointAt); err != nil {
+			return fmt.Errorf("effective budget active_runtime_checkpoint_at must be RFC3339Nano: %w", err)
+		}
+	}
+	if strings.TrimSpace(budget.ActiveRuntimeLastRecoveryAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, budget.ActiveRuntimeLastRecoveryAt); err != nil {
+			return fmt.Errorf("effective budget active_runtime_last_recovery_at must be RFC3339Nano: %w", err)
+		}
+	}
+	if budget.ActiveRuntimeLeaseOpen && (budget.MaxActiveRuntimeMS <= 0 || budget.ActiveRuntimeCheckpointIntervalMS <= 0 || strings.TrimSpace(budget.ActiveRuntimeCheckpointAt) == "" || strings.TrimSpace(budget.ActiveRuntimeLeaseOwner) == "") {
+		return errors.New("open active runtime lease requires an active-runtime limit, checkpoint interval, checkpoint time, and owner")
+	}
+	if !budget.ActiveRuntimeLeaseOpen && strings.TrimSpace(budget.ActiveRuntimeLeaseOwner) != "" {
+		return errors.New("closed active runtime lease cannot retain an owner")
+	}
+	if (budget.ActiveRuntimeLastRecoveryMS > 0) != (strings.TrimSpace(budget.ActiveRuntimeLastRecoveryAt) != "") {
+		return errors.New("active runtime recovery charge and timestamp must be recorded together")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, budget.UpdatedAt); err != nil {
 		return fmt.Errorf("effective budget updated_at must be RFC3339Nano: %w", err)

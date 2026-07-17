@@ -369,11 +369,11 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 
 Settings API：
 
-- `GET /api/config` 返回当前默认 provider、guardrails、全局 soft/hard turn guard、`child_budget { disabled, max_active_runtime_sec, max_elapsed_sec, max_turns_per_attempt }`，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、reasoning/thinking 字段
+- `GET /api/config` 返回当前默认 provider、guardrails、全局 soft/hard turn guard、`child_budget { disabled, max_active_runtime_sec, max_elapsed_sec, max_turns_per_attempt, active_runtime_checkpoint_ms }`，以及每个 provider 的 `api_provider`、`effective_api_provider`、`base_url`、`model`、`has_key`、reasoning/thinking 字段
 - `POST /api/config` 保存 provider 默认值、guardrails、全局 soft/hard turn guard、optional child budget 和 provider options，并写入审计事件；`child_budget.disabled=true` 持久化为三个维度全 `0`，启用时各维度必须非负且至少一个为正数。API 在兼容窗口内接受旧 `max_wall_clock_sec` / `max_turns`，新响应和新写配置使用 canonical 字段
 - Settings 将 Global Turn Guard 与 Sub-agent Budget 分组展示。hard limit 明确说明适用于 master、foreground child 与 background/queue child，并按每次 run 计数；soft 只做一次 reminder。Sub-agent Budget 的 active runtime、absolute elapsed deadline、per-attempt turns 分开显示，并明确修改只影响新 child/job
 - duration 输入接受并回显人类可读格式（例如 `30m`、`2h`），API/config 内部规范化为秒。Sub-agent Budget 不进入 provider test payload，也不在普通 session start / `agent_spawn` 表单增加逐 child budget字段
-- Session detail 的只读 budget inspector 从 child `metadata.effective_budget` / linked job snapshot 展示 configured/effective/used/remaining、attempt、policy source 与 last reason；parent notification 提示 inspect、extend/resume 或 cancel/settle
+- Session detail 的只读 budget inspector 从 child `metadata.effective_budget` / linked job snapshot 展示 configured/effective/used/remaining、attempt、policy source 与 last reason；active-runtime 还展示最近 durable checkpoint/heartbeat、lease 是否 open，以及最近一次 bounded crash-recovery charge。parent notification 提示 inspect、extend/resume 或 cancel/settle
 - `POST /api/config/test` 接收同一 provider 表单子集，执行 probe 后返回 `success`、`provider`、`api_provider`、`effective_api_provider`、`model`、`reasoning_mode`、`reasoning_summary`、`thinking_visible_observed`、`thinking_replay_observed`、`reasoning_summary_observed`、`reasoning_encrypted_observed`、`reasoning_tokens`、`thinking_strategy`、`thinking_detail` 与实际 provider option 摘要
 
 ### 7.1 `GET /api/meta`

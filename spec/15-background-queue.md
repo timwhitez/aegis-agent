@@ -261,6 +261,9 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 - canonical 配置为 `max_turns_per_attempt`、`max_active_runtime_sec`、`max_elapsed_sec`，默认全部 `0`。旧 `max_turns` / `max_wall_clock_sec` 只做兼容读取。
 - `max_turns_per_attempt` 只在当前 budget attempt 内计数；普通 continue 不重置 attempt。`max_active_runtime_sec` 只累计 runtime 活跃执行时间；paused、awaiting input、queue wait 和进程离线不消耗。`max_elapsed_sec` 在 job/session 创建时固化为 `absolute_deadline_at`，上述等待时间都会推进该绝对边界。
+- active-runtime dimension 启用时，effective budget 还会快照 `active_runtime_checkpoint_interval_ms`（默认 `1000`，可配置 `100..60000`）。run 开始先持久化 open active lease，运行中按该间隔把增量 usage 同步写入 child session 与 linked queue job，稳定 pause/terminal 时结清并关闭 lease；Web 读取到的 running usage 最多落后一个 checkpoint interval。
+- 进程在 provider/tool/hook/shell 中被 kill 时，下一次 recovery 看到未闭合 active lease，只补记一个 checkpoint interval 的 conservative uncertainty charge，而不是按 `now - checkpoint_at` 计算；因此 offline 时间不会持续计入，同时重复 crash 不能无限刷新预算。recovery charge、previous owner/checkpoint 与时间写入 effective budget/event。
+- 周期 checkpoint 若无法同步持久化 session 与 linked job，runtime 必须记录失败事实、cooperative cancel 当前 provider/tool/hook/shell，并把 child/job 按 execution failure 收敛；不能静默停止 heartbeat 后继续执行，也不能把 ledger failure 伪装成预算触顶 pause。
 - job 创建时快照 `effective_budget`，worker 创建 child 时原样传入 `session.json`。Settings 热更新只影响新 job；running/paused job 继续使用自己的 snapshot。
 - 全局 `max_turns_hard` 是独立的 per-run hard limit，显式启用后也适用于 child；child effective budget 与全局/operation timeout 同时存在时，以最先到达的边界为准并记录准确 reason。
 - active-runtime 与 absolute deadline 通过 `context.WithDeadlineCause` 或 `context.WithTimeoutCause` 进入 provider/tool/hook/shell cancellation chain。超限时 child 以 `paused` 收敛，reason 为 `child_budget_turns_exceeded`、`child_budget_active_runtime_exceeded` 或 `child_budget_absolute_deadline_exceeded`，并记录 limit/used/remaining/overrun/attempt/source。

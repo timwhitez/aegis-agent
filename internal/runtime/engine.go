@@ -169,8 +169,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			return RunResult{}, err
 		}
 	}
-	runCtx, cancelBudgetContext, budgetRun := e.beginChildBudgetRun(ctx, meta, state)
+	runCtx, cancelBudgetContext, budgetRun, err := e.beginChildBudgetRun(ctx, meta, state)
+	if err != nil {
+		return RunResult{}, err
+	}
 	ctx = runCtx
+	if budgetRun != nil {
+		meta, err = e.store.LoadMetadata(meta.ID)
+		if err != nil {
+			cancelBudgetContext()
+			return RunResult{}, fmt.Errorf("reload child budget after starting active-runtime lease: %w", err)
+		}
+	}
 	defer cancelBudgetContext()
 	defer func() {
 		if budgetRun == nil {
@@ -217,6 +227,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if hardTurnLimitEnabled && runTurn >= hardTurnLimit {
 			if !allowResolutionTurn {
+				if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+					return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before global turn-limit failure: %w", err), hookManager)
+				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_limit"
 				state.LastError = "max_turns_hard_exceeded"
@@ -257,6 +270,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err := e.store.SaveState(meta.ID, state); err != nil {
 			return RunResult{}, err
 		}
+		budgetRun.setAbsoluteTurn(state.Turn)
 		if e.control.consumePause() {
 			return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 		}
@@ -487,6 +501,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if err != nil {
 			if isContextCancellation(ctx, err) {
+				if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+					if appendErr := e.appendProviderCancelled(meta.ID, childBudgetCheckpointFailureReason); appendErr != nil {
+						return RunResult{}, appendErr
+					}
+					return e.fail(ctx, meta, state, checkpointErr, hookManager)
+				}
 				if reason := childBudgetReasonFromContext(ctx); reason != "" {
 					if appendErr := e.appendProviderCancelled(meta.ID, reason); appendErr != nil {
 						return RunResult{}, appendErr
@@ -527,12 +547,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, appendErr
 				}
 				if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+					if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+						return e.fail(ctx, meta, state, checkpointErr, hookManager)
+					}
 					if reason := childBudgetReasonFromContext(ctx); reason != "" {
 						return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
 					}
 					return RunResult{}, sleepErr
 				}
 				continue
+			}
+			if settleErr := settleChildBudgetBeforeTerminal(ctx, state.Turn); settleErr != nil {
+				return e.fail(ctx, meta, state, errors.Join(err, fmt.Errorf("settle child active runtime before provider failure: %w", settleErr)), hookManager)
 			}
 			state.Status = session.StatusFailed
 			state.LastError = err.Error()
@@ -588,6 +614,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 
 		if failureReason, failureText := providerToolCallStopFailure(result); failureReason != "" {
+			if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+				return e.fail(ctx, meta, state, errors.Join(errors.New(failureText), fmt.Errorf("settle child active runtime before provider stop failure: %w", err)), hookManager)
+			}
 			state.Status = session.StatusFailed
 			state.Phase = "turn_decide"
 			state.IncompleteReason = failureReason
@@ -662,12 +691,18 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						return RunResult{}, appendErr
 					}
 					if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
+						if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+							return e.fail(ctx, meta, state, checkpointErr, hookManager)
+						}
 						if reason := childBudgetReasonFromContext(ctx); reason != "" {
 							return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
 						}
 						return RunResult{}, sleepErr
 					}
 					continue
+				}
+				if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+					return e.fail(ctx, meta, state, errors.Join(errors.New(failureText), fmt.Errorf("settle child active runtime before provider stop failure: %w", err)), hookManager)
 				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_decide"
@@ -946,6 +981,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if afterErr != nil {
 							return RunResult{}, fmt.Errorf("record interrupted tool.after event for %s: %w", call.Name, afterErr)
 						}
+						if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+							return e.fail(ctx, meta, state, checkpointErr, hookManager)
+						}
 						if reason := childBudgetReasonFromContext(ctx); reason != "" {
 							return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
 						}
@@ -1177,6 +1215,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if unresolved.CanProgress {
 						return e.awaitingInput(ctx, meta, state, result.Text, hookManager)
 					}
+					if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+						return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before unresolved-background failure: %w", err), hookManager)
+					}
 					state.Status = session.StatusFailed
 					state.Phase = "turn_decide"
 					state.IncompleteReason = "unresolved_background_work"
@@ -1193,6 +1234,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				continue
 			}
 			if e.cfg.Runtime.Degeneration.Enabled && consecutiveNoToolCandidates >= e.cfg.Runtime.Degeneration.GiveUpAfter {
+				if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+					return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before degeneration failure: %w", err), hookManager)
+				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_decide"
 				state.IncompleteReason = modelDegenerationNoProgressReason
@@ -1439,6 +1483,9 @@ func (e *Engine) awaitingInputWithIdleParked(ctx context.Context, meta session.S
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before awaiting input: %w", err), hookManager)
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "turn_decide"
 	state.LastAssistantExcerpt = truncateText(text, 500)
@@ -1549,6 +1596,9 @@ func (e *Engine) awaitingModelInput(ctx context.Context, meta session.SessionMet
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before model wait: %w", err), hookManager)
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "model_wait"
 	state.IdleReason = "model_requested_" + request.Kind
@@ -1651,6 +1701,11 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 		}
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if budgetRun != nil {
+		if _, err := budgetRun.pauseActive(state.Turn); err != nil {
+			return e.fail(ctx, meta, state, fmt.Errorf("persist child active runtime before background wait: %w", err), hookManager)
+		}
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "background_wait"
 	state.LastAssistantExcerpt = truncateText(text, 500)
@@ -1662,11 +1717,6 @@ func (e *Engine) awaitingBackground(ctx context.Context, meta session.SessionMet
 	}
 	_ = writeSessionSummary(e.store, meta.ID)
 	_ = writeLongRunCheckpoint(e.store, meta.ID)
-	if budgetRun != nil {
-		if _, err := budgetRun.pauseActive(state.Turn); err != nil {
-			return RunResult{}, fmt.Errorf("persist child active runtime before background wait: %w", err)
-		}
-	}
 	waitCtx, cancelWait := context.WithCancel(ctx)
 	e.control.setCancel(cancelWait)
 	count, waitErr := e.waitForBackgroundResult(waitCtx, meta, hookManager)
@@ -1861,6 +1911,9 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before budget wrap-up wait: %w", err), hookManager)
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "goal_budget_limited"
 	state.LastAssistantExcerpt = truncateText(text, 500)
@@ -1882,6 +1935,9 @@ func (e *Engine) awaitingBudgetWrapUp(ctx context.Context, meta session.SessionM
 func (e *Engine) awaitingPlanApproval(ctx context.Context, meta session.SessionMetadata, state session.State, hookManager *hooks.Manager) (RunResult, error) {
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before plan approval wait: %w", err), hookManager)
 	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "plan_approval"
@@ -1905,6 +1961,9 @@ func (e *Engine) awaitingPlanInput(ctx context.Context, meta session.SessionMeta
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before plan input wait: %w", err), hookManager)
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "plan_input"
 	state.LastAssistantExcerpt = "Plan Mode is awaiting user input."
@@ -1927,6 +1986,9 @@ func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.Session
 	if _, err := hookManager.Trigger(ctx, "session.awaiting_input", sessionHookPayload(meta, session.StatusAwaitingInput)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before plan cancellation wait: %w", err), hookManager)
+	}
 	state.Status = session.StatusAwaitingInput
 	state.Phase = "plan_cancelled"
 	state.LastAssistantExcerpt = "Plan Mode cancelled."
@@ -1948,6 +2010,9 @@ func (e *Engine) awaitingPlanCancelled(ctx context.Context, meta session.Session
 func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, state session.State, text string, hookManager *hooks.Manager) (RunResult, error) {
 	if _, err := hookManager.Trigger(ctx, "session.complete", sessionHookPayload(meta, session.StatusCompleted)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(ctx, meta, state, fmt.Errorf("settle child active runtime before completion: %w", err), hookManager)
 	}
 	state.Status = session.StatusCompleted
 	state.Phase = "turn_decide"
@@ -1972,6 +2037,16 @@ func (e *Engine) complete(ctx context.Context, meta session.SessionMetadata, sta
 }
 
 func (e *Engine) pauseForReason(ctx context.Context, meta session.SessionMetadata, state session.State, reason string, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, error) {
+	if reason == childBudgetCheckpointFailureReason {
+		checkpointErr := childBudgetCheckpointErrorFromContext(ctx)
+		if checkpointErr == nil {
+			checkpointErr = budgetRun.checkpointFailure()
+		}
+		if checkpointErr == nil {
+			checkpointErr = errors.New(childBudgetCheckpointFailureReason)
+		}
+		return e.fail(context.WithoutCancel(ctx), meta, state, checkpointErr, hookManager)
+	}
 	if session.IsChildBudgetPauseReason(reason) {
 		return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
 	}
@@ -1984,6 +2059,10 @@ func (e *Engine) pauseForReason(ctx context.Context, meta session.SessionMetadat
 func (e *Engine) handleCancelledBoundary(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, bool, error) {
 	if !isContextCancellation(ctx, err) {
 		return RunResult{}, false, nil
+	}
+	if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+		result, failErr := e.fail(ctx, meta, state, checkpointErr, hookManager)
+		return result, true, failErr
 	}
 	if reason := childBudgetReasonFromContext(ctx); reason != "" {
 		result, pauseErr := e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
@@ -2003,6 +2082,9 @@ func (e *Engine) pause(ctx context.Context, meta session.SessionMetadata, state 
 	}
 	if _, err := hookManager.Trigger(hookCtx, "session.pause", sessionHookPayload(meta, session.StatusPaused)); err != nil {
 		return e.fail(ctx, meta, state, err, hookManager)
+	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(hookCtx, meta, state, fmt.Errorf("settle child active runtime before pause: %w", err), hookManager)
 	}
 	state.Status = session.StatusPaused
 	state.PauseReason = reason
@@ -2084,6 +2166,9 @@ func (e *Engine) cancel(ctx context.Context, meta session.SessionMetadata, state
 			return e.fail(hookCtx, meta, state, err, hookManager)
 		}
 	}
+	if err := settleChildBudgetBeforeTerminal(ctx, state.Turn); err != nil {
+		return e.fail(hookCtx, meta, state, fmt.Errorf("settle child active runtime before cancellation: %w", err), hookManager)
+	}
 	state.Status = session.StatusCancelled
 	state.Phase = "cancelled"
 	state.PauseReason = ""
@@ -2145,14 +2230,25 @@ func (e *Engine) cancel(ctx context.Context, meta session.SessionMetadata, state
 }
 
 func (e *Engine) fail(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager) (RunResult, error) {
+	if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
+		err = checkpointErr
+		if e.control.consumePause() {
+			_ = e.control.takePauseReason()
+		}
+		ctx = context.WithoutCancel(ctx)
+	}
 	state.Status = session.StatusFailed
 	state.Phase = "error"
-	state.LastError = err.Error()
+	hookErrorSuffix := ""
 	if hookManager != nil {
 		if _, hookErr := hookManager.Trigger(ctx, "session.fail", sessionHookPayload(meta, session.StatusFailed)); hookErr != nil {
-			state.LastError = state.LastError + "; session.fail hook: " + hookErr.Error()
+			hookErrorSuffix = "; session.fail hook: " + hookErr.Error()
 		}
 	}
+	if settleErr := settleChildBudgetPersistenceBeforeFailure(ctx, state.Turn); settleErr != nil {
+		err = errors.Join(err, fmt.Errorf("settle child active runtime before failure: %w", settleErr))
+	}
+	state.LastError = err.Error() + hookErrorSuffix
 	if saveErr := e.store.SaveState(meta.ID, state); saveErr != nil {
 		return RunResult{}, saveErr
 	}

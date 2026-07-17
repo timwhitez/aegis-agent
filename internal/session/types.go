@@ -102,28 +102,34 @@ const (
 // and queue jobs. Limits are snapshotted when child work is created; Settings
 // changes do not silently reinterpret existing work.
 type EffectiveBudget struct {
-	SchemaVersion          int    `json:"schema_version"`
-	PolicyVersion          int    `json:"policy_version"`
-	Source                 string `json:"source"`
-	TurnScope              string `json:"turn_scope"`
-	TimeScope              string `json:"time_scope"`
-	MaxTurnsPerAttempt     int    `json:"max_turns_per_attempt,omitempty"`
-	MaxActiveRuntimeMS     int64  `json:"max_active_runtime_ms,omitempty"`
-	AbsoluteDeadlineAt     string `json:"absolute_deadline_at,omitempty"`
-	Attempt                int    `json:"attempt"`
-	AttemptStartTurn       int    `json:"attempt_start_turn"`
-	AttemptStartedAt       string `json:"attempt_started_at,omitempty"`
-	UsedTurns              int    `json:"used_turns"`
-	UsedActiveRuntimeMS    int64  `json:"used_active_runtime_ms"`
-	TotalUsedTurns         int    `json:"total_used_turns"`
-	TotalActiveRuntimeMS   int64  `json:"total_active_runtime_ms"`
-	RemainingTurns         *int   `json:"remaining_turns,omitempty"`
-	RemainingActiveRuntime *int64 `json:"remaining_active_runtime_ms,omitempty"`
-	OverrunTurns           int    `json:"overrun_turns,omitempty"`
-	OverrunActiveRuntimeMS int64  `json:"overrun_active_runtime_ms,omitempty"`
-	Status                 string `json:"status"`
-	LastReason             string `json:"last_reason,omitempty"`
-	UpdatedAt              string `json:"updated_at"`
+	SchemaVersion                     int    `json:"schema_version"`
+	PolicyVersion                     int    `json:"policy_version"`
+	Source                            string `json:"source"`
+	TurnScope                         string `json:"turn_scope"`
+	TimeScope                         string `json:"time_scope"`
+	MaxTurnsPerAttempt                int    `json:"max_turns_per_attempt,omitempty"`
+	MaxActiveRuntimeMS                int64  `json:"max_active_runtime_ms,omitempty"`
+	AbsoluteDeadlineAt                string `json:"absolute_deadline_at,omitempty"`
+	Attempt                           int    `json:"attempt"`
+	AttemptStartTurn                  int    `json:"attempt_start_turn"`
+	AttemptStartedAt                  string `json:"attempt_started_at,omitempty"`
+	UsedTurns                         int    `json:"used_turns"`
+	UsedActiveRuntimeMS               int64  `json:"used_active_runtime_ms"`
+	TotalUsedTurns                    int    `json:"total_used_turns"`
+	TotalActiveRuntimeMS              int64  `json:"total_active_runtime_ms"`
+	RemainingTurns                    *int   `json:"remaining_turns,omitempty"`
+	RemainingActiveRuntime            *int64 `json:"remaining_active_runtime_ms,omitempty"`
+	OverrunTurns                      int    `json:"overrun_turns,omitempty"`
+	OverrunActiveRuntimeMS            int64  `json:"overrun_active_runtime_ms,omitempty"`
+	ActiveRuntimeCheckpointIntervalMS int64  `json:"active_runtime_checkpoint_interval_ms,omitempty"`
+	ActiveRuntimeCheckpointAt         string `json:"active_runtime_checkpoint_at,omitempty"`
+	ActiveRuntimeLeaseOpen            bool   `json:"active_runtime_lease_open,omitempty"`
+	ActiveRuntimeLeaseOwner           string `json:"active_runtime_lease_owner,omitempty"`
+	ActiveRuntimeLastRecoveryMS       int64  `json:"active_runtime_last_recovery_ms,omitempty"`
+	ActiveRuntimeLastRecoveryAt       string `json:"active_runtime_last_recovery_at,omitempty"`
+	Status                            string `json:"status"`
+	LastReason                        string `json:"last_reason,omitempty"`
+	UpdatedAt                         string `json:"updated_at"`
 }
 
 type BudgetExtension struct {
