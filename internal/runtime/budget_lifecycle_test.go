@@ -723,6 +723,10 @@ func TestBackgroundBudgetPauseExtendResumeAndCrossParentRejection(t *testing.T) 
 	if processed.EffectiveBudget == nil || processed.EffectiveBudget.Status != session.BudgetStatusExhausted {
 		t.Fatalf("expected exhausted queue budget snapshot, got %#v", processed.EffectiveBudget)
 	}
+	assertQueueLeaseCleared(t, processed)
+	if session.QueueJobCanProgress(processed) {
+		t.Fatalf("budget-paused blocked job must require parent intervention: %#v", processed)
+	}
 	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
 	if err != nil {
 		t.Fatalf("load budget-pause notifications: %v", err)

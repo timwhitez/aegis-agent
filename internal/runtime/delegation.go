@@ -1346,6 +1346,7 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 			job.LastError = "child session is resumable: " + result.Status
 		}
 	}
+	clearQueueLeaseFields(&job)
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
 		return r.store.SaveJob(job)
 	}); err != nil {
@@ -1537,13 +1538,20 @@ func copyQueueLeaseFields(target *session.QueueJob, source session.QueueJob) {
 	target.ProcessStartID = source.ProcessStartID
 }
 
-func clearQueueClaim(job session.QueueJob) session.QueueJob {
-	job.Status = session.QueueStatusQueued
+func clearQueueLeaseFields(job *session.QueueJob) {
+	if job == nil {
+		return
+	}
 	job.ClaimedBy = ""
 	job.ClaimedAt = ""
 	job.HeartbeatAt = ""
 	job.WorkerPID = 0
 	job.ProcessStartID = ""
+}
+
+func clearQueueClaim(job session.QueueJob) session.QueueJob {
+	job.Status = session.QueueStatusQueued
+	clearQueueLeaseFields(&job)
 	job.SessionID = ""
 	job.SessionStatus = ""
 	job.EffectiveWorkdir = ""

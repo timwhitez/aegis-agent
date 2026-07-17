@@ -1924,8 +1924,146 @@ func TestQueueWorkerRefreshesHeartbeat(t *testing.T) {
 	if processErr != nil || !ok || processed.Status != session.QueueStatusCompleted {
 		t.Fatalf("unexpected processed job ok=%t err=%v job=%#v", ok, processErr, processed)
 	}
-	if processed.HeartbeatAt == "" || processed.ClaimedBy == "" || processed.ProcessStartID == "" || processed.WorkerPID == 0 {
-		t.Fatalf("expected lease fields on completed job, got %#v", processed)
+	assertQueueLeaseCleared(t, processed)
+}
+
+func TestQueueWorkerReleasesLeaseForBlockedAwaitingInputAndSecondWaitIntervenes(t *testing.T) {
+	server := responsesToolServer(t, "await_input", map[string]any{
+		"kind":             "external_wait",
+		"reason":           "waiting for parent guidance",
+		"resume_condition": "parent sends a follow-up prompt",
+	})
+	defer server.Close()
+
+	cfg := cancellationRuntimeConfig(t, server.URL)
+	cfg.Runtime.Queue.PollIntervalMS = 10
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "pause for parent input",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+
+	processed, ok, err := runner.ProcessNextJob(context.Background())
+	if err != nil || !ok || processed.Status != session.QueueStatusBlocked || processed.SessionStatus != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting-input blocked job: ok=%t err=%v job=%#v", ok, err, processed)
+	}
+	assertQueueLeaseCleared(t, processed)
+	loaded, err := runner.store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load blocked job: %v", err)
+	}
+	assertQueueLeaseCleared(t, loaded)
+	if session.QueueJobCanProgress(loaded) {
+		t.Fatalf("settled blocked job must not be treated as self-progressing: %#v", loaded)
+	}
+
+	if _, _, err := runner.store.MutateParentCoordination(parentID, func(coordination *session.ParentCoordination) error {
+		coordination.Parked = true
+		return nil
+	}); err != nil {
+		t.Fatalf("park parent coordination: %v", err)
+	}
+	parent, err := runner.store.LoadMetadata(parentID)
+	if err != nil {
+		t.Fatalf("load parent metadata: %v", err)
+	}
+	injected, alreadyDelivered, reason, _, err := runner.engine.injectCoordinationDeadlockWake(parent)
+	if err != nil || !injected || alreadyDelivered || !strings.Contains(reason, job.ID) {
+		t.Fatalf("expected immediate deadlock wake for blocked job: injected=%t delivered=%t reason=%q err=%v", injected, alreadyDelivered, reason, err)
+	}
+	notifications, err := runner.store.LoadBackgroundNotifications(parentID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	for i := range notifications {
+		notifications[i].DeliveryStatus = session.BackgroundNotificationAccepted
+	}
+	if err := runner.store.UpdateBackgroundNotifications(parentID, notifications); err != nil {
+		t.Fatalf("accept blocked/deadlock notifications: %v", err)
+	}
+	decision, err := runner.engine.beforeAwaitingBackground(parent)
+	if err != nil {
+		t.Fatalf("second agent_wait preflight: %v", err)
+	}
+	if !decision.AlreadyDeliveredDeadlock || !strings.Contains(decision.Reason, job.ID) {
+		t.Fatalf("second agent_wait must return intervention instead of parking: %#v", decision)
+	}
+}
+
+func TestQueueWorkerReleasesLeaseForManualPause(t *testing.T) {
+	providerStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case <-providerStarted:
+		default:
+			close(providerStarted)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	cfg := cancellationRuntimeConfig(t, server.URL)
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+		ParentSessionID: parentID,
+		Prompt:          "pause manually",
+		IsolationMode:   "off",
+	})
+	if err != nil {
+		t.Fatalf("queue submit: %v", err)
+	}
+	type processOutcome struct {
+		job session.QueueJob
+		ok  bool
+		err error
+	}
+	done := make(chan processOutcome, 1)
+	go func() {
+		processed, ok, err := runner.ProcessNextJob(context.Background())
+		done <- processOutcome{job: processed, ok: ok, err: err}
+	}()
+	waitForTestSignal(t, providerStarted, 5*time.Second, "queue provider start")
+	childID := waitForRunningChild(t, runner.store, parentID, 5*time.Second)
+	key := activeSessionKey(runner.store, childID)
+	activeSessionRunners.Lock()
+	childRunner := activeSessionRunners.items[key]
+	activeSessionRunners.Unlock()
+	if childRunner == nil {
+		t.Fatalf("missing active child runner for %s", childID)
+	}
+	childRunner.control.requestPauseWithReason("manual_stop")
+
+	var outcome processOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queue worker did not settle after manual pause")
+	}
+	if outcome.err != nil || !outcome.ok || outcome.job.ID != job.ID || outcome.job.Status != session.QueueStatusBlocked || outcome.job.SessionStatus != session.StatusPaused {
+		t.Fatalf("unexpected manual-pause queue outcome: %#v", outcome)
+	}
+	assertQueueLeaseCleared(t, outcome.job)
+	state, err := runner.store.LoadState(childID)
+	if err != nil || state.PauseReason != "manual_stop" {
+		t.Fatalf("expected durable manual_stop pause: state=%#v err=%v", state, err)
+	}
+}
+
+func assertQueueLeaseCleared(t *testing.T, job session.QueueJob) {
+	t.Helper()
+	if job.ClaimedBy != "" || job.ClaimedAt != "" || job.HeartbeatAt != "" || job.WorkerPID != 0 || job.ProcessStartID != "" {
+		t.Fatalf("expected released queue worker lease, got %#v", job)
 	}
 }
 

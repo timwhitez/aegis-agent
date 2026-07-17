@@ -171,6 +171,7 @@ func TestStopAgentCancelsRunningQueueShellProcessGroup(t *testing.T) {
 	if outcome.err != nil || !outcome.ok || outcome.job.Status != session.QueueStatusCancelled || outcome.job.SessionStatus != session.StatusCancelled {
 		t.Fatalf("unexpected queue cancellation outcome: %#v", outcome)
 	}
+	assertQueueLeaseCleared(t, outcome.job)
 	time.Sleep(300 * time.Millisecond)
 	if _, err := os.Stat(latePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("cancelled shell process group wrote late artifact: %v", err)
@@ -194,6 +195,7 @@ func TestStopAgentCancelsRunningQueueShellProcessGroup(t *testing.T) {
 	if err != nil || finalJob.Status != session.QueueStatusCancelled || finalJob.SessionStatus != session.StatusCancelled {
 		t.Fatalf("expected durable cancelled queue job, job=%#v err=%v", finalJob, err)
 	}
+	assertQueueLeaseCleared(t, finalJob)
 	again, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
 	if err != nil || !again.Accepted || again.Behavior != "already_cancelled" {
 		t.Fatalf("repeated queue stop must be idempotent: result=%#v err=%v", again, err)

@@ -52,7 +52,7 @@ provider transport 层把父 context 的 deadline 归一化成普通 `upstream_t
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -76,6 +76,13 @@ worker 已经不再执行该 child，但 parent coordination 会把 job 当成�
 - 只有确有继续执行 handle/heartbeat 的 job 才能被 `QueueJobCanProgress` 判定为可自行推进。
 - blocked notification 被 parent 接纳后，再次 `agent_wait` 必须立即进入 intervention reminder，而不是等待 lease stale。
 - 永久测试至少覆盖：`await_input` blocked、manual pause blocked、budget pause blocked、terminal outcomes、第一次 notification 接纳后的第二次 `agent_wait`。
+
+### Resolution and validation
+
+- `ProcessNextJob` 在任何 stable non-running outcome 落盘前统一释放 active queue lease；这也修复了 running cancellation settle 后被本地旧 snapshot 重新写回 lease 的竞态。
+- `QueueJobCanProgress` 现在只把 queued 和带 live owner 的 running job 视为可自行推进；blocked 始终是 intervention-required，旧版本遗留的 live PID/heartbeat 不再造成假 liveness。
+- 永久回归覆盖运行中 heartbeat 更新后 completed 清 lease、真实 `await_input` blocked、真实 cooperative `manual_stop` blocked、budget pause blocked、running queue cancellation、legacy live-lease blocked snapshot，以及 blocked/deadlock notifications 被接纳后的第二次 `agent_wait` preflight。
+- Focused validation: `go test ./internal/session ./internal/runtime -run 'TestQueueJobCanProgress|TestQueueWorkerRefreshesHeartbeat|TestQueueWorkerReleasesLeaseForBlockedAwaitingInputAndSecondWaitIntervenes|TestQueueWorkerReleasesLeaseForManualPause|TestBackgroundBudgetPauseExtendResumeAndCrossParentRejection|TestStopAgentCancelsRunningQueueShellProcessGroup' -count=1 -timeout=60s`。
 
 ## CAP-003 — Resumed child work bypasses `max_active_children` and the durable claim lock
 

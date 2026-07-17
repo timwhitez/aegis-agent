@@ -341,6 +341,10 @@ func TestQueueJobCanProgress(t *testing.T) {
 	if QueueJobCanProgress(deadBlocked) {
 		t.Fatal("expected blocked job with dead owner to be non-progressable")
 	}
+	liveBlocked := QueueJob{Status: QueueStatusBlocked, WorkerPID: os.Getpid(), ProcessStartID: queueProcessStartID, HeartbeatAt: now}
+	if QueueJobCanProgress(liveBlocked) {
+		t.Fatal("blocked job must require intervention even when legacy lease fields name a live process")
+	}
 	completed := QueueJob{Status: QueueStatusCompleted}
 	if QueueJobCanProgress(completed) {
 		t.Fatal("expected terminal job to be non-progressable")

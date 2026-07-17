@@ -229,12 +229,13 @@ parent-linked queue job 只能由 root master session 创建。`depth > 0` 或�
 ### 5.5 worker 生命周期
 
 - 单个 job 失败时，worker 必须先把 job 状态持久化为 `failed`
+- worker 一旦离开某个 job 的执行边界，在保存 `blocked`、`completed`、`cancelled` 或 `failed` 前必须清空 `claimed_by`、`claimed_at`、`heartbeat_at`、`worker_pid`、`process_start_id`；历史 owner 只保留在事件/诊断记录中，不能继续占用 active lease
 - 普通任务失败不应直接结束长跑 worker，worker 应继续轮询后续 job
 - 只有 claim / 落盘等 queue 基础设施错误才让 worker 返回错误
 
 ### 5.6 孤儿 job 回收（liveness reaper）
 
-job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有者。持有进程异常退出（例如 web 服务重启）后，留在 `running/` 或 `blocked/` 的 job 不会自动前进，会让其 parent 永久停留在 wait-all 协同里。runtime 必须提供周期性回收：
+job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有者。持有进程异常退出（例如 web 服务重启）后，留在 `running/` 的 job 不会自动前进；旧版本也可能留下带 lease 的 `blocked/` snapshot。两者都可能让 parent 永久停留在 wait-all 协同里，因此 runtime 必须提供周期性回收：
 
 - 扫描 `running/` 与 `blocked/`，识别孤儿 job：`process_start_id` 非当前进程且持有进程已不存在（`/proc` 探测），或心跳超过 `lease_stale_after`（默认 `15m` / `runtime.queue.lease_stale_after_sec`）。
 - 回收策略为混合（仅做 liveness 恢复，绝不替模型决定 workflow）：
@@ -248,7 +249,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 当 parent 因 `agent_wait` / `resume_parent` 停车（`background_wait`）等待后台结果时，如果其全部 unresolved 工作都无法再自行前进，parent 会无限等待。runtime 必须检测并唤醒：
 
-- 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked` 且持有进程已死、终态但仍挂在 unresolved、或 unresolved job 文件已缺失），同时每个 unresolved child session 都为非 `running` 的非终态或文件已缺失。
+- 死锁判定：parent 处于 parked，且每个 unresolved queue job 都不可前进（`blocked`、running 但 owner 已死、终态但仍挂在 unresolved、或 unresolved job 文件已缺失），同时每个 unresolved child session 都为非 `running` 的非终态或文件已缺失。`blocked` 是稳定 intervention-required 状态；旧 snapshot 即使残留 live PID/heartbeat 也不能覆盖该状态语义。
 - queue claim 使用 `queued -> running` rename 后再落盘带 lease 的 running snapshot；parent coordination / deadlock 检测必须在同一 durable `claim.lock` 下读取不触发 reconcile 的 canonical snapshot，等 rename + lease write 临界区结束后再判断。锁内仍缺失才可按 orphan/stalled 处理，不能靠任意 sleep 窗口猜测，也不能在健康 worker 刚 claim 时提前唤醒 parent。
 - 命中后写入 `parent.coordination.deadlock` 事件，并注入一条 `coordination_deadlock` 来源的 pending background notification（无 `queue_job_id`，`status=coordination_deadlock`）。该 notification 在下一安全边界并入上下文，提示模型用 `agent_prompt` 收敛、`agent_stop` 停弃，或自行继续。
 - 注入有幂等保护：已有 pending 死锁 notification 时不重复注入；同一 unresolved-work deadlock reason 已被 parent 接纳后，后续 `agent_wait` 或人工 / Web `continue` 旧 parked/failed parent session 时不再重复写入同一 liveness notification，也不能静默重新停车，而是向 parent transcript 写入需要 master 介入的 reminder 并继续 parent loop。该 master-intervention reminder 也必须按排序后的 stalled children/jobs 语义事实去重；已提醒过但事实未变化时，runtime 不应刷屏。实现上去重应使用轻量持久索引或尾部有界扫描，避免在 parent loop 热路径对长 `messages.jsonl` 做每次全量扫描；历史无 signature 的 reminder 可用 bounded tail 文本匹配兼容。

@@ -162,6 +162,7 @@ child session 使用独立工作目录执行。当前支持：
 - runtime 将 parent 进入 `awaiting_input` / `background_wait`，等待任一 pending background notification 后自动接纳结果并继续 parent loop
 - parent 恢复后由模型基于注入的 `<background-agent-results>`、`agent_status` / `agent_list` 和 parent coordination 判断是否继续 `agent_wait`、提示其他 child 收敛或停止不需要的 queued job
 - 如果同一 deadlock / liveness notification 已经被 parent 接纳且当前没有新的 pending background result，后续 `agent_wait` 不能再次静默停车；人工 / Web `continue` 旧 parked 或因 provider 错误转为 failed 的 parent session 时也应先复用同一判定。runtime 应把“等待不会再推进，需要 master 介入”的 reminder 写回 parent transcript，并继续 parent loop，让模型显式选择 `agent_prompt` / `agent_status` / `agent_list` / `agent_stop` 或 handoff
+- queue job 的 `blocked` 是 worker 已退出执行边界后的稳定状态，必须视为需要 parent 介入；即使读取到旧版本遗留的 lease 字段，也不能据此把 blocked job 判成仍可自行推进
 - 该工具不取消、不停止 child work；若 child work 不再需要，parent 必须先通过可用控制面解决该 work，再退出
 
 #### `agent_stop`

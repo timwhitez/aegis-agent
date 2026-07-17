@@ -64,15 +64,15 @@ func queueJobOwnerAlive(job QueueJob) bool {
 }
 
 // QueueJobCanProgress reports whether an unresolved queue job could still make
-// forward progress on its own. A job is progressable when it is queued, actively
-// running with a live owner, or blocked but still owned by a live process that
-// can resume it. A blocked job whose owner has exited cannot progress without
-// outside intervention and therefore indicates a coordination deadlock.
+// forward progress on its own. A job is progressable when it is queued or
+// actively running with a live owner. Blocked is a stable, intervention-required
+// state; legacy lease fields on a blocked snapshot are not authoritative proof
+// that a worker is still executing it.
 func QueueJobCanProgress(job QueueJob) bool {
 	switch job.Status {
 	case QueueStatusQueued:
 		return true
-	case QueueStatusRunning, QueueStatusBlocked:
+	case QueueStatusRunning:
 		return queueJobOwnerAlive(job)
 	default:
 		// Terminal statuses are resolved, not pending; treat as non-progressing.
