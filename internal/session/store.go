@@ -4396,6 +4396,9 @@ func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, bo
 		} else if meta.QueueJobID == jobID {
 			state, err := s.LoadState(meta.ID)
 			if err != nil {
+				if queueJobLinkedStateCreationInProgress(job, err) {
+					return SessionMetadata{}, State{}, false, nil
+				}
 				return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s state.json: %w", meta.ID, err)
 			}
 			return meta, state, true, nil
@@ -4419,11 +4422,25 @@ func (s *Store) findSessionForQueueJob(job QueueJob) (SessionMetadata, State, bo
 		}
 		state, err := s.LoadState(sessionID)
 		if err != nil {
+			if queueJobLinkedStateCreationInProgress(job, err) {
+				return SessionMetadata{}, State{}, false, nil
+			}
 			return SessionMetadata{}, State{}, false, fmt.Errorf("linked session %s state.json: %w", sessionID, err)
 		}
 		return meta, state, true, nil
 	}
 	return SessionMetadata{}, State{}, false, nil
+}
+
+func queueJobLinkedStateCreationInProgress(job QueueJob, err error) bool {
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if job.Status != QueueStatusRunning {
+		return false
+	}
+	now := time.Now().UTC()
+	return queueJobHasRecentLease(job, now) && queueJobOwnerAlive(job)
 }
 
 type queueSessionMetadataIndex struct {

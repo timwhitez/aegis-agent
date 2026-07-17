@@ -2,7 +2,7 @@
 
 审计目标：`9cbb8c8672d38b524dfa00cff66705c8816c5b9c`（`feat(runtime): unify global turn guards and child budgets`）。
 
-审计结论：方案的总体分层与预算语义达到较高水平，包括全局 per-run turn guard、child 三维预算、effective policy 快照、显式 extension/resume、durable cancel request、`cancelled` 与 `failed` 分离、shell 进程组取消、统一 active-child capacity 和 queue claim lock。审计发现的六项可复现缺陷现已全部修复并进入永久回归；在本文件覆盖的 master/child budget、agent loop、provider/tool/hook/shell cancellation、queue claim/settle、resume 与 crash-recovery 范围内，当前未保留已知可见 bug。该结论基于当前自动化与真实浏览器/进程 kill 证据，不等同于对未来变更作绝对无缺陷保证。
+审计结论：方案的总体分层与预算语义达到较高水平，包括全局 per-run turn guard、child 三维预算、effective policy 快照、显式 extension/resume、durable cancel request、`cancelled` 与 `failed` 分离、shell 进程组取消、统一 active-child capacity 和 queue claim lock。审计及最终 race 回归发现的七项可复现缺陷现已全部修复并进入永久回归；在本文件覆盖的 master/child budget、agent loop、provider/tool/hook/shell cancellation、queue claim/settle、resume 与 crash-recovery 范围内，当前未保留已知可见 bug。该结论基于当前自动化与真实浏览器/进程 kill 证据，不等同于对未来变更作绝对无缺陷保证。
 
 已有基线验证仍然通过：
 
@@ -234,6 +234,38 @@ operator 在 child 运行期间看到的 active usage/remaining 不是真实当�
 - Focused validation: `go test ./internal/config ./internal/session ./internal/runtime ./internal/webconsole -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime -count=1 -timeout=300s`；`go vet ./internal/config ./internal/session ./internal/provider ./internal/runtime ./internal/tools ./internal/webconsole`；`node --check internal/webconsole/assets/*.js`；`node --check validation/scripts/webconsole_ui_smoke.mjs`；`node --test validation/scripts/webconsole_utils_test.mjs`；`bash -n validation/run_budget_browser_smoke.sh`。
 - Real browser validation: `bash validation/run_budget_browser_smoke.sh /tmp/go-cli-agent-budget-browser-bud006`，证据 `/tmp/go-cli-agent-budget-browser-bud006/budget-browser-smoke.json`；结果包含 `active_runtime_checkpoint_ms=1000`、budget inspector `checkpoint` / `lease closed`，且无 runtime exception 或 console error。
 
+## QUEUE-007 — `LoadJob` exposes the session creation half-state as an error
+
+- Severity: P2
+- Confidence: High
+- Status: Resolved
+
+### Evidence
+
+- `ProcessNextJob` 先把 claimed job 持久化为 `running + session_id`，随后由另一个 `Runner` / `Store` 创建 child session；`Store.Create` 依次写 `session.json` 和 `state.json`，两个 Store 的进程内 mutex 不能覆盖彼此。
+- `findSessionForQueueJob` 在看到 matching `session.json` 但 `state.json` 尚未 rename 完成时直接返回错误；因此普通 Web/API/test polling 的 `LoadJob` 会短暂得到 `linked session ... state.json: file does not exist`，即使 job 持有当前进程的 recent live lease 且 worker 正常推进。
+- 最终全量 race 回归 `CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime -count=1 -timeout=300s` 触发 `TestRunnerAutoQueueWorkerProcessesQueuedJobs` 失败；单测连续 20 次可重复触发 3 次。
+
+### Why it matters
+
+queue job 从 claim 到 child session 完整创建是正常生命周期，不应向 operator 暴露为损坏或失败。轮询恰好命中该窗口会产生间歇 API 错误、UI 刷新失败和不稳定测试；增加 sleep 只能掩盖跨 Store 的真实文件可见性竞态。
+
+### Root cause
+
+queue claim/session creation 使用 durable file facts，但 `LoadJob` 的 full reconcile 把 `session.json` 已出现、`state.json` 尚未出现的合法 pre-create half-state当作永久损坏。它没有利用 running job 的 recent heartbeat、live owner 和 claim lease 来区分“worker 正在完成原子边界”与“terminal/corrupt session 缺失 state”。
+
+### Acceptance criteria
+
+- 当且仅当 job 为 `running`、lease recent 且 owner 仍存活时，matching session metadata 后暂缺 `state.json` 应返回当前 canonical running job，不做 reconcile 副作用也不报错。
+- terminal job、dead/stale owner 或 malformed `state.json` 仍必须报错或进入既有 stale/orphan recovery，不能把真实损坏永久吞掉。
+- 不得依赖固定 sleep；永久测试应构造 metadata-only linked session，并覆盖 live-running tolerance、terminal rejection、malformed-state rejection及 auto-worker race 重复运行。
+
+### Resolution and validation
+
+- `findSessionForQueueJob` 现在只对 `running + recent lease + live owner + state.json not-exist` 识别为 transient creation gap，并把它交回既有 `reconcileQueueJobSession` 的 recent-running 分支；其他 missing/malformed state 继续返回诊断错误。
+- 永久 store 测试直接构造 metadata-only linked child，验证 live running poll 稳定返回 canonical job，state 出现后正常同步；terminal 与 malformed state 不被容忍。
+- Validation: `CGO_ENABLED=1 go test -race ./internal/runtime -run '^TestRunnerAutoQueueWorkerProcessesQueuedJobs$' -count=20 -timeout=180s`；`go test ./internal/session ./internal/runtime -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime -count=1 -timeout=300s`。
+
 ## Completed fix order
 
 1. `BUD-001`：先恢复 budget cause fidelity，避免错误终态和失败统计污染。
@@ -241,3 +273,4 @@ operator 在 child 运行期间看到的 active usage/remaining 不是真实当�
 3. `CAP-003` 与 `CAP-005`：统一 active-slot acquisition/recovery，保证并发上限既不会被绕过，也不会被僵尸占满。
 4. `LIFE-004`：补齐 direct child 的公开恢复生命周期。
 5. `BUD-006`：完善 durable active-runtime ledger 和 live observability。
+6. `QUEUE-007`：消除 queue child session 创建窗口对 polling 暴露的 half-state 错误。

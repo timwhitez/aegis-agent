@@ -6160,6 +6160,97 @@ func TestDeleteJobRejectsSymlinkedQueueStatusDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadJobToleratesOnlyLiveRunningSessionCreationGap(t *testing.T) {
+	seed := func(t *testing.T, status string) (*Store, QueueJob, SessionMetadata) {
+		t.Helper()
+		store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		jobID := "job_session_creation_gap_" + status
+		meta := SessionMetadata{
+			SchemaVersion:    1,
+			ID:               "child_session_creation_gap_" + status,
+			CreatedAt:        now,
+			Workdir:          t.TempDir(),
+			RequestedWorkdir: t.TempDir(),
+			Mode:             ModeExec,
+			Provider:         "fake",
+			Model:            "fake",
+			CompletionPolicy: CompletionPolicyAutonomous,
+			ParentSessionID:  "parent_session_creation_gap",
+			RootSessionID:    "parent_session_creation_gap",
+			QueueJobID:       jobID,
+			Depth:            1,
+		}
+		if err := os.MkdirAll(store.SessionDir(meta.ID), 0o700); err != nil {
+			t.Fatalf("create metadata-only session directory: %v", err)
+		}
+		if err := store.SaveMetadata(meta.ID, meta); err != nil {
+			t.Fatalf("save metadata-only linked session: %v", err)
+		}
+		job := QueueJob{
+			SchemaVersion:    1,
+			ID:               jobID,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+			Status:           status,
+			ParentSessionID:  meta.ParentSessionID,
+			RootSessionID:    meta.RootSessionID,
+			Prompt:           "create child",
+			Mode:             ModeExec,
+			SessionID:        meta.ID,
+			SessionStatus:    StatusRunning,
+			Background:       true,
+			EffectiveWorkdir: meta.Workdir,
+		}
+		if status == QueueStatusRunning {
+			job.ClaimedBy = "test-worker"
+			job.ClaimedAt = now
+			job.HeartbeatAt = now
+			job.WorkerPID = os.Getpid()
+			job.ProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), now)
+		} else {
+			job.SessionStatus = StatusCompleted
+		}
+		if err := store.SaveJob(job); err != nil {
+			t.Fatalf("save linked queue job: %v", err)
+		}
+		return store, job, meta
+	}
+
+	t.Run("live running lease", func(t *testing.T) {
+		store, job, meta := seed(t, QueueStatusRunning)
+		loaded, err := store.LoadJob(job.ID)
+		if err != nil || loaded.Status != QueueStatusRunning || loaded.SessionID != meta.ID {
+			t.Fatalf("live worker creation gap must remain a readable running job: job=%#v err=%v", loaded, err)
+		}
+		if err := store.SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+			t.Fatalf("finish linked session creation: %v", err)
+		}
+		loaded, err = store.LoadJob(job.ID)
+		if err != nil || loaded.Status != QueueStatusRunning || loaded.SessionStatus != StatusRunning {
+			t.Fatalf("completed session creation must reconcile normally: job=%#v err=%v", loaded, err)
+		}
+	})
+
+	t.Run("terminal job", func(t *testing.T) {
+		store, job, _ := seed(t, QueueStatusCompleted)
+		if _, err := store.LoadJob(job.ID); err == nil || !strings.Contains(err.Error(), "state.json") {
+			t.Fatalf("terminal job with missing linked state must remain diagnostic, got %v", err)
+		}
+	})
+
+	t.Run("malformed state", func(t *testing.T) {
+		store, job, meta := seed(t, QueueStatusRunning)
+		statePath := filepath.Join(store.SessionDir(meta.ID), "state.json")
+		if err := os.WriteFile(statePath, []byte("{"), 0o600); err != nil {
+			t.Fatalf("write malformed linked state: %v", err)
+		}
+		if _, err := store.LoadJob(job.ID); err == nil || !strings.Contains(err.Error(), "state.json") {
+			t.Fatalf("malformed linked state must remain diagnostic, got %v", err)
+		}
+	})
+}
+
 func TestDeleteJobRemovesParentCoordinationBeforeQueueFile(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
