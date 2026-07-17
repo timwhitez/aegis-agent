@@ -155,6 +155,7 @@ type ChildRunReservation struct {
 	RootSessionID   string `json:"root_session_id"`
 	WorkerPID       int    `json:"worker_pid"`
 	ProcessStartID  string `json:"process_start_id"`
+	ProcessIdentity string `json:"process_identity,omitempty"`
 	CreatedAt       string `json:"created_at"`
 }
 

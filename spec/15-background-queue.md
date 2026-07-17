@@ -271,6 +271,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 
 - `runtime.multi_agent.max_active_children` 默认 `4`；queue claim 与所有 direct/queue resume 必须在同一个 durable claim lock 下核对 active foreground/background child，不能因多个 worker、大量 queued jobs 或 budget extension/parent-stop resume 越过上限。容量拒绝发生在 effective budget extension/attempt 持久化之前，原 paused/blocked snapshot 保持可安全重试。
 - direct resume 使用 durable reservation；queue resume 在锁内原子执行 blocked -> running 并安装 worker lease，运行期间刷新 heartbeat。进入任何 stable non-running outcome 后释放对应 reservation/lease；异常退出由 owner liveness/reaper 回收。
+- direct reservation 的 durable owner fact 包含 PID、process start id 与可用时的 Linux boot id + `/proc` starttime identity。capacity 扫描发现 owner 已死或 PID identity mismatch 时，不能再相信 stale child `status=running`；必须先把 child 收敛为 `paused/stale_owner_reconciled` 并写 `session.paused` diagnostic event，再释放 reservation。状态/event 写入失败时回滚并保留 reservation，避免只释放 capacity 却留下不可诊断的矛盾状态。
 - parent 可按 `session_id` / `queue_job_id` 取消 queued、running 或 paused child；running cancellation 先写 durable request，再 cooperative cancel active context。worker/reconcile 只在 child 已写 `cancelled` 或 job 已安全 terminalize 后释放 parent coordination。
 
 ## 6. 与 delegation 的关系

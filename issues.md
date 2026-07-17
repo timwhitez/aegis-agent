@@ -153,7 +153,7 @@ foreground child 可以合法调用 `await_input`，也可能因可修复 provid
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -177,6 +177,14 @@ reservation cleanup 把 durable session status 当成 owner liveness 的替代�
 - 无法可靠判断 liveness 的平台可采用保守策略，但必须有 heartbeat/lease stale 上界，不能永久占用容量。
 - 回收 reservation 时应把僵尸 running child 收敛到可恢复状态或至少写入可诊断事件，避免只删除 capacity fact 而保留矛盾 UI 状态。
 - 永久测试至少覆盖 dead PID + running state、PID reuse/start-id mismatch、missing state、malformed reservation、live owner 和并发 claim。
+
+### Resolution and validation
+
+- direct reservation liveness 现在先要求 owner PID 存活，并在 Linux `/proc` 可用时校验 `boot_id + stat.starttime` 的 boot-scoped `process_identity`；PID reuse 不再被当成原 owner。
+- stale `state.status=running` 不再覆盖 dead/mismatched owner。capacity 扫描会在同一 store critical section 内把僵尸 child 转为 `paused`、reason=`stale_owner_reconciled`，写入带 reservation owner/reclaim reason 的 durable `session.paused` event，然后删除 reservation。
+- state 与 diagnostic event 采用可回滚写入：event append 失败会恢复原 running state并保留 reservation/queued replacement work，避免 capacity fact 与 session evidence 分叉。
+- recent pre-create/pre-resume reservation 仍可在 session 尚未进入 running 的有界 provisional window 内占位；missing/non-running provisional fact 超过 stale 上界后回收。相同 direct child 的并发 reservation 已在 CAP-003 中通过 durable lock 去重。
+- Validation: `go test ./internal/session ./internal/runtime -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/session -run 'TestDeadDirectReservationReclaimsCapacityAndPausesZombieSession|TestDirectReservationRejectsPIDReuseByProcessIdentity|TestDirectReservationReclaimRollsBackStateWhenDiagnosticEventFails|TestConcurrentDirectResumeReservationRejectsDuplicateSession|TestConcurrentQueueResumeSlotsRespectActiveChildCap' -count=1 -timeout=120s`；`go vet ./internal/session ./internal/runtime`。
 
 ## BUD-006 — Active-runtime usage is only persisted at run exit, so live telemetry is stale and crashes refund budget
 

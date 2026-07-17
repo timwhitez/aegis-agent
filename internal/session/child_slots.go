@@ -7,7 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go-cli-agent/internal/events"
 )
+
+const directChildReservationReclaimPauseReason = "stale_owner_reconciled"
 
 func (s *Store) directChildReservationDir() string {
 	return filepath.Join(s.queueRoot(), "active_children")
@@ -61,6 +65,9 @@ func (s *Store) AcquireDirectChildSlot(parentSessionID, rootSessionID, childSess
 			WorkerPID:       os.Getpid(),
 			ProcessStartID:  queueProcessStartID,
 			CreatedAt:       now,
+		}
+		if identity, ok := hostProcessIdentity(reservation.WorkerPID); ok {
+			reservation.ProcessIdentity = identity
 		}
 		if err := validateChildRunReservation(reservation); err != nil {
 			return err
@@ -186,13 +193,22 @@ func (s *Store) activeDirectChildReservationsByRootLocked() (map[string]int, err
 			continue
 		}
 		createdAt, _ := time.Parse(time.RFC3339Nano, reservation.CreatedAt)
-		keep := hostProcessAlive(reservation.WorkerPID)
+		ownerAlive := hostProcessOwnerAlive(reservation.WorkerPID, reservation.ProcessIdentity)
+		keep := ownerAlive
+		reclaimReason := "owner_dead_or_identity_mismatch"
+		var childState State
+		hasChildState := false
 		if state, stateErr := s.LoadState(reservation.SessionID); stateErr == nil {
+			childState = state
+			hasChildState = true
 			if state.Status != StatusRunning {
 				// Direct spawn/resume reserves capacity immediately before the
 				// session transitions to running. Keep that short provisional
 				// claim, but bound it so a failed pre-run path cannot leak forever.
 				keep = keep && now.Sub(createdAt) <= queueRunningStaleAfter
+				if !keep && ownerAlive {
+					reclaimReason = "provisional_reservation_stale"
+				}
 			}
 		} else if !errors.Is(stateErr, os.ErrNotExist) {
 			return nil, stateErr
@@ -201,14 +217,50 @@ func (s *Store) activeDirectChildReservationsByRootLocked() (map[string]int, err
 			// session fact, a reservation older than the queue stale window must not
 			// consume capacity forever.
 			keep = false
+			if ownerAlive {
+				reclaimReason = "precreate_reservation_stale"
+			}
 		}
 		if !keep {
+			if hasChildState && childState.Status == StatusRunning {
+				if err := s.pauseReclaimedDirectChildLocked(reservation, childState, reclaimReason); err != nil {
+					return nil, err
+				}
+			}
 			_ = os.Remove(path)
 			continue
 		}
 		counts[reservation.RootSessionID]++
 	}
 	return counts, nil
+}
+
+func (s *Store) pauseReclaimedDirectChildLocked(reservation ChildRunReservation, state State, reclaimReason string) error {
+	previous := state
+	state.Status = StatusPaused
+	state.Phase = "interrupt"
+	state.PauseReason = directChildReservationReclaimPauseReason
+	state.LastError = ""
+	if err := s.saveStateLocked(reservation.SessionID, state); err != nil {
+		return fmt.Errorf("pause child after reclaiming direct reservation: %w", err)
+	}
+	event := events.New(reservation.SessionID, "session.paused", "interrupt", map[string]any{
+		"reason":                 directChildReservationReclaimPauseReason,
+		"source":                 "direct_child_slot_reaper",
+		"reconciled":             true,
+		"reconciled_from":        "direct_child_reservation",
+		"reclaim_reason":         reclaimReason,
+		"reservation_worker_pid": reservation.WorkerPID,
+		"process_start_id":       reservation.ProcessStartID,
+		"process_identity":       reservation.ProcessIdentity,
+	})
+	if err := s.appendEventLocked(reservation.SessionID, event); err != nil {
+		if rollbackErr := s.saveStateLocked(reservation.SessionID, previous); rollbackErr != nil {
+			return fmt.Errorf("record direct reservation reclaim event failed with %v; restore running child state: %w", err, rollbackErr)
+		}
+		return fmt.Errorf("record direct reservation reclaim event: %w", err)
+	}
+	return nil
 }
 
 func validateChildRunReservation(reservation ChildRunReservation) error {

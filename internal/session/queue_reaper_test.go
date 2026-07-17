@@ -351,6 +351,22 @@ func TestQueueJobCanProgress(t *testing.T) {
 	}
 }
 
+func TestLinuxHostProcessIdentityDetectsPIDReuse(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("host does not expose Linux proc process identity")
+	}
+	identity, ok := hostProcessIdentity(os.Getpid())
+	if !ok || identity == "" {
+		t.Fatalf("expected current Linux process identity, got %q ok=%t", identity, ok)
+	}
+	if !hostProcessOwnerAlive(os.Getpid(), identity) {
+		t.Fatalf("current process identity should be live: %q", identity)
+	}
+	if hostProcessOwnerAlive(os.Getpid(), identity+"-reused") {
+		t.Fatalf("mismatched process identity must reject a reused PID: %q", identity)
+	}
+}
+
 func sliceHasString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {

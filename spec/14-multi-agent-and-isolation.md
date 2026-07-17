@@ -322,7 +322,7 @@ parent 通过 tool 或 CLI 获取结构化结果，不直接复用 child 的 std
 
 ### 9.1 depth limit
 
-默认 `enabled = true`、`max_depth = 1`、`max_active_children = 4`。当前产品只允许 root master 创建 child，因此默认深度与真实能力一致；advanced profile 后续若放开 nesting，仍必须受显式 depth limit。active child cap 同时覆盖 foreground 与 background，queue worker count 和 resume 入口都不能绕过它。所有 non-running -> running transition（新 direct spawn、queue claim、direct/queue `agent_prompt` resume、budget extension resume、parent-stop resume）都在同一 durable `claim.lock` 下按 `root_session_id` 原子检查/占位；同一 direct child 的并发 resume 只能有一个 reservation owner。默认暴露 `agent_spawn` / `agent_status` / `agent_list`，operator 可通过 `runtime.multi_agent.enabled=false` 显式收窄。
+默认 `enabled = true`、`max_depth = 1`、`max_active_children = 4`。当前产品只允许 root master 创建 child，因此默认深度与真实能力一致；advanced profile 后续若放开 nesting，仍必须受显式 depth limit。active child cap 同时覆盖 foreground 与 background，queue worker count 和 resume 入口都不能绕过它。所有 non-running -> running transition（新 direct spawn、queue claim、direct/queue `agent_prompt` resume、budget extension resume、parent-stop resume）都在同一 durable `claim.lock` 下按 `root_session_id` 原子检查/占位；同一 direct child 的并发 resume 只能有一个 reservation owner。direct reservation 的 owner 必须同时满足 PID 存活与（Linux 可用时）boot-scoped process start identity 匹配；刚创建/刚 resume 的 provisional reservation 允许在 session 尚未切为 running 的有界窗口内占位，超过 stale 上界即回收。默认暴露 `agent_spawn` / `agent_status` / `agent_list`，operator 可通过 `runtime.multi_agent.enabled=false` 显式收窄。
 
 超过时：
 

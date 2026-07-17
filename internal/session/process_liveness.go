@@ -8,6 +8,59 @@ import (
 	"strings"
 )
 
+// hostProcessIdentity returns a boot-scoped OS process identity when the host
+// exposes one. Linux uses boot_id + /proc/<pid>/stat starttime, so PID reuse can
+// be distinguished from the process that originally created a durable lease.
+// Unknown platforms return ok=false and callers retain conservative PID-only
+// behavior.
+var hostProcessIdentity = func(pid int) (string, bool) {
+	if pid <= 0 {
+		return "", false
+	}
+	bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return "", false
+	}
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return "", false
+	}
+	statText := strings.TrimSpace(string(stat))
+	closeParen := strings.LastIndex(statText, ")")
+	if closeParen < 0 || closeParen+1 >= len(statText) {
+		return "", false
+	}
+	fields := strings.Fields(statText[closeParen+1:])
+	// fields starts at proc stat field 3 (state); starttime is field 22.
+	const startTimeIndex = 22 - 3
+	if len(fields) <= startTimeIndex {
+		return "", false
+	}
+	boot := strings.TrimSpace(string(bootID))
+	startTicks := strings.TrimSpace(fields[startTimeIndex])
+	if boot == "" || startTicks == "" {
+		return "", false
+	}
+	return "linux:" + boot + ":" + startTicks, true
+}
+
+func hostProcessOwnerAlive(pid int, expectedIdentity string) bool {
+	if !hostProcessAlive(pid) {
+		return false
+	}
+	expectedIdentity = strings.TrimSpace(expectedIdentity)
+	if expectedIdentity == "" {
+		return true
+	}
+	actual, ok := hostProcessIdentity(pid)
+	if !ok {
+		// The liveness contract is conservative when the OS cannot provide a
+		// stable process identity.
+		return true
+	}
+	return actual == expectedIdentity
+}
+
 // pidFromProcessStartID extracts the PID prefix from a "<pid>:<started_at>"
 // process start identity token. It returns 0 when the token is empty or
 // malformed.

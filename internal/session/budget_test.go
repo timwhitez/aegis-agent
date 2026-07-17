@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -310,6 +311,212 @@ func TestStalePreCreateDirectReservationDoesNotLeakCapacity(t *testing.T) {
 	claimed, ok, err := store.ClaimNextQueuedJobWithLimit(1)
 	if err != nil || !ok || claimed.ID != job.ID {
 		t.Fatalf("stale reservation must not consume capacity: ok=%t err=%v job=%#v", ok, err, claimed)
+	}
+}
+
+func TestDeadDirectReservationReclaimsCapacityAndPausesZombieSession(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_dead_direct_owner",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_dead_direct_owner",
+		RootSessionID:    "root_dead_direct_owner",
+		Depth:            1,
+	}
+	if err := store.Create(child, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create running child: %v", err)
+	}
+	acquired, err := store.AcquireDirectChildSlot(child.ParentSessionID, child.RootSessionID, child.ID, 1)
+	if err != nil || !acquired {
+		t.Fatalf("acquire direct reservation: acquired=%t err=%v", acquired, err)
+	}
+	reservationPath := filepath.Join(store.directChildReservationDir(), child.ID+".json")
+	var reservation ChildRunReservation
+	if err := readJSONFile(reservationPath, &reservation); err != nil {
+		t.Fatalf("load direct reservation: %v", err)
+	}
+	reservation.WorkerPID = 999999
+	reservation.ProcessStartID = "999999:dead-owner"
+	reservation.ProcessIdentity = ""
+	if err := store.writeJSONFile(reservationPath, reservation); err != nil {
+		t.Fatalf("write dead reservation owner: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_after_dead_direct_owner",
+		Status:          QueueStatusQueued,
+		ParentSessionID: child.ParentSessionID,
+		RootSessionID:   child.RootSessionID,
+		Prompt:          "claim after dead direct owner",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue replacement work: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextQueuedJobWithLimit(1)
+	if err != nil || !ok || claimed.ID != job.ID {
+		t.Fatalf("dead direct owner must release capacity: ok=%t err=%v job=%#v", ok, err, claimed)
+	}
+	state, err := store.LoadState(child.ID)
+	if err != nil || state.Status != StatusPaused || state.PauseReason != "stale_owner_reconciled" {
+		t.Fatalf("dead direct owner must pause zombie running child: state=%#v err=%v", state, err)
+	}
+	eventsList, err := store.LoadEvents(child.ID)
+	if err != nil {
+		t.Fatalf("load reclaimed child events: %v", err)
+	}
+	found := false
+	for _, event := range eventsList {
+		if event.Type == "session.paused" && event.Data["reconciled_from"] == "direct_child_reservation" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing durable direct-reservation reclaim event: %#v", eventsList)
+	}
+	if _, err := os.Stat(reservationPath); !os.IsNotExist(err) {
+		t.Fatalf("dead direct reservation was not removed: %v", err)
+	}
+}
+
+func TestDirectReservationRejectsPIDReuseByProcessIdentity(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_pid_reuse_direct_owner",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_pid_reuse_direct_owner",
+		RootSessionID:    "root_pid_reuse_direct_owner",
+		Depth:            1,
+	}
+	if err := store.Create(child, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create running child: %v", err)
+	}
+	acquired, err := store.AcquireDirectChildSlot(child.ParentSessionID, child.RootSessionID, child.ID, 1)
+	if err != nil || !acquired {
+		t.Fatalf("acquire direct reservation: acquired=%t err=%v", acquired, err)
+	}
+	reservationPath := filepath.Join(store.directChildReservationDir(), child.ID+".json")
+	var reservation ChildRunReservation
+	if err := readJSONFile(reservationPath, &reservation); err != nil {
+		t.Fatalf("load direct reservation: %v", err)
+	}
+	reservation.ProcessIdentity = "linux:test-boot:old-start-ticks"
+	if err := store.writeJSONFile(reservationPath, reservation); err != nil {
+		t.Fatalf("write stale process identity: %v", err)
+	}
+	originalIdentity := hostProcessIdentity
+	hostProcessIdentity = func(pid int) (string, bool) {
+		if pid == os.Getpid() {
+			return "linux:test-boot:new-start-ticks", true
+		}
+		return "", false
+	}
+	defer func() { hostProcessIdentity = originalIdentity }()
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_after_pid_reuse_direct_owner",
+		Status:          QueueStatusQueued,
+		ParentSessionID: child.ParentSessionID,
+		RootSessionID:   child.RootSessionID,
+		Prompt:          "claim after pid reuse",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue replacement work: %v", err)
+	}
+	claimed, ok, err := store.ClaimNextQueuedJobWithLimit(1)
+	if err != nil || !ok || claimed.ID != job.ID {
+		t.Fatalf("process identity mismatch must release capacity: ok=%t err=%v job=%#v", ok, err, claimed)
+	}
+	state, err := store.LoadState(child.ID)
+	if err != nil || state.Status != StatusPaused || state.PauseReason != "stale_owner_reconciled" {
+		t.Fatalf("pid reuse must pause zombie running child: state=%#v err=%v", state, err)
+	}
+}
+
+func TestDirectReservationReclaimRollsBackStateWhenDiagnosticEventFails(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_reclaim_event_failure",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_reclaim_event_failure",
+		RootSessionID:    "root_reclaim_event_failure",
+		Depth:            1,
+	}
+	if err := store.Create(child, State{Status: StatusRunning, Phase: "provider_call", UpdatedAt: now}); err != nil {
+		t.Fatalf("create running child: %v", err)
+	}
+	acquired, err := store.AcquireDirectChildSlot(child.ParentSessionID, child.RootSessionID, child.ID, 1)
+	if err != nil || !acquired {
+		t.Fatalf("acquire direct reservation: acquired=%t err=%v", acquired, err)
+	}
+	reservationPath := filepath.Join(store.directChildReservationDir(), child.ID+".json")
+	var reservation ChildRunReservation
+	if err := readJSONFile(reservationPath, &reservation); err != nil {
+		t.Fatalf("load direct reservation: %v", err)
+	}
+	reservation.WorkerPID = 999999
+	reservation.ProcessStartID = "999999:dead-owner"
+	reservation.ProcessIdentity = ""
+	if err := store.writeJSONFile(reservationPath, reservation); err != nil {
+		t.Fatalf("write dead reservation owner: %v", err)
+	}
+	eventsPath := filepath.Join(store.SessionDir(child.ID), "events.jsonl")
+	if err := os.Remove(eventsPath); err != nil {
+		t.Fatalf("remove events file: %v", err)
+	}
+	if err := os.Mkdir(eventsPath, 0o700); err != nil {
+		t.Fatalf("block events path: %v", err)
+	}
+	job := QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_reclaim_event_failure",
+		Status:          QueueStatusQueued,
+		ParentSessionID: child.ParentSessionID,
+		RootSessionID:   child.RootSessionID,
+		Prompt:          "must remain queued",
+		Mode:            ModeExec,
+		Background:      true,
+	}
+	if err := store.EnqueueJob(job); err != nil {
+		t.Fatalf("enqueue replacement work: %v", err)
+	}
+	if claimed, ok, err := store.ClaimNextQueuedJobWithLimit(1); err == nil || ok {
+		t.Fatalf("expected reclaim diagnostic failure, ok=%t err=%v job=%#v", ok, err, claimed)
+	}
+	state, err := store.LoadState(child.ID)
+	if err != nil || state.Status != StatusRunning || state.PauseReason != "" {
+		t.Fatalf("failed reclaim diagnostic must restore running state: state=%#v err=%v", state, err)
+	}
+	if _, err := os.Stat(reservationPath); err != nil {
+		t.Fatalf("failed reclaim diagnostic must retain reservation: %v", err)
+	}
+	queued, err := store.LoadJob(job.ID)
+	if err != nil || queued.Status != QueueStatusQueued {
+		t.Fatalf("failed reclaim diagnostic must leave replacement queued: job=%#v err=%v", queued, err)
 	}
 }
 

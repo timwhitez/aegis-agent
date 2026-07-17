@@ -221,6 +221,12 @@ func (s *Store) LoadState(sessionID string) (State, error) {
 }
 
 func (s *Store) SaveState(sessionID string, state State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveStateLocked(sessionID, state)
+}
+
+func (s *Store) saveStateLocked(sessionID string, state State) error {
 	path, err := s.sessionPath(sessionID, "state.json")
 	if err != nil {
 		return err
@@ -230,8 +236,6 @@ func (s *Store) SaveState(sessionID string, state State) error {
 	if err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if count, ok, err := s.pendingSteerCountLocked(sessionID); err != nil {
 		return err
 	} else if ok {
@@ -1111,11 +1115,15 @@ func (s *Store) WriteSessionMarkdown(sessionID string, content string) error {
 }
 
 func (s *Store) AppendEvent(sessionID string, event events.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendEventLocked(sessionID, event)
+}
+
+func (s *Store) appendEventLocked(sessionID string, event events.Event) error {
 	if err := validateEvents(sessionID, []events.Event{event}); err != nil {
 		return fmt.Errorf("validate events.jsonl: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "events.jsonl")
 	if err != nil {
 		return err
