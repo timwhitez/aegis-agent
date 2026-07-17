@@ -746,7 +746,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 			var ok bool
 			behavior, ok = childPromptContinueBehavior(r.store, childSessionID, queueJobID, state)
 			if !ok {
-				return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a blocked or parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
+				return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a resumable child state for agent_prompt", childSessionID, state.Status)
 			}
 		}
 		previousJob, directSlotReserved, err := r.acquirePromptedChildRunSlot(parentMeta, childSessionID, queueJobID)
@@ -759,6 +759,22 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		}
 		if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && req.BudgetExtension != nil {
 			effectiveBudget, err = r.extendChildBudget(parentMeta.ID, childSessionID, queueJobID, state, *req.BudgetExtension)
+			if err != nil {
+				stopHeartbeat()
+				return tools.AgentPromptResult{}, errors.Join(err, r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
+			}
+		}
+		var directCoordinationSnapshot session.ParentCoordinationSnapshot
+		var directParentEventsSnapshot []events.Event
+		directCoordinationReopened := previousJob.ID == ""
+		if directCoordinationReopened {
+			directCoordinationSnapshot, err = r.store.SnapshotParentCoordination(parentMeta.ID)
+			if err == nil {
+				directParentEventsSnapshot, err = r.store.LoadEvents(parentMeta.ID)
+			}
+			if err == nil {
+				err = addParentChildSession(r.store, parentMeta.ID, childSessionID, parentWaitAll)
+			}
 			if err != nil {
 				stopHeartbeat()
 				return tools.AgentPromptResult{}, errors.Join(err, r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
@@ -794,6 +810,14 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 			}
 		} else if continueErr == nil {
 			continueErr = errors.New("child continue returned without a durable session result")
+		}
+		if directCoordinationReopened && (result.SessionID == "" || result.Status == "") {
+			if restoreErr := r.store.RestoreParentCoordination(parentMeta.ID, directCoordinationSnapshot); restoreErr != nil {
+				settleErr = errors.Join(settleErr, fmt.Errorf("restore parent coordination after failed direct child resume: %w", restoreErr))
+			}
+			if restoreErr := r.store.RestoreEvents(parentMeta.ID, directParentEventsSnapshot); restoreErr != nil {
+				settleErr = errors.Join(settleErr, fmt.Errorf("restore parent events after failed direct child resume: %w", restoreErr))
+			}
 		}
 		if continueErr = errors.Join(continueErr, settleErr); continueErr != nil {
 			return tools.AgentPromptResult{}, continueErr
@@ -890,8 +914,19 @@ func childPromptContinueBehavior(store *session.Store, childSessionID, queueJobI
 		}
 		return "", false
 	}
-	if state.Status == session.StatusPaused && state.PauseReason == "manual_stop" {
-		return "continued_parent_stopped_child", true
+	switch state.Status {
+	case session.StatusAwaitingInput:
+		return "continued_awaiting_input_child", true
+	case session.StatusFailed:
+		return "continued_failed_child", true
+	case session.StatusPaused:
+		if state.PauseReason == agentCancelRequestedReason {
+			return "", false
+		}
+		if state.PauseReason == "manual_stop" {
+			return "continued_parent_stopped_child", true
+		}
+		return "continued_paused_child", true
 	}
 	return "", false
 }

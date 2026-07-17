@@ -59,6 +59,9 @@ func addParentChildSession(store *session.Store, parentSessionID, childSessionID
 		}
 		wasParked = coordination.Parked
 		coordination.WaitMode = mergeWaitMode(coordination.WaitMode, waitMode)
+		coordination.CompletedChildSessions = removeString(coordination.CompletedChildSessions, childSessionID)
+		coordination.FailedChildSessions = removeString(coordination.FailedChildSessions, childSessionID)
+		coordination.CancelledChildSessions = removeString(coordination.CancelledChildSessions, childSessionID)
 		coordination.UnresolvedChildSessions = appendUnique(coordination.UnresolvedChildSessions, childSessionID)
 		coordination.Parked = shouldParkParent(*coordination)
 		return nil

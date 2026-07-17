@@ -125,7 +125,7 @@ worker 已经不再执行该 child，但 parent coordination 会把 job 当成�
 
 - Severity: P2
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -148,6 +148,14 @@ foreground child 可以合法调用 `await_input`，也可能因可修复 provid
 - budget-paused direct child 仍必须要求有效 `budget_extension`；completed/cancelled child 仍不可通用恢复。
 - resume 后 parent coordination 必须保持 unresolved，直到 child 真正 terminal；结果、事件和 summary 必须与 queue child 一致。
 - 永久测试至少覆盖 direct `awaiting_input`、direct `failed`、manual stop、budget pause、completed/cancelled rejection 和 cross-parent rejection。
+
+### Resolution and validation
+
+- direct child 的 `awaiting_input`、`failed`、`manual_stop`、`keyboard_interrupt` 与 `stale_owner_reconciled` paused state 现在都可由 owning parent 通过 `agent_prompt` continue；返回 behavior 区分 awaiting/failed/generic paused，保留既有 manual-stop behavior。
+- budget-paused direct child 仍必须提供有效 extension；`completed`、`cancelled` 与 `agent_cancel_requested` pause 继续拒绝通用恢复，cross-parent target validation 未放宽。
+- direct resume 在执行前重新打开 parent coordination：从 failed/completed/cancelled bucket 移除并加入 unresolved。若 resume 仍停在 `awaiting_input`，unresolved 保持；真正 terminal 后再移动到对应 terminal bucket。pre-run/no-result failure 会恢复 coordination 与 parent events snapshot。
+- 永久回归覆盖 failed -> awaiting_input -> completed 的两次 parent resume 生命周期、failed/manual/keyboard/stale-owner 直接恢复、completed/cancelled/cancel-requested rejection；既有 budget-extension、cross-parent 与 queue resume 测试继续通过。
+- Validation: `go test ./internal/session ./internal/runtime -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/runtime -run 'TestRunnerPromptAgentContinuesDirectFailedThroughAwaitingInputUntilTerminal|TestRunnerPromptAgentContinuesRecoverableDirectStates|TestRunnerPromptAgentRejectsTerminalAndCancelledPauseDirectStates|TestForegroundBudgetPauseExtendResume|TestRunnerPromptAgentRejectsOutsideParent' -count=1 -timeout=120s`；`go vet ./internal/runtime ./internal/session`。
 
 ## CAP-005 — A dead direct-child reservation can consume capacity forever while stale state remains `running`
 

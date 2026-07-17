@@ -202,7 +202,7 @@ child session 使用独立工作目录执行。当前支持：
 
 - parent agent 可以向当前 parent 名下的 running child session 或已启动 / blocked 且可恢复的 background child job 发送一条 durable steer prompt
 - prompt 通过 child session 的 `control/steer.jsonl` 进入现有 Live Steer 流程，最终以普通 user message 进入 child transcript，而不是引入第二套控制状态
-- 对 running child，`agent_prompt` 走 steer；对已 linked child 且 child session 为 `paused` / `awaiting_input` / `failed`、queue job 为 `blocked` 的可恢复 work，`agent_prompt` 可显式 continue 该 child 并把 prompt 作为 parent intervention 追加进去
+- 对 running child，`agent_prompt` 走 steer；对已 linked direct child，只要 session 为可恢复的 `paused` / `awaiting_input` / `failed` 即可显式 continue；对 background child 还要求 linked queue job 为 `blocked`。恢复 direct failed child 时必须先把它从 parent 的 failed terminal bucket 重新移入 unresolved，若本次 resume 又停在 paused/awaiting_input 则继续保持 unresolved，只有新的 completed/failed/cancelled terminal fact 才再次结算。budget pause 与 cancel-requested pause 仍走各自专用控制边界
 - 对 budget-paused child，普通 prompt 不足以恢复：parent 必须提供能解除已耗尽维度的 `budget_extension`。runtime 基于上一 attempt 的 remaining + extension 创建新 attempt，记录 previous/effective budget、parent、reason 和 audit event；未提供有效 extension 时明确拒绝
 - `interrupt` 默认 `false`，普通 parent prompt 只作为 durable steer 进入 child，避免抢占仍在自主探索的 sub-agent
 - 当 parent 明确发现 child 长时间重复 discovery、重复 read/grep/load_skill、范围漂移或需要立即交付当前证据时，可以显式传 `interrupt=true` 请求 best-effort 抢占

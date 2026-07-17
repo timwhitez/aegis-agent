@@ -829,6 +829,190 @@ func TestRunnerPromptAgentContinuesBlockedPausedQueueChild(t *testing.T) {
 	}
 }
 
+func TestRunnerPromptAgentContinuesDirectFailedThroughAwaitingInputUntilTerminal(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{"id":"resp_wait","status":"completed","output":[{"type":"function_call","call_id":"call_wait","name":"await_input","arguments":"{\"kind\":\"external_wait\",\"reason\":\"need another parent decision\",\"resume_condition\":\"parent prompts again\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_finish","status":"completed","output":[{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{\"message\":\"direct child done\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	cfg := testRuntimeConfig(t)
+	providerCfg := cfg.Providers["openai-compatible"]
+	providerCfg.BaseURL = server.URL
+	cfg.Providers["openai-compatible"] = providerCfg
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_direct_failed_awaiting_input_continue",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "recoverable provider failure", UpdatedAt: now}); err != nil {
+		t.Fatalf("create failed direct child: %v", err)
+	}
+	if err := addParentChildSession(runner.store, parentID, child.ID, parentWaitAll); err != nil {
+		t.Fatalf("link direct child: %v", err)
+	}
+	if err := resolveParentChildSession(runner.store, parentID, child.ID, session.StatusFailed); err != nil {
+		t.Fatalf("seed failed direct child coordination: %v", err)
+	}
+
+	first, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.ID,
+		Message:         "continue, but wait again if needed",
+	})
+	if err != nil || !first.Accepted || first.Behavior != "continued_failed_child" {
+		t.Fatalf("first direct failed resume: result=%#v err=%v", first, err)
+	}
+	state, err := runner.store.LoadState(child.ID)
+	if err != nil || state.Status != session.StatusAwaitingInput {
+		t.Fatalf("first resume should remain awaiting input: state=%#v err=%v", state, err)
+	}
+	coordination, err := runner.store.LoadParentCoordination(parentID)
+	if err != nil || !containsString(coordination.UnresolvedChildSessions, child.ID) || containsString(coordination.CompletedChildSessions, child.ID) || containsString(coordination.FailedChildSessions, child.ID) {
+		t.Fatalf("non-terminal direct resume must remain unresolved: coordination=%#v err=%v", coordination, err)
+	}
+
+	second, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		SessionID:       child.ID,
+		Message:         "finish now",
+	})
+	if err != nil || !second.Accepted || second.Behavior != "continued_awaiting_input_child" {
+		t.Fatalf("second direct awaiting-input resume: result=%#v err=%v", second, err)
+	}
+	state, err = runner.store.LoadState(child.ID)
+	if err != nil || state.Status != session.StatusCompleted {
+		t.Fatalf("second resume should complete: state=%#v err=%v", state, err)
+	}
+	coordination, err = runner.store.LoadParentCoordination(parentID)
+	if err != nil || containsString(coordination.UnresolvedChildSessions, child.ID) || !containsString(coordination.CompletedChildSessions, child.ID) {
+		t.Fatalf("terminal direct resume must resolve coordination: coordination=%#v err=%v", coordination, err)
+	}
+}
+
+func TestRunnerPromptAgentContinuesRecoverableDirectStates(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		status       string
+		pauseReason  string
+		wantBehavior string
+	}{
+		{name: "failed", status: session.StatusFailed, wantBehavior: "continued_failed_child"},
+		{name: "manual_stop", status: session.StatusPaused, pauseReason: "manual_stop", wantBehavior: "continued_parent_stopped_child"},
+		{name: "keyboard_interrupt", status: session.StatusPaused, pauseReason: "keyboard_interrupt", wantBehavior: "continued_paused_child"},
+		{name: "stale_owner", status: session.StatusPaused, pauseReason: "stale_owner_reconciled", wantBehavior: "continued_paused_child"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testRuntimeConfig(t)
+			runner := NewRunner(cfg)
+			parentID := createParentSession(t, runner.store, t.TempDir())
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			child := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               "child_direct_recoverable_" + tc.name,
+				CreatedAt:        now,
+				Workdir:          t.TempDir(),
+				RequestedWorkdir: t.TempDir(),
+				Mode:             session.ModeExec,
+				Provider:         "openai-compatible",
+				Model:            "gpt-5.4",
+				CompletionPolicy: session.CompletionPolicyAutonomous,
+				ParentSessionID:  parentID,
+				RootSessionID:    parentID,
+				Depth:            1,
+			}
+			state := session.State{Status: tc.status, Phase: "interrupt", PauseReason: tc.pauseReason, UpdatedAt: now}
+			if tc.status == session.StatusFailed {
+				state.Phase = "provider_call"
+				state.LastError = "recoverable provider failure"
+			}
+			if err := runner.store.Create(child, state); err != nil {
+				t.Fatalf("create recoverable direct child: %v", err)
+			}
+			if err := addParentChildSession(runner.store, parentID, child.ID, parentWaitAll); err != nil {
+				t.Fatalf("link direct child: %v", err)
+			}
+			result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+				ParentSessionID: parentID,
+				SessionID:       child.ID,
+				Message:         "recover and finish",
+			})
+			if err != nil || !result.Accepted || result.Behavior != tc.wantBehavior {
+				t.Fatalf("resume recoverable direct child: result=%#v err=%v", result, err)
+			}
+			state, err = runner.store.LoadState(child.ID)
+			if err != nil || state.Status != session.StatusCompleted {
+				t.Fatalf("recoverable direct child did not complete: state=%#v err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestRunnerPromptAgentRejectsTerminalAndCancelledPauseDirectStates(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      string
+		pauseReason string
+	}{
+		{name: "completed", status: session.StatusCompleted},
+		{name: "cancelled", status: session.StatusCancelled},
+		{name: "cancel_requested_pause", status: session.StatusPaused, pauseReason: agentCancelRequestedReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testRuntimeConfig(t)
+			runner := NewRunner(cfg)
+			parentID := createParentSession(t, runner.store, t.TempDir())
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			child := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               "child_direct_rejected_" + tc.name,
+				CreatedAt:        now,
+				Workdir:          t.TempDir(),
+				Mode:             session.ModeExec,
+				Provider:         "openai-compatible",
+				Model:            "gpt-5.4",
+				CompletionPolicy: session.CompletionPolicyAutonomous,
+				ParentSessionID:  parentID,
+				RootSessionID:    parentID,
+				Depth:            1,
+			}
+			if err := runner.store.Create(child, session.State{Status: tc.status, Phase: "interrupt", PauseReason: tc.pauseReason, UpdatedAt: now}); err != nil {
+				t.Fatalf("create rejected direct child: %v", err)
+			}
+			if err := addParentChildSession(runner.store, parentID, child.ID, parentWaitAll); err != nil {
+				t.Fatalf("link direct child: %v", err)
+			}
+			if result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+				ParentSessionID: parentID,
+				SessionID:       child.ID,
+				Message:         "must not resume",
+			}); err == nil {
+				t.Fatalf("expected direct state rejection, got %#v", result)
+			}
+		})
+	}
+}
+
 func TestRunnerPromptAgentRejectsOutsideParent(t *testing.T) {
 	cfg := testRuntimeConfig(t)
 	runner := NewRunner(cfg)
