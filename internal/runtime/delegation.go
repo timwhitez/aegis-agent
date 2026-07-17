@@ -736,10 +736,6 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 				}
 				behavior = "continued_previously_extended_child"
 			} else {
-				effectiveBudget, err = r.extendChildBudget(parentMeta.ID, childSessionID, queueJobID, state, *req.BudgetExtension)
-				if err != nil {
-					return tools.AgentPromptResult{}, err
-				}
 				behavior = "continued_budget_extended_child"
 			}
 			budgetResumeAuthorized = true
@@ -753,36 +749,54 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 				return tools.AgentPromptResult{}, fmt.Errorf("child session %s is %s and is not a blocked or parent-stopped session that agent_prompt can restart", childSessionID, state.Status)
 			}
 		}
-		var previousJob session.QueueJob
-		if strings.TrimSpace(queueJobID) != "" {
-			previousJob, err = r.markPromptedJobRunning(parentMeta.ID, queueJobID, childSessionID)
+		previousJob, directSlotReserved, err := r.acquirePromptedChildRunSlot(parentMeta, childSessionID, queueJobID)
+		if err != nil {
+			return tools.AgentPromptResult{}, err
+		}
+		stopHeartbeat := func() {}
+		if previousJob.ID != "" {
+			stopHeartbeat = r.startQueueJobHeartbeat(ctx, previousJob.ID)
+		}
+		if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && req.BudgetExtension != nil {
+			effectiveBudget, err = r.extendChildBudget(parentMeta.ID, childSessionID, queueJobID, state, *req.BudgetExtension)
 			if err != nil {
-				return tools.AgentPromptResult{}, err
+				stopHeartbeat()
+				return tools.AgentPromptResult{}, errors.Join(err, r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
 			}
 		}
 		childRunner := NewRunner(r.cfg)
 		childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
-		result, err := childRunner.Continue(ctx, ContinueRequest{
+		result, continueErr := childRunner.Continue(ctx, ContinueRequest{
 			SessionID:              childSessionID,
 			Message:                message,
 			Source:                 "agent",
 			BudgetExtensionApplied: budgetResumeAuthorized,
 		})
+		stopHeartbeat()
+		var settleErr error
+		if directSlotReserved {
+			settleErr = r.store.ReleaseDirectChildSlot(childSessionID)
+		}
 		if previousJob.ID != "" {
 			if result.SessionID != "" && result.Status != "" {
 				if reconcileErr := r.reconcilePromptedChildJob(parentMeta.ID, previousJob, result); reconcileErr != nil {
-					return tools.AgentPromptResult{}, errors.Join(err, reconcileErr)
+					settleErr = errors.Join(settleErr, reconcileErr)
 				}
-			} else if err != nil {
-				_ = r.store.SaveJob(previousJob)
+			} else {
+				if continueErr == nil {
+					continueErr = errors.New("child continue returned without a durable session result")
+				}
+				settleErr = errors.Join(settleErr, r.store.SaveJob(previousJob))
 			}
 		} else if result.SessionID != "" && result.Status != "" {
 			if reconcileErr := resolveParentChildSession(r.store, parentMeta.ID, result.SessionID, result.Status); reconcileErr != nil {
-				return tools.AgentPromptResult{}, errors.Join(err, reconcileErr)
+				settleErr = errors.Join(settleErr, reconcileErr)
 			}
+		} else if continueErr == nil {
+			continueErr = errors.New("child continue returned without a durable session result")
 		}
-		if err != nil {
-			return tools.AgentPromptResult{}, err
+		if continueErr = errors.Join(continueErr, settleErr); continueErr != nil {
+			return tools.AgentPromptResult{}, continueErr
 		}
 		if childMeta, loadErr := r.store.LoadMetadata(childSessionID); loadErr == nil {
 			effectiveBudget = session.CloneEffectiveBudget(childMeta.EffectiveBudget)
@@ -946,32 +960,50 @@ func (r *Runner) extendChildBudget(parentSessionID, childSessionID, queueJobID s
 	return next, nil
 }
 
-func (r *Runner) markPromptedJobRunning(parentSessionID, queueJobID, childSessionID string) (session.QueueJob, error) {
-	job, err := r.store.LoadJob(queueJobID)
+func (r *Runner) acquirePromptedChildRunSlot(parent session.SessionMetadata, childSessionID, queueJobID string) (session.QueueJob, bool, error) {
+	limit := r.cfg.Runtime.MultiAgent.MaxActiveChildren
+	if strings.TrimSpace(queueJobID) != "" {
+		previous, acquired, err := r.store.AcquireQueueChildResumeSlot(parent.ID, queueJobID, childSessionID, limit)
+		if err != nil {
+			return session.QueueJob{}, false, fmt.Errorf("acquire queue child resume slot for %s: %w", queueJobID, err)
+		}
+		if !acquired {
+			return session.QueueJob{}, false, fmt.Errorf("max active children reached: %d", limit)
+		}
+		return previous, false, nil
+	}
+	child, err := r.store.LoadMetadata(childSessionID)
 	if err != nil {
-		return session.QueueJob{}, err
+		return session.QueueJob{}, false, err
 	}
-	if strings.TrimSpace(job.ParentSessionID) != parentSessionID || strings.TrimSpace(job.SessionID) != childSessionID {
-		return session.QueueJob{}, fmt.Errorf("queue job %s is not linked to parent %s and child %s", job.ID, parentSessionID, childSessionID)
+	if strings.TrimSpace(child.ParentSessionID) != parent.ID {
+		return session.QueueJob{}, false, fmt.Errorf("child session %s is not linked to parent session %s", childSessionID, parent.ID)
 	}
-	if job.Status != session.QueueStatusBlocked {
-		return session.QueueJob{}, fmt.Errorf("queue job %s is %s and cannot be resumed by agent_prompt", job.ID, job.Status)
+	rootSessionID := strings.TrimSpace(child.RootSessionID)
+	if rootSessionID == "" {
+		rootSessionID = strings.TrimSpace(parent.RootSessionID)
 	}
-	previous := job
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job.Status = session.QueueStatusRunning
-	job.SessionStatus = session.StatusRunning
-	job.StopReason = ""
-	job.LastError = ""
-	job.ClaimedBy = "agent_prompt:" + parentSessionID
-	job.ClaimedAt = now
-	job.HeartbeatAt = now
-	job.WorkerPID = os.Getpid()
-	job.ProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), now)
-	if err := r.store.SaveJob(job); err != nil {
-		return session.QueueJob{}, err
+	if rootSessionID == "" {
+		rootSessionID = parent.ID
 	}
-	return previous, nil
+	acquired, err := r.store.AcquireDirectChildSlot(parent.ID, rootSessionID, childSessionID, limit)
+	if err != nil {
+		return session.QueueJob{}, false, err
+	}
+	if !acquired {
+		return session.QueueJob{}, false, fmt.Errorf("max active children reached: %d", limit)
+	}
+	return session.QueueJob{}, true, nil
+}
+
+func (r *Runner) releasePromptedChildRunSlot(childSessionID string, previousJob session.QueueJob, directSlotReserved bool) error {
+	if previousJob.ID != "" {
+		return r.store.SaveJob(previousJob)
+	}
+	if directSlotReserved {
+		return r.store.ReleaseDirectChildSlot(childSessionID)
+	}
+	return nil
 }
 
 func (r *Runner) reconcilePromptedChildJob(parentSessionID string, previous session.QueueJob, result RunResult) error {

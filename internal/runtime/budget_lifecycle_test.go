@@ -643,6 +643,7 @@ func TestForegroundBudgetPauseExtendResume(t *testing.T) {
 	providerCfg.BaseURL = server.URL
 	cfg.Providers["openai-compatible"] = providerCfg
 	cfg.Runtime.MaxTurnsHard = -1
+	cfg.Runtime.MultiAgent.MaxActiveChildren = 1
 	cfg.Runtime.ChildBudget.MaxTurnsPerAttempt = 1
 	runner := NewRunner(cfg)
 	parentID := createParentSession(t, runner.store, t.TempDir())
@@ -698,6 +699,146 @@ func TestForegroundBudgetPauseExtendResume(t *testing.T) {
 	if containsString(coordination.UnresolvedChildSessions, spawned.SessionID) || !containsString(coordination.CompletedChildSessions, spawned.SessionID) {
 		t.Fatalf("direct child completion did not release parent gate: %#v", coordination)
 	}
+	queued, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{ParentSessionID: parentID, Prompt: "verify direct resume slot released", IsolationMode: "off"})
+	if err != nil {
+		t.Fatalf("queue submit after direct resume: %v", err)
+	}
+	claimed, ok, err := runner.store.ClaimNextQueuedJobWithLimit(1)
+	if err != nil || !ok || claimed.ID != queued.ID {
+		t.Fatalf("direct resume slot was not released: ok=%t err=%v job=%#v", ok, err, claimed)
+	}
+}
+
+func TestPromptAgentResumeRespectsActiveChildCapWithoutMutatingBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		queueTarget bool
+	}{
+		{name: "running_queue_blocks_direct_resume"},
+		{name: "direct_reservation_blocks_queue_resume", queueTarget: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testRuntimeConfig(t)
+			cfg.Runtime.MultiAgent.MaxActiveChildren = 1
+			cfg.Runtime.MaxTurnsHard = -1
+			runner := NewRunner(cfg)
+			parentID := createParentSession(t, runner.store, t.TempDir())
+			now := time.Now().UTC()
+
+			if tc.queueTarget {
+				acquired, err := runner.store.AcquireDirectChildSlot(parentID, parentID, "occupying_direct_child", 1)
+				if err != nil || !acquired {
+					t.Fatalf("occupy direct child slot: acquired=%t err=%v", acquired, err)
+				}
+				t.Cleanup(func() { _ = runner.store.ReleaseDirectChildSlot("occupying_direct_child") })
+			} else {
+				occupier, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+					ParentSessionID: parentID,
+					Prompt:          "occupy queue child slot",
+					IsolationMode:   "off",
+				})
+				if err != nil {
+					t.Fatalf("submit occupying queue job: %v", err)
+				}
+				claimed, ok, err := runner.store.ClaimNextQueuedJobWithLimit(1)
+				if err != nil || !ok || claimed.ID != occupier.ID {
+					t.Fatalf("claim occupying queue job: ok=%t err=%v job=%#v", ok, err, claimed)
+				}
+			}
+
+			budget := session.NewEffectiveBudget(session.BudgetSourceRuntimeChild, 1, 0, 0, 0, now)
+			session.RefreshEffectiveBudget(budget, 1)
+			budget.Status = session.BudgetStatusExhausted
+			budget.LastReason = session.ChildBudgetTurnsExceededReason
+			childID := "capacity_paused_direct_child"
+			queueJobID := ""
+			if tc.queueTarget {
+				childID = "capacity_paused_queue_child"
+				queueJobID = "job_capacity_paused_queue_child"
+			}
+			child := session.SessionMetadata{
+				SchemaVersion:    1,
+				ID:               childID,
+				CreatedAt:        now.Format(time.RFC3339Nano),
+				Workdir:          t.TempDir(),
+				RequestedWorkdir: t.TempDir(),
+				Mode:             session.ModeExec,
+				Provider:         "openai-compatible",
+				Model:            "gpt-5.4",
+				CompletionPolicy: session.CompletionPolicyAutonomous,
+				ParentSessionID:  parentID,
+				RootSessionID:    parentID,
+				QueueJobID:       queueJobID,
+				Depth:            1,
+				EffectiveBudget:  session.CloneEffectiveBudget(budget),
+			}
+			state := session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: session.ChildBudgetTurnsExceededReason, Turn: 1, UpdatedAt: now.Format(time.RFC3339Nano)}
+			if err := runner.store.Create(child, state); err != nil {
+				t.Fatalf("create paused child: %v", err)
+			}
+			if tc.queueTarget {
+				job := session.QueueJob{
+					SchemaVersion:   1,
+					ID:              queueJobID,
+					CreatedAt:       now.Format(time.RFC3339Nano),
+					UpdatedAt:       now.Format(time.RFC3339Nano),
+					Status:          session.QueueStatusBlocked,
+					ParentSessionID: parentID,
+					RootSessionID:   parentID,
+					Prompt:          "resume queue target",
+					Mode:            session.ModeExec,
+					Background:      true,
+					SessionID:       childID,
+					SessionStatus:   session.StatusPaused,
+					LastError:       "child session is resumable: paused",
+					EffectiveBudget: session.CloneEffectiveBudget(budget),
+				}
+				if err := runner.store.SaveJob(job); err != nil {
+					t.Fatalf("save blocked queue target: %v", err)
+				}
+				if err := addParentQueueJob(runner.store, parentID, queueJobID, parentWaitAll); err != nil {
+					t.Fatalf("link queue target: %v", err)
+				}
+			} else if err := addParentChildSession(runner.store, parentID, childID, parentWaitAll); err != nil {
+				t.Fatalf("link direct target: %v", err)
+			}
+
+			_, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+				ParentSessionID: parentID,
+				SessionID:       childID,
+				QueueJobID:      queueJobID,
+				Message:         "resume only when capacity is available",
+				BudgetExtension: &session.BudgetExtension{AddTurns: 1, Reason: "capacity test"},
+			})
+			if err == nil || !strings.Contains(err.Error(), "max active children reached") {
+				t.Fatalf("expected resume capacity rejection, got %v", err)
+			}
+			after, err := runner.store.LoadMetadata(childID)
+			if err != nil {
+				t.Fatalf("reload paused child metadata: %v", err)
+			}
+			if after.EffectiveBudget == nil || after.EffectiveBudget.Attempt != 1 || after.EffectiveBudget.MaxTurnsPerAttempt != 1 || after.EffectiveBudget.Status != session.BudgetStatusExhausted {
+				t.Fatalf("capacity rejection mutated effective budget: %#v", after.EffectiveBudget)
+			}
+			state, err = runner.store.LoadState(childID)
+			if err != nil || state.Status != session.StatusPaused || state.PauseReason != session.ChildBudgetTurnsExceededReason {
+				t.Fatalf("capacity rejection changed child state: state=%#v err=%v", state, err)
+			}
+			if tc.queueTarget {
+				job, err := runner.store.LoadJob(queueJobID)
+				if err != nil || job.Status != session.QueueStatusBlocked || job.SessionStatus != session.StatusPaused {
+					t.Fatalf("capacity rejection changed queue target: job=%#v err=%v", job, err)
+				}
+			}
+			eventsList, err := runner.store.LoadEvents(childID)
+			if err != nil {
+				t.Fatalf("load child events: %v", err)
+			}
+			if countEventType(eventsList, "session.child_budget.extended") != 0 {
+				t.Fatalf("capacity rejection must not record budget extension: %#v", eventsList)
+			}
+		})
+	}
 }
 
 func TestBackgroundBudgetPauseExtendResumeAndCrossParentRejection(t *testing.T) {
@@ -744,6 +885,23 @@ func TestBackgroundBudgetPauseExtendResumeAndCrossParentRejection(t *testing.T) 
 		BudgetExtension: &session.BudgetExtension{AddTurns: 1},
 	}); err == nil || !strings.Contains(err.Error(), "not linked") {
 		t.Fatalf("cross-parent extension must be rejected, got %v", err)
+	}
+	if _, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+		ParentSessionID: parentID,
+		QueueJobID:      job.ID,
+		Message:         "invalid extension must roll back the resume slot",
+		BudgetExtension: &session.BudgetExtension{AddTurns: 1, ClearTurnLimit: true},
+	}); err == nil || !strings.Contains(err.Error(), "cannot add turns and clear") {
+		t.Fatalf("invalid extension must be rejected after safe slot rollback, got %v", err)
+	}
+	rolledBackJob, err := runner.store.LoadJob(job.ID)
+	if err != nil || rolledBackJob.Status != session.QueueStatusBlocked || rolledBackJob.SessionStatus != session.StatusPaused {
+		t.Fatalf("invalid extension did not restore blocked queue job: job=%#v err=%v", rolledBackJob, err)
+	}
+	assertQueueLeaseCleared(t, rolledBackJob)
+	rolledBackMeta, err := runner.store.LoadMetadata(processed.SessionID)
+	if err != nil || rolledBackMeta.EffectiveBudget == nil || rolledBackMeta.EffectiveBudget.Attempt != 1 || rolledBackMeta.EffectiveBudget.Status != session.BudgetStatusExhausted {
+		t.Fatalf("invalid extension mutated durable budget: budget=%#v err=%v", rolledBackMeta.EffectiveBudget, err)
 	}
 
 	mode.Store(1)

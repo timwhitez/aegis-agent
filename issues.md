@@ -88,7 +88,7 @@ worker 已经不再执行该 child，但 parent coordination 会把 job 当成�
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -112,6 +112,14 @@ worker 已经不再执行该 child，但 parent coordination 会把 job 当成�
 - 无容量时应保持原 paused/blocked 状态和 effective budget，不得先 extension 后启动；若 extension 已先持久化，失败必须可安全重试且不能造成 attempt/事件重复。
 - run 进入稳定非 running 状态后必须可靠释放 slot；异常退出由 owner liveness/reaper 回收。
 - 永久测试至少覆盖 direct-vs-queue、queue-vs-queue、多进程/多 goroutine 并发 resume、extension 后容量不足、取消与 resume 竞态。
+
+### Resolution and validation
+
+- direct resume 现在复用 durable direct-child reservation；blocked queue resume 通过新的 store 原子操作在 `claim.lock` 内检查 root-scoped queue + direct active 数量并执行 blocked -> running。
+- budget extension 延后到 slot 成功获取之后；容量不足时 child/job/budget/attempt/events 都保持不变。extension 自身失败会停止 heartbeat 并恢复原 blocked job/reservation，后续可安全重试。
+- queue resume 在运行期间刷新 lease heartbeat；direct/queue 在稳定 non-running outcome 释放 slot。相同 direct child 的并发 resume reservation 也被显式拒绝，避免在 cap 尚有余量时重复执行同一 session。
+- 永久回归覆盖 running queue vs direct resume、direct reservation vs queue resume、两个独立 Store/文件锁参与者的并发 queue resume、并发 direct duplicate resume、容量拒绝前 budget 不变、invalid extension rollback、successful direct release，以及 queue resume/cancel race 后 terminal settle 与 capacity release。
+- Validation: `go test ./internal/session ./internal/runtime -count=1 -timeout=300s`；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime -run 'TestConcurrentQueueResumeSlotsRespectActiveChildCap|TestConcurrentDirectResumeReservationRejectsDuplicateSession|TestPromptAgentResumeRespectsActiveChildCapWithoutMutatingBudget|TestForegroundBudgetPauseExtendResume|TestBackgroundBudgetPauseExtendResumeAndCrossParentRejection|TestStopAgentRacingQueueResumeSettlesCancelledAndReleasesSlot' -count=1 -timeout=180s`；`go vet ./internal/session ./internal/runtime`。
 
 ## LIFE-004 — A direct foreground child in `awaiting_input` or `failed` cannot be resumed by its parent
 

@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +27,6 @@ func (s *Store) AcquireDirectChildSlot(parentSessionID, rootSessionID, childSess
 	if err := validateStoreID("child session", childSessionID); err != nil {
 		return false, err
 	}
-	if maxActiveChildren <= 0 {
-		return true, nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureQueueDirs(); err != nil {
@@ -45,7 +43,13 @@ func (s *Store) AcquireDirectChildSlot(parentSessionID, rootSessionID, childSess
 		if err != nil {
 			return err
 		}
-		if activeByRoot[rootSessionID]+directByRoot[rootSessionID] >= maxActiveChildren {
+		path := filepath.Join(s.directChildReservationDir(), childSessionID+".json")
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("child session %s already has an active reservation", childSessionID)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if maxActiveChildren > 0 && activeByRoot[rootSessionID]+directByRoot[rootSessionID] >= maxActiveChildren {
 			return nil
 		}
 		now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -61,7 +65,6 @@ func (s *Store) AcquireDirectChildSlot(parentSessionID, rootSessionID, childSess
 		if err := validateChildRunReservation(reservation); err != nil {
 			return err
 		}
-		path := filepath.Join(s.directChildReservationDir(), childSessionID+".json")
 		if err := s.writeJSONFile(path, reservation); err != nil {
 			return err
 		}
@@ -69,6 +72,76 @@ func (s *Store) AcquireDirectChildSlot(parentSessionID, rootSessionID, childSess
 		return nil
 	})
 	return acquired, err
+}
+
+// AcquireQueueChildResumeSlot atomically moves one blocked queue job back to
+// running while reserving capacity under the same durable claim lock used by
+// new queue claims and direct-child reservations. The returned job is the
+// pre-resume snapshot used to roll back a failed pre-run transition.
+func (s *Store) AcquireQueueChildResumeSlot(parentSessionID, queueJobID, childSessionID string, maxActiveChildren int) (QueueJob, bool, error) {
+	if err := validateStoreID("parent session", parentSessionID); err != nil {
+		return QueueJob{}, false, err
+	}
+	if err := validateStoreID("queue job", queueJobID); err != nil {
+		return QueueJob{}, false, err
+	}
+	if err := validateStoreID("child session", childSessionID); err != nil {
+		return QueueJob{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return QueueJob{}, false, err
+	}
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
+	var previous QueueJob
+	acquired := false
+	err := s.withFileLock(lockPath, func() error {
+		job, err := s.loadQueueJobForCoordinationLocked(queueJobID)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(job.ParentSessionID) != parentSessionID || strings.TrimSpace(job.SessionID) != childSessionID {
+			return fmt.Errorf("queue job %s is not linked to parent %s and child %s", queueJobID, parentSessionID, childSessionID)
+		}
+		if job.Status != QueueStatusBlocked {
+			return fmt.Errorf("queue job %s is %s; only blocked jobs can acquire a resume slot", queueJobID, job.Status)
+		}
+		previous = job
+		rootSessionID := strings.TrimSpace(job.RootSessionID)
+		if rootSessionID == "" {
+			rootSessionID = parentSessionID
+		}
+		if maxActiveChildren > 0 {
+			activeByRoot, err := s.activeRunningQueueJobsByRootLocked()
+			if err != nil {
+				return err
+			}
+			directByRoot, err := s.activeDirectChildReservationsByRootLocked()
+			if err != nil {
+				return err
+			}
+			if activeByRoot[rootSessionID]+directByRoot[rootSessionID] >= maxActiveChildren {
+				return nil
+			}
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		job.Status = QueueStatusRunning
+		job.SessionStatus = StatusRunning
+		job.StopReason = ""
+		job.LastError = ""
+		job.ClaimedBy = "agent_prompt:" + parentSessionID
+		job.ClaimedAt = now
+		job.HeartbeatAt = now
+		job.WorkerPID = os.Getpid()
+		job.ProcessStartID = queueProcessStartID
+		if err := s.saveJobLocked(job); err != nil {
+			return err
+		}
+		acquired = true
+		return nil
+	})
+	return previous, acquired, err
 }
 
 func (s *Store) ReleaseDirectChildSlot(childSessionID string) error {
@@ -112,12 +185,18 @@ func (s *Store) activeDirectChildReservationsByRootLocked() (map[string]int, err
 			_ = os.Remove(path)
 			continue
 		}
+		createdAt, _ := time.Parse(time.RFC3339Nano, reservation.CreatedAt)
 		keep := hostProcessAlive(reservation.WorkerPID)
 		if state, stateErr := s.LoadState(reservation.SessionID); stateErr == nil {
-			keep = state.Status == StatusRunning
+			if state.Status != StatusRunning {
+				// Direct spawn/resume reserves capacity immediately before the
+				// session transitions to running. Keep that short provisional
+				// claim, but bound it so a failed pre-run path cannot leak forever.
+				keep = keep && now.Sub(createdAt) <= queueRunningStaleAfter
+			}
 		} else if !errors.Is(stateErr, os.ErrNotExist) {
 			return nil, stateErr
-		} else if createdAt, parseErr := time.Parse(time.RFC3339Nano, reservation.CreatedAt); parseErr != nil || now.Sub(createdAt) > queueRunningStaleAfter {
+		} else if now.Sub(createdAt) > queueRunningStaleAfter {
 			// A live process can survive a panic or failed pre-create path. Without a
 			// session fact, a reservation older than the queue stale window must not
 			// consume capacity forever.

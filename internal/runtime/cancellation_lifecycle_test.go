@@ -216,6 +216,108 @@ func TestStopAgentCancelsRunningQueueShellProcessGroup(t *testing.T) {
 	}
 }
 
+func TestStopAgentRacingQueueResumeSettlesCancelledAndReleasesSlot(t *testing.T) {
+	providerStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case <-providerStarted:
+		default:
+			close(providerStarted)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	cfg := cancellationRuntimeConfig(t, server.URL)
+	cfg.Runtime.MultiAgent.MaxActiveChildren = 1
+	runner := NewRunner(cfg)
+	parentID := createParentSession(t, runner.store, t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_resume_cancel_race",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeExec,
+		Provider:         "openai-compatible",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		QueueJobID:       "job_resume_cancel_race",
+		Depth:            1,
+	}
+	if err := runner.store.Create(child, session.State{Status: session.StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create paused child: %v", err)
+	}
+	job := session.QueueJob{
+		SchemaVersion:   1,
+		ID:              child.QueueJobID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusBlocked,
+		ParentSessionID: parentID,
+		RootSessionID:   parentID,
+		Prompt:          "resume then cancel",
+		Mode:            session.ModeExec,
+		Background:      true,
+		SessionID:       child.ID,
+		SessionStatus:   session.StatusPaused,
+		LastError:       "child session is resumable: paused",
+	}
+	if err := runner.store.SaveJob(job); err != nil {
+		t.Fatalf("save blocked job: %v", err)
+	}
+	if err := addParentQueueJob(runner.store, parentID, job.ID, parentWaitAll); err != nil {
+		t.Fatalf("link blocked job: %v", err)
+	}
+	type promptOutcome struct {
+		result tools.AgentPromptResult
+		err    error
+	}
+	promptDone := make(chan promptOutcome, 1)
+	go func() {
+		result, err := runner.PromptAgent(context.Background(), tools.AgentPromptRequest{
+			ParentSessionID: parentID,
+			QueueJobID:      job.ID,
+			Message:         "resume and wait",
+		})
+		promptDone <- promptOutcome{result: result, err: err}
+	}()
+	waitForTestSignal(t, providerStarted, 5*time.Second, "resumed queue provider call")
+	stopped, err := runner.StopAgent(context.Background(), tools.AgentStopRequest{ParentSessionID: parentID, QueueJobID: job.ID})
+	if err != nil || !stopped.Accepted || stopped.Status != session.StatusCancelled {
+		t.Fatalf("cancel resumed queue child: result=%#v err=%v", stopped, err)
+	}
+	var prompted promptOutcome
+	select {
+	case prompted = <-promptDone:
+	case <-time.After(6 * time.Second):
+		t.Fatal("queue resume did not settle after cancellation")
+	}
+	if prompted.err != nil || !prompted.result.Accepted {
+		t.Fatalf("unexpected queue prompt outcome after cancellation: %#v", prompted)
+	}
+	finalJob, err := runner.store.LoadJob(job.ID)
+	if err != nil || finalJob.Status != session.QueueStatusCancelled || finalJob.SessionStatus != session.StatusCancelled {
+		t.Fatalf("resume/cancel race did not settle queue job: job=%#v err=%v", finalJob, err)
+	}
+	assertQueueLeaseCleared(t, finalJob)
+	available, err := runner.store.AcquireDirectChildSlot(parentID, parentID, "child_after_resume_cancel", 1)
+	if err != nil || !available {
+		t.Fatalf("resume/cancel race leaked active child capacity: acquired=%t err=%v", available, err)
+	}
+	if err := runner.store.ReleaseDirectChildSlot("child_after_resume_cancel"); err != nil {
+		t.Fatalf("release post-race direct slot: %v", err)
+	}
+}
+
 func TestPreSessionCancelRequestSurvivesWorkerStartAndResolvesOnlyAtTerminalFact(t *testing.T) {
 	var providerCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

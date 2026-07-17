@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -153,6 +154,127 @@ func TestConcurrentQueueClaimsRespectActiveChildCap(t *testing.T) {
 	wg.Wait()
 	if len(claimedIDs) != 2 {
 		t.Fatalf("expected exactly two durable claims at cap=2, got %d: %#v", len(claimedIDs), claimedIDs)
+	}
+}
+
+func TestConcurrentQueueResumeSlotsRespectActiveChildCap(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStore(root)
+	stores := []*Store{store, NewStore(root)}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for i := 0; i < 2; i++ {
+		childID := fmt.Sprintf("child_resume_cap_%d", i)
+		job := QueueJob{
+			SchemaVersion:   1,
+			ID:              fmt.Sprintf("job_resume_cap_%d", i),
+			CreatedAt:       now,
+			UpdatedAt:       now,
+			Status:          QueueStatusBlocked,
+			ParentSessionID: "parent_resume_cap",
+			RootSessionID:   "root_resume_cap",
+			Prompt:          "resume queued work",
+			Mode:            ModeExec,
+			Background:      true,
+			SessionID:       childID,
+			SessionStatus:   StatusPaused,
+			LastError:       "child session is resumable: paused",
+		}
+		if err := store.SaveJob(job); err != nil {
+			t.Fatalf("save blocked job %d: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	acquiredIDs := map[string]struct{}{}
+	for i := 0; i < 2; i++ {
+		i := i
+		wg.Add(1)
+		go func(store *Store) {
+			defer wg.Done()
+			jobID := fmt.Sprintf("job_resume_cap_%d", i)
+			childID := fmt.Sprintf("child_resume_cap_%d", i)
+			_, acquired, err := store.AcquireQueueChildResumeSlot("parent_resume_cap", jobID, childID, 1)
+			if err != nil {
+				t.Errorf("acquire resume slot for %s: %v", jobID, err)
+				return
+			}
+			if acquired {
+				mu.Lock()
+				acquiredIDs[jobID] = struct{}{}
+				mu.Unlock()
+			}
+		}(stores[i])
+	}
+	wg.Wait()
+	if len(acquiredIDs) != 1 {
+		t.Fatalf("expected exactly one queue resume slot at cap=1, got %#v", acquiredIDs)
+	}
+	for i := 0; i < 2; i++ {
+		jobID := fmt.Sprintf("job_resume_cap_%d", i)
+		job, err := store.LoadJob(jobID)
+		if err != nil {
+			t.Fatalf("load queue resume candidate %s: %v", jobID, err)
+		}
+		_, acquired := acquiredIDs[jobID]
+		if acquired && job.Status != QueueStatusRunning {
+			t.Fatalf("acquired resume job must be running: %#v", job)
+		}
+		if !acquired && job.Status != QueueStatusBlocked {
+			t.Fatalf("capacity-rejected resume job must remain blocked: %#v", job)
+		}
+	}
+}
+
+func TestConcurrentDirectResumeReservationRejectsDuplicateSession(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	stores := []*Store{NewStore(root), NewStore(root)}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "child_direct_resume",
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  "parent_direct_resume",
+		RootSessionID:    "root_direct_resume",
+		Depth:            1,
+	}
+	if err := stores[0].Create(child, State{Status: StatusPaused, Phase: "interrupt", PauseReason: "manual_stop", UpdatedAt: now}); err != nil {
+		t.Fatalf("create paused direct child: %v", err)
+	}
+	type outcome struct {
+		acquired bool
+		err      error
+	}
+	results := make(chan outcome, len(stores))
+	var wg sync.WaitGroup
+	for _, store := range stores {
+		store := store
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			acquired, err := store.AcquireDirectChildSlot("parent_direct_resume", "root_direct_resume", "child_direct_resume", 4)
+			results <- outcome{acquired: acquired, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	acquiredCount := 0
+	duplicateRejected := false
+	for result := range results {
+		if result.acquired {
+			acquiredCount++
+		}
+		if result.err != nil && strings.Contains(result.err.Error(), "already has an active reservation") {
+			duplicateRejected = true
+		}
+	}
+	if acquiredCount != 1 || !duplicateRejected {
+		t.Fatalf("expected one direct resume owner and one duplicate rejection: acquired=%d duplicate_rejected=%t", acquiredCount, duplicateRejected)
 	}
 }
 
