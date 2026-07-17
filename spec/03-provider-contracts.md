@@ -373,6 +373,7 @@ adapter 至少要把 provider 错误归类为：
 - effective timeout policy 必须写入 session metadata，并在 continue / resume 时恢复
 - 所有请求必须接受 `context.Context`
 - 请求超时、等待响应头超时、stream idle 超时应归类为 `upstream_timeout`，并尽量填充 `timeout_kind`
+- adapter 必须先判断 caller-owned run context 是否已经结束：parent cancel、child budget deadline、manual interrupt 等上层取消必须原样返回 cancellation，并保留 runtime 可读取的 `context.Cause`，不能被 per-attempt request timeout 归类成 `upstream_timeout`，也不能进入 transport retry；只有 caller context 仍存活时触发的 provider-owned deadline 才属于 operation timeout
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，runtime 可按 `runtime.provider_auto_resume.max_attempts` 做有界自动续跑；超过预算后必须正常 failed
 - provider 返回 `max_tokens` / `max_output_tokens` 且有部分 assistant 输出时，runtime 可复用同一 `runtime.provider_auto_resume.max_attempts` 预算自动续跑；续跑前只持久化 assistant 部分输出和 harness reminder，不执行不完整响应里的 tool call；超过预算后必须正常 failed
 - cancel 后必须尽快返回，不能伪装成普通失败

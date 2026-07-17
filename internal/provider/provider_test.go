@@ -2181,6 +2181,49 @@ func TestJSONClientUsesPerAttemptRequestTimeout(t *testing.T) {
 	}
 }
 
+func TestJSONClientParentDeadlineCancelsWithoutRetry(t *testing.T) {
+	var attempts atomic.Int32
+	var retries atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	client := JSONClient{
+		Client:   server.Client(),
+		BaseURL:  server.URL,
+		Provider: "test-provider",
+		Retry: RetryConfig{
+			MaxAttempts:    2,
+			BaseDelay:      time.Millisecond,
+			RetryTransport: true,
+			RequestTimeout: time.Second,
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	var out map[string]any
+	err := client.DoJSON(ctx, http.MethodPost, "/", nil, map[string]any{"hello": "world"}, &out, func(eventType string, _ map[string]any) {
+		if eventType == "provider.retry" {
+			retries.Add(1)
+		}
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected parent deadline cancellation, got %T %v", err, err)
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		t.Fatalf("parent deadline must not be classified as provider timeout: %#v", httpErr)
+	}
+	if attempts.Load() != 1 || retries.Load() != 0 {
+		t.Fatalf("parent cancellation must not be retried: attempts=%d retries=%d", attempts.Load(), retries.Load())
+	}
+}
+
 func TestJSONClientClassifiesStreamIdleTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

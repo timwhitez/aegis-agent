@@ -62,6 +62,13 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		} else {
 			err = classifyTransportError(attemptCtx, providerName, err)
 		}
+		if err != nil && ctx != nil && ctx.Err() != nil {
+			// The caller-owned context is the authoritative cancellation
+			// boundary. A per-attempt timeout is a provider failure, but a
+			// parent cancellation must not be rewritten as upstream_timeout or
+			// retried by the transport layer.
+			err = ctx.Err()
+		}
 		cancelAttempt()
 		if err == nil {
 			return nil

@@ -136,10 +136,19 @@ func childBudgetReasonFromContext(ctx context.Context) string {
 }
 
 func isContextCancellation(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		// Adapter layers may normalize a cancelled request into a provider or
+		// operation error. Once the run context has ended, its durable cause
+		// takes precedence over that wrapper.
+		return true
+	}
 	if errors.Is(err, context.Canceled) {
 		return true
 	}
-	return errors.Is(err, context.DeadlineExceeded) && ctx != nil && ctx.Err() != nil
+	return false
 }
 
 func (r *childBudgetRun) finish(absoluteTurn int, exhaustedReason string) (*session.EffectiveBudget, error) {

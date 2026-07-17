@@ -334,6 +334,109 @@ func TestChildAbsoluteDeadlineCancelsProviderCall(t *testing.T) {
 	assertBudgetPauseReason(t, engine.store, result, session.ChildBudgetAbsoluteDeadlineExceededReason)
 }
 
+func TestChildBudgetReasonWinsWrappedProviderTimeout(t *testing.T) {
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.ProviderAutoResume.Enabled = false
+	cfg.Runtime.ChildBudget.MaxElapsedSec = 1
+	engine, meta, state, reg, hooks, catalog := childEngineWithConfig(t, cfg)
+	engine.cfg.Runtime.MaxTurnsHard = -1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "wait")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	fake := provider.NewFake(func(ctx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		<-ctx.Done()
+		return provider.TurnResult{}, &provider.HTTPError{
+			Provider:    "openai",
+			Class:       "upstream_timeout",
+			Message:     context.DeadlineExceeded.Error(),
+			TimeoutKind: "request_timeout",
+		}
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, reg, hooks)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	assertBudgetPauseReason(t, engine.store, result, session.ChildBudgetAbsoluteDeadlineExceededReason)
+	if countHarnessReminderSource(t, engine.store, meta.ID, "provider_auto_resume") != 0 {
+		t.Fatal("child budget cancellation must not add a provider auto-resume reminder")
+	}
+}
+
+func TestQueueChildAbsoluteDeadlineWinsRealHTTPProviderTimeoutMatrix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name           string
+		retryTransport bool
+		autoResume     bool
+	}{
+		{name: "retry_off_auto_resume_off"},
+		{name: "retry_on_auto_resume_off", retryTransport: true},
+		{name: "retry_off_auto_resume_on", autoResume: true},
+		{name: "retry_on_auto_resume_on", retryTransport: true, autoResume: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testRuntimeConfig(t)
+			providerCfg := cfg.Providers["openai-compatible"]
+			providerCfg.BaseURL = server.URL
+			providerCfg.RequestTimeoutSec = 30
+			providerCfg.Retry = config.Retry{
+				MaxAttempts:    1,
+				BaseDelayMS:    1,
+				RetryTransport: tc.retryTransport,
+			}
+			if tc.retryTransport {
+				providerCfg.Retry.MaxAttempts = 2
+			}
+			cfg.Providers["openai-compatible"] = providerCfg
+			cfg.Runtime.MaxTurnsHard = -1
+			cfg.Runtime.ProviderAutoResume.Enabled = tc.autoResume
+			cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+			cfg.Runtime.ChildBudget = config.ChildBudgetConfig{MaxElapsedSec: 1}
+			runner := NewRunner(cfg)
+			parentID := createParentSession(t, runner.store, t.TempDir())
+			job, err := runner.QueueSubmit(context.Background(), QueueSubmitRequest{
+				ParentSessionID: parentID,
+				Prompt:          "wait until the absolute budget expires",
+				IsolationMode:   "off",
+			})
+			if err != nil {
+				t.Fatalf("queue submit: %v", err)
+			}
+			processed, ok, err := runner.ProcessNextJob(context.Background())
+			if err != nil || !ok {
+				t.Fatalf("process queue child: ok=%t err=%v job=%#v", ok, err, processed)
+			}
+			if processed.ID != job.ID || processed.Status != session.QueueStatusBlocked || processed.SessionStatus != session.StatusPaused {
+				t.Fatalf("absolute deadline must block a paused child: %#v", processed)
+			}
+			state, err := runner.store.LoadState(processed.SessionID)
+			if err != nil {
+				t.Fatalf("load child state: %v", err)
+			}
+			if state.PauseReason != session.ChildBudgetAbsoluteDeadlineExceededReason {
+				t.Fatalf("unexpected child deadline result: %#v", state)
+			}
+			eventsList, err := runner.store.LoadEvents(processed.SessionID)
+			if err != nil {
+				t.Fatalf("load child events: %v", err)
+			}
+			if countEventType(eventsList, "provider.auto_resume") != 0 || countHarnessReminderSource(t, runner.store, processed.SessionID, "provider_auto_resume") != 0 {
+				t.Fatalf("child budget cancellation must bypass provider auto-resume: %#v", eventsList)
+			}
+		})
+	}
+}
+
 func TestChildActiveRuntimeDeadlineCancelsShellProcessGroup(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
@@ -385,6 +488,43 @@ func TestOperationDeadlineEarlierThanChildBudgetRemainsProviderFailure(t *testin
 	}
 	if persisted.Status != session.StatusFailed || session.IsChildBudgetPauseReason(persisted.PauseReason) {
 		t.Fatalf("operation timeout must not be rewritten as child budget pause: %#v", persisted)
+	}
+}
+
+func TestRealHTTPProviderTimeoutBeforeChildDeadlineRemainsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Runtime.GuardrailsMode = "standard"
+	cfg.Runtime.ProviderAutoResume.Enabled = false
+	cfg.Runtime.ChildBudget.MaxElapsedSec = 1
+	engine, meta, state, reg, hooks, catalog := childEngineWithConfig(t, cfg)
+	engine.cfg.Runtime.MaxTurnsHard = -1
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "provider timeout first")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	adapter := provider.NewOpenAIWithRetry(server.URL, "key", server.Client(), provider.RetryConfig{
+		MaxAttempts:    1,
+		RequestTimeout: 20 * time.Millisecond,
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, reg, hooks)
+	if err == nil {
+		t.Fatalf("expected provider timeout failure, got %#v", result)
+	}
+	persisted, loadErr := engine.store.LoadState(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load state: %v", loadErr)
+	}
+	if persisted.Status != session.StatusFailed || session.IsChildBudgetPauseReason(persisted.PauseReason) {
+		t.Fatalf("provider-owned timeout must win before child deadline: %#v", persisted)
 	}
 }
 
