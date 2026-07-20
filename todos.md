@@ -247,7 +247,7 @@ Completion record：
 - Tests：TDD 首轮因 estimator/snapshot/preflight 尚不存在而编译失败；实现后计划聚焦测试、wire body 逐字节 parity、main/semantic/probe 零调用拒绝、边界/旧配置/内容不落 snapshot、provider timeout/child budget/manual interrupt 分类回归，以及 `go test ./internal/provider ./internal/runtime ./internal/config -count=1 -timeout=240s` 全部通过；`gofmt -l` 与 scoped `git diff --check` 无输出。
 - CTX-003 remaining work：`CTX-003B pending`
 
-### [ ] TOOL-003 — 让 grep / grep_files 集合截断可观测
+### [x] TOOL-003 — 让 grep / grep_files 集合截断可观测
 
 - Issue：TOOL-003。
 - Priority：P1，前置低风险基础。
@@ -281,10 +281,10 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] exact-limit 无 overflow 不误报。
-- [ ] true overflow 返回可机读 metadata 和模型可见 narrowing 提示。
-- [ ] `truncated` 旧字段若保留，兼容语义已在 spec 写明；新代码不再让一个布尔值同时代表两种截断。
-- [ ] glob 现有行为不回退。
+- [x] exact-limit 无 overflow 不误报。
+- [x] true overflow 返回可机读 metadata 和模型可见 narrowing 提示。
+- [x] `truncated` 旧字段若保留，兼容语义已在 spec 写明；新代码不再让一个布尔值同时代表两种截断。
+- [x] glob 现有行为不回退。
 
 Validation：
 
@@ -304,9 +304,9 @@ Commit subject：`fix(tools): report grep result set overflow`
 
 Completion record：
 
-- Commit：`pending`
-- Tests：`pending`
-- TOOL-003 status：`pending`
+- Commit：本任务提交 `fix(tools): report grep result set overflow`。
+- Tests：TDD 红测确认旧实现缺少集合 metadata、在 exact-limit 提前停止且无法识别 true overflow；实现后 0/limit-1/limit/limit+1、cap、UTF-8 snippet、overflow sentinel、include/多目录/重复排序与 glob exact-limit 回归全部通过，`go test ./internal/tools -count=1 -timeout=180s` 通过；`gofmt -l` 与 scoped `git diff --check` 无输出。
+- TOOL-003 status：`complete`；TOOL-002B 后续补 byte budget、stop reason 与 continuation cursor。
 
 ---
 

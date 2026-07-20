@@ -138,6 +138,8 @@ v1 内置工具固定为：
 - 仅返回命中文件路径，不返回整段上下文
 - 用于先做便宜的候选文件发现，再配合 `read_file` 定点读取
 - 默认跳过常见构建产物、缓存目录和二进制文件
+- 实现必须按 stable walk order 收集 `effective_limit + 1` 个候选，只在确实存在第 `limit + 1` 项时返回 `has_more=true`；恰好等于 limit 不得误报不完整
+- metadata 固定包含 `returned_count`、原始 `requested_limit`（省略/非正数保持原值）、`effective_limit`、`has_more`、`limit_capped`、`truncated_snippet_count=0`。真实 overflow 时模型可见输出还要提示缩小 `path` / `include` / `pattern`
 
 ### 4.7 `grep`
 
@@ -149,6 +151,9 @@ v1 内置工具固定为：
 - 默认跳过常见构建产物、缓存目录和二进制文件
 - 命中文件内容读取必须复用 capped regular-file reader；超出 16 MiB 的单文件应跳过或返回受控错误，不得完整读入内存后再截断
 - 更适合“已经知道要找哪类证据，只差精确行号”的场景，而不是大范围初筛
+- 集合完整性与单条 snippet 裁剪是两个独立维度：同样按 stable walk/line order 收集 `effective_limit + 1`，只有第 `limit + 1` 项存在时 `has_more=true`；返回项正文被截短只增加 `truncated_snippet_count`，不得据此推断还有未返回匹配
+- metadata 固定包含 `returned_count`、`requested_limit`、`effective_limit`、`has_more`、`limit_capped`、`truncated_snippet_count`。兼容字段 `truncated` / `truncated_matching_lines` 只继续表示返回 snippet 被截短，不能表示 result-set overflow
+- 真实 overflow 时模型可见输出提示缩小 `path` / `include` / `pattern`；恰好等于 limit 时不添加该提示
 
 ### 4.8 `finish`
 
@@ -452,6 +457,7 @@ hook 可修改最终进入模型的内容，但必须留下 trace。
 - `load_skill` 可读取本地 skill
 - skill tool 能被 registry 注册
 - 越界路径被阻止
+- `grep` / `grep_files` 的 exact-limit 与 true-overflow 可区分，metadata 不把 snippet 截短和集合不完整混为同一布尔值
 - `todo_write` / `todo_read` 可稳定回放当前执行计划
 - `task_create` / `task_update` / `task_list` / `task_get` 可维护完整 task graph
 - `feature_list_create` / `feature_list_update` / `feature_list_read` 可维护 durable feature 状态

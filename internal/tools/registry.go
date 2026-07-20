@@ -1324,6 +1324,7 @@ func defGrep() Definition {
 			limit := normalizeGrepMatchesLimit(input.Limit)
 			var lines []string
 			truncatedLineCount := 0
+			hasMore := false
 			walkErr := filepath.Walk(root.path, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					if sameCleanPath(path, root.path) {
@@ -1362,12 +1363,13 @@ func defGrep() Definition {
 					}
 					if matched {
 						formatted, truncated := formatGrepMatchLine(root.displayBase, path, lineNo+1, line)
+						lines = append(lines, formatted)
+						if len(lines) > limit {
+							hasMore = true
+							return errGrepLimitReached
+						}
 						if truncated {
 							truncatedLineCount++
-						}
-						lines = append(lines, formatted)
-						if len(lines) >= limit {
-							return errGrepLimitReached
 						}
 					}
 				}
@@ -1376,14 +1378,17 @@ func defGrep() Definition {
 			if walkErr != nil && !errors.Is(walkErr, errGrepLimitReached) {
 				return errorResult("grep", walkErr), nil
 			}
+			if hasMore {
+				lines = lines[:limit]
+			}
 			output := strings.Join(lines, "\n")
 			if output == "" {
 				output = "(no matches)"
 			}
-			metadata := map[string]any{
-				"truncated":                truncatedLineCount > 0,
-				"truncated_matching_lines": truncatedLineCount,
-			}
+			output = appendSearchOverflowNotice(output, limit, hasMore)
+			metadata := searchResultMetadata(input.Limit, limit, len(lines), hasMore, truncatedLineCount)
+			metadata["truncated"] = truncatedLineCount > 0
+			metadata["truncated_matching_lines"] = truncatedLineCount
 			return session.ToolResult{Name: "grep", LLMOutput: output, DisplayOutput: output, Metadata: metadata}, nil
 		},
 	}
@@ -1446,12 +1451,14 @@ func defGrepFiles() Definition {
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
 			limit := normalizeGrepFilesLimit(input.Limit)
 			var matches []string
+			hasMore := false
 			err = walkTextSearchFiles(root.displayBase, root.path, input.Include, func(path string, data string) error {
 				if !textMatchesPattern(data, matcher, useRegex, input.Pattern) {
 					return nil
 				}
 				matches = append(matches, relativeOrAbsolute(root.displayBase, path))
-				if len(matches) >= limit {
+				if len(matches) > limit {
+					hasMore = true
 					return errGrepLimitReached
 				}
 				return nil
@@ -1459,11 +1466,16 @@ func defGrepFiles() Definition {
 			if err != nil && !errors.Is(err, errGrepLimitReached) {
 				return errorResult("grep_files", err), nil
 			}
+			if hasMore {
+				matches = matches[:limit]
+			}
 			output := strings.Join(matches, "\n")
 			if output == "" {
 				output = "(no matches)"
 			}
-			return session.ToolResult{Name: "grep_files", LLMOutput: output, DisplayOutput: output}, nil
+			output = appendSearchOverflowNotice(output, limit, hasMore)
+			metadata := searchResultMetadata(input.Limit, limit, len(matches), hasMore, 0)
+			return session.ToolResult{Name: "grep_files", LLMOutput: output, DisplayOutput: output, Metadata: metadata}, nil
 		},
 	}
 }
@@ -1987,6 +1999,24 @@ func normalizeGrepMatchesLimit(limit int) int {
 		return maxGrepMatches
 	}
 	return limit
+}
+
+func searchResultMetadata(requestedLimit, effectiveLimit, returnedCount int, hasMore bool, truncatedSnippetCount int) map[string]any {
+	return map[string]any{
+		"returned_count":          returnedCount,
+		"requested_limit":         requestedLimit,
+		"effective_limit":         effectiveLimit,
+		"has_more":                hasMore,
+		"limit_capped":            requestedLimit > effectiveLimit,
+		"truncated_snippet_count": truncatedSnippetCount,
+	}
+}
+
+func appendSearchOverflowNotice(output string, effectiveLimit int, hasMore bool) string {
+	if !hasMore {
+		return output
+	}
+	return output + fmt.Sprintf("\n[More matches exist beyond effective_limit=%d; narrow path, include, or pattern to retrieve a complete result set.]", effectiveLimit)
 }
 
 func walkTextSearchFiles(workdir, root, include string, fn func(path string, data string) error) error {

@@ -74,6 +74,7 @@
 - 永久回归必须覆盖真实 `read_file.path`、相同参数但不同结果、multi-call tool message、OpenAI/Anthropic/Google replay 以及 provider view 构造前后 durable log 一致性
 - compaction 字符 trigger 只负责决定何时压缩，不能作为最终 request fit 证明；CTX-003A correctness gate 要求 main/semantic-summary/probe 共用 adapter wire estimator、版本化 `RequestBudgetSnapshot` 与发送前 fail-closed 预检
 - 预算拒绝与预算观测必须来自同一 snapshot/公式；已知超窗不得进入 transport retry/auto-resume，semantic-summary 拒绝则回退确定性摘要
+- TOOL-003 completeness gate 要求 `grep` / `grep_files` 用 `effective_limit + 1` 识别真实集合 overflow，并把 `has_more` 与 snippet 文本截短分开；永久边界矩阵覆盖 exact-limit、cap、include、多目录、UTF-8 与重复排序
 
 ### 2.6 薄 provider 层
 

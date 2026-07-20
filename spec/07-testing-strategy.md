@@ -120,6 +120,9 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `todo_write` 允许多个 `in_progress` 并完整持久化
 - `task_create` / `task_update` 保持依赖边双向一致
 - task graph cycle 被拒绝
+- `grep` / `grep_files` 分别覆盖 0、limit-1、limit、limit+1；只在 limit+1 报 `has_more`
+- 请求 limit 超 cap 时 requested/effective/limit_capped 可观测；grep snippet 截短但集合完整时 `has_more=false`
+- include、多目录、UTF-8 snippet 与重复执行保持 deterministic ordering；`glob` 既有 exact-limit 行为不回退
 
 ### 4.2 Hooks
 

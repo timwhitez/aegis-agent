@@ -68,6 +68,69 @@ func containsString(items []string, target string) bool {
 	return false
 }
 
+func newSearchToolTestRegistry(t *testing.T) (*Registry, ExecContext, string) {
+	t.Helper()
+	cfg := config.Default()
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          workdir,
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create search tool test session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new search tool test registry: %v", err)
+	}
+	execCtx := ExecContext{
+		SessionID: meta.ID,
+		Workdir:   workdir,
+		Store:     store,
+		Config:    cfg,
+	}
+	return registry, execCtx, workdir
+}
+
+func assertSearchResultMetadata(t *testing.T, result session.ToolResult, returnedCount, requestedLimit, effectiveLimit int, hasMore, limitCapped bool, truncatedSnippetCount int) {
+	t.Helper()
+	want := map[string]any{
+		"returned_count":          returnedCount,
+		"requested_limit":         requestedLimit,
+		"effective_limit":         effectiveLimit,
+		"has_more":                hasMore,
+		"limit_capped":            limitCapped,
+		"truncated_snippet_count": truncatedSnippetCount,
+	}
+	for key, wantValue := range want {
+		if got := result.Metadata[key]; got != wantValue {
+			t.Errorf("metadata[%q]=%#v, want %#v; full metadata=%#v", key, got, wantValue, result.Metadata)
+		}
+	}
+}
+
+func countOutputLinesContaining(output, fragment string) int {
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if strings.Contains(line, fragment) {
+			count++
+		}
+	}
+	return count
+}
+
 type recordingControlPlane struct {
 	spawnCalls  int
 	spawnReq    AgentSpawnRequest
@@ -4658,6 +4721,154 @@ func TestGlobHonorsLimitAndReportsTruncation(t *testing.T) {
 	}
 }
 
+func TestGrepLimitBoundaryMetadata(t *testing.T) {
+	const limit = 3
+	for _, matchCount := range []int{0, limit - 1, limit, limit + 1} {
+		matchCount := matchCount
+		t.Run(fmt.Sprintf("matches_%d", matchCount), func(t *testing.T) {
+			registry, execCtx, workdir := newSearchToolTestRegistry(t)
+			var content strings.Builder
+			for i := 0; i < matchCount; i++ {
+				fmt.Fprintf(&content, "needle line %02d\n", i)
+			}
+			if matchCount == 0 {
+				content.WriteString("haystack only\n")
+			}
+			if err := os.WriteFile(filepath.Join(workdir, "matches.txt"), []byte(content.String()), 0o600); err != nil {
+				t.Fatalf("write grep fixture: %v", err)
+			}
+
+			result, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+				"pattern":"needle",
+				"path":".",
+				"include":"*.txt",
+				"limit":3
+			}`))
+			if err != nil {
+				t.Fatalf("grep: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("unexpected grep error result: %#v", result)
+			}
+			returnedCount := matchCount
+			if returnedCount > limit {
+				returnedCount = limit
+			}
+			hasMore := matchCount > limit
+			assertSearchResultMetadata(t, result, returnedCount, limit, limit, hasMore, false, 0)
+			if got := countOutputLinesContaining(result.DisplayOutput, ":needle line"); got != returnedCount {
+				t.Errorf("returned grep match lines=%d, want %d; output=%q", got, returnedCount, result.DisplayOutput)
+			}
+			if got := strings.Contains(result.LLMOutput, "narrow path, include, or pattern"); got != hasMore {
+				t.Errorf("overflow narrowing notice present=%v, want %v; output=%q", got, hasMore, result.LLMOutput)
+			}
+		})
+	}
+}
+
+func TestGrepFilesLimitBoundaryMetadata(t *testing.T) {
+	const limit = 3
+	for _, matchCount := range []int{0, limit - 1, limit, limit + 1} {
+		matchCount := matchCount
+		t.Run(fmt.Sprintf("matches_%d", matchCount), func(t *testing.T) {
+			registry, execCtx, workdir := newSearchToolTestRegistry(t)
+			for i := 0; i < matchCount; i++ {
+				path := filepath.Join(workdir, fmt.Sprintf("match-%02d.txt", i))
+				if err := os.WriteFile(path, []byte("needle\n"), 0o600); err != nil {
+					t.Fatalf("write grep_files fixture: %v", err)
+				}
+			}
+			if matchCount == 0 {
+				if err := os.WriteFile(filepath.Join(workdir, "haystack.txt"), []byte("no match\n"), 0o600); err != nil {
+					t.Fatalf("write nonmatching grep_files fixture: %v", err)
+				}
+			}
+
+			result, err := registry.Execute(context.Background(), "grep_files", execCtx, json.RawMessage(`{
+				"pattern":"needle",
+				"path":".",
+				"include":"*.txt",
+				"limit":3
+			}`))
+			if err != nil {
+				t.Fatalf("grep_files: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("unexpected grep_files error result: %#v", result)
+			}
+			returnedCount := matchCount
+			if returnedCount > limit {
+				returnedCount = limit
+			}
+			hasMore := matchCount > limit
+			assertSearchResultMetadata(t, result, returnedCount, limit, limit, hasMore, false, 0)
+			if got := countOutputLinesContaining(result.DisplayOutput, "match-"); got != returnedCount {
+				t.Errorf("returned grep_files paths=%d, want %d; output=%q", got, returnedCount, result.DisplayOutput)
+			}
+			if got := strings.Contains(result.LLMOutput, "narrow path, include, or pattern"); got != hasMore {
+				t.Errorf("overflow narrowing notice present=%v, want %v; output=%q", got, hasMore, result.LLMOutput)
+			}
+		})
+	}
+}
+
+func TestGrepAndGrepFilesOrderingAndIncludeAreDeterministic(t *testing.T) {
+	registry, execCtx, workdir := newSearchToolTestRegistry(t)
+	fixtures := map[string]string{
+		"a/01.txt": "needle alpha\n",
+		"a/02.go":  "needle skipped\n",
+		"b/01.txt": "needle bravo\n",
+		"b/02.txt": "needle charlie\n",
+	}
+	for name, content := range fixtures {
+		path := filepath.Join(workdir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir fixture parent for %s: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write fixture %s: %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		tool       string
+		wantOutput string
+	}{
+		{
+			name:       "grep",
+			tool:       "grep",
+			wantOutput: "a/01.txt:1:needle alpha\nb/01.txt:1:needle bravo\nb/02.txt:1:needle charlie",
+		},
+		{
+			name:       "grep_files",
+			tool:       "grep_files",
+			wantOutput: "a/01.txt\nb/01.txt\nb/02.txt",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := json.RawMessage(`{"pattern":"needle","path":".","include":"*.txt","limit":10}`)
+			first, err := registry.Execute(context.Background(), test.tool, execCtx, raw)
+			if err != nil {
+				t.Fatalf("first %s: %v", test.tool, err)
+			}
+			second, err := registry.Execute(context.Background(), test.tool, execCtx, raw)
+			if err != nil {
+				t.Fatalf("second %s: %v", test.tool, err)
+			}
+			if first.DisplayOutput != test.wantOutput {
+				t.Fatalf("%s ordered include output=%q, want %q", test.tool, first.DisplayOutput, test.wantOutput)
+			}
+			if second.DisplayOutput != first.DisplayOutput {
+				t.Fatalf("%s output changed across identical executions: first=%q second=%q", test.tool, first.DisplayOutput, second.DisplayOutput)
+			}
+			assertSearchResultMetadata(t, first, 3, 10, 10, false, false, 0)
+			assertSearchResultMetadata(t, second, 3, 10, 10, false, false, 0)
+		})
+	}
+}
+
 func TestGrepSkipsBuildArtifactsAndBinaryNoiseByDefault(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -4766,7 +4977,7 @@ func TestGrepTruncatesLongMatchingLines(t *testing.T) {
 	}
 	execCtx := ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}
 
-	longLine := "needle-" + strings.Repeat("x", maxGrepLineOutputBytes*4) + "-needle-tail"
+	longLine := "needle-\u4e2d\u6587\U0001f642-" + strings.Repeat("x", maxGrepLineOutputBytes*4) + "-needle-tail-\u7ed3\u5c3e"
 	if err := os.WriteFile(filepath.Join(workdir, "bundle.html"), []byte(longLine), 0o644); err != nil {
 		t.Fatalf("write bundle: %v", err)
 	}
@@ -4781,14 +4992,45 @@ func TestGrepTruncatesLongMatchingLines(t *testing.T) {
 	if result.Metadata["truncated"] != true || result.Metadata["truncated_matching_lines"] != 1 {
 		t.Fatalf("expected grep truncation metadata, got %#v", result.Metadata)
 	}
+	assertSearchResultMetadata(t, result, 1, 0, defaultGrepMatchesLimit, false, false, 1)
 	if !strings.Contains(result.DisplayOutput, "bundle.html:1:needle-") {
 		t.Fatalf("expected grep output to include path, line, and prefix, got %q", result.DisplayOutput)
 	}
-	if !strings.Contains(result.DisplayOutput, "[truncated:") || !strings.Contains(result.DisplayOutput, "needle-tail") {
+	if !strings.Contains(result.DisplayOutput, "[truncated:") || !strings.Contains(result.DisplayOutput, "needle-tail-\u7ed3\u5c3e") {
 		t.Fatalf("expected grep output to preserve truncation marker and tail, got %q", result.DisplayOutput)
+	}
+	if !utf8.ValidString(result.DisplayOutput) {
+		t.Fatalf("expected grep snippet truncation to preserve valid UTF-8, got %q", result.DisplayOutput)
+	}
+	if strings.Contains(result.LLMOutput, "narrow path, include, or pattern") {
+		t.Fatalf("did not expect result-set overflow notice for one truncated snippet, got %q", result.LLMOutput)
 	}
 	if len(result.DisplayOutput) > maxGrepLineOutputBytes+len("bundle.html:1:")+256 {
 		t.Fatalf("expected grep output to stay bounded, got %d bytes", len(result.DisplayOutput))
+	}
+}
+
+func TestGrepOverflowSentinelDoesNotCountSnippetTruncation(t *testing.T) {
+	registry, execCtx, workdir := newSearchToolTestRegistry(t)
+	content := "needle returned\nneedle-" + strings.Repeat("x", maxGrepLineOutputBytes*4) + "-overflow-only\n"
+	if err := os.WriteFile(filepath.Join(workdir, "matches.txt"), []byte(content), 0o600); err != nil {
+		t.Fatalf("write grep overflow sentinel fixture: %v", err)
+	}
+
+	result, err := registry.Execute(context.Background(), "grep", execCtx, json.RawMessage(`{
+		"pattern":"needle",
+		"path":"matches.txt",
+		"limit":1
+	}`))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	assertSearchResultMetadata(t, result, 1, 1, 1, true, false, 0)
+	if result.Metadata["truncated"] != false || result.Metadata["truncated_matching_lines"] != 0 {
+		t.Fatalf("overflow sentinel must not count as a returned truncated snippet: %#v", result.Metadata)
+	}
+	if strings.Contains(result.DisplayOutput, "overflow-only") {
+		t.Fatalf("overflow sentinel leaked into returned output: %q", result.DisplayOutput)
 	}
 }
 
@@ -5134,9 +5376,12 @@ func TestGrepFilesLimitIsCapped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep_files: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
-	if len(lines) != maxGrepFilesLimit {
-		t.Fatalf("expected grep_files to cap oversized limits at %d results, got %d results", maxGrepFilesLimit, len(lines))
+	if got := countOutputLinesContaining(result.DisplayOutput, "match-"); got != maxGrepFilesLimit {
+		t.Fatalf("expected grep_files to cap oversized limits at %d results, got %d results", maxGrepFilesLimit, got)
+	}
+	assertSearchResultMetadata(t, result, maxGrepFilesLimit, 1000000, maxGrepFilesLimit, true, true, 0)
+	if !strings.Contains(result.LLMOutput, "narrow path, include, or pattern") {
+		t.Fatalf("expected capped grep_files overflow notice, got %q", result.LLMOutput)
 	}
 	if strings.Contains(result.DisplayOutput, "match-200.txt") {
 		t.Fatalf("expected capped grep_files output not to include match-200.txt, got %q", result.DisplayOutput)
@@ -5191,10 +5436,10 @@ func TestGrepLimitIsHonoredAndCapped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected grep limit to return 3 matching lines, got %d: %q", len(lines), result.DisplayOutput)
+	if got := countOutputLinesContaining(result.DisplayOutput, ":needle line"); got != 3 {
+		t.Fatalf("expected grep limit to return 3 matching lines, got %d: %q", got, result.DisplayOutput)
 	}
+	assertSearchResultMetadata(t, result, 3, 3, 3, true, false, 0)
 	if strings.Contains(result.DisplayOutput, "needle line 003") {
 		t.Fatalf("expected grep small limit to stop before fourth match, got %q", result.DisplayOutput)
 	}
@@ -5208,10 +5453,10 @@ func TestGrepLimitIsHonoredAndCapped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grep capped: %v", err)
 	}
-	lines = strings.Split(strings.TrimSpace(result.DisplayOutput), "\n")
-	if len(lines) != maxGrepMatches {
-		t.Fatalf("expected grep oversized limit capped at %d matching lines, got %d", maxGrepMatches, len(lines))
+	if got := countOutputLinesContaining(result.DisplayOutput, ":needle line"); got != maxGrepMatches {
+		t.Fatalf("expected grep oversized limit capped at %d matching lines, got %d", maxGrepMatches, got)
 	}
+	assertSearchResultMetadata(t, result, maxGrepMatches, 1000000, maxGrepMatches, true, true, 0)
 	if strings.Contains(result.DisplayOutput, "needle line 200") {
 		t.Fatalf("expected capped grep output not to include match beyond cap, got %q", result.DisplayOutput)
 	}
