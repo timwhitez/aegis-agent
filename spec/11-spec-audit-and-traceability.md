@@ -75,6 +75,7 @@
 - CTX-001B marker 必须保留旧 call/result pair、retained call id、result hash、original bytes 与 source/artifact reference；缺 hash、canonicalization 失败、文件/grep 内容变化、error/success 或 complete/truncated 变化都 fail closed，重复 provider-view build 不得嵌套 marker
 - compaction 字符 trigger 只负责决定何时压缩，不能作为最终 request fit 证明；CTX-003A correctness gate 要求 main/semantic-summary/probe 共用 adapter wire estimator、版本化 `RequestBudgetSnapshot` 与发送前 fail-closed 预检
 - 预算拒绝与预算观测必须来自同一 snapshot/公式；已知超窗不得进入 transport retry/auto-resume，semantic-summary 拒绝则回退确定性摘要
+- CTX-003B hard-fit gate 要求 recoverable result pointer、oldest replay-safe tail、optional semantic summary、bounded deterministic summary 按固定顺序执行；每个 accepted action 的 adapter wire bytes 严格递减且总 pass 有常量上限。最新 external/steer/latest tool replay 与 tool schemas 不可静默删除，new/reused/deferred view 最终仍不 fit 时返回不含正文的 typed `request_budget_unfit`
 - TOOL-003 completeness gate 要求 `grep` / `grep_files` 用 `effective_limit + 1` 识别真实集合 overflow，并把 `has_more` 与 snippet 文本截短分开；永久边界矩阵覆盖 exact-limit、cap、include、多目录、UTF-8 与重复排序
 - TOOL-002A durability gate 要求所有 ToolResult 在 `tool.after` 后、event/message 前走 versioned finalizer；session Store 通过文件锁、目录重建、owner-only/no-symlink 与三维 quota 保存原始 LLM output，child sync/background handoff 使用相同预算且 partial artifact 不得冒充 Full output
 - TOOL-002B recovery gate 要求 read_file byte mode 仅复用 no-symlink range reader并返回 UTF-8-safe next offset；grep/grep_files/glob 用 schema v1、query-bound、checksum-protected cursor，在完整 record/footer 边界同时执行 count/byte budget，current-view 语义与 typed failures 可观测

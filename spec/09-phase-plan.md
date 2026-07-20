@@ -214,7 +214,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
 - optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
 - context correctness stop-loss：永久移除按 tool 参数执行的通用 message-level 结果去重；只允许 `read_file` / `grep` / `grep_files` / `glob` 在 canonical arguments、版本化结果 hash、完整语义与三 provider replay 都证明等价时做单-`ToolResult` provider-view 去重，其余结果继续只使用 micro/full compaction
-- provider request hard-fit Phase A：main/semantic-summary/probe 调用共享 adapter wire estimator 和版本化预算快照，已知超窗本地 fail closed；Phase B 再加入严格递减、有界轮数的自动收缩
+- provider request hard-fit：main/semantic-summary/probe 调用共享 adapter wire estimator 和版本化预算快照；main 初始超窗后按 recoverable result pointer、oldest replay-safe tail、optional semantic summary、bounded deterministic summary 的固定顺序有界收缩，每个 accepted action 的 wire bytes 严格递减。最终仍不 fit 返回 typed `request_budget_unfit`，不调用 provider、不裁 tool schema、不进入 transport retry/auto-resume
 
 验收补充：
 

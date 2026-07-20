@@ -164,14 +164,16 @@
 
 - 在每次 main、semantic-summary 和 probe provider 请求真正发送前，要求 adapter 用发送路径共享的 wire-body builder 生成版本化尺寸估算
 - 生成不含 prompt、tool schema 正文或 credential 的 `RequestBudgetSnapshot`，记录 request kind、session/turn/request correlation、provider/model、system/messages/tools/metadata 的数量与尺寸、inline/compacted/pointerized ToolResult count/bytes、wire body bytes、估算 input tokens、output reserve、safety headroom、effective context window、剩余 headroom、compaction action/summary id 与 fit 结果
-- 对已知超窗请求返回 typed local `request_budget_exceeded`；拒绝发生在 transport/retry 之前，不允许先向 provider “试发一次”
+- 对初始超窗的 main/provider view 进入确定性 hard-fit 收缩；每次候选变换都重新调用同一 adapter estimator，只有 wire bytes 严格下降的变换才可提交。最终仍不 fit 时返回 typed local `request_budget_unfit`，拒绝发生在 transport/retry 之前，不允许先向 provider “试发一次”
 - estimator 缺失或 wire body 无法编码时 fail closed；内置 OpenAI、Anthropic、Google、fake adapter 都必须实现 estimator，测试/第三方 adapter 不得静默跳过
 - main 请求拒绝时写 `provider.request.prepared(fit=false)`、budget/rejected 事件并按 provider-call failure 收敛；semantic-summary 拒绝只让语义摘要回退到确定性 baseline
 
 边界：
 
-- Phase A 只负责单次最终预检与拒绝；pointerize、recent-tail 收缩和多轮 hard-fit 属于后续 Phase B
-- `provider.call` 只能在 snapshot `fit=true`、prepared event 已落盘且 pause gate 已通过后发出，避免把本地拒绝记成已发送调用
+- hard-fit 顺序固定为：复用已完成的 safe dedup/current-result/micro/full compaction；pointerize 有完整 session artifact 或可由原 call/path/range/current-view cursor 恢复的 result；从最老可丢 message/replay 闭包缩短 recent tail；删除 optional semantic summary 并把 deterministic summary 缩到 current goal/open items/key paths/latest external/latest steer/transcript reference
+- 最新 external user instruction、最新 steer、最新 tool result 及其合法 replay 依赖是不可静默删除边界；tool schemas 也不能为 fit 临时裁掉。某个不可丢 component 单体或最终最小视图仍超窗时，`request_budget_unfit` 只报告 request kind、blocking component、estimated/available/reserved 数值，不包含 prompt/tool 正文
+- 收缩 pass 有固定上限，已提交 action 的 adapter wire bytes 必须严格递减；每个 action 以 request id/kind 关联 before/after estimate 和受影响的 message/tool-call id/count，不记录内容正文
+- `provider.call` 只能在最终 snapshot `fit=true`、prepared event 已落盘且 pause gate 已通过后发出，避免把本地拒绝记成已发送调用；local unfit 不进入 provider transport retry、auto-resume 或 max-token resume
 
 ### 2.12 SessionContractManager
 

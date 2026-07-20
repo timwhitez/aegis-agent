@@ -40,10 +40,13 @@ func recordProviderFailure(store *session.Store, meta session.SessionMetadata, t
 		attempt.StatusCode = httpErr.StatusCode
 	} else {
 		var budgetErr *RequestBudgetExceededError
+		var unfitErr *RequestBudgetUnfitError
 		var preflightErr *RequestBudgetPreflightError
 		switch {
 		case errors.As(err, &budgetErr):
 			attempt.ErrorClass = budgetErr.Code
+		case errors.As(err, &unfitErr):
+			attempt.ErrorClass = unfitErr.Code
 		case errors.As(err, &preflightErr):
 			attempt.ErrorClass = preflightErr.Code
 		}

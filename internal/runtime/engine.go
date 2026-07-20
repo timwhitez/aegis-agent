@@ -160,7 +160,7 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			PromptCache:      meta.ProviderOptions.PromptCache,
 			Store:            meta.ProviderOptions.Store,
 		}
-		snapshot, budgetErr := preflightProviderRequest(adapter, req, requestBudgetPolicy{
+		fitted, budgetErr := fitProviderRequestToBudget(adapter, req, requestBudgetPolicy{
 			EffectiveWindowTokens: profile.ContextWindowTokens,
 			UtilizationFactor:     profile.UtilizationFactor,
 		}, requestBudgetContext{
@@ -168,7 +168,12 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			SessionID:        meta.ID,
 			Turn:             turn,
 			CompactionAction: "semantic_summary",
-		})
+		}, e.cfg)
+		req = fitted.Request
+		snapshot := fitted.Snapshot
+		if err := e.appendProviderRequestBudgetActions(meta.ID, "compact", snapshot, fitted.Actions); err != nil {
+			return "", fmt.Errorf("record semantic-summary provider request budget actions: %w", err)
+		}
 		if err := e.appendEvent(meta.ID, "provider.request.prepared", "compact", providerRequestPreparedEventData(meta, nil, snapshot)); err != nil {
 			return "", fmt.Errorf("record semantic-summary provider.request.prepared event: %w", err)
 		}
@@ -518,7 +523,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			PromptCache:      meta.ProviderOptions.PromptCache,
 			Store:            meta.ProviderOptions.Store,
 		}
-		snapshot, budgetErr := preflightProviderRequest(adapter, turnRequest, requestBudgetPolicy{
+		fitted, budgetErr := fitProviderRequestToBudget(adapter, turnRequest, requestBudgetPolicy{
 			EffectiveWindowTokens: compactionProfile.ContextWindowTokens,
 			UtilizationFactor:     compactionProfile.UtilizationFactor,
 		}, requestBudgetContext{
@@ -528,7 +533,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			RequestSequence:   state.ProviderAutoResumeCount + state.ProviderMaxTokensResumeCount,
 			CompactionAction:  providerView.CompactionAction,
 			CompactionSummary: providerView.CompactionSummary,
-		})
+		}, e.cfg)
+		turnRequest = fitted.Request
+		snapshot := fitted.Snapshot
+		if err := e.appendProviderRequestBudgetActions(meta.ID, state.Phase, snapshot, fitted.Actions); err != nil {
+			return RunResult{}, fmt.Errorf("record provider request budget actions: %w", err)
+		}
 		if err := e.appendEvent(meta.ID, "provider.request.prepared", state.Phase, providerRequestPreparedEventData(meta, requestMetadata, snapshot)); err != nil {
 			return RunResult{}, fmt.Errorf("record provider.request.prepared event: %w", err)
 		}

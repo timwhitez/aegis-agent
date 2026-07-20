@@ -2254,12 +2254,14 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
 		Store:            defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
 	}
-	if _, err := preflightProviderRequest(adapter, turnRequest, newRequestBudgetPolicy(model, providerCfg.ContextWindowTokens, r.cfg.Runtime.Compact.UtilizationFactor), requestBudgetContext{
+	fitted, err := fitProviderRequestToBudget(adapter, turnRequest, newRequestBudgetPolicy(model, providerCfg.ContextWindowTokens, r.cfg.Runtime.Compact.UtilizationFactor), requestBudgetContext{
 		RequestKind: requestKindProbe,
 		SessionID:   "probe",
-	}); err != nil {
+	}, r.cfg)
+	if err != nil {
 		return ProbeResult{}, WrapProviderError(err)
 	}
+	turnRequest = fitted.Request
 	result, err := adapter.RunTurn(ctx, turnRequest, func(string, map[string]any) {})
 	if err != nil {
 		return ProbeResult{}, WrapProviderError(err)

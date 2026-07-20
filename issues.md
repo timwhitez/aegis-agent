@@ -167,7 +167,7 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 
 - Severity: P0
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -207,6 +207,15 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 - 单个最新外部指令本身过大、单个最新 tool result 过大、tool schemas 过大、summary 过大时，都有稳定错误或可恢复 pointer 路径。
 - OpenAI、Anthropic、Google 的 multi-tool replay hard-fit 回归验证协议完整性。
 - 固定 fixture 比较本地估算与真实 usage.input_tokens；允许记录误差，但不得在已知估算超窗时继续调用 provider。
+
+### Resolution
+
+- main、semantic-summary 与 probe 现在统一通过 adapter 的真实 wire estimator；main 在 `RunTurn` 前执行 provider-view clone-only hard-fit，最终 snapshot `fit=true` 才会写 prepared/call 路径
+- hard-fit 以固定 `256` pass 为上限，按 complete artifact/current-view read-only source pointer、最老 replay closure、optional semantic summary、bounded deterministic core 的顺序收缩；每个已提交 action 的 wire body bytes 都经过重新估算并严格下降
+- 最新 external instruction、最新 steer、最新 ToolResult replay closure、system prompt、tool schemas 与 metadata/envelope 不会被静默删除；无法满足时返回不含正文的 typed `request_budget_unfit`，并记录 estimated/available/reserved/effective-window 与 blocking component
+- `provider.request.budget_action`、最终 `provider.request.prepared`、local rejection 和 provider attempt 复用同一 request id/snapshot；local unfit 不进入 transport retry、auto-resume、max-token resume 或 provider HTTP/fake call
+- 永久回归覆盖 complete/source pointer、partial artifact fail-closed、replay-safe tail、semantic/deterministic summary、full/reused/deferred view、固定 pass/幂等、durable message 不变、system/schema/metadata/latest user/latest tool/summary component error，以及 OpenAI/Anthropic/Google multi-call replay
+- Resolution commit：本任务提交 `feat(runtime): shrink provider views to a hard request budget`
 
 ### Non-goals
 

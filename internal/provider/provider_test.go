@@ -1879,34 +1879,38 @@ func TestProviderReplayPreservesSameArgumentsWithDistinctToolResults(t *testing.
 
 func TestWireEstimateMatchesActuallySentBody(t *testing.T) {
 	tests := []struct {
-		name       string
-		newAdapter func(string, *http.Client) Adapter
-		buildBody  func(TurnRequest) (map[string]any, error)
-		response   string
+		name                string
+		newAdapter          func(string, *http.Client) Adapter
+		buildBody           func(TurnRequest) (map[string]any, error)
+		response            string
+		reportedInputTokens int
 	}{
 		{
 			name: "openai",
 			newAdapter: func(baseURL string, client *http.Client) Adapter {
 				return NewOpenAI(baseURL, "key", client)
 			},
-			buildBody: func(req TurnRequest) (map[string]any, error) { return buildOpenAIRequestBody(req, true) },
-			response:  `{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			buildBody:           func(req TurnRequest) (map[string]any, error) { return buildOpenAIRequestBody(req, true) },
+			response:            `{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			reportedInputTokens: 1,
 		},
 		{
 			name: "anthropic",
 			newAdapter: func(baseURL string, client *http.Client) Adapter {
 				return NewAnthropic(baseURL, "key", "2023-06-01", client)
 			},
-			buildBody: buildAnthropicRequestBody,
-			response:  `{"id":"msg_1","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			buildBody:           buildAnthropicRequestBody,
+			response:            `{"id":"msg_1","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+			reportedInputTokens: 1,
 		},
 		{
 			name: "google",
 			newAdapter: func(baseURL string, client *http.Client) Adapter {
 				return NewGoogle(baseURL, "key", client)
 			},
-			buildBody: buildGoogleRequestBody,
-			response:  `{"responseId":"resp_1","candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`,
+			buildBody:           buildGoogleRequestBody,
+			response:            `{"responseId":"resp_1","candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`,
+			reportedInputTokens: 1,
 		},
 	}
 
@@ -1945,7 +1949,8 @@ func TestWireEstimateMatchesActuallySentBody(t *testing.T) {
 			if err != nil {
 				t.Fatalf("estimate request: %v", err)
 			}
-			if _, err := adapter.RunTurn(context.Background(), req, func(string, map[string]any) {}); err != nil {
+			result, err := adapter.RunTurn(context.Background(), req, func(string, map[string]any) {})
+			if err != nil {
 				t.Fatalf("run turn: %v", err)
 			}
 			if estimate.SchemaVersion != wireRequestEstimateSchemaVersion {
@@ -1967,6 +1972,16 @@ func TestWireEstimateMatchesActuallySentBody(t *testing.T) {
 			}
 			if estimate.EstimatedInputTokens != (len(captured)+3)/4 {
 				t.Fatalf("unexpected token approximation: %#v", estimate)
+			}
+			if result.Usage.InputTokens != tc.reportedInputTokens {
+				t.Fatalf("provider usage/input estimate fixture drift: estimate=%d reported=%d result=%#v", estimate.EstimatedInputTokens, tc.reportedInputTokens, result.Usage)
+			}
+			// The v1 estimate deliberately approximates tokens from exact wire
+			// bytes. Keep the observed provider-token delta explicit in this
+			// fixture without treating the mocked usage as an exact tokenizer.
+			estimateDelta := estimate.EstimatedInputTokens - result.Usage.InputTokens
+			if estimateDelta != (len(captured)+3)/4-tc.reportedInputTokens {
+				t.Fatalf("unexpected estimate/provider usage delta: %d", estimateDelta)
 			}
 		})
 	}

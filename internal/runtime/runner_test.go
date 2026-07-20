@@ -263,11 +263,11 @@ func TestProbeRequestBudgetRejectsBeforeHTTPCall(t *testing.T) {
 	t.Setenv("PROBE_BUDGET_API_KEY", "test-key")
 
 	_, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "probe-budget"})
-	var budgetErr *RequestBudgetExceededError
+	var budgetErr *RequestBudgetUnfitError
 	if !errors.As(err, &budgetErr) {
 		t.Fatalf("expected typed probe budget error, got %v", err)
 	}
-	if budgetErr.Snapshot.RequestKind != requestKindProbe || calls != 0 {
+	if budgetErr.RequestKind != requestKindProbe || budgetErr.Snapshot.RequestKind != requestKindProbe || calls != 0 {
 		t.Fatalf("probe preflight did not fail before HTTP: snapshot=%#v calls=%d", budgetErr.Snapshot, calls)
 	}
 }

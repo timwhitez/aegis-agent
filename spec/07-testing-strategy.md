@@ -206,6 +206,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - todo 与 task graph 不因 compaction 丢失
 - main 与 semantic-summary 请求都生成版本化 request budget snapshot；semantic-summary 不 fit 时确定性 compaction 仍成功
 - 已知估算超窗在本地拒绝，fake/httptest provider 调用计数保持 0；刚好等于预算可发送，超过一个 token 单位拒绝
+- hard-fit 分别构造 recoverable current/old tool payload、oldest tail、new/reused/deferred compaction view、semantic summary 与 deterministic summary；每个 accepted action 的 adapter wire bytes 严格递减、pass 不超过固定上限、第二次执行结果稳定
+- tail fixture 同时保留最新 external user message、较早但最新的 steer、最新 tool result 与 ToolCallID/ProviderCallID replay closure；OpenAI、Anthropic、Google multi-call 编码在 pointer/删尾后都无 dangling pair
+- system、tool schemas、metadata/provider envelope、不可恢复最新 tool result、最新 external instruction 和最小 deterministic summary 的单体/组合超限分别返回 typed `request_budget_unfit`；blocking component 与 estimated/available/reserved 数值稳定且事件/错误中不出现正文 sentinel
+- main local unfit 的 fake/HTTP provider、transport retry、provider auto-resume 与 max-token resume 调用/事件计数均为 0；semantic-summary unfit 继续生成 transcript 与 deterministic summary
 
 ### 4.6 Providers
 

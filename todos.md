@@ -245,7 +245,7 @@ Completion record：
 - Commit：本任务提交 `feat(runtime): fail closed on oversized provider requests`。
 - Snapshot schema version：`1`；wire estimate schema version 同为 `1`。
 - Tests：TDD 首轮因 estimator/snapshot/preflight 尚不存在而编译失败；实现后计划聚焦测试、wire body 逐字节 parity、main/semantic/probe 零调用拒绝、边界/旧配置/内容不落 snapshot、provider timeout/child budget/manual interrupt 分类回归，以及 `go test ./internal/provider ./internal/runtime ./internal/config -count=1 -timeout=240s` 全部通过；`gofmt -l` 与 scoped `git diff --check` 无输出。
-- CTX-003 remaining work：`CTX-003B pending`
+- CTX-003 remaining work：`none`；CTX-003B 已完成并关闭该 issue。
 
 ### [x] TOOL-003 — 让 grep / grep_files 集合截断可观测
 
@@ -699,7 +699,7 @@ Completion record：
 - Tests：TDD 首轮因 `CanonicalReadOnlyToolArguments` 与 `deduplicateIdenticalReadOnlyToolResults` 尚不存在而按预期编译失败；实现后 canonical/default/cap、result hash、同/异结果、真实文件与 grep 变化、error/final、artifact 完整性、mixed batch、三 provider replay、durable log 与幂等永久回归通过。计划聚焦命令、三包完整回归、对应 `-race`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`gofmt -l`、`git diff --check`、Web JS syntax 与 140 项 Web utility 测试全部通过；未启动 Docker。
 - CTX-001 status：`complete`；CTX-001A stop-loss 与 CTX-001B 安全重实现共同关闭该 issue。
 
-### [ ] CTX-003B — 增加有界 hard-fit 收缩循环与不可满足错误
+### [x] CTX-003B — 增加有界 hard-fit 收缩循环与不可满足错误
 
 - Issue：CTX-003 最终关闭。
 - Priority：P0 completion gate。
@@ -735,6 +735,8 @@ Implementation files：
 - `internal/runtime/compaction_test.go`
 - `internal/runtime/engine.go`
 - `internal/runtime/engine_test.go`
+- `internal/runtime/runner.go`
+- `internal/runtime/runner_test.go`
 - `internal/provider/provider_test.go`
 
 Permanent tests：
@@ -748,11 +750,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 代码中所有 main provider call 的唯一前置条件是最终 snapshot `fit=true`。
-- [ ] 任何 compaction 返回 view 都会再次测量，不存在“一次 compact 后直接发送”。
-- [ ] 收缩循环有固定最大步数与严格进度断言。
-- [ ] 不可满足错误包含 request_kind、blocking component、estimated/available/reserved 数值，不含 prompt 原文。
-- [ ] provider retry/auto-resume 不处理 local unfit error。
+- [x] 代码中所有 main provider call 的唯一前置条件是最终 snapshot `fit=true`。
+- [x] 任何 compaction 返回 view 都会再次测量，不存在“一次 compact 后直接发送”。
+- [x] 收缩循环有固定最大步数与严格进度断言。
+- [x] 不可满足错误包含 request_kind、blocking component、estimated/available/reserved 数值，不含 prompt 原文。
+- [x] provider retry/auto-resume 不处理 local unfit error。
 
 Validation：
 
@@ -776,10 +778,10 @@ Commit subject：`feat(runtime): shrink provider views to a hard request budget`
 
 Completion record：
 
-- Commit：`pending`
-- Max shrink passes：`pending`
-- Tests/race：`pending`
-- CTX-003 status：`pending`
+- Commit：本任务提交 `feat(runtime): shrink provider views to a hard request budget`。
+- Max shrink passes：固定 `256`；每个 accepted action 都重新调用 adapter estimator，且 `after_wire_body_bytes < before_wire_body_bytes`。达到上限或没有合法 action 时返回 typed `request_budget_unfit`。
+- Tests/race：TDD 首轮按预期因 `fitProviderRequestToBudget`、`RequestBudgetAction`、`RequestBudgetUnfitError` 与 action/component 常量尚不存在而编译失败；实现后聚焦 hard-fit/oversized/compaction/semantic 回归、runtime/provider 完整回归、对应 runtime/session `-race`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`gofmt -l`、`git diff --check`、Web JS syntax 与 140 项 Web utility 测试全部通过；未启动 Docker。
+- CTX-003 status：`complete`；CTX-003A 的统一 estimator/snapshot fail-closed gate 与 CTX-003B 的有界收缩/typed unfit 共同关闭该 issue。
 
 ### [ ] CTX-004 — 增加 current-session-only 的 read_session_history
 

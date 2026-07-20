@@ -110,6 +110,15 @@ RequestEstimator
 - 每个旧 assistant call 与 marker result 仍是一对合法 replay：OpenAI 保留原 `function_call.call_id` / `function_call_output.call_id`，Anthropic 保留 `tool_use.id` / `tool_result.tool_use_id`，Google 保留 `functionCall.id/name` / `functionResponse.id/name`；同 batch sibling call/result 的字段、顺序和 provider block 不得变化
 - 去重发生在 current-result finalization 和 ephemeral provider-view 处理之后、result-level micro-compaction 之前；重复构造 provider view 不得恢复原 payload、嵌套 marker 或回写 durable `messages.jsonl`
 
+#### 2.2.3 Final hard-fit contract
+
+- main、semantic-summary 与 probe 都必须在 `RunTurn` 前获得 adapter 同一 wire-body builder 生成的最终 estimate；main 初始不 fit 时允许在 provider-view clone 上执行有界 hard-fit，semantic-summary/probe 不能通过删除其唯一外部请求内容伪造 fit
+- hard-fit action 只能提交 wire body bytes 严格下降的候选，并在每次提交后重新 estimate；action 顺序固定为 recoverable result pointer、oldest removable message/replay closure、optional semantic summary、bounded deterministic summary。最大 pass 数是 harness 常量，不能依赖模型输出或无限重试
+- pointer 只能引用已经证明 complete 的 session artifact，或保留原 call arguments 且由 path/range/versioned current-view query 重新取得的只读 source；partial/unavailable artifact、不可恢复最新 result 不能被标成 recoverable
+- tail 收缩必须按 call/result alias 闭包删除，不能留下 dangling OpenAI function call/output、Anthropic tool_use/tool_result 或 Google functionCall/functionResponse；最新 external instruction、最新 steer 与最新 tool result replay closure 不得删除
+- tool schemas、system prompt、metadata/provider envelope 或不可丢单条消息本身不可满足时，runtime 返回 `request_budget_unfit`。错误至少包含 request_kind、blocking_component、estimated_input_tokens、available_input_tokens、reserved_output_tokens、effective_window_tokens 与最终 snapshot，不包含请求正文
+- 最终 `provider.request.prepared` 与随后 `provider.call` 使用同一个 fitted TurnRequest/snapshot；`fit=false` 只写 local rejection/attempt facts，不进入 adapter retry/auto-resume。每个 `provider.request.budget_action` 通过 request id/kind 记录 pass、action、before/after wire bytes/tokens 与受影响 id/count
+
 ### 2.3 EventSink
 
 adapter 可向 runtime 发出：

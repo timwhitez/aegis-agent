@@ -194,7 +194,17 @@ v1 仍用字符数做整体 compaction trigger 的近似估算，不做 provider
 
 micro-compaction 统计使用互斥分类：带既有 provider-view pointer 的 result 优先计入 `pointerized`，其次是本层标记的 `compacted`，其余计入 `inline`。`inline_tool_result_count/bytes`、`compacted_tool_result_count/bytes`、`pointerized_tool_result_count/bytes` 写入 compact event 与每次 provider request 的 versioned budget snapshot；bytes 均取最终 provider-view `llm_output`，不含 display、metadata 或 durable JSON envelope。
 
-compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定。Phase A 对不 fit 请求本地拒绝；后续 Phase B 才负责在有限轮次内 pointerize/缩尾后重新估算。
+compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定；probe 同样预检，但不删除唯一 probe prompt 来伪造 fit。
+
+最终 hard-fit 只修改 provider-view clone，并使用固定顺序：
+
+1. 以已经完成的 current-result cap、safe identical-result dedup、result-level micro-compaction 与 full/reused/deferred compaction view 为起点
+2. 从旧到新把 recoverable inline result 换成 pointer：优先引用 `artifact_complete=true` 的 session artifact；read_file/search page 只有在原 call arguments 仍存在且 path/range 或 versioned current-view query 可重放时才能使用 source pointer。partial/unavailable artifact 不能升级为 complete
+3. 从最老、最低优先级 message 开始删除完整 replay closure；ToolCallID/ProviderCallID alias 对应的 assistant call、provider block 与 tool result 必须一起保留或一起删除
+4. 对 compaction summary 先删 optional `semantic_summary`，再删低优先级集合/摘录并生成有界 deterministic core；core 继续保留 current goal、open items、key paths、latest external instruction、latest steer 和 transcript/history reference
+5. 每个候选都重新走 adapter estimator；只有 wire body bytes 严格下降才提交并写 `provider.request.budget_action`。固定最大 pass 后或没有合法 action 时返回 typed `request_budget_unfit`
+
+最新 external user message、最新 steer 与最新 tool result replay closure不可被 tail step 删除；tool schema 不进入收缩候选。不可恢复最新 result、不可丢消息、system/schema/envelope 或最小 summary 自身已超过 available input 时，错误报告 blocking component 与 estimated/available/reserved 数值，不复制正文。new compaction、hysteresis reuse 和 `compact.deferred` fallback 都必须经过这一最终 gate；local unfit 不触发 provider retry/auto-resume。
 
 current-result cap、安全 identical-result 去重、old-result micro-compaction 与 full compaction 是四个顺序明确的层次：
 
@@ -245,4 +255,5 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - stop-loss provider view 保留相同参数但不同结果的每个 ToolResult，也保留同一 tool message 中未被验证为等价的其他结果；构造 view 前后 durable message 日志逐字段不变
 - 等价证明完整时只把更旧的单个 allowlisted result 替换为幂等 duplicate marker；三 provider 仍保留合法 call/result pair，未命中 sibling 不变
 - compaction 后的 main wire request 仍必须通过 request-budget preflight；semantic-summary 自身超预算时只省略语义补充并标记失败，不阻断确定性 summary/transcript 生成
+- 初始 request 不 fit 时有界 hard-fit action 的 wire estimate 严格递减；最终 snapshot `fit=true` 才能发送，无法满足则返回 `request_budget_unfit` 且 durable messages/artifacts 不变
 - 当前工具结果、hook amplification 与 child handoff 在进入 durable log 前已经受统一 byte cap；old-result pointerization 只复用或通过同一 quota writer 创建 artifact
