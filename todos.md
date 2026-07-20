@@ -468,7 +468,7 @@ Completion record：
 - Tests：TDD 红测先证明 `read_file`/`grep`/`grep_files`/`glob` schema 拒绝 byte/cursor 字段且没有 continuation。实现后，UTF-8 mid-rune/跨页重组、16 MiB minified、JSONL/no-newline、EOF/空文件、workspace/skill/session artifact 与 symlink/escape、count/byte/同点 stop、match span、cursor version/checksum/query mismatch/tamper、long-path typed failure 均进入永久测试；聚焦命令、`go test ./internal/fileutil ./internal/tools ./internal/runtime -count=1 -timeout=300s`、`go test ./... -count=1 -timeout=600s` 与对应 `-race` 聚焦门禁通过。
 - TOOL-002 status：`complete`（TOOL-002A + TOOL-002B）。
 
-### [ ] TOOL-001 — 用有界流式 collector 保存 command 原始输出
+### [x] TOOL-001 — 用有界流式 collector 保存 command 原始输出
 
 - Issue：TOOL-001。
 - Priority：P1 resource safety/recovery。
@@ -480,7 +480,7 @@ Scope：
 - collector 内存仅保存有界 head/tail preview；输出超过 inline budget 时，将已缓存完整前缀和后续字节写入 TOOL-002A 的当前 session quota-aware artifact writer。
 - stdout/stderr 继续合并到同一有序 writer；collector 的 `Write` 在 artifact hard cap 后仍准确累计 raw bytes，同时丢弃不可保存部分并维持有界 tail。
 - 当前轮 ToolResult 直接返回 exit/timeout/cancel/workdir/sandbox、preview、artifact path、raw/persisted/omitted bytes 与 complete/truncated 状态。无需等它成为旧 ephemeral result。
-- 只有 `raw_bytes == persisted_bytes` 且 close/flush 成功时才显示 `Full output`；其余使用 `Recoverable prefix` / `Artifact truncated` / `Artifact unavailable` 等准确文案。
+- 只有 `raw_bytes == persisted_bytes` 且 close/flush 成功时才显示 `Complete artifact`；其余使用 `Partial artifact` / `Artifact unavailable` 等准确文案，任何路径都不再使用含混的 `Full output` 标签。
 - timeout、interrupt、child budget cancel、process-group kill、非零退出、artifact create/write/fsync/close 失败都必须关闭资源并返回可诊断 metadata。
 - 修正 `applyEphemeralProviderView`：不得再把已经截断的 `original.LLMOutput` 落盘并称为 Full output；已有当前轮 artifact 时只复用 pointer/metadata。
 
@@ -493,13 +493,17 @@ Spec changes：
 
 Implementation files：
 
-- 新文件建议：`internal/tools/output_collector.go`、`internal/tools/output_collector_test.go`
+- `internal/session/tool_output_artifact.go`
+- `internal/session/tool_output_artifact_stream.go`
+- `internal/session/tool_output_artifact_stream_test.go`
+- `internal/tools/output_collector.go`
+- `internal/tools/output_collector_test.go`
 - `internal/tools/registry.go`
 - `internal/tools/registry_test.go`
-- `internal/tools/process_group_linux_test.go`
 - `internal/runtime/engine.go`
-- `internal/runtime/engine_test.go`
-- 复用 `internal/session/tool_output_artifact.go`
+- `internal/runtime/tool_result_budget.go`
+- `internal/runtime/command_output_test.go`
+- `internal/runtime/budget_lifecycle_test.go`
 
 Permanent tests：
 
@@ -512,11 +516,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] shell/skill command 生产代码中不再调用 `CombinedOutput()`。
-- [ ] 命令总输出增长不会导致 collector 内存线性增长。
-- [ ] raw/persisted/inline/omitted 字节可由测试与实际 artifact 对账。
-- [ ] shell timeout、最小 env allowlist、sandbox、exec policy、process-group cancel 没有回退。
-- [ ] 旧 Full output 误标已消失。
+- [x] shell/skill command 生产代码中不再调用 `CombinedOutput()`。
+- [x] 命令总输出增长不会导致 collector 内存线性增长。
+- [x] raw/persisted/inline/omitted 字节可由测试与实际 artifact 对账。
+- [x] shell timeout、最小 env allowlist、sandbox、exec policy、process-group cancel 没有回退。
+- [x] 旧 Full output 误标已消失。
 
 Validation：
 
@@ -540,10 +544,10 @@ Commit subject：`feat(tools): stream command output into bounded artifacts`
 
 Completion record：
 
-- Commit：`pending`
-- Peak collector buffer：`pending`
-- Race/tests：`pending`
-- TOOL-001 status：`pending`
+- Commit：本任务提交 `feat(tools): stream command output into bounded artifacts`。
+- Peak collector buffer：collector 的硬上界为 `llm_output_max_bytes + max(llm_output_max_bytes, display_output_max_bytes)`；默认配置为 `32768 + 131072 = 163840` bytes。持续输出 timeout 永久测试使用 512/768-byte inline policy，实测 `collector_peak_buffered_bytes=768`，不超过声明的 1280-byte 上界，且 command raw bytes 持续增长时 buffer 不增长。
+- Race/tests：TDD 红测先证明缺少 streaming artifact/collector API、shell/skill 仍走 `CombinedOutput()`、runtime interruption 丢弃当前 artifact；补充红测又捕获 write 后 sync/close 失败仍发布不确定 prefix、publish 后 reservation cleanup 隐藏已发布 artifact、reservation 更新先改内存、同 Store cross-session root 可越权写入、长 summary 截断 pointer/status、小型非法 UTF-8 被误标 inline recoverable，以及最终 header 二次裁剪造成 preview source bytes 对账失真。实现后 lifecycle 注入、并发 Store/quota/restart 回收、owner-only/cross-session/no-symlink/no-replace、持续输出 timeout、非零退出、manual interrupt、child budget/process-group cancel、shell/skill parity、UTF-8 byte-exact artifact、read_file 回捞和 ephemeral pointer 复用均进入永久测试；聚焦门禁、`CGO_ENABLED=1 go test -race ./internal/tools ./internal/runtime ./internal/session -run 'Test.*(OutputCollector|Shell.*Output|ArtifactQuota|ToolOutputArtifactStream).*' -count=1 -timeout=300s`、三包回归、`go test ./... -count=1 -timeout=600s` 与 `go vet` 全通过，`gofmt -l` / `git diff --check` 无输出。
+- TOOL-001 status：`complete`。
 
 ### [ ] CTX-002 — 将 micro-compaction 改为独立 ToolResult 数量/字节窗口
 

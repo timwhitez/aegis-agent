@@ -13,9 +13,16 @@ import (
 )
 
 const (
+	ToolOutputBudgetVersion                 = 1
 	ToolOutputArtifactReasonFileBytes       = "artifact_file_max_bytes"
 	ToolOutputArtifactReasonSessionBytes    = "artifact_session_max_bytes"
 	ToolOutputArtifactReasonSessionFiles    = "artifact_max_files"
+	ToolOutputArtifactReasonCreateFailed    = "artifact_create_failed"
+	ToolOutputArtifactReasonReservationFail = "artifact_reservation_failed"
+	ToolOutputArtifactReasonWriteFailed     = "artifact_write_failed"
+	ToolOutputArtifactReasonSyncFailed      = "artifact_sync_failed"
+	ToolOutputArtifactReasonCloseFailed     = "artifact_close_failed"
+	ToolOutputArtifactReasonRenameFailed    = "artifact_rename_failed"
 	toolOutputArtifactReasonExistingPartial = "existing_partial_artifact"
 	toolOutputArtifactLockName              = ".quota.lock"
 )
@@ -48,16 +55,16 @@ func (s *Store) WriteToolOutputArtifact(sessionID, artifactRoot, artifactKey str
 	if quota.FileMaxBytes <= 0 || quota.SessionMaxBytes <= 0 || quota.MaxFiles <= 0 {
 		return result, fmt.Errorf("tool output artifact quota values must be positive: %#v", quota)
 	}
-	artifactRoot = strings.TrimSpace(artifactRoot)
-	if artifactRoot == "" {
-		artifactRoot = filepath.Join(s.SessionDir(sessionID), "artifacts", "tool-outputs")
+	resolvedRoot, err := s.resolveToolOutputArtifactRoot(sessionID, artifactRoot)
+	if err != nil {
+		return result, err
 	}
-	artifactRoot = filepath.Clean(artifactRoot)
+	artifactRoot = resolvedRoot
 	filename := toolOutputArtifactFilename(artifactKey, payload)
 	targetPath := filepath.Join(artifactRoot, filename)
 	lockPath := filepath.Join(artifactRoot, toolOutputArtifactLockName)
 
-	err := s.withPrivateFileLock(lockPath, func() error {
+	err = s.withPrivateFileLock(lockPath, func() error {
 		if err := rejectSymlinkPathAncestors(artifactRoot); err != nil {
 			return err
 		}
@@ -135,6 +142,25 @@ func (s *Store) WriteToolOutputArtifact(sessionID, artifactRoot, artifactKey str
 	return result, err
 }
 
+func (s *Store) resolveToolOutputArtifactRoot(sessionID, artifactRoot string) (string, error) {
+	artifactRoot = strings.TrimSpace(artifactRoot)
+	allowedRoot := filepath.Clean(filepath.Join(s.SessionDir(sessionID), "artifacts", "tool-outputs"))
+	if artifactRoot == "" {
+		artifactRoot = allowedRoot
+	} else {
+		artifactRoot = filepath.Clean(artifactRoot)
+	}
+	// Report symlink attacks directly even when the lexical alias also sits
+	// outside the owning session tree.
+	if err := rejectSymlinkPathAncestors(artifactRoot); err != nil {
+		return "", err
+	}
+	if !pathWithinRoot(allowedRoot, artifactRoot) {
+		return "", fmt.Errorf("tool output artifact root %s does not belong to session %s (allowed root %s)", artifactRoot, sessionID, allowedRoot)
+	}
+	return artifactRoot, nil
+}
+
 func readExistingToolOutputArtifact(path string) ([]byte, bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -154,42 +180,6 @@ func readExistingToolOutputArtifact(path string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return data, true, nil
-}
-
-func scanToolOutputArtifactUsage(root string) (int, int, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, 0, nil
-		}
-		return 0, 0, err
-	}
-	totalBytes := int64(0)
-	files := 0
-	for _, entry := range entries {
-		if entry.Name() == toolOutputArtifactLockName {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return 0, 0, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return 0, 0, fmt.Errorf("refusing symlink in tool output artifact root: %s", filepath.Join(root, entry.Name()))
-		}
-		if !info.Mode().IsRegular() {
-			return 0, 0, fmt.Errorf("unexpected non-regular entry in tool output artifact root: %s", filepath.Join(root, entry.Name()))
-		}
-		if info.Size() < 0 || totalBytes > int64(^uint(0)>>1)-info.Size() {
-			return 0, 0, fmt.Errorf("tool output artifact usage overflow in %s", root)
-		}
-		totalBytes += info.Size()
-		files++
-	}
-	if totalBytes > int64(^uint(0)>>1) {
-		return 0, 0, fmt.Errorf("tool output artifact usage exceeds platform int range in %s", root)
-	}
-	return int(totalBytes), files, nil
 }
 
 func toolOutputArtifactFilename(key string, payload []byte) string {

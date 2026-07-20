@@ -131,6 +131,13 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - byte mode 的 workspace、skill、session artifact exact path、symlink file/parent 与 escape matrix 复用 line mode 安全 gate；生产路径必须可证明只调用 range reader
 - grep/grep_files/glob 覆盖 count limit、byte limit、同点触发、complete、长 path/record typed failure；v1 cursor 的 checksum/version/query fingerprint/tamper 与 current-view deterministic ordering 均有永久测试
 - 搜索 cursor footer、record/header 和 metadata 一起计入 output cap；测试确认 cap 收缩删除完整 record 或 snippet，不产生被截断的 cursor
+- command output collector 用远大于 inline/artifact cap 的分块输出验证内存上界固定，且 `raw_bytes = persisted_bytes + omitted_bytes`；测试不得只在进程退出后观察截断文本
+- shell 与 trusted skill command 对相同 stdout/stderr 序列产生同构 preview/artifact metadata，生产代码不含 `CombinedOutput()`；两个 stream 连接同一个并发安全 writer，并通过 race test
+- complete command artifact 与 collector 收到的原始合并字节逐字节一致；file/session byte quota 只发布获准的 partial prefix，file-count quota 在无法创建 reservation 时返回 unavailable，所有 partial/unavailable 路径均不出现 complete/full 文案
+- streaming reservation 覆盖并发 Store、进程重启后的 usage rebuild、dead-owner reservation/orphan temp 回收、owner-only mode、cross-session root 拒绝、symlink root/target 与 no-replace finalize
+- artifact create/write/fsync/close/rename 注入失败均返回有界 ToolResult 与可诊断 metadata；失败不能阻塞 stdout/stderr drain，也不能让未发布 temp 被 `read_file` 当成完成 artifact
+- 大输出后的正常退出、非零退出、timeout、manual interrupt、child budget cancel 与 process-group kill 都会 finalize collector；interrupted durable ToolResult 保留 command artifact metadata并补 `failure_class=interrupted`
+- current command artifact 可由 `read_file` line/byte mode 用 exact path 分页；old ephemeral provider view 复用当前 artifact，不生成第二个文件
 
 ### 4.2 Hooks
 
@@ -168,6 +175,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - tool 执行中 cancel
 - `Esc` 逻辑触发 interrupt API
 - tool cancel 后写入中断错误结果
+- command tool cancel 后写入的中断错误结果保留 collector 的 raw/persisted/omitted、artifact path/completeness 与 command execution metadata；同 batch 后续调用仍得到 synthetic interrupted result
 - `steer --interrupt` 对不可取消工具退化为 deferred
 - child active-runtime/absolute deadline 能取消 provider、tool 与 shell，不等待 operation timeout
 - parent 按 session/job 取消 running foreground/background child，cross-parent 请求被拒绝，重复 cancel 幂等

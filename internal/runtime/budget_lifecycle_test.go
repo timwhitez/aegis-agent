@@ -441,6 +441,11 @@ func TestChildActiveRuntimeDeadlineCancelsShellProcessGroup(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
 	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = 1
+	cfg.Runtime.ToolOutput.LLMOutputMaxBytes = 512
+	cfg.Runtime.ToolOutput.DisplayOutputMaxBytes = 768
+	cfg.Runtime.ToolOutput.ArtifactFileMaxBytes = 8192
+	cfg.Runtime.ToolOutput.ArtifactSessionMaxBytes = 16384
+	cfg.Runtime.ToolOutput.ArtifactMaxFiles = 8
 	engine, meta, state, reg, hooks, catalog := childEngineWithConfig(t, cfg)
 	engine.cfg.Runtime.MaxTurnsHard = -1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "run slow shell")); err != nil {
@@ -451,7 +456,7 @@ func TestChildActiveRuntimeDeadlineCancelsShellProcessGroup(t *testing.T) {
 		return provider.TurnResult{ToolCalls: []provider.ToolCall{{
 			ID:        "shell_budget",
 			Name:      "shell",
-			Arguments: json.RawMessage(`{"command":"sleep 3; printf late > budget-shell-late.txt"}`),
+			Arguments: json.RawMessage(`{"command":"head -c 3000 /dev/zero | tr '\\0' x; sleep 3; printf late > budget-shell-late.txt"}`),
 		}}, StopReason: "tool_use"}, nil
 	})
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, reg, hooks)
@@ -462,6 +467,33 @@ func TestChildActiveRuntimeDeadlineCancelsShellProcessGroup(t *testing.T) {
 	time.Sleep(350 * time.Millisecond)
 	if _, statErr := os.Stat(latePath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("cancelled shell process group wrote late artifact: %v", statErr)
+	}
+	messages, loadErr := engine.store.LoadMessages(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load child budget messages: %v", loadErr)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "tool" || len(last.ToolResults) != 1 {
+		t.Fatalf("child budget cancellation did not persist one tool result: %#v", last)
+	}
+	toolResult := last.ToolResults[0]
+	if toolResult.Metadata[tools.MetadataFailureClass] != tools.FailureClassInterrupted || toolResult.Metadata["artifact_complete"] != true || toolResult.Metadata["recoverable"] != true {
+		t.Fatalf("child budget cancellation discarded command artifact facts: %#v", toolResult)
+	}
+	if rawBytes, ok := toolMetadataInt(toolResult.Metadata, "raw_bytes"); !ok || rawBytes != 3000 {
+		t.Fatalf("child budget command raw bytes=%#v, want 3000", toolResult.Metadata["raw_bytes"])
+	}
+	artifactPath, _ := toolResult.Metadata["artifact_path"].(string)
+	if artifactPath == "" {
+		t.Fatalf("child budget command artifact path missing: %#v", toolResult.Metadata)
+	}
+	absolute := artifactPath
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(engine.store.SessionDir(meta.ID), filepath.FromSlash(artifactPath))
+	}
+	artifact, readErr := os.ReadFile(absolute)
+	if readErr != nil || len(artifact) != 3000 || strings.Trim(string(artifact), "x") != "" {
+		t.Fatalf("child budget command artifact mismatch: bytes=%d err=%v", len(artifact), readErr)
 	}
 }
 

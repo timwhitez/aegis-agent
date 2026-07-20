@@ -1027,16 +1027,21 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 							"tool_name":                call.Name,
 							tools.MetadataFailureClass: tools.FailureClassInterrupted,
 						})
-						toolResult = session.ToolResult{
-							ToolCallID:    call.ID,
-							Name:          call.Name,
-							LLMOutput:     tools.InterruptedToolExecutionMessage,
-							DisplayOutput: tools.InterruptedToolExecutionMessage,
-							IsError:       true,
-							Metadata: map[string]any{
-								tools.MetadataFailureClass: tools.FailureClassInterrupted,
-							},
+						toolResult.ToolCallID = call.ID
+						toolResult.Name = call.Name
+						toolResult.IsError = true
+						preFinalizedInterrupt := toolOutputBudgetVersionApplied(toolResult.Metadata) && toolFailureClass(toolResult) == tools.FailureClassInterrupted
+						if strings.TrimSpace(toolResult.LLMOutput) == "" {
+							toolResult.LLMOutput = tools.InterruptedToolExecutionMessage
+						} else if !preFinalizedInterrupt && !strings.Contains(toolResult.LLMOutput, tools.InterruptedToolExecutionMessage) {
+							toolResult.LLMOutput = tools.InterruptedToolExecutionMessage + "\n" + toolResult.LLMOutput
 						}
+						if strings.TrimSpace(toolResult.DisplayOutput) == "" {
+							toolResult.DisplayOutput = tools.InterruptedToolExecutionMessage
+						} else if !preFinalizedInterrupt && !strings.Contains(toolResult.DisplayOutput, tools.InterruptedToolExecutionMessage) {
+							toolResult.DisplayOutput = tools.InterruptedToolExecutionMessage + "\n" + toolResult.DisplayOutput
+						}
+						setToolFailureClass(&toolResult, tools.FailureClassInterrupted)
 						toolResult = e.finalizeToolResultForContext(meta.ID, toolResult)
 						afterErr := e.appendEvent(meta.ID, "tool.after", "tool_execute", toolAfterEventData(call.ID, call.Name, toolResult))
 						toolResults = append(toolResults, toolResult)

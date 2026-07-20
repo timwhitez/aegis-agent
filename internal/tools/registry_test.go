@@ -2337,14 +2337,16 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	}
 
 	execCtx := ExecContext{
-		SessionID: meta.ID,
-		Workdir:   meta.Workdir,
-		Store:     store,
-		Config:    cfg,
+		SessionID:             meta.ID,
+		ToolCallID:            "call_shell_compaction_metadata",
+		Workdir:               meta.Workdir,
+		EphemeralArtifactRoot: filepath.Join(store.SessionDir(meta.ID), "artifacts", "tool-outputs"),
+		Store:                 store,
+		Config:                cfg,
 	}
 
 	shellResult, err := registry.Execute(context.Background(), "shell", execCtx, json.RawMessage(`{
-		"command":"yes A | head -n 7000"
+		"command":"yes A | head -n 20000"
 	}`))
 	if err != nil {
 		t.Fatalf("shell: %v", err)
@@ -2355,8 +2357,11 @@ func TestShellAndFileToolsEmitCompactionMetadata(t *testing.T) {
 	if shellResult.Metadata["raw_length"] == nil {
 		t.Fatalf("expected raw_length metadata, got %#v", shellResult.Metadata)
 	}
-	if shellResult.Metadata["command"] != "yes A | head -n 7000" {
+	if shellResult.Metadata["command"] != "yes A | head -n 20000" {
 		t.Fatalf("expected command metadata, got %#v", shellResult.Metadata)
+	}
+	if shellResult.Metadata["artifact_complete"] != true || shellResult.Metadata["recoverable"] != true {
+		t.Fatalf("expected current-result command artifact, got %#v", shellResult.Metadata)
 	}
 	for _, want := range []string{"[command_result tool=shell", "exit_code=0", "raw_output_bytes=", "truncated=true"} {
 		if !strings.Contains(shellResult.LLMOutput, want) {

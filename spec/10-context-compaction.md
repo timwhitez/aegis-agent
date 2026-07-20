@@ -33,9 +33,10 @@ v1 只做最小但完整的三层压缩。
 
 每次工具执行后，先在工具层做基础截断：
 
-- `display_output` 可比 `llm_output` 更短
-- 超长 stdout/stderr 必须截断
-- metadata 要保留“原始长度”和“是否截断”
+- `display_output` 可与 `llm_output` 使用不同 byte cap
+- 动态 command stdout/stderr 在进程运行时就由有界 collector 消费；超出 inline boundary 的原始字节直接流入 current-session artifact，不允许先无界缓冲、执行后再截断
+- collector 内存只保留固定 pending prefix 与 UTF-8-safe head/tail；artifact hard cap 后仍消费并计数，但不可保存的中段明确计入 omitted bytes
+- metadata 同时记录 process raw bytes、inline bytes、persisted/omitted bytes、artifact completeness、recoverability 与失败原因
 
 这是最廉价的一层。
 
@@ -191,6 +192,8 @@ current-result cap、old-result micro-compaction 与 full compaction 是三个�
 3. 整体仍超阈值时才生成 transcript/summary；该层只改变 provider view，不回写前两层 durable facts
 
 第一层 artifact 完整性必须由 `artifact_complete` 证明；partial/quota/write-failed artifact 不能在第二、三层被重新标成 Full output。
+
+command collector 已在当前 ToolResult 建立 `tool_output_budget_version=1` artifact/preview contract时，old-result ephemeral sliding window只能复用该 pointer。它不得把 bounded preview 或 summary 再落盘成第二份 artifact，也不得把 partial/unavailable source 改写成 complete。只有尚未经过 current-result finalizer 的 legacy/non-command 结果才允许使用同一 quota writer补建 artifact。
 
 read_file byte window、grep/grep_files/glob page 都属于 source-recoverable payload：它们在当前结果中优先返回 path/range 或 versioned query cursor。runtime finalizer 仍是最后的 correctness cap，但正常工具输出必须已为 header + bounded records + intact cursor，不能先超量生成再依赖 head/tail artifact 截断；只有动态且无法从 source cursor 重建的正文才进入 tool-output artifact。
 

@@ -9,7 +9,7 @@ import (
 	"go-cli-agent/internal/session"
 )
 
-const toolOutputBudgetVersion = 1
+const toolOutputBudgetVersion = session.ToolOutputBudgetVersion
 
 func (e *Engine) appendFinalizedToolResults(sessionID string, results []session.ToolResult) error {
 	return e.store.AppendMessage(sessionID, e.finalizedToolMessage(sessionID, results))

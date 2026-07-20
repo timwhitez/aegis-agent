@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,36 @@ func newToolOutputArtifactTestStore(t *testing.T) (*Store, string, string) {
 	}
 	artifactRoot := filepath.Join(store.SessionDir(sessionID), "artifacts", "tool-outputs")
 	return store, sessionID, artifactRoot
+}
+
+func TestToolOutputArtifactWritersRejectCrossSessionRoot(t *testing.T) {
+	store, ownerSessionID, ownerArtifactRoot := newToolOutputArtifactTestStore(t)
+	otherSessionID := NewSessionID()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.Create(SessionMetadata{
+		SchemaVersion:    1,
+		ID:               otherSessionID,
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create other session: %v", err)
+	}
+	quota := ToolOutputArtifactQuota{FileMaxBytes: 64, SessionMaxBytes: 128, MaxFiles: 4}
+	_, writeErr := store.WriteToolOutputArtifact(otherSessionID, ownerArtifactRoot, "cross-session-write", []byte("must-not-cross"), quota)
+	stream, _, streamErr := store.BeginToolOutputArtifactStream(otherSessionID, ownerArtifactRoot, "cross-session-stream", quota)
+	if stream != nil {
+		_, _ = stream.Close()
+	}
+	if writeErr == nil || streamErr == nil || !strings.Contains(writeErr.Error(), "session") || !strings.Contains(streamErr.Error(), "session") {
+		t.Fatalf("cross-session artifact roots were accepted: owner=%s other=%s write_err=%v stream=%#v stream_err=%v", ownerSessionID, otherSessionID, writeErr, stream, streamErr)
+	}
+	if _, err := os.Lstat(ownerArtifactRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cross-session attempt changed owner artifact root: %v", err)
+	}
 }
 
 func TestToolOutputArtifactWritesCompleteOwnerOnlyFile(t *testing.T) {

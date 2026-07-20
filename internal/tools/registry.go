@@ -814,16 +814,17 @@ func defShell() Definition {
 					return errorResult("shell", err), nil
 				}
 			}
-			output, err := cmd.CombinedOutput()
+			collector := newCommandOutputCollector(execCtx, "shell")
+			cmd.Stdout = collector
+			cmd.Stderr = collector
+			err = cmd.Run()
 			exitCode := 0
 			if cmd.ProcessState != nil {
 				exitCode = cmd.ProcessState.ExitCode()
 			}
-			text, rawLength, truncated := truncateOutput(string(output), 12000)
-			if text == "" {
-				text = "(no output)"
-			}
-			llmText := commandLLMOutput(text, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
+			rawLength := collector.rawByteCount()
+			truncated := rawLength > effectiveCommandToolOutputPolicy(execCtx.Config).LLMOutputMaxBytes
+			summary := commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated)
 			if err != nil {
 				// A real interrupt cancels the parent ctx (user steer, pause,
 				// session shutdown) and must propagate. A per-command timeout
@@ -831,42 +832,35 @@ func defShell() Definition {
 				// can react to, so surface a timeout-specific message + class and
 				// return nil error instead of a bare "interrupted".
 				if ctx.Err() != nil {
-					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
-					return session.ToolResult{
-						ToolCallID:    "",
-						Name:          "shell",
-						LLMOutput:     interruptedText,
-						DisplayOutput: InterruptedToolExecutionMessage,
+					md := metadata(exitCode, rawLength, truncated)
+					md[MetadataFailureClass] = FailureClassInterrupted
+					return collector.finalize(commandOutputResultOptions{
+						Summary:       summary,
+						StatusMessage: InterruptedToolExecutionMessage,
 						IsError:       true,
-						Metadata:      metadata(exitCode, rawLength, truncated),
-					}, ctx.Err()
+						Metadata:      md,
+					}), ctx.Err()
 				}
 				if callCtx.Err() != nil {
 					md := metadata(exitCode, rawLength, truncated)
 					md[MetadataFailureClass] = FailureClassTimeout
-					timedOutText := commandLLMOutput(TimedOutToolExecutionMessage, commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated))
-					return session.ToolResult{
-						Name:          "shell",
-						LLMOutput:     timedOutText,
-						DisplayOutput: TimedOutToolExecutionMessage,
+					return collector.finalize(commandOutputResultOptions{
+						Summary:       summary,
+						StatusMessage: TimedOutToolExecutionMessage,
 						IsError:       true,
 						Metadata:      md,
-					}, nil
+					}), nil
 				}
-				return session.ToolResult{
-					Name:          "shell",
-					LLMOutput:     llmText,
-					DisplayOutput: text,
-					IsError:       true,
-					Metadata:      metadata(exitCode, rawLength, truncated),
-				}, nil
+				return collector.finalize(commandOutputResultOptions{
+					Summary:  summary,
+					IsError:  true,
+					Metadata: metadata(exitCode, rawLength, truncated),
+				}), nil
 			}
-			return session.ToolResult{
-				Name:          "shell",
-				LLMOutput:     llmText,
-				DisplayOutput: text,
-				Metadata:      metadata(exitCode, rawLength, truncated),
-			}, nil
+			return collector.finalize(commandOutputResultOptions{
+				Summary:  summary,
+				Metadata: metadata(exitCode, rawLength, truncated),
+			}), nil
 		},
 	}
 }
@@ -4213,10 +4207,12 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 		}
 	}
 	return Definition{
-		Name:           tool.Name,
-		Description:    fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
-		InputSchema:    inputSchema,
-		SkipInputCheck: true,
+		Name:            tool.Name,
+		Description:     fmt.Sprintf("Direct-call skill command tool from skill %s. Call this tool directly by name; do not search the workspace, skill files, or shell PATH for it. This tool executes from the skill directory. %s", tool.SkillName, description),
+		InputSchema:     inputSchema,
+		SkipInputCheck:  true,
+		Ephemeral:       true,
+		EphemeralWindow: 2,
 		Execute: func(ctx context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			args, err := decodeCommandToolArgs(raw)
 			if err != nil {
@@ -4299,53 +4295,48 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					return errorResult(tool.Name, err), nil
 				}
 			}
-			output, err := cmd.CombinedOutput()
+			collector := newCommandOutputCollector(execCtx, tool.Name)
+			cmd.Stdout = collector
+			cmd.Stderr = collector
+			err = cmd.Run()
 			exitCode := 0
 			if cmd.ProcessState != nil {
 				exitCode = cmd.ProcessState.ExitCode()
 			}
-			text, rawLength, truncated := truncateOutput(string(output), 12000)
-			if text == "" {
-				text = "(no output)"
-			}
-			llmText := commandLLMOutput(text, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
+			rawLength := collector.rawByteCount()
+			truncated := rawLength > effectiveCommandToolOutputPolicy(effectiveConfig).LLMOutputMaxBytes
+			summary := commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated)
 			if err != nil {
 				if ctx.Err() != nil {
-					interruptedText := commandLLMOutput(InterruptedToolExecutionMessage, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
-					return session.ToolResult{
-						Name:          tool.Name,
-						LLMOutput:     interruptedText,
-						DisplayOutput: InterruptedToolExecutionMessage,
+					md := attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata)
+					md[MetadataFailureClass] = FailureClassInterrupted
+					return collector.finalize(commandOutputResultOptions{
+						Summary:       summary,
+						StatusMessage: InterruptedToolExecutionMessage,
 						IsError:       true,
-						Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
-					}, ctx.Err()
+						Metadata:      md,
+					}), ctx.Err()
 				}
 				if callCtx.Err() != nil {
 					md := attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata)
 					md[MetadataFailureClass] = FailureClassTimeout
-					timedOutText := commandLLMOutput(TimedOutToolExecutionMessage, commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated))
-					return session.ToolResult{
-						Name:          tool.Name,
-						LLMOutput:     timedOutText,
-						DisplayOutput: TimedOutToolExecutionMessage,
+					return collector.finalize(commandOutputResultOptions{
+						Summary:       summary,
+						StatusMessage: TimedOutToolExecutionMessage,
 						IsError:       true,
 						Metadata:      md,
-					}, nil
+					}), nil
 				}
-				return session.ToolResult{
-					Name:          tool.Name,
-					LLMOutput:     llmText,
-					DisplayOutput: text,
-					IsError:       true,
-					Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
-				}, nil
+				return collector.finalize(commandOutputResultOptions{
+					Summary:  summary,
+					IsError:  true,
+					Metadata: attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
+				}), nil
 			}
-			return session.ToolResult{
-				Name:          tool.Name,
-				LLMOutput:     llmText,
-				DisplayOutput: text,
-				Metadata:      attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
-			}, nil
+			return collector.finalize(commandOutputResultOptions{
+				Summary:  summary,
+				Metadata: attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
+			}), nil
 		},
 	}
 }

@@ -93,6 +93,15 @@ v1 内置工具固定为：
 - finalizer 幂等；同一 ToolResult 因 event rollback/retry 再次经过时不得重复占用 quota 或改写 ToolCallID/Name/IsError/Final/既有业务 metadata
 - 同步 child 的结构化状态/ID 位于 bounded preview；background notification 也保留 queue job/session reference 与相同预算产生的 artifact path
 
+command 输出还要在进入通用 finalizer 前完成一层 source capture。该层与最终 provider byte cap 使用同一份 `runtime.tool_output` policy，但职责不同：
+
+- process capture：`shell` 与 trusted skill command 把 stdout/stderr 接到同一个并发安全 writer；writer 按实际收到的顺序合并两个 stream，累计完整 `raw_bytes`，内存只保留固定大小的 pending prefix 与 head/tail preview
+- inline preview：结果中的命令摘要、artifact notice 与 UTF-8-safe head/tail 一起受 `llm_output_max_bytes` / `display_output_max_bytes` 约束；preview 不是原始全文，也不能被后续层标成全文
+- recoverable artifact：命令输出越过 inline boundary 后，collector 把尚未丢失的完整 prefix 和后续字节直接流入当前 session 的 quota-aware artifact stream；当前 ToolResult 立即返回 exact path，不等待 old-result ephemeral 处理
+- artifact hard cap：单文件、session bytes 或文件数 quota 触发后，collector 继续累计真实 raw bytes 并维护 bounded tail，但只保存已经获准的 prefix；metadata 必须使 `persisted_bytes + omitted_bytes = raw_bytes`
+
+command collector 生成的结果直接使用 `tool_output_budget_version=1` 完整 metadata contract。通用 finalizer 只有在 hook 改写导致 inline 长度或 metadata 对账失效时才重新处理；未改写结果不得复制第二份 artifact。command 自身的 `raw_length` / `truncated` 兼容字段继续保留：`raw_length` 等于 `raw_bytes`；`truncated` 表示原始 command output 没有完整内联在当前结果中，即使完整原文已经转存 artifact 也仍为 true。artifact 是否只保存 prefix 必须只由 `artifact_truncated` 与 `omitted_bytes` 判断，不能混用兼容字段。
+
 ## 4. 工具行为约束
 
 ### 4.1 `shell`
@@ -101,13 +110,26 @@ v1 内置工具固定为：
 - 可选接受 `workdir` 覆盖；相对路径按当前 workspace 解析，解析后仍必须位于 workspace 内且是目录
 - 对已注册 skill，`workdir` 也可使用 `load_skill` 返回的 skill 根目录提示；这只表示 skill bundle 的受控执行目录，不改变 workspace 写入边界
 - 必须接受 timeout
-- stdout/stderr 合并后按字节限额截断；超长输出应保留头部与尾部并标注中间省略字节数，避免丢失末尾错误摘要
+- 禁止使用 `CombinedOutput()` 或等价的执行后全量内存缓冲；stdout/stderr 必须接入同一个 streaming collector，合并后只保留有界 UTF-8-safe head/tail preview，并把可保存的原始合并字节流写入当前 session artifact
 - 返回码、timeout、workdir、sandbox、原始输出长度和截断状态必须写入 metadata，并以简短执行摘要进入 `llm_output`，避免模型只能在 UI/event metadata 中看到关键执行事实
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
 - 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
 - exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI
 - 当同一个远端响应需要多次统计或筛选时，应优先单次获取到临时快照后本地复用；只有外部状态已变化或新鲜度确实重要时才刷新，避免“先完整打印、再重新请求解析”的无效重复
 - 不要把 pipe 数据和 heredoc 脚本同时送入同一个解释器 stdin，例如 `curl ... | python3 - <<'PY'`；heredoc 会占用 stdin，脚本内再读 `sys.stdin` 会得到 EOF。应使用临时文件、`python3 -c`，或让脚本自己发请求
+
+#### 4.1.1 Command artifact stream
+
+- session Store 只接受位于对应 session `artifacts/tool-outputs/` 下的 artifact root，cross-session root 即使属于同一个 Store 也必须拒绝；随后在短时 `.quota.lock` 临界区内创建 owner-only reservation 与 no-symlink temporary file。reservation 同时占用一个 file slot，并以分块方式预留可写字节；命令写入期间不得长期持有全局 quota lock，避免并行高输出命令互相阻塞 stdout/stderr drain
+- 每次扩展 reservation 前重建当前 artifact usage；final files 按实际长度计费，active reservations 按 reserved bytes 计费，因此多个 Store/进程并发时总承诺量不能超过 `artifact_session_max_bytes` / `artifact_max_files`
+- reservation 文件由活跃 writer 持有 OS file lock；进程崩溃会自动释放。后续 quota scan 必须回收没有活跃 lock 的 reservation 与 orphan temp，再重新计算 quota，不能让 crash 永久耗尽 session 配额
+- stream 只允许持久化 prefix，达到 file/session hard cap 后不得绕过 quota 写 tail。collector 仍要继续消费进程输出、累计 raw bytes，并保留 bounded tail 供 inline preview
+- preview 必须是合法 UTF-8；非法源字节用等长安全占位符显示，原始字节不能因此被冒充为完整 inline 文本。即使总字节未越过 inline cap，只要源包含非法 UTF-8，就要通过 artifact 保留 byte-exact 原文
+- 正常结束、非零退出、command timeout、manual interrupt、child budget cancel 与 process-group kill 都必须 finalize collector。只有 artifact 写入、`fsync`、close 和 atomic no-replace rename 全部成功且 `persisted_bytes == raw_bytes` 时，才设置 `artifact_complete=true` / `recoverable=true` 并显示 `Complete artifact`
+- quota 截断但成功发布的 prefix 设置 `artifact_truncated=true`、`recoverable=false`，使用 `Partial artifact` / `Recoverable prefix` 文案；create/write/fsync/close/rename 失败必须记录稳定 `budget_reason` 与 `artifact_error`，不得显示 complete/full
+- command collector 没有有效 Store/session/tool-call context 时安全退化为 bounded preview + `artifact unavailable`；不得 panic，也不得为了补 artifact 重新缓存无界输出
+- timeout 与 caller cancellation 的结果都必须保留 collector 已完成的 raw/persisted/artifact metadata。caller cancellation 仍返回 `failure_class=interrupted`，runtime 只覆盖错误分类和中断提示，不得丢弃已生成的 artifact 事实
+- trusted skill command 使用相同 capture、quota、preview、timeout/cancel 与 metadata 契约，并标记为 ephemeral；skill 输入 stdin、工作目录、sandbox、exec policy 和最小环境规则保持不变
 
 ### 4.2 `read_file`
 
