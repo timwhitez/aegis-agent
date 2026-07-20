@@ -66,6 +66,7 @@ type providerViewBuild struct {
 
 func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMetadata, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, registry *tools.Registry, profile compactionContextProfile, systemPromptChars int, summarize semanticSummaryFunc) (providerViewBuild, error) {
 	providerMessages := e.applyEphemeralProviderView(meta.ID, messages, messages, registry)
+	providerMessages = deduplicateIdenticalReadOnlyToolResults(providerMessages, e.cfg)
 	compactionAction := "none"
 	compactionSummary := ""
 	view, inputChars, didCompact, err := e.compactor.build(ctx, meta.ID, meta.Workdir, state, providerMessages, todo, tasks, profile, state.LastCompactionInputChars, systemPromptChars, summarize, func(evt events.Event) error {

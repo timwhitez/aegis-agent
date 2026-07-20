@@ -625,7 +625,7 @@ Completion record：
 
 ## Phase 2 — 安全压缩、最终 hard-fit 与历史回捞
 
-### [ ] CTX-001B — 以 result hash 和 ToolCallID 安全重实现只读结果去重
+### [x] CTX-001B — 以 result hash 和 ToolCallID 安全重实现只读结果去重
 
 - Issue：CTX-001 最终关闭。
 - Priority：P1 optimization after stop-loss。
@@ -668,11 +668,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 不存在从过时字段读取的 fingerprint 路径。
-- [ ] fingerprint normalizer 与工具执行使用同一 effective defaults。
-- [ ] 没有 result hash 就不去重，不能根据“看起来是相同请求”猜测内容未变。
-- [ ] 去重只改 provider view，且精确到 ToolCallID。
-- [ ] CTX-001 的全部 acceptance 已由永久测试覆盖。
+- [x] 不存在从过时字段读取的 fingerprint 路径。
+- [x] fingerprint normalizer 与工具执行使用同一 effective defaults。
+- [x] 没有 result hash 就不去重，不能根据“看起来是相同请求”猜测内容未变。
+- [x] 去重只改 provider view，且精确到 ToolCallID。
+- [x] CTX-001 的全部 acceptance 已由永久测试覆盖。
 
 Validation：
 
@@ -694,10 +694,10 @@ Commit subject：`feat(runtime): deduplicate identical read only tool results`
 
 Completion record：
 
-- Commit：`pending`
-- Eligible tools：`pending`
-- Tests：`pending`
-- CTX-001 status：`pending`
+- Commit：本任务提交 `feat(runtime): deduplicate identical read only tool results`。
+- Eligible tools：仅 `read_file`、`grep`、`grep_files`、`glob`；shell、write/edit、goal/task/agent control 与其他工具均 fail closed、不参与去重。
+- Tests：TDD 首轮因 `CanonicalReadOnlyToolArguments` 与 `deduplicateIdenticalReadOnlyToolResults` 尚不存在而按预期编译失败；实现后 canonical/default/cap、result hash、同/异结果、真实文件与 grep 变化、error/final、artifact 完整性、mixed batch、三 provider replay、durable log 与幂等永久回归通过。计划聚焦命令、三包完整回归、对应 `-race`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`gofmt -l`、`git diff --check`、Web JS syntax 与 140 项 Web utility 测试全部通过；未启动 Docker。
+- CTX-001 status：`complete`；CTX-001A stop-loss 与 CTX-001B 安全重实现共同关闭该 issue。
 
 ### [ ] CTX-003B — 增加有界 hard-fit 收缩循环与不可满足错误
 

@@ -88,6 +88,7 @@ v1 内置工具固定为：
 - `llm_output` 与 `display_output` 分别受 `runtime.tool_output` 的 byte cap；finalizer 必须 UTF-8-safe 地生成短 notice 与 bounded head/tail preview
 - 超出 LLM inline cap 的原始结果写入当前 session 的 `artifacts/tool-outputs/`；模型只能获得精确 artifact path，不能通过 glob/grep discovery 枚举该目录
 - metadata 固定包含 `tool_output_budget_version=1`、`raw_bytes`、`persisted_bytes`、`inline_bytes`、`omitted_bytes`、`artifact_path`、`artifact_complete`、`artifact_truncated`、`budget_reason`、`recoverable`；Display 另报 `display_raw_bytes`、`display_inline_bytes`、`display_omitted_bytes`
+- finalizer 还要写入 `result_content_hash_version=1`、小写十六进制 `result_content_sha256`、`result_content_bytes`、`result_inline_bytes` 与 `result_content_hash_source`。普通新结果的 hash 基于 byte cap 前的原始 `llm_output`，source=`pre_budget_llm_output`；已经完成预算处理但缺少 hash 的兼容结果只能标记 source=`existing_inline_llm_output`，安全去重不得把这种兼容 hash 当作原始全文证明
 - `raw/persisted/inline/omitted` 指 LLM channel：inline 完整时 `persisted=0, omitted=0, recoverable=true`；完整 artifact 时 `persisted=raw, omitted=0, artifact_complete=true, recoverable=true`；部分/未写 artifact 时 `omitted=raw-persisted, recoverable=false`
 - artifact pointer 必须区分 `Complete artifact`、`Partial artifact` 和未保存；只有 `artifact_complete=true` 才能使用 complete/full 语义。quota 或写失败不得输出 `Full output:`
 - finalizer 幂等；同一 ToolResult 因 event rollback/retry 再次经过时不得重复占用 quota 或改写 ToolCallID/Name/IsError/Final/既有业务 metadata
@@ -201,6 +202,14 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - cursor schema version 固定为 `1`，encoded token 最大 2048 bytes；cursor 只保存 bounded continuation state，不保存搜索正文
 - continuation 重新扫描当前 workspace/skill view 并跳过 token 记录的稳定顺序位置，不承诺跨调用事务快照。两页之间外部修改可能改变 index 对应集合；这类 current-view/best-effort 语义必须由 metadata `snapshot_semantics=current_view` 明示
 - 相同静态 view 上连续分页必须无重复、无漏项；query fingerprint 不匹配时不得静默从新 query 的错误位置继续
+
+### 4.7.2 Read-only canonical arguments
+
+- `read_file`、`grep`、`grep_files`、`glob` 共享一套 typed argument decoder/normalizer，工具执行和 provider-view fingerprint 必须调用同一实现；不得在 runtime 另写一套 map-based 参数解释
+- `read_file` canonical form 包含 normalized path、line/byte mode、effective line offset/limit 或 effective byte offset/limit。line mode 中省略 offset、`0`、`1` 表示同一起点；省略/非正 limit 与显式默认值相同，超过上限的 limit 与上限值相同
+- 搜索工具 canonical form 包含 tool、pattern、normalized path、include、effective count limit、effective byte limit 与 cursor；省略 search path 保留默认 workspace-root 语义，limit/byte_limit 使用执行路径的现行 default、cap 与 tool-output cap
+- pattern、include、cursor 与具有文件名语义的 path 内容不得做改变查询含义的 trim/case folding。宁可因无法证明等价而不去重，也不能把不同来源或不同 page 合并
+- canonicalization 只证明请求参数等价；最终是否折叠还必须比较 finalizer 的 result-content hash 和完整 result 语义。path/range 相同本身不证明文件内容未变化
 
 ### 4.8 `finish`
 
@@ -506,6 +515,7 @@ hook 可修改最终进入模型的内容，但必须留下 trace。
 - skill tool 能被 registry 注册
 - 越界路径被阻止
 - `grep` / `grep_files` 的 exact-limit 与 true-overflow 可区分，metadata 不把 snippet 截短和集合不完整混为同一布尔值
+- 只读 canonical normalizer 覆盖默认值/cap、line/byte mode、path/include/cursor 差异；result hash 与 canonical arguments 共同证明等价时才允许单-result provider-view 去重
 - `todo_write` / `todo_read` 可稳定回放当前执行计划
 - `task_create` / `task_update` / `task_list` / `task_get` 可维护完整 task graph
 - `feature_list_create` / `feature_list_update` / `feature_list_read` 可维护 durable feature 状态

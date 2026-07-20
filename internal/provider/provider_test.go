@@ -1743,6 +1743,76 @@ func TestProviderReplayPreservesMixedCompactedMultiCallBatch(t *testing.T) {
 	}
 }
 
+func TestProviderReplayPreservesDuplicateToolResultMarkerMultiCallBatch(t *testing.T) {
+	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
+	marker := "[Duplicate grep result omitted from provider view; identical result retained at call \"call_new\"; result_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef; original_bytes=4096.]"
+	messages := []session.Message{
+		session.NewAssistantMessage("", "", []session.ToolCall{
+			{ID: "call_old", Name: "grep", Arguments: arguments},
+			{ID: "call_sibling", Name: "grep", Arguments: json.RawMessage(`{"pattern":"unique","path":"internal/runtime"}`)},
+		}),
+		session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "call_old", Name: "grep", LLMOutput: marker, Metadata: map[string]any{"duplicate_tool_result": true, "compacted_for_context": true}},
+			{ToolCallID: "call_sibling", Name: "grep", LLMOutput: "unique sibling result", IsError: true},
+		}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "call_new", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_new", Name: "grep", LLMOutput: "retained full result"}}),
+	}
+
+	tests := []struct {
+		name      string
+		serialize func() ([]byte, error)
+		want      []string
+	}{
+		{
+			name: "openai",
+			serialize: func() ([]byte, error) {
+				input, err := openAIInput(messages, "gpt-5.5")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"call_id":"call_old"`, `"call_id":"call_sibling"`, `"call_id":"call_new"`, "Duplicate grep result omitted", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "unique sibling result", "retained full result"},
+		},
+		{
+			name: "anthropic",
+			serialize: func() ([]byte, error) {
+				input, err := anthropicMessages(messages, "claude-sonnet-4-6", "", "", false)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"call_old"`, `"tool_use_id":"call_old"`, `"id":"call_sibling"`, `"tool_use_id":"call_sibling"`, `"is_error":true`, `"id":"call_new"`, `"tool_use_id":"call_new"`, "Duplicate grep result omitted"},
+		},
+		{
+			name: "google",
+			serialize: func() ([]byte, error) {
+				input, err := googleContents(messages, "gemini-2.5-flash", "", "")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"call_old"`, `"id":"call_sibling"`, `"id":"call_new"`, `"name":"grep"`, "Duplicate grep result omitted", "unique sibling result", "retained full result"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := tc.serialize()
+			if err != nil {
+				t.Fatalf("serialize replay: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(string(body), want) {
+					t.Fatalf("expected %s in duplicate-marker replay body: %s", want, body)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderReplayPreservesSameArgumentsWithDistinctToolResults(t *testing.T) {
 	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
 	messages := []session.Message{

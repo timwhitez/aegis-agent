@@ -63,7 +63,7 @@
 
 - Severity: P0
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -99,6 +99,15 @@ read_file 的去重当前基本失效，重复读取仍持续占用上下文；g
 - 一个 assistant turn 同时发出两个或更多 tool call 时，只折叠被判重的 ToolCallID，其他结果逐字保持。
 - OpenAI、Anthropic、Google 的 call/result replay 结构在去重后仍合法配对。
 - 永久回归覆盖：真实 schema、文件变化、参数变化、并行 multi-call batch、同结果重复、不同结果重复，以及 durable messages 不被改写。
+
+### Resolution
+
+- CTX-001A 已由 `1f00225 fix(runtime): disable unsafe tool result deduplication` 移除旧的 message-level、参数猜测式去重路径；micro/full compaction 在安全实现完成前继续独立工作
+- CTX-001B 只为 `read_file`、`grep`、`grep_files`、`glob` 启用 result-level 去重；typed decoder/normalizer 同时供真实工具执行与 canonical fingerprint 使用，并覆盖 tool、normalized path、line/byte range、pattern/include、effective count/byte limit 和 cursor
+- ToolResult finalizer 记录版本化的 cap 前 `llm_output` SHA-256、原始/inline byte 数与 hash source；只有 `pre_budget_llm_output` 可作为去重证明，缺 hash 或仅有 legacy inline hash 时 fail closed
+- 等价判断同时核对 tool name、canonical arguments、result hash、error/final、artifact completeness/recoverability、byte accounting 与 source/skill 语义；只替换更旧的单个 ToolResult，marker 保留旧 ToolCallID、业务 metadata、retained call id、hash、原始长度和 source/artifact reference
+- 永久回归覆盖真实 read_file/grep 执行期间文件变化、默认值/cap 与所有参数差异、同/异结果、error/success、complete/truncated、ProviderCallID alias、mixed multi-call batch、重复 provider-view build、micro-compaction、三 provider replay，以及 `messages.jsonl` byte-for-byte 不变
+- Resolution commit：本任务提交 `feat(runtime): deduplicate identical read only tool results`
 
 ### Non-goals
 

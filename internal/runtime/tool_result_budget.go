@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,6 +12,13 @@ import (
 )
 
 const toolOutputBudgetVersion = session.ToolOutputBudgetVersion
+
+const resultContentHashVersion = 1
+
+const (
+	resultContentHashSourcePreBudget = "pre_budget_llm_output"
+	resultContentHashSourceInline    = "existing_inline_llm_output"
+)
 
 func (e *Engine) appendFinalizedToolResults(sessionID string, results []session.ToolResult) error {
 	return e.store.AppendMessage(sessionID, e.finalizedToolMessage(sessionID, results))
@@ -27,6 +36,7 @@ func (e *Engine) finalizeToolResultForContext(sessionID string, input session.To
 	result := cloneToolResultForBudget(input)
 	policy := effectiveToolOutputPolicy(e.cfg)
 	if toolOutputBudgetAlreadyApplied(result, policy) {
+		ensureResultContentHashMetadata(&result, result.LLMOutput, resultContentHashSourceInline, true)
 		return result
 	}
 	rawLLM := result.LLMOutput
@@ -115,7 +125,75 @@ func (e *Engine) finalizeToolResultForContext(sessionID string, input session.To
 		metadata["artifact_error"] = artifactError
 	}
 	result.Metadata = metadata
+	ensureResultContentHashMetadata(&result, rawLLM, resultContentHashSourcePreBudget, false)
 	return result
+}
+
+func ensureResultContentHashMetadata(result *session.ToolResult, content, source string, preserveValid bool) {
+	if result == nil {
+		return
+	}
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	if preserveValid {
+		if _, _, inlineBytes, _, ok := resultContentHashMetadata(result.Metadata); ok && inlineBytes == len(result.LLMOutput) {
+			return
+		}
+	}
+	sum := sha256.Sum256([]byte(content))
+	result.Metadata["result_content_hash_version"] = resultContentHashVersion
+	result.Metadata["result_content_sha256"] = hex.EncodeToString(sum[:])
+	result.Metadata["result_content_bytes"] = len(content)
+	result.Metadata["result_inline_bytes"] = len(result.LLMOutput)
+	result.Metadata["result_content_hash_source"] = source
+}
+
+func resultContentHashMetadata(metadata map[string]any) (hash string, contentBytes, inlineBytes int, source string, ok bool) {
+	if metadata == nil || !metadataVersionEquals(metadata["result_content_hash_version"], resultContentHashVersion) {
+		return "", 0, 0, "", false
+	}
+	hash, ok = metadata["result_content_sha256"].(string)
+	if !ok || len(hash) != sha256.Size*2 || hash != strings.ToLower(hash) {
+		return "", 0, 0, "", false
+	}
+	decoded, err := hex.DecodeString(hash)
+	if err != nil || len(decoded) != sha256.Size {
+		return "", 0, 0, "", false
+	}
+	contentBytes, ok = toolMetadataInt(metadata, "result_content_bytes")
+	if !ok || contentBytes < 0 {
+		return "", 0, 0, "", false
+	}
+	inlineBytes, ok = toolMetadataInt(metadata, "result_inline_bytes")
+	if !ok || inlineBytes < 0 {
+		return "", 0, 0, "", false
+	}
+	source, ok = metadata["result_content_hash_source"].(string)
+	if !ok || strings.TrimSpace(source) == "" {
+		return "", 0, 0, "", false
+	}
+	return hash, contentBytes, inlineBytes, source, true
+}
+
+func metadataVersionEquals(value any, want int) bool {
+	switch typed := value.(type) {
+	case int:
+		return typed == want
+	case int32:
+		return int(typed) == want
+	case int64:
+		return typed == int64(want)
+	case float32:
+		return typed == float32(want)
+	case float64:
+		return typed == float64(want)
+	case json.Number:
+		parsed, err := typed.Int64()
+		return err == nil && parsed == int64(want)
+	default:
+		return false
+	}
 }
 
 func effectiveToolOutputPolicy(cfg *config.Config) config.ToolOutputConfig {

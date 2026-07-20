@@ -15,14 +15,8 @@ const (
 )
 
 func executeReadFileByteMode(execCtx ExecContext, path, displayBase, source, skillName string, requestedOffset, requestedLimit int64) session.ToolResult {
-	windowLimit := requestedLimit
-	if windowLimit > readFileMaxByteLimit {
-		windowLimit = readFileMaxByteLimit
-	}
+	windowLimit := normalizeReadFileByteLimit(execCtx.Config, requestedLimit)
 	llmLimit := toolOutputLLMMaxBytes(execCtx.Config)
-	if windowLimit > int64(llmLimit) {
-		windowLimit = int64(llmLimit)
-	}
 	if windowLimit <= 0 {
 		return typedToolErrorResult("read_file", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, "effective byte window is too small to return UTF-8 text")
 	}

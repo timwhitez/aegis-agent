@@ -70,8 +70,9 @@
 - compaction 必须作为独立 harness 机制存在
 - 历史和工具输出不能无限增长
 - 原始日志必须和压缩视图分离
-- tool 参数相同不证明结果相同；当前 correctness gate 禁止通用 message-level tool-result 去重。后续若重新启用，只能在独立 ToolResult 粒度使用 canonical arguments、结果内容 hash 与 ToolCallID/replay 配对证明安全，并继续保证 durable message 日志不变
+- tool 参数相同不证明结果相同；correctness gate 永久禁止通用 message-level tool-result 去重。CTX-001B 只允许 `read_file` / `grep` / `grep_files` / `glob` 在执行共用 canonical arguments、版本化 cap 前结果 hash、完整 error/final/artifact/byte 语义与 ToolCallID/replay 配对都相同时折叠更旧的独立 ToolResult，并继续保证 durable message 日志不变
 - 永久回归必须覆盖真实 `read_file.path`、相同参数但不同结果、multi-call tool message、OpenAI/Anthropic/Google replay 以及 provider view 构造前后 durable log 一致性
+- CTX-001B marker 必须保留旧 call/result pair、retained call id、result hash、original bytes 与 source/artifact reference；缺 hash、canonicalization 失败、文件/grep 内容变化、error/success 或 complete/truncated 变化都 fail closed，重复 provider-view build 不得嵌套 marker
 - compaction 字符 trigger 只负责决定何时压缩，不能作为最终 request fit 证明；CTX-003A correctness gate 要求 main/semantic-summary/probe 共用 adapter wire estimator、版本化 `RequestBudgetSnapshot` 与发送前 fail-closed 预检
 - 预算拒绝与预算观测必须来自同一 snapshot/公式；已知超窗不得进入 transport retry/auto-resume，semantic-summary 拒绝则回退确定性摘要
 - TOOL-003 completeness gate 要求 `grep` / `grep_files` 用 `effective_limit + 1` 识别真实集合 overflow，并把 `has_more` 与 snippet 文本截短分开；永久边界矩阵覆盖 exact-limit、cap、include、多目录、UTF-8 与重复排序

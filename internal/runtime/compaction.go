@@ -679,6 +679,17 @@ func compactOldToolContext(messages []session.Message, keepRecent, keepRecentByt
 			if !withinCount {
 				inlineSuffixOpen = false
 			}
+			if toolResultIsDuplicateMarker(*result) {
+				resultBytes := len(result.LLMOutput)
+				fitsBytes := inlineBytes <= keepRecentBytes && resultBytes <= keepRecentBytes-inlineBytes
+				if withinCount && inlineSuffixOpen && fitsBytes {
+					inlineBytes += resultBytes
+					continue
+				}
+				inlineSuffixOpen = false
+				addOldCallID(result.ToolCallID)
+				continue
+			}
 			if toolResultIsPointerized(*result) {
 				if !withinCount || !inlineSuffixOpen {
 					addOldCallID(result.ToolCallID)
@@ -784,6 +795,9 @@ func pointerizeFinalizedToolResultForContext(result *session.ToolResult) bool {
 }
 
 func toolResultIsPointerized(result session.ToolResult) bool {
+	if toolResultIsDuplicateMarker(result) {
+		return false
+	}
 	if value, _ := result.Metadata["ephemeral_provider_view"].(bool); value {
 		return true
 	}

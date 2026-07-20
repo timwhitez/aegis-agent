@@ -102,6 +102,14 @@ RequestEstimator
 - 已经由 current-result budget 或 ephemeral view pointerize 的 result 不再生成 artifact、嵌套 pointer 或第二层 completion claim；pointer metadata 原样保留，且在统计分类中优先归入 pointerized
 - request budget snapshot 与 compact event 使用同一互斥分类：`pointerized` 优先于 `compacted`，其余为 `inline`。各类 bytes 都是最终 provider view 中 `llm_output` 的 UTF-8 byte 数，不包含 `display_output`、metadata 或 durable JSON envelope
 
+#### 2.2.2 Identical read-only result dedup replay contract
+
+- 安全去重只作用于 provider view 中的单个 `ToolResult`，只允许 `read_file`、`grep`、`grep_files`、`glob`；shell、写工具、goal/task/agent control、网络或时间相关结果均不参与
+- 候选结果必须同时具备：由工具执行路径共用 normalizer 生成的 canonical arguments、finalizer 写入的版本化原始结果 SHA-256，以及完全一致的 error/final、artifact completeness、recoverability 和 byte-accounting 语义。缺少任一证明时 fail closed，不得按相同 path 或相似文本猜测等价
+- 从最新结果向前比较；最新结果保持完整，只有更旧且等价签名完全相同的 result 才替换为 duplicate marker。marker 保留旧 `ToolCallID`、name、error/final、业务 metadata 和 source/artifact reference，并记录 retained call id、result hash 与原始字节数
+- 每个旧 assistant call 与 marker result 仍是一对合法 replay：OpenAI 保留原 `function_call.call_id` / `function_call_output.call_id`，Anthropic 保留 `tool_use.id` / `tool_result.tool_use_id`，Google 保留 `functionCall.id/name` / `functionResponse.id/name`；同 batch sibling call/result 的字段、顺序和 provider block 不得变化
+- 去重发生在 current-result finalization 和 ephemeral provider-view 处理之后、result-level micro-compaction 之前；重复构造 provider view 不得恢复原 payload、嵌套 marker 或回写 durable `messages.jsonl`
+
 ### 2.3 EventSink
 
 adapter 可向 runtime 发出：

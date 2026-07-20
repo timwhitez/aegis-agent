@@ -3762,7 +3762,7 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 	}
 }
 
-func TestEngineEphemeralProviderViewKeepsLatestWindowInline(t *testing.T) {
+func TestEngineEphemeralProviderViewDeduplicatesIdenticalResultsBeforeWindowing(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	for i := 1; i <= 6; i++ {
 		writeEvidenceFile(t, meta.Workdir, fmt.Sprintf("visible-%d.txt", i), "visible\n")
@@ -3787,6 +3787,15 @@ func TestEngineEphemeralProviderViewKeepsLatestWindowInline(t *testing.T) {
 		}
 		if !strings.Contains(result.LLMOutput, "visible-1.txt") || strings.Contains(result.LLMOutput, "moved out of the provider context window") {
 			t.Fatalf("expected %s to remain inline, got %q", callID, result.LLMOutput)
+		}
+	}
+	assertDuplicate := func(req provider.TurnRequest, callID, retainedCallID string) {
+		result, ok := findResult(req.Messages, callID)
+		if !ok {
+			t.Fatalf("provider request missing tool result %s", callID)
+		}
+		if result.Metadata["duplicate_tool_result"] != true || result.Metadata["dedup_retained_call_id"] != retainedCallID || !strings.Contains(result.LLMOutput, "Duplicate glob result") {
+			t.Fatalf("expected %s to be a duplicate marker retained by %s, got %#v", callID, retainedCallID, result)
 		}
 	}
 	fake := provider.NewFake(
@@ -3818,15 +3827,13 @@ func TestEngineEphemeralProviderViewKeepsLatestWindowInline(t *testing.T) {
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
-			assertInline(req, "call_2")
-			assertInline(req, "call_3")
 			assertInline(req, "call_4")
-			oldest, ok := findResult(req.Messages, "call_1")
-			if !ok {
-				t.Fatal("provider request missing oldest glob result")
-			}
-			if !strings.Contains(oldest.LLMOutput, "Older glob output moved out of the provider context window") || !strings.Contains(oldest.LLMOutput, "read_file") {
-				t.Fatalf("expected only the result outside the latest window to become an artifact pointer, got %q", oldest.LLMOutput)
+			assertDuplicate(req, "call_1", "call_4")
+			assertDuplicate(req, "call_2", "call_4")
+			assertDuplicate(req, "call_3", "call_4")
+			oldest, _ := findResult(req.Messages, "call_1")
+			if !strings.Contains(oldest.LLMOutput, "artifacts/tool-outputs/") || !strings.Contains(oldest.LLMOutput, "source=") {
+				t.Fatalf("oldest duplicate marker lost its recoverable artifact reference: %q", oldest.LLMOutput)
 			}
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},

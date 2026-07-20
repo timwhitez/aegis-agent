@@ -42,7 +42,12 @@ v1 只做最小但完整的三层压缩。
 
 ### 4.2 Layer 2 - Micro Compaction
 
-当准备发送给 provider 的上下文中，旧工具结果数量或体积过多时：
+准备发送给 provider 的上下文先执行一层受限的 identical-result 去重，再对旧工具结果执行数量/体积窗口：
+
+- 去重 allowlist 只有 `read_file`、`grep`、`grep_files`、`glob`。执行与 fingerprint 共用 typed canonical normalizer；只有 canonical arguments、版本化 cap 前 result-content SHA-256、error/final、artifact/recoverability 与 byte-accounting 语义全部相同才替换更旧 result
+- duplicate marker 精确保留旧 `ToolCallID` 与 replay pair，携带 retained call id、result hash、original bytes 和已有 source/artifact reference；同一 tool message 的其他 result 与 assistant sibling call/provider block 不变
+- duplicate marker 是已 compacted provider-view result：继续占一个最近 result 位置并计入 compacted count/bytes，但后续 micro-compaction 和第二次 ephemeral-view 处理不得嵌套 marker或恢复 payload；当它落到最近窗口外时仍可按其 call id 裁剪旧 call arguments
+- 没有可靠 result hash、canonicalization 失败、tool 不在 allowlist 或任一语义字段不同就保留原结果。文件/搜索状态发生变化时，即使参数相同也不能折叠
 
 - 倒序逐个遍历独立 `ToolResult`；每个 result 占一个最近位置，message/batch 边界不参与计数
 - 只有同时满足 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes` 的最新连续后缀保留完整 `llm_output`。byte 口径为 UTF-8 bytes，exact boundary 可保留；第一个超过 count 或 bytes 的 result 关闭完整后缀，该 result 与更早的非 pointer result 都替换为简短占位摘要（head/tail + 原始长度）
@@ -51,7 +56,7 @@ v1 只做最小但完整的三层压缩。
 - 原始 `messages.jsonl` 不做覆盖
 - compacted result 仍保留对应 assistant `tool_call` / provider call id；只按 ToolCallID 裁剪该 call 的大 arguments/input/args，不触碰同 batch sibling。full-compaction 的最近消息选择若保留 result，也必须保留其 call/replay 依赖链
 - 这一层无论总规模是否超阈值都会执行：始终对超出 `keep_recent_tool_results` 的旧大输出做 head/tail 截断，是最廉价的稳定裁剪
-- Phase 10 correctness stop-loss 期间不得按 tool name + arguments 推断两个结果语义相同，也不得在 message 级覆盖整批 `tool_results`。相同查询可能在两次调用之间观察到不同文件内容或外部状态；在 result-level canonical fingerprint、结果内容 hash、ToolCallID 配对和三 provider replay 约束一起落地前，不启用语义去重。
+- 不得只按 tool name + arguments 推断两个结果语义相同，也不得在 message 级覆盖整批 `tool_results`。相同查询可能在两次调用之间观察到不同文件内容或外部状态；只有上述受限 result-level 证明路径可以去重。
 
 示例：
 
@@ -191,11 +196,12 @@ micro-compaction 统计使用互斥分类：带既有 provider-view pointer 的 
 
 compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定。Phase A 对不 fit 请求本地拒绝；后续 Phase B 才负责在有限轮次内 pointerize/缩尾后重新估算。
 
-current-result cap、old-result micro-compaction 与 full compaction 是三个顺序明确的层次：
+current-result cap、安全 identical-result 去重、old-result micro-compaction 与 full compaction 是四个顺序明确的层次：
 
 1. 当前 ToolResult 在 hook 后、durable append 前执行 per-result byte cap；messages.jsonl 从产生时就是 bounded preview/pointer，原始动态正文只进入有 quota 的 session artifact
-2. provider view 对旧结果做 result-level micro-compaction 或 ephemeral sliding-window pointerization；优先复用第一层 artifact，不能再创建无 quota 副本
-3. 整体仍超阈值时才生成 transcript/summary；该层只改变 provider view，不回写前两层 durable facts
+2. provider view 在 ephemeral sliding-window 处理后，仅对 allowlisted read-only result 做 canonical arguments + result hash 安全去重；duplicate marker 不回写 durable log
+3. provider view 对旧结果做 result-level micro-compaction；优先复用第一层 artifact，不能再创建无 quota 副本
+4. 整体仍超阈值时才生成 transcript/summary；该层只改变 provider view，不回写前三层 durable facts
 
 第一层 artifact 完整性必须由 `artifact_complete` 证明；partial/quota/write-failed artifact 不能在第二、三层被重新标成 Full output。
 
@@ -237,5 +243,6 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - `messages.jsonl` 仍可用于完整重放
 - CLI / SDK / future API 都能基于原始日志调试问题
 - stop-loss provider view 保留相同参数但不同结果的每个 ToolResult，也保留同一 tool message 中未被验证为等价的其他结果；构造 view 前后 durable message 日志逐字段不变
+- 等价证明完整时只把更旧的单个 allowlisted result 替换为幂等 duplicate marker；三 provider 仍保留合法 call/result pair，未命中 sibling 不变
 - compaction 后的 main wire request 仍必须通过 request-budget preflight；semantic-summary 自身超预算时只省略语义补充并标记失败，不阻断确定性 summary/transcript 生成
 - 当前工具结果、hook amplification 与 child handoff 在进入 durable log 前已经受统一 byte cap；old-result pointerization 只复用或通过同一 quota writer 创建 artifact

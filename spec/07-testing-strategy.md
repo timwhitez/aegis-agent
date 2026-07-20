@@ -142,6 +142,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `keep_recent_tool_result_bytes` 覆盖 exact boundary、`+1` byte、count 与 bytes 同时触发、最新单 result 自身超限、已 pointerize result；重复构造 provider view 不生成嵌套 marker/重复 artifact，durable `messages.jsonl` byte-for-byte 不变
 - OpenAI multi-call、Anthropic `tool_use/tool_result`、Google `functionCall/functionResponse` 分别验证只有对应旧 result 的 call arguments/provider block 被裁剪，call/result id、name、顺序和 replay wire shape 仍合法
 - `compact.started` / `compact.finished` / `compact.reused` 以及 main/semantic-summary/probe 共用的 `RequestBudgetSnapshot` 验证六个 result-level 字段：inline/compacted/pointerized 的 count 与 provider-view `llm_output` bytes；三类计数之和等于 request view 的 ToolResult 总数
+- `read_file` / `grep` / `grep_files` / `glob` canonical arguments 覆盖省略默认值、显式默认值、limit cap、tool-output byte cap、line/byte mode和 path/pattern/include/cursor 任一变化；非 allowlist 与 malformed/unknown input 必须 fail closed
+- result-content hash 覆盖 inline、超过 cap 后仍基于 cap 前原文、重复 finalizer 和 source metadata clone；没有可靠 hash 的 legacy result 不参与去重
+- 安全去重覆盖同 canonical 请求的同结果/异结果、文件或 grep 命中变化、error↔success、complete↔truncated、ProviderCallID alias 与 mixed multi-call batch；只替换目标旧 result，第二次 provider-view build 不嵌套 marker，durable `messages.jsonl` byte-for-byte 不变
+- duplicate marker 与 retained full result 的混合 batch 分别通过 OpenAI、Anthropic、Google replay serialization，保留每个 call/result id、name、顺序和 error 语义
 
 ### 4.2 Hooks
 

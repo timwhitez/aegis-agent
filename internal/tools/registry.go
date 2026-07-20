@@ -932,85 +932,43 @@ func defReadFile() Definition {
 			},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Path       string `json:"path"`
-				Offset     *int   `json:"offset"`
-				Limit      *int   `json:"limit"`
-				ByteOffset *int64 `json:"byte_offset"`
-				ByteLimit  *int64 `json:"byte_limit"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			input, err := decodeReadFileToolArguments(raw)
+			if err != nil {
 				return errorResult("read_file", err), nil
-			}
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &fields); err != nil {
-				return errorResult("read_file", err), nil
-			}
-			hasLineFields := fields["offset"] != nil || fields["limit"] != nil
-			hasByteFields := fields["byte_offset"] != nil || fields["byte_limit"] != nil
-			if hasLineFields && hasByteFields {
-				return schemaRejectResult("read_file", errors.New("line offset/limit and byte_offset/byte_limit are mutually exclusive")), nil
-			}
-			if hasByteFields {
-				if input.ByteLimit == nil || input.ByteOffset == nil && fields["byte_offset"] != nil {
-					return schemaRejectResult("read_file", errors.New("byte mode requires integer byte_limit and any byte_offset must be an integer")), nil
-				}
-				if *input.ByteLimit <= 0 {
-					return schemaRejectResult("read_file", errors.New("byte_limit must be positive")), nil
-				}
-				if input.ByteOffset != nil && *input.ByteOffset < 0 {
-					return schemaRejectResult("read_file", errors.New("byte_offset must be non-negative")), nil
-				}
 			}
 			if err := validateToolPath(input.Path); err != nil {
 				return errorResult("read_file", err), nil
 			}
-			path, displayBase, source, skillName, err := resolveReadFilePath(execCtx, input.Path)
+			normalized, err := normalizeReadFileToolArguments(input, execCtx.Config)
 			if err != nil {
-				return readFileErrorResult(input.Path, err), nil
+				return schemaRejectResult("read_file", err), nil
 			}
-			if source == "workspace" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
+			path, displayBase, source, skillName, err := resolveReadFilePath(execCtx, normalized.Path)
+			if err != nil {
+				return readFileErrorResult(normalized.Path, err), nil
+			}
+			if source == "workspace" && (isInternalGeneratedArtifactInput(normalized.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
-			if hasByteFields {
-				byteOffset := int64(0)
-				if input.ByteOffset != nil {
-					byteOffset = *input.ByteOffset
-				}
-				return executeReadFileByteMode(execCtx, path, displayBase, source, skillName, byteOffset, *input.ByteLimit), nil
+			if normalized.Mode == readFileModeByte {
+				return executeReadFileByteMode(execCtx, path, displayBase, source, skillName, normalized.RequestedByteOffset, normalized.RequestedByteLimit), nil
 			}
 			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
-				return readFileErrorResult(input.Path, err), nil
+				return readFileErrorResult(normalized.Path, err), nil
 			}
 			lines := strings.Split(string(data), "\n")
-			requestedOffset := 0
-			if input.Offset != nil {
-				requestedOffset = *input.Offset
-			}
-			offset := max(requestedOffset, 1) - 1
+			offset := normalized.EffectiveLineOffset - 1
 			if offset > len(lines) {
 				offset = len(lines)
 			}
-			requestedLimit := 0
-			if input.Limit != nil {
-				requestedLimit = *input.Limit
-			}
-			limit := requestedLimit
-			if limit <= 0 {
-				limit = readFileDefaultLimit
-			}
-			capped := false
-			if limit > readFileMaxLimit {
-				limit = readFileMaxLimit
-				capped = true
-			}
+			limit := normalized.EffectiveLineLimit
 			end := offset + limit
 			if end > len(lines) {
 				end = len(lines)
 			}
 			selected := strings.Join(lines[offset:end], "\n")
-			selected = annotateReadWindow(displayBase, path, offset, end, len(lines), requestedLimit, capped, selected)
+			selected = annotateReadWindow(displayBase, path, offset, end, len(lines), normalized.RequestedLineLimit, normalized.LineLimitCapped, selected)
 			if len(selected) > toolOutputLLMMaxBytes(execCtx.Config) {
 				result := typedToolErrorResult("read_file", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, fmt.Sprintf("line window is %d bytes and exceeds the model-visible output budget; retry this exact path with byte_offset=0 and a positive byte_limit", len(selected)))
 				result.Metadata["path"] = path
@@ -1250,15 +1208,8 @@ func defGlob() Definition {
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Pattern   string `json:"pattern"`
-				Path      string `json:"path"`
-				Include   string `json:"include"`
-				Limit     int    `json:"limit"`
-				ByteLimit *int   `json:"byte_limit"`
-				Cursor    string `json:"cursor"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			input, err := decodeSearchToolArguments(raw)
+			if err != nil {
 				return errorResult("glob", err), nil
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
@@ -1281,11 +1232,12 @@ func defGlob() Definition {
 			if !info.IsDir() {
 				return errorResult("glob", fmt.Errorf("path %q is not a directory", input.Path)), nil
 			}
-			limit := normalizeGrepFilesLimit(input.Limit)
-			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			normalized, err := normalizeSearchToolArguments("glob", input, execCtx.Config)
 			if err != nil {
 				return typedToolErrorResult("glob", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
 			}
+			limit := normalized.EffectiveLimit
+			outputBudget := normalized.OutputBudget
 			query := newSearchCursorQuery("glob", root, input.Pattern, input.Include)
 			startIndex, err := decodeSearchCursor(input.Cursor, query)
 			if err != nil {
@@ -1327,7 +1279,7 @@ func defGlob() Definition {
 				StartIndex:         startIndex,
 				Records:            collector.records,
 				ScanComplete:       !collector.stopped,
-				RequestedLimit:     input.Limit,
+				RequestedLimit:     normalized.RequestedLimit,
 				EffectiveLimit:     limit,
 				RequestedByteLimit: outputBudget.Requested,
 				EffectiveByteLimit: outputBudget.Effective,
@@ -1394,15 +1346,8 @@ func defGrep() Definition {
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Pattern   string `json:"pattern"`
-				Path      string `json:"path"`
-				Include   string `json:"include"`
-				Limit     int    `json:"limit"`
-				ByteLimit *int   `json:"byte_limit"`
-				Cursor    string `json:"cursor"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			input, err := decodeSearchToolArguments(raw)
+			if err != nil {
 				return errorResult("grep", err), nil
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
@@ -1423,11 +1368,12 @@ func defGrep() Definition {
 			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, root.path) {
 				return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
-			limit := normalizeGrepMatchesLimit(input.Limit)
-			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			normalized, err := normalizeSearchToolArguments("grep", input, execCtx.Config)
 			if err != nil {
 				return typedToolErrorResult("grep", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
 			}
+			limit := normalized.EffectiveLimit
+			outputBudget := normalized.OutputBudget
 			query := newSearchCursorQuery("grep", root, input.Pattern, input.Include)
 			startIndex, err := decodeSearchCursor(input.Cursor, query)
 			if err != nil {
@@ -1524,7 +1470,7 @@ func defGrep() Definition {
 				StartIndex:         startIndex,
 				Records:            collector.records,
 				ScanComplete:       !collector.stopped,
-				RequestedLimit:     input.Limit,
+				RequestedLimit:     normalized.RequestedLimit,
 				EffectiveLimit:     limit,
 				RequestedByteLimit: outputBudget.Requested,
 				EffectiveByteLimit: outputBudget.Effective,
@@ -1583,15 +1529,8 @@ func defGrepFiles() Definition {
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Pattern   string `json:"pattern"`
-				Path      string `json:"path"`
-				Include   string `json:"include"`
-				Limit     int    `json:"limit"`
-				ByteLimit *int   `json:"byte_limit"`
-				Cursor    string `json:"cursor"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			input, err := decodeSearchToolArguments(raw)
+			if err != nil {
 				return errorResult("grep_files", err), nil
 			}
 			if err := validateGrepPattern(input.Pattern); err != nil {
@@ -1611,11 +1550,12 @@ func defGrepFiles() Definition {
 				return errorResult("grep_files", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
-			limit := normalizeGrepFilesLimit(input.Limit)
-			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			normalized, err := normalizeSearchToolArguments("grep_files", input, execCtx.Config)
 			if err != nil {
 				return typedToolErrorResult("grep_files", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
 			}
+			limit := normalized.EffectiveLimit
+			outputBudget := normalized.OutputBudget
 			query := newSearchCursorQuery("grep_files", root, input.Pattern, input.Include)
 			startIndex, err := decodeSearchCursor(input.Cursor, query)
 			if err != nil {
@@ -1641,7 +1581,7 @@ func defGrepFiles() Definition {
 				StartIndex:         startIndex,
 				Records:            collector.records,
 				ScanComplete:       !collector.stopped,
-				RequestedLimit:     input.Limit,
+				RequestedLimit:     normalized.RequestedLimit,
 				EffectiveLimit:     limit,
 				RequestedByteLimit: outputBudget.Requested,
 				EffectiveByteLimit: outputBudget.Effective,
