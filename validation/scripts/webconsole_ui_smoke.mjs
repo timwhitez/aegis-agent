@@ -214,6 +214,28 @@ function sessionToolNames(detail) {
   return (detail.messages || []).flatMap((msg) => (msg.tool_calls || []).map((call) => call.name));
 }
 
+function sessionToolCalls(detail) {
+  return (detail.messages || []).flatMap((msg) => msg.tool_calls || []);
+}
+
+function sessionToolResults(detail) {
+  return (detail.messages || []).flatMap((msg) => msg.tool_results || []);
+}
+
+function toolCallArguments(call) {
+  if (call?.arguments && typeof call.arguments === 'object') {
+    return call.arguments;
+  }
+  if (typeof call?.arguments === 'string') {
+    try {
+      return JSON.parse(call.arguments);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
 function sessionHasRichActivity(detail) {
   const toolNames = sessionToolNames(detail);
   return toolNames.length > 0 || (detail.timeline || []).length > 2 || (detail.children?.sessions || []).length > 0 || (detail.children?.jobs || []).length > 0;
@@ -371,6 +393,22 @@ async function main() {
       'settings form'
     );
     results.interactions.settings_loaded = true;
+    const explorerSettingsVisible = await browserClient.evaluate(`(() => {
+      const panel = document.querySelector('[data-role-provider="explorer"]');
+      return Boolean(
+        panel &&
+        panel.querySelector('[data-role-field="provider"]') &&
+        panel.querySelector('[data-role-field="api_provider"]') &&
+        panel.querySelector('[data-role-field="base_url"]') &&
+        panel.querySelector('[data-role-field="model"]') &&
+        panel.querySelector('[data-role-field="reasoning_effort"]') &&
+        panel.querySelector('[data-role-field="max_output_tokens"]')
+      );
+    })()`);
+    if (!explorerSettingsVisible) {
+      throw new Error('Explorer role provider settings are incomplete');
+    }
+    results.interactions.explorer_settings_visible = true;
     const childBudgetDefaults = await browserClient.evaluate(`(() => {
       const enabled = document.getElementById('settings-enable-child-budget');
       const activeRuntime = document.getElementById('settings-child-budget-active-runtime');
@@ -424,6 +462,9 @@ async function main() {
       await setValue('#settings-child-budget-active-runtime', '30m');
       await setValue('#settings-child-budget-elapsed', '2h');
       await setValue('#settings-child-budget-max-turns', '1');
+      await setValue('[data-role-provider="explorer"] [data-role-field="model"]', 'budget-smoke-explorer-model');
+      await setValue('[data-role-provider="explorer"] [data-role-field="reasoning_effort"]', 'low');
+      await setValue('[data-role-provider="explorer"] [data-role-field="max_output_tokens"]', '321');
       await click('#settings-save-btn', 'save budget settings');
       await waitFor(
         () => browserClient.evaluate(`Boolean(document.querySelector('.confirm-dialog-confirm'))`),
@@ -438,12 +479,30 @@ async function main() {
       );
       const savedConfig = await fetchJSON(`${baseURL}/api/config`);
       const savedBudget = savedConfig?.child_budget || {};
+      const savedExplorer = savedConfig?.role_providers?.explorer || {};
       if (savedConfig?.max_turns_hard !== -1 || savedConfig?.disable_hard_turn_limit !== true || savedBudget.disabled !== false || savedBudget.max_active_runtime_sec !== 1800 || savedBudget.max_elapsed_sec !== 7200 || savedBudget.max_turns_per_attempt !== 1 || Object.prototype.hasOwnProperty.call(savedBudget, 'max_wall_clock_sec') || Object.prototype.hasOwnProperty.call(savedBudget, 'max_turns')) {
         throw new Error(`unexpected canonical Settings round-trip: ${JSON.stringify(savedConfig)}`);
       }
+      if (savedExplorer.model !== 'budget-smoke-explorer-model' || savedExplorer.reasoning_effort !== 'low' || Number(savedExplorer.max_output_tokens || 0) !== 321) {
+        throw new Error(`unexpected Explorer role Settings round-trip: ${JSON.stringify(savedExplorer)}`);
+      }
+      await click('[data-view="chat"]', 'chat nav before Explorer settings reload');
+      await click('[data-view="settings"]', 'settings nav for Explorer reload');
+      await waitFor(
+        () => browserClient.evaluate(`(() => {
+          const panel = document.querySelector('[data-role-provider="explorer"]');
+          return panel?.querySelector('[data-role-field="model"]')?.value === 'budget-smoke-explorer-model' &&
+            panel?.querySelector('[data-role-field="reasoning_effort"]')?.value === 'low' &&
+            panel?.querySelector('[data-role-field="max_output_tokens"]')?.value === '321';
+        })()`),
+        15000,
+        'Explorer role Settings reload'
+      );
       results.interactions.settings_budget_saved = true;
       results.interactions.settings_canonical_round_trip = true;
+      results.interactions.explorer_settings_round_trip = true;
       results.saved_budget = savedBudget;
+      results.saved_explorer = savedExplorer;
     } else {
       await click('#settings-enable-child-budget', 'sub-agent budget reset');
     }
@@ -846,6 +905,50 @@ async function main() {
     results.interactions.tasks_tab_visible = (activeSessionDetail.task_board?.tasks || []).length > 0 || (activeSessionDetail.task_board?.todo || []).length > 0;
 
     if (budgetLifecycle) {
+      const rootCalls = sessionToolCalls(activeSessionDetail);
+      const rootResults = sessionToolResults(activeSessionDetail);
+      const shellResult = rootResults.find((item) => item.name === 'shell' && item.metadata?.artifact_complete === true);
+      const artifactPath = String(shellResult?.metadata?.artifact_path || '');
+      if (!shellResult || !artifactPath || Number(shellResult.metadata?.raw_bytes ?? 0) !== 70000 || Number(shellResult.metadata?.persisted_bytes ?? 0) !== 70000 || Number(shellResult.metadata?.omitted_bytes ?? -1) !== 0 || shellResult.metadata?.recoverable !== true) {
+        throw new Error(`large shell output did not preserve a complete current-result artifact: ${JSON.stringify(shellResult?.metadata || null)}`);
+      }
+      const artifactReadCall = rootCalls.find((call) => {
+        if (call.name !== 'read_file') return false;
+        const args = toolCallArguments(call);
+        return args.path === artifactPath && Number(args.byte_offset || 0) === 0 && Number(args.byte_limit || 0) === 512;
+      });
+      const artifactReadResult = rootResults.find((item) => item.name === 'read_file' && item.metadata?.mode === 'byte' && Number(item.metadata?.returned_bytes || 0) === 512 && item.metadata?.has_more === true);
+      if (!artifactReadCall || !artifactReadResult) {
+        throw new Error(`command artifact was not recovered through bounded read_file byte mode: ${JSON.stringify({ artifactReadCall, artifactReadResult })}`);
+      }
+
+      const historyCalls = rootCalls.filter((call) => call.name === 'read_session_history');
+      const historyResults = rootResults.filter((item) => item.name === 'read_session_history');
+      const recordCall = historyCalls.find((call) => Number(toolCallArguments(call).limit || 0) === 4);
+      const recordResult = historyResults.find((item) => item.metadata?.mode === 'tail' && item.metadata?.has_more === true && Boolean(item.metadata?.next_before_message_id));
+      const contentCalls = historyCalls
+        .map((call) => ({ call, args: toolCallArguments(call) }))
+        .filter((item) => Boolean(item.args.message_id) && Number(item.args.byte_limit || 0) === 512)
+        .sort((left, right) => Number(left.args.byte_offset || 0) - Number(right.args.byte_offset || 0));
+      const contentResults = historyResults
+        .filter((item) => item.metadata?.mode === 'message_content' && item.metadata?.has_more === true && Number(item.metadata?.next_byte_offset || 0) > 0)
+        .sort((left, right) => Number(left.metadata.next_byte_offset) - Number(right.metadata.next_byte_offset));
+      if (!recordCall || !recordResult || contentCalls.length < 2 || Number(contentCalls[0].args.byte_offset || 0) !== 0 || Number(contentCalls[1].args.byte_offset || 0) <= 0 || contentCalls[0].args.message_id !== contentCalls[1].args.message_id || contentResults.length < 2 || Number(contentResults[1].metadata.next_byte_offset) <= Number(contentResults[0].metadata.next_byte_offset)) {
+        throw new Error(`current-session history record/content pagination is incomplete: ${JSON.stringify({ recordCall, recordResult, contentCalls, contentResults })}`);
+      }
+      results.interactions.long_output_artifact_pointer = true;
+      results.interactions.artifact_read_file_byte_page = true;
+      results.interactions.history_record_pagination = true;
+      results.interactions.history_content_pagination = true;
+      results.context_harness = {
+        artifact_path: artifactPath,
+        artifact_raw_bytes: Number(shellResult.metadata.raw_bytes || 0),
+        history_message_id: String(contentCalls[0].args.message_id || ''),
+        history_next_offsets: contentResults.map((item) => Number(item.metadata.next_byte_offset || 0))
+      };
+    }
+
+    if (budgetLifecycle) {
       const childSessions = activeSessionDetail.children?.sessions || [];
       const childJobs = activeSessionDetail.children?.jobs || [];
       const resumeChild = childSessions.find((item) => item.agent_name === 'budget-resume-child');
@@ -936,6 +1039,66 @@ async function main() {
         cancelled_child_pause_reason: cancelledDetail.state?.pause_reason || ''
       };
     }
+
+    const contextTabRendered = await browserClient.evaluate(`Boolean(document.querySelector('[data-inspector-tab="context"]'))`);
+    if (!contextTabRendered) {
+      await click('#inspector-toggle-btn', 'open inspector for Context tab');
+      await waitFor(
+        () => browserClient.evaluate(`Boolean(document.querySelector('[data-inspector-tab="context"]'))`),
+        5000,
+        'Context inspector tab'
+      );
+    }
+    const contextResourceCountBefore = await browserClient.evaluate(`(() => {
+      const suffix = '/api/sessions/${encodeURIComponent(activeSessionId)}/context';
+      return performance.getEntriesByType('resource').filter((entry) => String(entry.name || '').includes(suffix)).length;
+    })()`);
+    if (contextResourceCountBefore !== 0) {
+      throw new Error(`Context report loaded before its inspector tab was opened: count=${contextResourceCountBefore}`);
+    }
+    await click('[data-inspector-tab="context"]', 'Context inspector tab');
+    await waitFor(
+      () => browserClient.evaluate(`(() => {
+        const report = typeof contextReportViewState !== 'undefined' ? contextReportViewState.report : null;
+        const text = [document.getElementById('inspector-panel')?.textContent || '', document.getElementById('inspector-slide-out')?.textContent || ''].join(' ');
+        return report?.schema_version === 1 && report?.requested_session_id === ${JSON.stringify(activeSessionId)} && text.includes('Context report v1') && text.includes('Root peak') && text.includes('Total input') && text.includes('Provider usage');
+      })()`),
+      15000,
+      'lazy Context report render'
+    );
+    const contextLoadFacts = await browserClient.evaluate(`(() => {
+      const suffix = '/api/sessions/${encodeURIComponent(activeSessionId)}/context';
+      const report = typeof contextReportViewState !== 'undefined' ? contextReportViewState.report : null;
+      const serialized = JSON.stringify(report || {});
+      return {
+        resource_count: performance.getEntriesByType('resource').filter((entry) => String(entry.name || '').includes(suffix)).length,
+        requested_session_id: report?.requested_session_id || '',
+        root_session_id: report?.root_session_id || '',
+        session_count: Number(report?.aggregate?.session_count || 0),
+        total_input: Number(report?.aggregate?.total_estimated_input_tokens || 0),
+        leaks_prompt: serialized.includes('BUDGET_BROWSER_SMOKE'),
+        leaks_tool_output: serialized.includes('pppppppppppppppppppppppppppppppp')
+      };
+    })()`);
+    if (contextLoadFacts.resource_count !== 1 || contextLoadFacts.requested_session_id !== activeSessionId || contextLoadFacts.root_session_id !== activeSessionId || contextLoadFacts.session_count < 1 || contextLoadFacts.total_input <= 0 || contextLoadFacts.leaks_prompt || contextLoadFacts.leaks_tool_output) {
+      throw new Error(`Context report lazy-load facts are invalid: ${JSON.stringify(contextLoadFacts)}`);
+    }
+    results.interactions.context_report_lazy_load = true;
+    results.interactions.context_report_bounded_surface = true;
+
+    await click('[data-context-report-refresh]', 'Context report refresh');
+    await waitFor(
+      () => browserClient.evaluate(`(() => {
+        const suffix = '/api/sessions/${encodeURIComponent(activeSessionId)}/context';
+        const count = performance.getEntriesByType('resource').filter((entry) => String(entry.name || '').includes(suffix)).length;
+        const button = document.querySelector('[data-context-report-refresh]');
+        return count >= 2 && Boolean(button) && !button.disabled;
+      })()`),
+      15000,
+      'Context report refresh request'
+    );
+    results.interactions.context_report_refresh = true;
+    results.context_report = contextLoadFacts;
 
     await click('[data-view="history"]', 'history nav after session');
     await waitFor(

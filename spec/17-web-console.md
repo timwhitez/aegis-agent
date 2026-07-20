@@ -764,7 +764,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - WebSocket malformed payload 不得造成全局 runtime exception
 - focused retry-resume live rerun 需要同时验证 durable retry metadata 未漂移，以及真实 `provider.retry` 事件出现
 - 若 retry proof 已经拿到上述 durable evidence，而 bounded finish nudges 后 session 仍为 `awaiting_input`，应将其记为 non-blocking completion quirk，而不是把整轮 webconsole follow-up 判成失败
-- 通用 headless browser UI smoke 覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history clear 留在 Sessions 视图；API 提交 queue job 后只验证后端 queue detail / 文件事实源。另有不依赖外部 API key 的 deterministic budget browser smoke，使用本地 scripted Responses provider 验证 Settings 默认/保存语义、config/API/audit canonical round-trip、真实 foreground extend/resume、background cancel/settle、compact inspector telemetry 与 cancelled-not-failed 统计
+- 通用 headless browser UI smoke 覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，start 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history clear 留在 Sessions 视图；API 提交 queue job 后只验证后端 queue detail / 文件事实源。另有不依赖外部 API key 的 deterministic budget browser smoke，使用临时 config 与本地 scripted Responses provider 验证 Explorer role override 保存/重新读取、Settings 默认/保存语义、config/API/audit canonical round-trip、真实 foreground extend/resume、background cancel/settle、complete command artifact + `read_file` byte page、`read_session_history` record/content continuation、Context tab lazy load/Refresh、compact inspector telemetry 与 cancelled-not-failed 统计
 - 浏览器侧 `runtime exception` 与 `console error` 为空
 
 手工验证至少覆盖：

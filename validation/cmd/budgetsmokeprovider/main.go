@@ -24,9 +24,12 @@ type providerState struct {
 }
 
 type sessionScriptState struct {
-	Calls           int
-	DirectChildID   string
-	BackgroundJobID string
+	Calls                 int
+	DirectChildID         string
+	BackgroundJobID       string
+	CommandArtifactPath   string
+	HistoryMessageID      string
+	HistoryNextByteOffset int64
 }
 
 type responseRequest struct {
@@ -195,6 +198,39 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 			"todos": []map[string]any{{"content": todoContent, "status": "in_progress", "priority": "high"}},
 		}}, nil
 	case 2:
+		return scriptedToolCall{Name: "shell", Arguments: map[string]any{
+			"command": "head -c 70000 /dev/zero | tr '\\0' p",
+		}}, nil
+	case 3:
+		if state.CommandArtifactPath == "" {
+			return scriptedToolCall{}, errors.New("large shell result did not expose a complete artifact path")
+		}
+		return scriptedToolCall{Name: "read_file", Arguments: map[string]any{
+			"path":        state.CommandArtifactPath,
+			"byte_offset": 0,
+			"byte_limit":  512,
+		}}, nil
+	case 4:
+		return scriptedToolCall{Name: "read_session_history", Arguments: map[string]any{"limit": 4}}, nil
+	case 5:
+		if state.HistoryMessageID == "" {
+			return scriptedToolCall{}, errors.New("history record page did not expose the large shell result message")
+		}
+		return scriptedToolCall{Name: "read_session_history", Arguments: map[string]any{
+			"message_id":  state.HistoryMessageID,
+			"byte_offset": 0,
+			"byte_limit":  512,
+		}}, nil
+	case 6:
+		if state.HistoryMessageID == "" || state.HistoryNextByteOffset <= 0 {
+			return scriptedToolCall{}, errors.New("history content page did not expose a continuation offset")
+		}
+		return scriptedToolCall{Name: "read_session_history", Arguments: map[string]any{
+			"message_id":  state.HistoryMessageID,
+			"byte_offset": state.HistoryNextByteOffset,
+			"byte_limit":  512,
+		}}, nil
+	case 7:
 		return scriptedToolCall{Name: "agent_spawn", Arguments: map[string]any{
 			"prompt":         "BUDGET_RESUME_CHILD: call read_file once, then finish with budget resume child complete after the parent extends the paused budget.",
 			"agent_name":     "budget-resume-child",
@@ -203,7 +239,7 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 			"background":     false,
 			"isolation_mode": "off",
 		}}, nil
-	case 3:
+	case 8:
 		if state.DirectChildID == "" {
 			return scriptedToolCall{}, errors.New("foreground agent_spawn result did not expose session_id")
 		}
@@ -215,12 +251,12 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 				"reason":    "browser smoke foreground resume",
 			},
 		}}, nil
-	case 4:
+	case 9:
 		if state.DirectChildID == "" {
 			return scriptedToolCall{}, errors.New("foreground child id is unavailable for status")
 		}
 		return scriptedToolCall{Name: "agent_status", Arguments: map[string]any{"session_id": state.DirectChildID}}, nil
-	case 5:
+	case 10:
 		return scriptedToolCall{Name: "agent_spawn", Arguments: map[string]any{
 			"prompt":         "BUDGET_CANCEL_CHILD: call read_file once and remain budget-paused until the parent cancels and settles the job.",
 			"agent_name":     "budget-cancel-child",
@@ -230,14 +266,14 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 			"resume_parent":  true,
 			"isolation_mode": "off",
 		}}, nil
-	case 6:
+	case 11:
 		if state.BackgroundJobID == "" {
 			return scriptedToolCall{}, errors.New("background agent_spawn result did not expose queue_job_id")
 		}
 		return scriptedToolCall{Name: "agent_stop", Arguments: map[string]any{"queue_job_id": state.BackgroundJobID}}, nil
-	case 7:
+	case 12:
 		return scriptedToolCall{Name: "agent_list", Arguments: map[string]any{}}, nil
-	case 8:
+	case 13:
 		return scriptedToolCall{Name: "todo_write", Arguments: map[string]any{
 			"todos": []map[string]any{{"content": todoContent, "status": "completed", "priority": "high"}},
 		}}, nil
@@ -256,6 +292,7 @@ func captureToolReferences(input []any, state *sessionScriptState) {
 		if strings.TrimSpace(output) == "" {
 			continue
 		}
+		captureCommandArtifactPath(output, state)
 		var value map[string]any
 		if err := json.Unmarshal([]byte(output), &value); err != nil {
 			continue
@@ -265,6 +302,59 @@ func captureToolReferences(input []any, state *sessionScriptState) {
 		}
 		if queueJobID := metadataString(value, "queue_job_id"); queueJobID != "" {
 			state.BackgroundJobID = queueJobID
+		}
+		captureHistoryReferences(value, state)
+	}
+}
+
+func captureCommandArtifactPath(output string, state *sessionScriptState) {
+	const prefix = "[Complete artifact: "
+	start := strings.Index(output, prefix)
+	if start < 0 {
+		return
+	}
+	remainder := output[start+len(prefix):]
+	end := strings.IndexByte(remainder, ';')
+	if end < 0 {
+		return
+	}
+	if path := strings.TrimSpace(remainder[:end]); path != "" {
+		state.CommandArtifactPath = path
+	}
+}
+
+func captureHistoryReferences(value map[string]any, state *sessionScriptState) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	var envelope struct {
+		Mode           string `json:"mode"`
+		HasMore        bool   `json:"has_more"`
+		NextByteOffset *int64 `json:"next_byte_offset"`
+		Messages       []struct {
+			MessageID   string `json:"message_id"`
+			ToolResults []struct {
+				Name        string `json:"name"`
+				OutputBytes int    `json:"output_bytes"`
+			} `json:"tool_results"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return
+	}
+	if envelope.Mode == "message_content" {
+		if envelope.HasMore && envelope.NextByteOffset != nil && *envelope.NextByteOffset > 0 {
+			state.HistoryNextByteOffset = *envelope.NextByteOffset
+		}
+		return
+	}
+	for _, message := range envelope.Messages {
+		for _, result := range message.ToolResults {
+			if result.Name == "shell" && result.OutputBytes > 512 && strings.TrimSpace(message.MessageID) != "" {
+				state.HistoryMessageID = message.MessageID
+				return
+			}
 		}
 	}
 }

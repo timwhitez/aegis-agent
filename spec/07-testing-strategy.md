@@ -202,7 +202,8 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - effective budget 在 job/session 创建时快照，Settings 热更新不改变旧 job，restart/reconcile 后不漂移
 - budget exceeded/extended/resumed/cancelled event 与 notification 幂等，usage/remaining/overrun/attempt/source 可由 durable files 还原
 - legacy child budget config 可以读取并迁移，new config/API/Settings round-trip 使用 canonical names
-- deterministic local-provider + headless Chrome smoke 验证 Settings 默认 hard Off / child Off、duration 保存与 config/API/audit round-trip、foreground budget pause -> parent extend/resume -> complete、background budget pause -> parent cancel/settle，以及 inspector telemetry / cancelled-not-failed 展示
+- deterministic local-provider + headless Chrome smoke 验证 Settings 默认 hard Off / child Off、duration 保存与 config/API/audit round-trip、Explorer role provider/reasoning/output 的保存与重新读取、foreground budget pause -> parent extend/resume -> complete、background budget pause -> parent cancel/settle，以及 inspector telemetry / cancelled-not-failed 展示
+- 同一条无 credential browser smoke 还要让 scripted provider 真实调用大输出 `shell`、artifact `read_file` byte page 与 `read_session_history` record/content continuation；浏览器从 durable session detail 核对 complete artifact pointer、两段 history pagination，再验证 Context tab 只在打开时加载、Refresh 发起新请求且报告仍来自同一 session root。任何 runtime exception / console error 都使 smoke 失败
 - queue claim rename/write 与 child session metadata/state 创建窗口不得让 parent 误报 coordination deadlock，也不得让 session detail 因短暂缺少 queue/state fact 返回 404
 
 ### 4.4.2 Explorer role/profile
@@ -216,6 +217,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - explorer system prompt 只规定只读 capability 与有界 handoff，不写固定搜索顺序、强制 delegation、固定 DAG、强制 wait 或 taskboard workflow；`agent_spawn` description 保持 model-led 信息经济 guidance
 - sync、background + wait、失败、暂停、取消与 parent resume/recovery 沿用现有 lifecycle；handoff 经过统一 ToolResult/background budget，deterministic fake-provider fixture 证明 parent provider messages 不含 child 原始 tool trajectory，只含有界 final/reference
 - Web Settings 渲染 Explorer row 与 reasoning/output 字段；session inspector 显示 role、provider/model、effective reasoning/output/isolation/tool profile；默认首页 fixture 不出现新的 orchestration panel
+- deterministic browser smoke 对 Explorer row 写入非默认 model/reasoning/max-output，保存后通过 `/api/config` 和重新渲染的 Settings 表单双重核对；测试只使用临时 config，不修改 operator 配置
 
 ### 4.4.3 Context report 与 harness comparator
 
@@ -223,6 +225,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - root/recursive-child fixture 验证 session id 去重、root peak、child peak、root/child/total aggregate、provider-view 三类 bytes、artifact bytes、known usage 与 unknown usage 数学对账；用 child id 查询仍返回同一 root tree，并保留 `requested_session_id`
 - runtime fixture 验证 main/semantic-summary、compaction lifecycle、transport retry 和 completed/failed 都带同一 request correlation；同一 request 的 transport retry 不生成新 snapshot，budget rejection、semantic-summary timeout、provider cancellation、call 前 pause 与 retry-attempt 持久化失败各只有一个 typed terminal event；event/report 中的 sentinel prompt、tool output、secret-shaped metadata value 不得出现
 - CLI `sessions context <id> --json`、SDK `Context` 与 Web `/api/sessions/<id>/context` 共享 schema version；Web detail 总预算为 64，aggregate 保持完整并明确标记 omitted session/request 数
+- headless smoke 在打开 Context tab 前记录 `/context` resource 数，打开后必须新增一次请求并渲染 report/root/aggregate；点击 Refresh 后必须再新增一次请求。默认首页和普通 settled-session polling 不得提前加载该 endpoint
 - `validation/cmd/contextharnessfixture` 生成 versioned deterministic JSON，对相同事实比较 `single_root_broad`、`single_root_narrowed`、`delegated_explorer`。普通 CI 断言 narrowed root peak 不高于 broad、delegated root peak 小于 broad、delegated child aggregate 非零、delegated total 等于 root aggregate 加 child aggregate 且单列、重复运行 JSON 完全一致
 - fixture 使用 repo-owned fixed workspace/scripted fake facts，不调用收费 provider、不要求 credential；live-provider/cost smoke 只能作为显式可选 validation，unknown usage 不参与 cost 推算
 

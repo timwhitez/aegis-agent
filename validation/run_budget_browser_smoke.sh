@@ -213,8 +213,17 @@ const required = [
   "soft_checkpoint_copy",
   "child_budget_snapshot_copy",
   "child_budget_parent_actions_copy",
+  "explorer_settings_visible",
+  "explorer_settings_round_trip",
   "settings_budget_saved",
   "settings_canonical_round_trip",
+  "long_output_artifact_pointer",
+  "artifact_read_file_byte_page",
+  "history_record_pagination",
+  "history_content_pagination",
+  "context_report_lazy_load",
+  "context_report_bounded_surface",
+  "context_report_refresh",
   "foreground_budget_pause_extend_resume_complete",
   "background_budget_pause_cancel_settle",
   "cancelled_excluded_from_failures",
@@ -235,6 +244,10 @@ grep -Fq 'max_active_runtime_sec: 1800' "$CONFIG_PATH"
 grep -Fq 'max_elapsed_sec: 7200' "$CONFIG_PATH"
 grep -Fq 'max_turns_per_attempt: 1' "$CONFIG_PATH"
 grep -Fq 'active_runtime_checkpoint_ms: 1000' "$CONFIG_PATH"
+grep -Fq 'explorer:' "$CONFIG_PATH"
+grep -Fq 'model: budget-smoke-explorer-model' "$CONFIG_PATH"
+grep -Fq 'reasoning_effort: low' "$CONFIG_PATH"
+grep -Fq 'max_output_tokens: 321' "$CONFIG_PATH"
 
 grep -Fq '"type":"web.config.write"' "$AUDIT_LOG"
 grep -Fq '"max_turns_hard":-1' "$AUDIT_LOG"
@@ -245,8 +258,20 @@ grep -Fq '"child_budget_turns_per_attempt":1' "$AUDIT_LOG"
 
 grep -Fq '"tool":"agent_prompt"' "$PROVIDER_LOG"
 grep -Fq '"tool":"agent_stop"' "$PROVIDER_LOG"
+grep -Fq '"tool":"shell"' "$PROVIDER_LOG"
+grep -Fq '"tool":"read_file"' "$PROVIDER_LOG"
+if [[ "$(grep -Fc '"tool":"read_session_history"' "$PROVIDER_LOG")" -lt 3 ]]; then
+	printf '%s\n' "missing record plus two content history calls" >&2
+	exit 1
+fi
 grep -Fq '"agent_name":"budget-resume-child"' "$PROVIDER_LOG"
 grep -Fq '"agent_name":"budget-cancel-child"' "$PROVIDER_LOG"
+
+COMMAND_ARTIFACT="$(find "$SESSION_ROOT" -type f -path '*/artifacts/tool-outputs/*' -size 70000c -print -quit)"
+if [[ -z "$COMMAND_ARTIFACT" ]]; then
+	printf '%s\n' "missing complete 70000-byte command artifact" >&2
+	exit 1
+fi
 
 if ! grep -R -Fq '"type":"session.child_budget.extended"' "$SESSION_ROOT"; then
 	printf '%s\n' "missing durable child budget extension event" >&2
