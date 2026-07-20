@@ -407,9 +407,12 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 			Status:          session.QueueStatusQueued,
 			ParentSessionID: meta.ID,
 			RootSessionID:   meta.ID,
+			AgentRole:       agentRoleExplorer,
+			ToolProfile:     session.ToolProfileExplorerReadOnly,
 			Prompt:          "child work",
 			Mode:            session.ModeExec,
 			Background:      true,
+			IsolationMode:   "off",
 		}); err != nil {
 			t.Fatalf("save queued job %s: %v", jobID, err)
 		}
@@ -424,8 +427,11 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 			ParentSessionID: meta.ID,
 			SessionID:       "child_finished_first",
 			SessionStatus:   session.StatusCompleted,
+			AgentRole:       agentRoleExplorer,
+			ToolProfile:     session.ToolProfileExplorerReadOnly,
 			FinalText:       "first child finished",
 			ResumeParent:    true,
+			IsolationMode:   "off",
 		}
 		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
 	}()
@@ -451,7 +457,7 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load background notifications: %v", err)
 	}
-	if len(notifications) != 1 || notifications[0].QueueJobID != "job_finished_first" || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted {
+	if len(notifications) != 1 || notifications[0].QueueJobID != "job_finished_first" || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted || notifications[0].AgentRole != agentRoleExplorer || notifications[0].ToolProfile != session.ToolProfileExplorerReadOnly || notifications[0].IsolationMode != "off" {
 		t.Fatalf("expected first finished child notification to be accepted, got %#v", notifications)
 	}
 	eventsList, err := engine.store.LoadEvents(meta.ID)

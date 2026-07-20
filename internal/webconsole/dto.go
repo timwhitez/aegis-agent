@@ -147,10 +147,12 @@ type TestConfigRequest struct {
 }
 
 type RoleProviderOverrideRequest struct {
-	Provider    string `json:"provider"`
-	APIProvider string `json:"api_provider"`
-	BaseURL     string `json:"base_url"`
-	Model       string `json:"model"`
+	Provider        string `json:"provider"`
+	APIProvider     string `json:"api_provider"`
+	BaseURL         string `json:"base_url"`
+	Model           string `json:"model"`
+	ReasoningEffort string `json:"reasoning_effort"`
+	MaxOutputTokens int    `json:"max_output_tokens"`
 }
 
 type TestConfigResponse struct {

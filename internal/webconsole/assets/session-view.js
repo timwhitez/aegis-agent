@@ -1287,8 +1287,11 @@ function renderSummaryPanel(detail) {
       <div class="kv-list">
         ${renderKVRow('Session', detail.metadata.id)}
         ${renderKVRow('Agent', agentLabel(detail.metadata.agent_name, detail.metadata.agent_role) || 'Master session')}
+        ${renderKVRow('Tool profile', detail.metadata.tool_profile || 'default')}
         ${renderKVRow('Provider', detail.metadata.provider || 'n/a')}
         ${renderKVRow('Model', detail.metadata.model || 'n/a')}
+        ${renderKVRow('Reasoning effort', detail.metadata.provider_options?.reasoning_effort || 'provider default')}
+        ${renderKVRow('Max output tokens', detail.metadata.provider_options?.max_output_tokens > 0 ? String(detail.metadata.provider_options.max_output_tokens) : 'provider default')}
         ${renderKVRow('Mode', detail.metadata.mode || 'run')}
         ${renderKVRow('Workdir', detail.metadata.workdir || 'n/a')}
         ${detail.metadata.requested_workdir ? renderKVRow('Requested workdir', detail.metadata.requested_workdir) : ''}

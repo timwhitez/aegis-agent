@@ -3409,14 +3409,14 @@ func TestDelegateCommandDispatchesStructuredRequest(t *testing.T) {
 	defer func() { experimentalRunnerLoader = restore }()
 
 	var stdout bytes.Buffer
-	if err := Run(context.Background(), []string{"experimental", "delegate", "parent-1", "review this", "--agent", "reviewer", "--background", "--isolation", "auto"}, &stdout, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), []string{"experimental", "delegate", "parent-1", "review this", "--agent", "reviewer", "--role", "explorer", "--background", "--isolation", "auto"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatalf("delegate: %v", err)
 	}
 	if len(fake.delegateCalls) != 1 {
 		t.Fatalf("expected delegate call, got %d", len(fake.delegateCalls))
 	}
 	call := fake.delegateCalls[0]
-	if call.ParentSessionID != "parent-1" || call.Prompt != "review this" || call.AgentName != "reviewer" || !call.Background || call.IsolationMode != "auto" {
+	if call.ParentSessionID != "parent-1" || call.Prompt != "review this" || call.AgentName != "reviewer" || call.AgentRole != "explorer" || !call.Background || call.IsolationMode != "auto" {
 		t.Fatalf("unexpected delegate request: %#v", call)
 	}
 	if !strings.Contains(stdout.String(), "queued child job job_1") {

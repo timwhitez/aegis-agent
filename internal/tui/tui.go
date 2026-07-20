@@ -121,6 +121,7 @@ func loadSelectedSummary(store *session.Store, sessionID string) (session.Sessio
 		RootSessionID:   meta.RootSessionID,
 		AgentName:       meta.AgentName,
 		AgentRole:       meta.AgentRole,
+		ToolProfile:     meta.ToolProfile,
 		Depth:           meta.Depth,
 		QueueJobID:      meta.QueueJobID,
 	}, nil

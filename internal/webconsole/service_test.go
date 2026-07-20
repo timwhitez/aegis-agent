@@ -4339,6 +4339,42 @@ func TestServiceStartSessionPersistsAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestServiceStartSessionAcceptsExplorerAndExposesEffectiveProfile(t *testing.T) {
+	server := newFinishServer()
+	defer server.Close()
+
+	cfg := testConfig(t, server.URL)
+	cfg.RoleProviders.Explorer = config.RoleProviderOverride{ReasoningEffort: "medium", MaxOutputTokens: 2048}
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var result LaunchResponse
+	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
+		"prompt":     "Read the requested scope and return a short evidence handoff.",
+		"mode":       "exec",
+		"agent_name": "web-explorer",
+		"agent_role": "explorer",
+	}, http.StatusAccepted, &result)
+	waitFor(t, 4*time.Second, func() bool {
+		state, err := svc.store.LoadState(result.SessionID)
+		return err == nil && state.Status == session.StatusCompleted
+	}, func() string { return result.SessionID })
+
+	var detail SessionDetailResponse
+	postGetJSON(t, ts.URL+"/api/sessions/"+result.SessionID, &detail)
+	if detail.Metadata.AgentRole != "explorer" || detail.Metadata.ToolProfile != session.ToolProfileExplorerReadOnly {
+		t.Fatalf("web session detail lost explorer profile: %#v", detail.Metadata)
+	}
+	if detail.Metadata.Isolation == nil || detail.Metadata.Isolation.Mode != "off" || detail.Metadata.ProviderOptions.ReasoningEffort != "medium" || detail.Metadata.ProviderOptions.MaxOutputTokens != 2048 {
+		t.Fatalf("web session detail lost explorer effective options: %#v", detail.Metadata)
+	}
+}
+
 func TestServiceCloseCancelsPendingStartBeforeSessionID(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -6610,6 +6646,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, `data-view="overview"`) || strings.Contains(indexBody, "Overview</span>") || strings.Contains(indexBody, "overview-view") {
 		t.Fatalf("expected standalone overview page to be removed from shell, got shell body: %s", indexBody)
 	}
+	if strings.Contains(indexBody, "explorer-dashboard") || strings.Contains(indexBody, "orchestration-dashboard") || strings.Contains(indexBody, "delegation-dashboard") {
+		t.Fatalf("expected Explorer to stay out of the default Web shell dashboard, got shell body: %s", indexBody)
+	}
 	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
@@ -6657,6 +6696,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(settingsBody, "settings-enable-child-budget") || !strings.Contains(settingsBody, "currentChildBudget") || !strings.Contains(settingsBody, "Sub-agent budget") {
 		t.Fatalf("expected settings view to expose an optional sub-agent budget, got settings-view.js body: %s", settingsBody)
 	}
+	if !strings.Contains(settingsBody, "explorer: 'Explorer'") || !strings.Contains(settingsBody, "data-role-field=\"reasoning_effort\"") || !strings.Contains(settingsBody, "data-role-field=\"max_output_tokens\"") {
+		t.Fatalf("expected Settings role overrides to expose Explorer reasoning/output controls, got settings-view.js body: %s", settingsBody)
+	}
 	if !strings.Contains(settingsBody, "confirmSettingsSave") || !strings.Contains(settingsBody, "write the entered API key to the local env file") {
 		t.Fatalf("expected settings save to require explicit local config/API key confirmation, got settings-view.js body: %s", settingsBody)
 	}
@@ -6700,6 +6742,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(sessionBody, "backgroundNotificationPendingHint") || !strings.Contains(sessionBody, "parent run has not continued to accept it") {
 		t.Fatalf("expected pending background notifications to explain parent delivery state, got session-view.js body: %s", sessionBody)
+	}
+	if !strings.Contains(sessionBody, "Tool profile") || !strings.Contains(sessionBody, "Reasoning effort") || !strings.Contains(sessionBody, "Max output tokens") {
+		t.Fatalf("expected session inspector to display effective explorer profile/options, got session-view.js body: %s", sessionBody)
 	}
 	if strings.Contains(sessionBody, "marked.parse") || strings.Contains(sessionBody, "unpkg.com") || strings.Contains(sessionBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected session-view.js to avoid external markdown/icon dependencies, got session-view.js body: %s", sessionBody)
@@ -10303,6 +10348,12 @@ func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 				"base_url":     "http://validator.invalid/v1",
 				"model":        "validator-model",
 			},
+			"explorer": map[string]any{
+				"provider":          "validator",
+				"model":             "explorer-model",
+				"reasoning_effort":  "medium",
+				"max_output_tokens": 4096,
+			},
 		},
 	}, http.StatusOK, nil)
 
@@ -10312,6 +10363,7 @@ func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 	planner, _ := roleProviders["planner"].(map[string]any)
 	evaluator, _ := roleProviders["evaluator"].(map[string]any)
 	generator, _ := roleProviders["generator"].(map[string]any)
+	explorer, _ := roleProviders["explorer"].(map[string]any)
 	if planner["model"] != "planner-only-model" || planner["provider"] != "" {
 		t.Fatalf("expected planner model-only override, got %#v", planner)
 	}
@@ -10321,11 +10373,14 @@ func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 	if generator["provider"] != "" || generator["model"] != "" {
 		t.Fatalf("expected empty generator override, got %#v", generator)
 	}
+	if explorer["provider"] != "validator" || explorer["model"] != "explorer-model" || explorer["reasoning_effort"] != "medium" || int(explorer["max_output_tokens"].(float64)) != 4096 {
+		t.Fatalf("expected explorer provider/reasoning/output override, got %#v", explorer)
+	}
 	updated, err := svc.configSnapshot()
 	if err != nil {
 		t.Fatalf("config snapshot: %v", err)
 	}
-	if updated.RoleProviders.Planner.Model != "planner-only-model" || updated.RoleProviders.Evaluator.Provider != "validator" {
+	if updated.RoleProviders.Planner.Model != "planner-only-model" || updated.RoleProviders.Evaluator.Provider != "validator" || updated.RoleProviders.Explorer.ReasoningEffort != "medium" || updated.RoleProviders.Explorer.MaxOutputTokens != 4096 {
 		t.Fatalf("expected role overrides in active config, got %#v", updated.RoleProviders)
 	}
 	configBytes, err := os.ReadFile(configPath)
@@ -10340,10 +10395,45 @@ func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 		"evaluator:",
 		"provider: validator",
 		"base_url: http://validator.invalid/v1",
+		"explorer:",
+		"reasoning_effort: medium",
+		"max_output_tokens: 4096",
 	} {
 		if !strings.Contains(configText, want) {
 			t.Fatalf("expected %q to persist to config, got %q", want, configText)
 		}
+	}
+}
+
+func TestServiceConfigRejectsNegativeRoleProviderMaxOutputTokensWithoutMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "openai",
+		"role_providers": map[string]any{
+			"explorer": map[string]any{"max_output_tokens": -1},
+		},
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "role_providers.explorer.max_output_tokens must be non-negative") {
+		t.Fatalf("unexpected negative role max_output_tokens error: %#v", errResp)
+	}
+	updated, err := svc.configSnapshot()
+	if err != nil {
+		t.Fatalf("config snapshot: %v", err)
+	}
+	if updated.RoleProviders.Explorer.MaxOutputTokens != 0 {
+		t.Fatalf("invalid role max_output_tokens mutated active config: %#v", updated.RoleProviders.Explorer)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid role max_output_tokens persisted config: %v", err)
 	}
 }
 

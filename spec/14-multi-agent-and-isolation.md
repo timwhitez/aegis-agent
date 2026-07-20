@@ -9,6 +9,7 @@
 - parent session 派生 child agent
 - child agent 的独立 session 持久化
 - 可选 worktree / workspace copy 隔离
+- 可选、只读、低噪声的 explorer role/profile
 - Web、CLI 和 tool 入口复用同一套 delegation 契约
 
 本阶段仍然坚持“模型是 agent，harness 提供环境”的边界：
@@ -55,11 +56,13 @@ child session 使用独立工作目录执行。当前支持：
 - `root_session_id`
 - `agent_name`
 - `agent_role`
+- `tool_profile`：effective versioned capability profile；普通 role 为 `default`，explorer 为 `explorer-readonly-v1`
 - `depth`
 - `requested_workdir`
 - `queue_job_id`
 - `isolation`
 - `effective_budget`：versioned child policy snapshot，包含 source、turn/time scope、limits、attempt、used/remaining 与 status
+- `provider_options`：包含 role/parent/request 合并后的 effective reasoning/output 与其他 provider options
 
 其中 `isolation` 结构：
 
@@ -138,7 +141,7 @@ child session 使用独立工作目录执行。当前支持：
 - 默认从当前 session 派生一个 child session
 - 未显式提供 `provider` / `model` 或传入 `default` 时，child 默认继承当前 parent session 的 provider / model
 - 默认 `mode=exec`
-- 默认 `isolation_mode=auto`
+- 默认 `isolation_mode=auto`；`agent_role=explorer` 的空值或兼容 `default` 例外为 `off`
 - `mode=full-auto` 作为兼容别名按 `exec` 处理
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
@@ -147,7 +150,7 @@ child session 使用独立工作目录执行。当前支持：
 - child 完成或失败后，结果需要回投到 parent session 的控制通知，供下一安全边界自动并入上下文
 - `resume_parent=true` 只在 `background=true` 下生效，表示 master agent 明确选择本轮暂时停止推进，进入 `awaiting_input` / `background_wait`，等待任一后台 child 产生 durable notification 后由 harness 自动接纳结果并继续 parent loop；master agent 恢复后自行判断是否继续等待其他 child
 - `background=false` 时同步执行 child session，直到 child 到达稳定状态
-- `agent_role` 允许显式声明 `planner` / `generator` / `evaluator`；`agent_name` 只作为人类可读标签，不参与 role provider override 匹配；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
+- `agent_role` 允许显式声明 `planner` / `generator` / `evaluator` / `explorer`；`agent_name` 只作为人类可读标签，不参与 role provider override 匹配；该 role 需要在 child session 元数据与后续队列/通知事实中保持可追踪
 - 只有 root master session 可以创建 child agent。`depth > 0` 或存在 `parent_session_id` 的 child session 不允许再调用 `agent_spawn` 或提交 parent-linked queue job，避免 nested sub-agent 树把等待和恢复状态分散到多层 parent coordination 中
 
 #### `agent_wait`
@@ -232,6 +235,49 @@ child session 使用独立工作目录执行。当前支持：
 
 - 列出当前 parent session 的 child sessions
 - 额外列出尚未落成 child session 的 queued jobs
+
+### 4.3 explorer role/profile
+
+`explorer` 是 large-project profile 下的可选 child role，不是新的自动 orchestration engine：
+
+- parent 模型或外部调用方必须显式选择 `agent_role=explorer`；runtime 不按 prompt 大小、repo 规模或 tool 次数自动 spawn
+- 适用 guidance 是信息经济启发：开放式、跨模块、入口不明且预期原始检索量远大于最终结论时考虑 explorer；入口明确的小检查由 parent 直接完成通常更合适
+- 为 context isolation 委托时，parent 可选择同步 spawn，或 background spawn 后显式 `agent_wait`；应避免重复 explorer 已覆盖的 repo 探索，但 runtime 不以 hard guard 阻止 parent 的其他工作
+- child 继续是 fresh session；child tool calls/messages/events 只写 child 文件事实，parent transcript 不复制 child trajectory
+
+#### 4.3.1 capability profile
+
+effective `tool_profile=explorer-readonly-v1` 的唯一 allowlist 为：
+
+```text
+read_file
+grep_files
+grep
+glob
+load_skill
+finish
+```
+
+ToolRegistry 的同一个 versioned profile 同时控制 provider schema 与执行。`shell`、`read_session_history`、trusted command skills、write/edit、`await_input`、goal/todo/task/feature mutation、Plan Mode tools、全部 agent control 和任何其他未列工具均不可见；直接、恢复或伪造调用返回 `failure_class=schema_reject`、`error_code=tool_not_allowed_for_role`、`tool_profile=explorer-readonly-v1`，且不运行 definition/command 副作用。
+
+#### 4.3.2 role prompt 与 handoff
+
+explorer system guidance 只定义：
+
+- 当前 session 只读，不修改 workspace 或 durable goal/task/plan state，不运行 shell，不派生 child
+- 回传简短结论与 `claim | file:line | confidence` 证据表
+- 列出未覆盖范围和仍需 parent 判断的关键疑点
+- 大输出与原始检索轨迹留在 child session/artifact，不粘贴进 final handoff
+
+它不得固定搜索命令、文件阅读顺序、审计路线、taskboard 节奏、必须 delegation 或必须等待。同步 `agent_spawn` result、background notification 与 `agent_status` 的 `final_text` 全部复用统一 ToolResult/background byte cap，并保留 child session/job/visible-path reference；超长正文只能形成有界 preview + recoverable artifact metadata。
+
+#### 4.3.3 provider/options/isolation resolution
+
+- `role_providers.explorer` 与其他 role 一样支持 provider、API provider、base URL、model、`reasoning_effort`、`max_output_tokens`
+- routing precedence：显式 request provider/model > role routing override > parent 同 provider > provider defaults；显式 provider 抑制 role provider/API/base/model routing override
+- option precedence：选中 provider defaults < parent effective options（仅同 provider）< role reasoning/output < 显式 request provider options
+- explorer 未显式给 isolation（空值或 `default`）时为 `off`；显式 `off` / `auto` / `git` / `copy` 原样执行
+- effective provider/model/options/isolation/tool profile 在提交/创建时写入 queue job、child `session.json`、创建/排队事件和 background notification；worker/resume 读取 durable snapshot，不受后续 Settings 热更新重解释
 
 ## 5. workdir 选择规则
 
@@ -343,3 +389,8 @@ parent-child 关系必须落在文件事实中，不能只留在内存里。
 - parent / root / depth 元数据正确落盘
 - `auto` isolation 能在 git repo 和非 git 目录下正确分流
 - `children` 与 `agent_list` 能同时看到已落盘 child 和未启动完成的 queued jobs
+- explorer normalize/config/API/Store round-trip，且旧三 role 配置保持兼容
+- explorer provider schema 精确等于六项 allowlist，执行层对所有禁用 built-in/trusted command 返回稳定 typed denial 且无副作用
+- explorer default isolation off、显式 canonical isolation 保持；effective role provider/reasoning/output/isolation/tool profile 在 direct/background facts 中一致
+- deterministic sync/background fixture 证明 parent provider messages 不包含 child 原始 tool trajectory，只包含经过统一 byte budget 的 handoff/reference；失败、暂停、取消与 parent recovery 不绕过该 cap
+- Web Settings 有 Explorer row 和完整 role override round-trip；session inspector 轻量显示 effective profile/options，默认首页没有新的 orchestration panel

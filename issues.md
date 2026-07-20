@@ -419,7 +419,7 @@ grep/grep_files 把 errGrepLimitReached 同时用作早停控制流和隐式 ove
 
 - Severity: P2
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -462,6 +462,18 @@ multi-agent 能力最初围绕 planner/generator/evaluator 与 large-project exe
 - 一个 deterministic fake-provider fixture 证明 parent request 不携带 child 原始 tool trajectory，且 child tool allowlist 与 handoff 大小满足契约。
 - 默认 Web 首页不增加复杂 orchestration 面；最多在现有 session/child inspector 折叠区显示 role 与 handoff。
 - 没有任何 runtime rule 强迫简单任务委派，模型未调用 agent_spawn 时行为与当前一致。
+
+### Resolution
+
+- 新增合法 `explorer` role 与 durable `explorer-readonly-v1` capability profile；provider schema 和 `Registry.Execute` 复用同一精确 allowlist：`read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`
+- 禁用工具在 provider view 中不可见；恢复轨迹、兼容 provider 或伪造调用仍会在 `tool.before` hook 和 definition dispatch 之前得到稳定 `schema_reject/tool_not_allowed_for_role`，不会触发 shell、写入、task/goal/plan mutation、agent control 或 trusted command side effect
+- explorer 保持显式、model-led；`agent_spawn` 只增加信息经济与 context isolation guidance。runtime 不按仓库大小、prompt 或 tool-call 数自动委派，也不强制 parent 等待或执行固定探索路线
+- explorer 未显式指定 isolation 时把 effective `off` 写入 child metadata；显式 `off/auto/git/copy` 保持调用方选择。provider/model/reasoning/max-output/tool profile/isolation 的 effective snapshot 同步写入 child session、queue job/lifecycle event、background notification、status/summary 与 Web session detail
+- planner/generator/evaluator/explorer 的 role provider override 统一支持 provider/API provider/base URL/model/reasoning effort/max output；direct child 与 queued worker 使用 durable effective options，后续 Settings 更新不会重解释已有 parent/job 中有意义的零值
+- explorer prompt 只约束 read-only 边界与简短 `claim | file:line | confidence` handoff、未覆盖范围和关键疑点；同步/后台 handoff 继续复用统一 tool-output byte budget，长 trajectory 留在独立 child session/artifact
+- deterministic HTTP fake-provider fixture 证明 child `read_file` 原始 sentinel 只进入 child request，parent request 仅看到有界 handoff/reference；永久回归还覆盖精确 schema、trusted skill、执行层拒绝、sync/background+wait、failure/pause/cancel/parent recovery、role option snapshot、Web GET/PATCH/YAML round-trip 与默认首页无 orchestration dashboard
+- 验证通过：HARNESS 聚焦回归、`CGO_ENABLED=1` runtime/session race、相关 Go 包完整回归、`go test ./...`、scoped `go vet`、Web JS syntax 与 140 项 Web utility tests；未启动 Docker
+- Resolution commit：本任务提交 `feat(runtime): add a read only explorer agent profile`
 
 ### Non-goals
 

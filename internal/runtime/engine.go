@@ -858,6 +858,24 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			backgroundWait := false
 			var modelWait *modelAwaitInputRequest
 			for callIndex, call := range result.ToolCalls {
+				if deniedResult, denied := registry.CapabilityDenial(call.Name); denied {
+					deniedResult.ToolCallID = call.ID
+					deniedResult.Name = call.Name
+					deniedResult = e.finalizeToolResultForContext(meta.ID, deniedResult)
+					toolResults = append(toolResults, deniedResult)
+					if err := e.appendEvent(meta.ID, "tool.blocked", "tool_execute", map[string]any{
+						"call_id":      call.ID,
+						"tool_name":    call.Name,
+						"reason":       tools.ErrorCodeToolNotAllowedForRole,
+						"tool_profile": deniedResult.Metadata["tool_profile"],
+					}); err != nil {
+						if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
+							return RunResult{}, fmt.Errorf("record capability denial after tool.blocked event failure for %s (%v): %w", call.Name, err, appendErr)
+						}
+						return RunResult{}, fmt.Errorf("record tool.blocked capability denial for %s: %w", call.Name, err)
+					}
+					continue
+				}
 				argumentsText := prettyJSON(call.Arguments)
 				if err := e.appendEvent(meta.ID, "tool.before", "tool_execute", map[string]any{
 					"call_id":   call.ID,
@@ -3487,6 +3505,9 @@ func sessionIdentityEventData(meta session.SessionMetadata) map[string]any {
 	}
 	if strings.TrimSpace(meta.AgentRole) != "" {
 		data["agent_role"] = meta.AgentRole
+	}
+	if strings.TrimSpace(meta.ToolProfile) != "" {
+		data["tool_profile"] = meta.ToolProfile
 	}
 	if meta.Depth > 0 {
 		data["depth"] = meta.Depth

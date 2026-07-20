@@ -305,6 +305,47 @@ func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPreservesExplorerRoleProviderGenerationOverrides(t *testing.T) {
+	cfg := Default()
+	cfg.RoleProviders.Explorer = RoleProviderOverride{
+		Provider:        " openai ",
+		APIProvider:     " OPENAI-COMPATIBLE ",
+		BaseURL:         " http://explorer.invalid/v1 ",
+		Model:           " explorer-model ",
+		ReasoningEffort: " medium ",
+		MaxOutputTokens: 4096,
+	}
+
+	normalizeConfig(cfg, t.TempDir())
+
+	override := cfg.RoleProviderOverride("explorer")
+	if override.Provider != "openai" || override.APIProvider != "openai-compatible" || override.BaseURL != "http://explorer.invalid/v1" || override.Model != "explorer-model" {
+		t.Fatalf("unexpected normalized explorer routing override: %#v", override)
+	}
+	if override.ReasoningEffort != "medium" || override.MaxOutputTokens != 4096 {
+		t.Fatalf("unexpected normalized explorer generation override: %#v", override)
+	}
+	data, err := MarshalYAML(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"explorer:", "reasoning_effort: medium", "max_output_tokens: 4096"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in role provider YAML:\n%s", want, text)
+		}
+	}
+}
+
+func TestNormalizeConfigClearsNegativeRoleProviderMaxOutputTokens(t *testing.T) {
+	cfg := Default()
+	cfg.RoleProviders.Explorer = RoleProviderOverride{MaxOutputTokens: -1}
+	normalizeConfig(cfg, t.TempDir())
+	if got := cfg.RoleProviders.Explorer.MaxOutputTokens; got != 0 {
+		t.Fatalf("negative role max_output_tokens must normalize to inherit/zero, got %d", got)
+	}
+}
+
 func TestEffectiveAPIProviderDefaultsAndCustomValidation(t *testing.T) {
 	for name, want := range map[string]string{
 		"openai":            "openai-compatible",

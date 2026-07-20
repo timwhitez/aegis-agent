@@ -360,6 +360,9 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - `mode=full-auto` 作为兼容别名按 `exec` 处理
 - `isolation_mode=workspace-write` 作为兼容别名按 `off` 处理
 - 工具可见不代表 runtime 会自动 delegation；是否调用由当前 master agent 自主决定
+- `agent_role` 接受 `planner` / `generator` / `evaluator` / `explorer`。当开放式、跨模块、入口不明且预期原始检索量远大于最终结论时，可考虑 explorer；入口明确的小检查留在 parent。该信息经济判断只是 description guidance，不是自动 spawn 规则
+- explorer prompt 应要求简短结论、`claim | file:line | confidence`、未覆盖范围与关键疑点；当 delegation 目的为 context isolation，parent 可选择同步 spawn 或 background + `agent_wait`，并避免重复同一探索范围。runtime 不强制等待或阻止 parent 做其他不重叠工作
+- explorer 未显式给 isolation 时默认 `off`；显式 canonical isolation mode 保持调用方选择
 
 ### 4.20 `agent_wait`
 
@@ -397,6 +400,28 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 - 默认注册到 session tool list
 - 设置 `runtime.multi_agent.enabled=false` 时不注册
 - 查询当前 session 的 child sessions 和关联 jobs
+
+### 4.25 Role capability profiles
+
+ToolRegistry 保存 profile 名称与 allowlist 的单一 versioned 定义，并同时用于 `Definitions()` provider schema view 与 `Execute()`：
+
+- `default`：保持当前普通 session 的完整已注册 tool set，再受 multi-agent config、Plan Mode 与其他既有 capability gate 约束
+- `explorer-readonly-v1`：只允许 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`
+
+explorer 默认拒绝 `shell`、`read_session_history`、trusted skill command、write/edit、`await_input`、goal/todo/task/feature mutation、Plan Mode mutation/input tools、全部 agent control 和任何其他未列工具。拒绝结果固定为：
+
+```json
+{
+  "is_error": true,
+  "metadata": {
+    "failure_class": "schema_reject",
+    "error_code": "tool_not_allowed_for_role",
+    "tool_profile": "explorer-readonly-v1"
+  }
+}
+```
+
+拒绝必须发生在实际 definition execute/command spawn 之前，不运行文件、session mutation 或 trusted command 副作用。`load_skill` 仍只返回 skill 指令并记录当前 child 已加载事实；skill 声明的 command tool 不因此获得 explorer capability。
 
 ## 5. 工作区安全
 

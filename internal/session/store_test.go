@@ -1419,7 +1419,7 @@ func TestStoreRejectsMalformedAgentRoleFacts(t *testing.T) {
 		t.Fatalf("expected LoadMetadata to reject invalid agent_role, got %v", err)
 	}
 
-	for _, role := range []string{"", "planner", "generator", "evaluator"} {
+	for _, role := range []string{"", "planner", "generator", "evaluator", "explorer"} {
 		validRole := meta
 		validRole.AgentRole = role
 		if err := store.SaveMetadata(meta.ID, validRole); err != nil {
@@ -1432,6 +1432,41 @@ func TestStoreRejectsMalformedAgentRoleFacts(t *testing.T) {
 		if loaded.AgentRole != role {
 			t.Fatalf("expected role %q to round trip, got %q", role, loaded.AgentRole)
 		}
+	}
+}
+
+func TestStoreRoundTripsExplorerToolProfileFacts(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        now,
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		AgentRole:        "explorer",
+		ToolProfile:      ToolProfileExplorerReadOnly,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create explorer session: %v", err)
+	}
+	loaded, err := store.LoadMetadata(meta.ID)
+	if err != nil {
+		t.Fatalf("load explorer session: %v", err)
+	}
+	if loaded.AgentRole != "explorer" || loaded.ToolProfile != ToolProfileExplorerReadOnly {
+		t.Fatalf("explorer role/profile facts did not round trip: %#v", loaded)
+	}
+
+	invalid := loaded
+	invalid.ToolProfile = "write-enabled-explorer"
+	if err := store.SaveMetadata(meta.ID, invalid); err == nil || !strings.Contains(err.Error(), "invalid session tool_profile") {
+		t.Fatalf("expected invalid tool profile rejection, got %v", err)
 	}
 }
 

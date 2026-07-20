@@ -56,6 +56,7 @@ const (
 	FailureClassInvalidCursor        = "invalid_cursor"
 	FailureClassOutputBudgetTooSmall = "output_budget_too_small"
 	FailureClassSearchRecordTooLarge = "search_record_exceeds_byte_limit"
+	ErrorCodeToolNotAllowedForRole   = "tool_not_allowed_for_role"
 	InterruptedToolExecutionMessage  = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
 	TimedOutToolExecutionMessage     = "[Command timed out and was terminated after the timeout window. This is a command/network timeout, not a bug in the command syntax; any spawned process may still be running. Consider an offline approach, a narrower command, or a larger timeout; verify state before re-running side-effecting commands.]"
 )
@@ -68,6 +69,7 @@ type ExecContext struct {
 	Store                 *session.Store
 	Config                *config.Config
 	Catalog               *skills.Catalog
+	ToolProfile           string
 	Emit                  func(string, map[string]any)
 	EmitRequired          func(string, map[string]any) error
 	EmitBatchRequired     func([]ToolEvent) error
@@ -111,6 +113,7 @@ type AgentSpawnResult struct {
 	Workdir      string   `json:"workdir,omitempty"`
 	VisiblePaths []string `json:"visible_paths,omitempty"`
 	AgentRole    string   `json:"agent_role,omitempty"`
+	ToolProfile  string   `json:"tool_profile,omitempty"`
 }
 
 type AgentStatusRequest struct {
@@ -167,6 +170,7 @@ type AgentStatusResult struct {
 	Workdir         string                   `json:"workdir,omitempty"`
 	AgentName       string                   `json:"agent_name,omitempty"`
 	AgentRole       string                   `json:"agent_role,omitempty"`
+	ToolProfile     string                   `json:"tool_profile,omitempty"`
 	EffectiveBudget *session.EffectiveBudget `json:"effective_budget,omitempty"`
 }
 
@@ -189,10 +193,45 @@ type ControlPlane interface {
 }
 
 type Registry struct {
-	defs    map[string]Definition
-	order   []string
-	control ControlPlane
-	cfg     *config.Config
+	defs        map[string]Definition
+	order       []string
+	control     ControlPlane
+	cfg         *config.Config
+	toolProfile toolCapabilityProfile
+}
+
+type toolCapabilityProfile struct {
+	name    string
+	allowed map[string]struct{}
+}
+
+var explorerReadOnlyToolAllowlist = map[string]struct{}{
+	"read_file":  {},
+	"grep_files": {},
+	"grep":       {},
+	"glob":       {},
+	"load_skill": {},
+	"finish":     {},
+}
+
+func resolveToolCapabilityProfile(name string) (toolCapabilityProfile, error) {
+	name = strings.TrimSpace(name)
+	switch name {
+	case "", session.ToolProfileDefault:
+		return toolCapabilityProfile{name: session.ToolProfileDefault}, nil
+	case session.ToolProfileExplorerReadOnly:
+		return toolCapabilityProfile{name: session.ToolProfileExplorerReadOnly, allowed: explorerReadOnlyToolAllowlist}, nil
+	default:
+		return toolCapabilityProfile{}, fmt.Errorf("unsupported tool profile: %s", name)
+	}
+}
+
+func (p toolCapabilityProfile) allows(name string) bool {
+	if p.allowed == nil {
+		return true
+	}
+	_, ok := p.allowed[name]
+	return ok
 }
 
 var beforeShellCommandStart func(workdir string) error
@@ -210,10 +249,18 @@ const providerToolNamePatternText = `^[A-Za-z_][A-Za-z0-9_-]{0,63}$`
 var providerToolNamePattern = regexp.MustCompile(providerToolNamePatternText)
 
 func NewRegistry(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, trustedCommandWorkdir ...string) (*Registry, error) {
+	return NewRegistryForToolProfile(cfg, catalog, store, control, session.ToolProfileDefault, trustedCommandWorkdir...)
+}
+
+func NewRegistryForToolProfile(cfg *config.Config, catalog *skills.Catalog, store *session.Store, control ControlPlane, toolProfile string, trustedCommandWorkdir ...string) (*Registry, error) {
 	if cfg == nil {
 		cfg = config.Default()
 	}
-	registry := &Registry{defs: map[string]Definition{}, control: control, cfg: cfg}
+	profile, err := resolveToolCapabilityProfile(toolProfile)
+	if err != nil {
+		return nil, err
+	}
+	registry := &Registry{defs: map[string]Definition{}, control: control, cfg: cfg, toolProfile: profile}
 	for _, def := range builtinDefinitions(cfg, catalog, control) {
 		registry.Register(def)
 	}
@@ -254,6 +301,9 @@ func (r *Registry) Register(def Definition) {
 }
 
 func (r *Registry) Get(name string) *Definition {
+	if !r.toolProfile.allows(name) {
+		return nil
+	}
 	if def, ok := r.defs[name]; ok {
 		return &def
 	}
@@ -263,12 +313,36 @@ func (r *Registry) Get(name string) *Definition {
 func (r *Registry) Definitions() []Definition {
 	var out []Definition
 	for _, name := range r.order {
+		if !r.toolProfile.allows(name) {
+			continue
+		}
 		out = append(out, r.defs[name])
 	}
 	return out
 }
 
+// CapabilityDenial returns the stable, side-effect-free denial for a tool that
+// is outside the registry's effective capability profile. Dispatchers call it
+// before tool lifecycle hooks; Execute calls it again as the final authority
+// for direct, resumed, or forged invocations.
+func (r *Registry) CapabilityDenial(name string) (session.ToolResult, bool) {
+	if r.toolProfile.allows(name) {
+		return session.ToolResult{}, false
+	}
+	result := errorResult(name, fmt.Errorf("tool %s is not allowed by role capability profile %s", name, r.toolProfile.name))
+	setToolResultFailureClass(&result, FailureClassSchemaReject)
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]any)
+	}
+	result.Metadata["error_code"] = ErrorCodeToolNotAllowedForRole
+	result.Metadata["tool_profile"] = r.toolProfile.name
+	return result, true
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext, args json.RawMessage) (session.ToolResult, error) {
+	if result, denied := r.CapabilityDenial(name); denied {
+		return result, nil
+	}
 	def, ok := r.defs[name]
 	if !ok {
 		return session.ToolResult{}, fmt.Errorf("unknown tool: %s", name)
@@ -281,6 +355,7 @@ func (r *Registry) Execute(ctx context.Context, name string, execCtx ExecContext
 	if execCtx.Config == nil {
 		execCtx.Config = r.cfg
 	}
+	execCtx.ToolProfile = r.toolProfile.name
 	return def.Execute(ctx, execCtx, args)
 }
 
@@ -2387,18 +2462,25 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 			}
 			skillDir := filepath.Dir(skill.Path)
 			shellWorkdir := relativeOrAbsolute(execCtx.Workdir, skillDir)
+			explorerReadOnly := execCtx.ToolProfile == session.ToolProfileExplorerReadOnly
 			if !input.ForceReload && skillLoaded(execCtx, input.Name) {
 				output := fmt.Sprintf("<skill name=%q path=%q already_loaded=true shell_workdir=%q>\nThis skill has already been loaded in this session. Reuse the prior instructions; call load_skill again with force_reload=true only if the skill file changed or the user explicitly asks to reload it.\nAvailable bundle files can still be inspected or searched with read_file, grep, or grep_files using paths like `skills/%s/references/...` or skill-relative links.\n</skill>", skill.Name, skill.Path, shellWorkdir, skill.Name)
+				metadata := map[string]any{
+					"path":           skill.Path,
+					"shell_workdir":  shellWorkdir,
+					"already_loaded": true,
+					"force_reload":   false,
+				}
+				if explorerReadOnly {
+					output = fmt.Sprintf("<skill name=%q path=%q already_loaded=true tool_profile=%q>\nThis skill has already been loaded. Reuse its read-only guidance; modification and command instructions remain unavailable in this capability profile. Inspect bundle references only with read_file, grep, or grep_files.\n</skill>", skill.Name, skill.Path, execCtx.ToolProfile)
+					delete(metadata, "shell_workdir")
+					metadata["tool_profile"] = execCtx.ToolProfile
+				}
 				return session.ToolResult{
 					Name:          "load_skill",
 					LLMOutput:     output,
 					DisplayOutput: fmt.Sprintf("Skill already loaded: %s", input.Name),
-					Metadata: map[string]any{
-						"path":           skill.Path,
-						"shell_workdir":  shellWorkdir,
-						"already_loaded": true,
-						"force_reload":   false,
-					},
+					Metadata:      metadata,
 				}, nil
 			}
 			body, err := execCtx.Catalog.LoadBody(input.Name)
@@ -2412,15 +2494,21 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				return errorResult("load_skill", err), nil
 			}
 			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect or search referenced skill files, call read_file, grep, or grep_files with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
+			metadata := map[string]any{
+				"path":          skill.Path,
+				"shell_workdir": shellWorkdir,
+				"force_reload":  input.ForceReload,
+			}
+			if explorerReadOnly {
+				output = fmt.Sprintf("<skill path=%q tool_profile=%q>\nThis capability profile remains read-only. Treat any modification or command instruction in the skill as unavailable. Inspect referenced bundle files only with read_file, grep, or grep_files.\n\n%s\n</skill>", skill.Path, execCtx.ToolProfile, body)
+				delete(metadata, "shell_workdir")
+				metadata["tool_profile"] = execCtx.ToolProfile
+			}
 			return session.ToolResult{
 				Name:          "load_skill",
 				LLMOutput:     output,
 				DisplayOutput: fmt.Sprintf("Loaded skill: %s", input.Name),
-				Metadata: map[string]any{
-					"path":          skill.Path,
-					"shell_workdir": shellWorkdir,
-					"force_reload":  input.ForceReload,
-				},
+				Metadata:      metadata,
 			}, nil
 		},
 	}
@@ -3813,7 +3901,7 @@ func emitToolEvents(execCtx ExecContext, items []ToolEvent) error {
 func defAgentSpawn(control ControlPlane) Definition {
 	return Definition{
 		Name:        "agent_spawn",
-		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, separable long-running slices, code audits, module scans, independent validation, or reviewer/evaluator passes; keep tiny single-file checks in the parent. Child sessions and background jobs are durable facts, and their results should be reconciled before final parent conclusions. Delegation is optional and model-led. Choose agent_role directly from planner, generator, or evaluator when role-specific Settings provider overrides should apply. Use isolation_mode=auto when the child must write artifacts.",
+		Description: "Spawn a child agent when the model decides delegation would improve coverage, independence, or context control. Consider this for broad investigations, separable long-running slices, code audits, module scans, independent validation, or reviewer/evaluator passes; keep tiny single-file checks in the parent. Delegation is optional and model-led. For open-ended, cross-module exploration where raw search output is much larger than the final evidence, an explorer can provide context isolation; use synchronous spawn or background plus agent_wait when preserving the parent context matters, and avoid repeating exploration already covered by the child. Child sessions and background jobs are durable facts, and their results should be reconciled before final parent conclusions. Choose agent_role directly when role-specific Settings provider overrides should apply. Use isolation_mode=auto when a non-read-only child must write artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3827,8 +3915,8 @@ func defAgentSpawn(control ControlPlane) Definition {
 				},
 				"agent_role": map[string]any{
 					"type":        "string",
-					"enum":        []string{"planner", "generator", "evaluator"},
-					"description": "Optional child role hint. Choose exactly one of planner, generator, or evaluator when that role's Settings provider override should apply. Omit provider/model to use the configured default for the chosen role.",
+					"enum":        []string{"planner", "generator", "evaluator", "explorer"},
+					"description": "Optional child role hint. Choose exactly one of planner, generator, or evaluator for planning, implementation, or review; choose explorer for a read-only evidence handoff when raw search volume warrants context isolation. Omit provider/model to use the configured default for the chosen role.",
 				},
 				"provider": map[string]any{
 					"type":        "string",

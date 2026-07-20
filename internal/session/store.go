@@ -1912,6 +1912,7 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 			RootSessionID:   meta.RootSessionID,
 			AgentName:       meta.AgentName,
 			AgentRole:       meta.AgentRole,
+			ToolProfile:     meta.ToolProfile,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
@@ -1982,6 +1983,7 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			RootSessionID:   meta.RootSessionID,
 			AgentName:       meta.AgentName,
 			AgentRole:       meta.AgentRole,
+			ToolProfile:     meta.ToolProfile,
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
@@ -3524,6 +3526,11 @@ func NewBackgroundNotification(job QueueJob) BackgroundNotification {
 		SessionID:        job.SessionID,
 		AgentName:        job.AgentName,
 		AgentRole:        job.AgentRole,
+		ToolProfile:      job.ToolProfile,
+		Provider:         job.Provider,
+		Model:            job.Model,
+		ProviderOptions:  job.ProviderOptions,
+		IsolationMode:    job.IsolationMode,
 		Status:           job.Status,
 		SessionStatus:    job.SessionStatus,
 		RequestedWorkdir: job.RequestedWorkdir,
@@ -4722,12 +4729,17 @@ func (s *Store) ensureQueueLifecycleEvent(job QueueJob, eventType string) error 
 		}
 	}
 	data := map[string]any{
-		"job_id":      job.ID,
-		"session_id":  job.SessionID,
-		"status":      job.Status,
-		"agent_role":  job.AgentRole,
-		"stop_reason": job.StopReason,
-		"last_error":  job.LastError,
+		"job_id":           job.ID,
+		"session_id":       job.SessionID,
+		"status":           job.Status,
+		"agent_role":       job.AgentRole,
+		"tool_profile":     job.ToolProfile,
+		"provider":         job.Provider,
+		"model":            job.Model,
+		"provider_options": job.ProviderOptions,
+		"isolation_mode":   job.IsolationMode,
+		"stop_reason":      job.StopReason,
+		"last_error":       job.LastError,
 	}
 	if job.EffectiveBudget != nil {
 		data["effective_budget"] = CloneEffectiveBudget(job.EffectiveBudget)
@@ -5265,6 +5277,9 @@ func validateSessionMetadata(meta SessionMetadata, expectedID string) error {
 	if err := validateAgentRole("session", meta.AgentRole); err != nil {
 		return err
 	}
+	if err := validateToolProfile("session", meta.ToolProfile); err != nil {
+		return err
+	}
 	if err := validateProviderOptions(meta.ProviderOptions); err != nil {
 		return err
 	}
@@ -5588,6 +5603,19 @@ func validateBackgroundNotification(notification BackgroundNotification) error {
 	if err := validateAgentRole("background notification", notification.AgentRole); err != nil {
 		return err
 	}
+	if err := validateToolProfile("background notification", notification.ToolProfile); err != nil {
+		return err
+	}
+	if err := validateProviderOptions(notification.ProviderOptions); err != nil {
+		return err
+	}
+	if strings.TrimSpace(notification.IsolationMode) != "" {
+		switch notification.IsolationMode {
+		case "off", "auto", "copy", "git":
+		default:
+			return fmt.Errorf("invalid background notification isolation_mode %q", notification.IsolationMode)
+		}
+	}
 	if strings.TrimSpace(notification.Status) == "" {
 		return errors.New("background notification status is required")
 	}
@@ -5744,6 +5772,9 @@ func validateQueueJob(job QueueJob) error {
 	if err := validateAgentRole("queue job", job.AgentRole); err != nil {
 		return err
 	}
+	if err := validateToolProfile("queue job", job.ToolProfile); err != nil {
+		return err
+	}
 	if err := validateProviderOptions(job.ProviderOptions); err != nil {
 		return err
 	}
@@ -5825,10 +5856,22 @@ func validateAgentRole(kind, role string) error {
 		return nil
 	}
 	switch role {
-	case "planner", "generator", "evaluator":
+	case "planner", "generator", "evaluator", "explorer":
 		return nil
 	default:
 		return fmt.Errorf("invalid %s agent_role %q", kind, role)
+	}
+}
+
+func validateToolProfile(kind, profile string) error {
+	if strings.TrimSpace(profile) == "" {
+		return nil
+	}
+	switch profile {
+	case ToolProfileDefault, ToolProfileExplorerReadOnly:
+		return nil
+	default:
+		return fmt.Errorf("invalid %s tool_profile %q", kind, profile)
 	}
 }
 
@@ -6679,6 +6722,11 @@ func backgroundNotificationFactsEqual(a, b BackgroundNotification) bool {
 		a.SessionID == b.SessionID &&
 		a.AgentName == b.AgentName &&
 		a.AgentRole == b.AgentRole &&
+		a.ToolProfile == b.ToolProfile &&
+		a.Provider == b.Provider &&
+		a.Model == b.Model &&
+		reflect.DeepEqual(a.ProviderOptions, b.ProviderOptions) &&
+		a.IsolationMode == b.IsolationMode &&
 		a.Status == b.Status &&
 		a.SessionStatus == b.SessionStatus &&
 		a.RequestedWorkdir == b.RequestedWorkdir &&
@@ -6729,6 +6777,19 @@ func mergeBackgroundNotification(existing, next BackgroundNotification) Backgrou
 	}
 	if strings.TrimSpace(next.AgentRole) != "" {
 		merged.AgentRole = next.AgentRole
+	}
+	if strings.TrimSpace(next.ToolProfile) != "" {
+		merged.ToolProfile = next.ToolProfile
+	}
+	if strings.TrimSpace(next.Provider) != "" {
+		merged.Provider = next.Provider
+	}
+	if strings.TrimSpace(next.Model) != "" {
+		merged.Model = next.Model
+	}
+	merged.ProviderOptions = next.ProviderOptions
+	if strings.TrimSpace(next.IsolationMode) != "" {
+		merged.IsolationMode = next.IsolationMode
 	}
 	if strings.TrimSpace(next.Status) != "" {
 		merged.Status = next.Status
@@ -6786,6 +6847,21 @@ func backgroundNotificationFactsChanged(existing, next BackgroundNotification) b
 		return true
 	}
 	if strings.TrimSpace(next.AgentRole) != "" && existing.AgentRole != next.AgentRole {
+		return true
+	}
+	if strings.TrimSpace(next.ToolProfile) != "" && existing.ToolProfile != next.ToolProfile {
+		return true
+	}
+	if strings.TrimSpace(next.Provider) != "" && existing.Provider != next.Provider {
+		return true
+	}
+	if strings.TrimSpace(next.Model) != "" && existing.Model != next.Model {
+		return true
+	}
+	if !reflect.DeepEqual(existing.ProviderOptions, next.ProviderOptions) {
+		return true
+	}
+	if strings.TrimSpace(next.IsolationMode) != "" && existing.IsolationMode != next.IsolationMode {
 		return true
 	}
 	if strings.TrimSpace(next.Status) != "" && existing.Status != next.Status {

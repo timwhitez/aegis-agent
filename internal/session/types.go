@@ -38,6 +38,9 @@ const (
 
 	BackgroundSourceQueue                = "queue"
 	BackgroundSourceCoordinationDeadlock = "coordination_deadlock"
+
+	ToolProfileDefault          = "default"
+	ToolProfileExplorerReadOnly = "explorer-readonly-v1"
 )
 
 type IsolationInfo struct {
@@ -179,6 +182,7 @@ type SessionMetadata struct {
 	RootSessionID    string           `json:"root_session_id,omitempty"`
 	AgentName        string           `json:"agent_name,omitempty"`
 	AgentRole        string           `json:"agent_role,omitempty"`
+	ToolProfile      string           `json:"tool_profile,omitempty"`
 	QueueJobID       string           `json:"queue_job_id,omitempty"`
 	Depth            int              `json:"depth,omitempty"`
 	Isolation        *IsolationInfo   `json:"isolation,omitempty"`
@@ -448,6 +452,11 @@ type BackgroundNotification struct {
 	SessionID        string           `json:"session_id,omitempty"`
 	AgentName        string           `json:"agent_name,omitempty"`
 	AgentRole        string           `json:"agent_role,omitempty"`
+	ToolProfile      string           `json:"tool_profile,omitempty"`
+	Provider         string           `json:"provider,omitempty"`
+	Model            string           `json:"model,omitempty"`
+	ProviderOptions  ProviderOptions  `json:"provider_options,omitempty"`
+	IsolationMode    string           `json:"isolation_mode,omitempty"`
 	Status           string           `json:"status"`
 	SessionStatus    string           `json:"session_status,omitempty"`
 	RequestedWorkdir string           `json:"requested_workdir,omitempty"`
@@ -483,6 +492,7 @@ type SessionSummary struct {
 	RootSessionID   string           `json:"root_session_id,omitempty"`
 	AgentName       string           `json:"agent_name,omitempty"`
 	AgentRole       string           `json:"agent_role,omitempty"`
+	ToolProfile     string           `json:"tool_profile,omitempty"`
 	Depth           int              `json:"depth,omitempty"`
 	QueueJobID      string           `json:"queue_job_id,omitempty"`
 	EffectiveBudget *EffectiveBudget `json:"effective_budget,omitempty"`
@@ -530,6 +540,7 @@ type QueueJob struct {
 	RootSessionID    string           `json:"root_session_id,omitempty"`
 	AgentName        string           `json:"agent_name,omitempty"`
 	AgentRole        string           `json:"agent_role,omitempty"`
+	ToolProfile      string           `json:"tool_profile,omitempty"`
 	Prompt           string           `json:"prompt"`
 	Mode             string           `json:"mode"`
 	Provider         string           `json:"provider,omitempty"`

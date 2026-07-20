@@ -205,6 +205,18 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - deterministic local-provider + headless Chrome smoke 验证 Settings 默认 hard Off / child Off、duration 保存与 config/API/audit round-trip、foreground budget pause -> parent extend/resume -> complete、background budget pause -> parent cancel/settle，以及 inspector telemetry / cancelled-not-failed 展示
 - queue claim rename/write 与 child session metadata/state 创建窗口不得让 parent 误报 coordination deadlock，也不得让 session detail 因短暂缺少 queue/state fact 返回 404
 
+### 4.4.2 Explorer role/profile
+
+- normalize、config、CLI/API 与 Store 接受 `explorer`，未知 role 继续拒绝；旧 planner/generator/evaluator config 不迁移也能加载
+- Role Provider Overrides 的 Explorer provider/API/base/model/reasoning/max-output 完成 YAML、Web GET/PATCH 与 active config round-trip；负 max output 拒绝且不落盘
+- child option fixture 覆盖 provider/model/caller 显式优先级、parent effective options 继承、role reasoning/output override，并断言 effective options 同时进入 direct child metadata、queue job、worker-created metadata、provider TurnRequest 和事件
+- explorer 无 isolation 字段或使用兼容 `default` 时为 `off`；显式 `off` / `auto` / `git` / `copy` 原样持久化，其他 role 保持现有 fallback
+- provider schema 的工具名集合精确等于 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`；包含 trusted command skill 时集合不变
+- 对每个已注册但禁用的 built-in/trusted command 直接调用 `Registry.Execute`，都返回 `schema_reject/tool_not_allowed_for_role` 且 workspace、session、command sentinel 不变化
+- explorer system prompt 只规定只读 capability 与有界 handoff，不写固定搜索顺序、强制 delegation、固定 DAG、强制 wait 或 taskboard workflow；`agent_spawn` description 保持 model-led 信息经济 guidance
+- sync、background + wait、失败、暂停、取消与 parent resume/recovery 沿用现有 lifecycle；handoff 经过统一 ToolResult/background budget，deterministic fake-provider fixture 证明 parent provider messages 不含 child 原始 tool trajectory，只含有界 final/reference
+- Web Settings 渲染 Explorer row 与 reasoning/output 字段；session inspector 显示 role、provider/model、effective reasoning/output/isolation/tool profile；默认首页 fixture 不出现新的 orchestration panel
+
 ### 4.5 Compaction
 
 - 超过阈值时只压缩 provider 输入视图

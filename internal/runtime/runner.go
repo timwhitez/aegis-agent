@@ -228,24 +228,29 @@ func (r *Runner) acquireRunSlot(sessionID string) (func(), error) {
 }
 
 type StartRequest struct {
-	SessionID        string
-	Prompt           string
-	Provider         string
-	Model            string
-	ProviderOptions  session.ProviderOptions
-	Workdir          string
-	Mode             string
-	SystemOverride   string
-	Goal             *session.GoalDraft
-	PlanMode         *session.PlanModeDraft
-	PlanInputHandler PlanInputHandler
-	ParentSessionID  string
-	AgentName        string
-	AgentRole        string
-	QueueJobID       string
-	IsolationMode    string
-	IsolationRoot    string
-	EffectiveBudget  *session.EffectiveBudget
+	SessionID       string
+	Prompt          string
+	Provider        string
+	Model           string
+	ProviderOptions session.ProviderOptions
+	// ProviderOptionsResolved marks ProviderOptions as an effective durable
+	// snapshot. Internal child/queue paths set it so later Settings changes do
+	// not reinterpret intentional zero/inherit values.
+	ProviderOptionsResolved bool
+	Workdir                 string
+	Mode                    string
+	SystemOverride          string
+	Goal                    *session.GoalDraft
+	PlanMode                *session.PlanModeDraft
+	PlanInputHandler        PlanInputHandler
+	ParentSessionID         string
+	AgentName               string
+	AgentRole               string
+	ToolProfile             string
+	QueueJobID              string
+	IsolationMode           string
+	IsolationRoot           string
+	EffectiveBudget         *session.EffectiveBudget
 }
 
 type ContinueRequest struct {
@@ -327,6 +332,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err != nil {
 		return RunResult{}, err
 	}
+	toolProfile, err := resolveAgentToolProfile(agentRole, req.ToolProfile)
+	if err != nil {
+		return RunResult{}, err
+	}
 	mode, err := normalizeAndValidateRunMode(req.Mode, session.ModeRun)
 	if err != nil {
 		return RunResult{}, err
@@ -374,12 +383,19 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if _, err := config.EffectiveAPIProvider(providerName, providerCfg); err != nil {
 		return RunResult{}, WrapConfigError(err)
 	}
-	providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
-	if err != nil {
-		return RunResult{}, err
+	providerOptions := req.ProviderOptions
+	if req.ProviderOptionsResolved {
+		if err := validateSupportedAPIProvider(providerName, providerOptions.APIProvider); err != nil {
+			return RunResult{}, err
+		}
+	} else {
+		providerOptions, err = resolvedChildProviderOptions(r.cfg, parentMeta, providerName, model, providerCfg, agentRole, req.Provider, req.ProviderOptions)
+		if err != nil {
+			return RunResult{}, err
+		}
 	}
 	effectiveWorkdir := requestedWorkdir
-	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, r.cfg.Runtime.Isolation.DefaultMode)
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, isolationFallbackForAgentRole(agentRole, r.cfg.Runtime.Isolation.DefaultMode))
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -407,6 +423,13 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 			RootDir:       prepared.RootDir,
 			GitRepoRoot:   prepared.GitRepoRoot,
 		}
+	} else if agentRole == agentRoleExplorer {
+		isolationInfo = &session.IsolationInfo{
+			Mode:          "off",
+			RequestedMode: normalizeIsolationMode(req.IsolationMode, "off"),
+			ParentWorkdir: requestedWorkdir,
+			Workdir:       requestedWorkdir,
+		}
 	}
 	createdAt := time.Now().UTC()
 	effectiveBudget := session.CloneEffectiveBudget(req.EffectiveBudget)
@@ -427,6 +450,7 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		RootSessionID:    rootSessionID,
 		AgentName:        req.AgentName,
 		AgentRole:        agentRole,
+		ToolProfile:      toolProfile,
 		QueueJobID:       req.QueueJobID,
 		Depth:            depth,
 		Isolation:        isolationInfo,
@@ -447,12 +471,17 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if r.beforeStartSessionCreatedEvent != nil {
 		r.beforeStartSessionCreatedEvent(meta.ID)
 	}
-	if err := r.appendEvent(meta.ID, "session.created", "prepare", map[string]any{
-		"provider": meta.Provider,
-		"model":    meta.Model,
-		"mode":     meta.Mode,
-		"workdir":  meta.Workdir,
-	}); err != nil {
+	createdEventData := map[string]any{
+		"provider":         meta.Provider,
+		"model":            meta.Model,
+		"mode":             meta.Mode,
+		"workdir":          meta.Workdir,
+		"provider_options": meta.ProviderOptions,
+	}
+	for key, value := range sessionIdentityEventData(meta) {
+		createdEventData[key] = value
+	}
+	if err := r.appendEvent(meta.ID, "session.created", "prepare", createdEventData); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record session.created event: %w", err))
 	}
 	_ = writeSessionSummary(r.store, meta.ID)
@@ -835,6 +864,56 @@ func resolveProviderAndModel(cfg *config.Config, parentMeta *session.SessionMeta
 		}
 	}
 	return providerName, model, providerCfg, nil
+}
+
+func resolvedChildProviderOptions(cfg *config.Config, parentMeta *session.SessionMetadata, providerName, modelName string, providerCfg config.Provider, agentRole, providerOverride string, requested session.ProviderOptions) (session.ProviderOptions, error) {
+	defaults, err := resolvedProviderOptions(providerName, providerCfg, session.ProviderOptions{})
+	if err != nil {
+		return session.ProviderOptions{}, err
+	}
+	if parentMeta != nil && strings.TrimSpace(parentMeta.Provider) == strings.TrimSpace(providerName) {
+		inherited := parentMeta.ProviderOptions
+		if strings.TrimSpace(inherited.APIProvider) != "" && inherited.ContextWindowTokens > 0 {
+			// Current sessions persist a complete effective snapshot. Inherit it
+			// exactly so later provider Settings changes cannot replace durable
+			// zero/nil values. A model override is the sole exception: its window
+			// comes from the newly selected model/provider profile.
+			if strings.TrimSpace(parentMeta.Model) != strings.TrimSpace(modelName) {
+				inherited.ContextWindowTokens = defaults.ContextWindowTokens
+			}
+			defaults = inherited
+		} else {
+			// Backward compatibility for sessions created before complete provider
+			// option snapshots: merge their partial fields over current defaults.
+			if strings.TrimSpace(parentMeta.Model) != strings.TrimSpace(modelName) {
+				inherited.ContextWindowTokens = 0
+			}
+			defaults = mergeProviderOptions(defaults, inherited)
+		}
+	}
+
+	roleOverride := cfg.RoleProviderOverride(agentRole)
+	if normalizeProviderOverride(providerOverride) == "" {
+		if strings.TrimSpace(roleOverride.APIProvider) != "" {
+			defaults.APIProvider = strings.TrimSpace(providerCfg.APIProvider)
+			defaults.PromptCache = defaultPromptCacheForAPIProvider(defaults.APIProvider, providerCfg.PromptCache)
+			defaults.Store = defaultStoreForAPIProvider(defaults.APIProvider, providerCfg.Store)
+		}
+		if strings.TrimSpace(roleOverride.BaseURL) != "" {
+			defaults.BaseURL = strings.TrimSpace(providerCfg.BaseURL)
+		}
+	}
+	roleOptions := session.ProviderOptions{
+		ReasoningEffort: strings.TrimSpace(roleOverride.ReasoningEffort),
+		MaxOutputTokens: roleOverride.MaxOutputTokens,
+	}
+	defaults = mergeProviderOptions(defaults, roleOptions)
+	if strings.TrimSpace(requested.APIProvider) != "" {
+		if err := validateSupportedAPIProvider(providerName, strings.TrimSpace(requested.APIProvider)); err != nil {
+			return session.ProviderOptions{}, err
+		}
+	}
+	return mergeProviderOptions(defaults, requested), nil
 }
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
@@ -2053,7 +2132,17 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	if err != nil {
 		return RunResult{}, err
 	}
-	registry, err := tools.NewRegistry(r.cfg, catalog, r.store, r, meta.Workdir)
+	toolProfile, err := resolveAgentToolProfile(meta.AgentRole, meta.ToolProfile)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if meta.ToolProfile == "" {
+		meta.ToolProfile = toolProfile
+		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
+			return RunResult{}, fmt.Errorf("persist effective tool profile: %w", err)
+		}
+	}
+	registry, err := tools.NewRegistryForToolProfile(r.cfg, catalog, r.store, r, toolProfile, meta.Workdir)
 	if err != nil {
 		return RunResult{}, err
 	}

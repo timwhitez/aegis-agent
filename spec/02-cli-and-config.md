@@ -359,6 +359,16 @@ providers:
     reasoning_summary: auto
     text_verbosity: low
 
+role_providers:
+  planner: {}
+  generator: {}
+  evaluator: {}
+  explorer:
+    provider: openai
+    model: gpt-5.5-mini
+    reasoning_effort: medium
+    max_output_tokens: 4096
+
 session:
   dir: .go-cli-agent/sessions
   dir_mode: "0700"
@@ -440,6 +450,10 @@ hooks:
 - `runtime.multi_agent.enabled` 默认 `true`
 - 默认开启只表示当前 session 会看到 `agent_spawn` / `agent_wait` / `agent_stop` / `agent_prompt` / `agent_status` / `agent_list`
 - 是否真正创建 child agent 仍由当前 master agent 自行决定；若部署方需要收紧能力面，可显式改成 `false`
+- `role_providers.planner|generator|evaluator|explorer` 支持 `provider`、`api_provider`、`base_url`、`model`、`reasoning_effort`、`max_output_tokens`。全部为空时不改变旧配置行为；`max_output_tokens < 0` 非法，`0` 表示继承
+- child provider resolution 顺序为：显式 request provider > role provider > parent provider > global default；model 顺序为显式 request model > role model > parent 同 provider model > provider profile model。显式 provider 会抑制该 role 的 provider/API/base/model routing override，保持现有 caller precedence
+- effective provider options 先取选中 provider profile defaults；effective provider 与 parent 相同时继承 parent 的 durable options；再应用 role 的 `reasoning_effort` / `max_output_tokens`，最后应用显式 request provider options。这样 role 空字段继承、role generation override 与 caller explicit override 都可独立解释
+- `agent_role=explorer` 的空值/`default` isolation fallback 固定为 `off`；显式 `off` / `auto` / `git` / `copy` 不被重写。该 effective mode 与 `tool_profile=explorer-readonly-v1` 在 queue job 和 child session 创建时快照，Settings 热更新不重解释旧 work
 - `runtime.queue.reaper_interval_ms` 默认 `60000`：后台 queue liveness 回收周期。reaper 扫描 `running/` 与 `blocked/`，回收拥有进程已死（如服务重启）或心跳超 `lease_stale_after_sec`（默认 `900`）的孤儿 job——子会话已终态的结算为对应终态、未建会话的重新入队、其余转 `blocked` 并向 parent 写 pending notification；`<= 0` 关闭该回收。active-child capacity 扫描还会回收 dead/PID-reused direct reservation：Linux 通过 boot id + `/proc/<pid>/stat` starttime 校验真实 owner identity，僵尸 running child 转为 `paused/stale_owner_reconciled` 并写 durable event。`web` 进程同时对其他僵尸 `running` 会话做 stale-owner reconcile（转 `paused`）
 - `runtime.queue.background_wait_timeout_sec` 默认 `0`（不超时）：parked parent 等待后台 child 结果的墙钟上界，超时记录 `session.background.wait_timeout` 并回到 `awaiting_input`；与死锁检测互补——当 unresolved 工作全部不可推进时，runtime 会写入 `parent.coordination.deadlock` 事件并注入一条 `coordination_deadlock` background notification 唤醒模型决策（`agent_prompt` 收敛 / `agent_stop` 停弃 / 自行继续），而不是无声死等
 - `runtime.multi_agent.max_depth` 默认 `1`，与当前“只有 root master 可以创建 child”的产品边界一致；`max_active_children` 默认 `4`，统一限制 foreground 与 background child 的 active 数量，不能被大量 queued jobs 或 `agent_prompt` resume 绕过。新 spawn、queue claim、direct resume、blocked queue resume、budget extension resume 都必须在同一 durable `claim.lock` 下按 root 原子占位；容量不足时不得先修改 effective budget/attempt。queue worker count、active child cap 与 nesting depth 是三个独立边界
@@ -449,6 +463,7 @@ hooks:
 - child/job 创建时快照 versioned `effective_budget`；Settings/config 热更新默认只影响之后创建的 child/job。budget-paused child 只有在 parent 通过 `agent_prompt.budget_extension` 追加或清除已耗尽维度后才能开始新 attempt
 - `agent_stop` 可按 `session_id` 或 `queue_job_id` 取消当前 parent 名下的 queued/running/paused child。queued 与最终取消 outcome 使用 `cancelled`；budget-paused blocked job settle 后 queue job 为 `cancelled`，child 保留 paused budget evidence；execution error 继续使用 `failed`
 - `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary、`max_turns_hard` 和 optional child budget 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
+- Settings 的现有 Role Provider Overrides 区必须包含 Explorer，并对上述六个 override 字段完成 GET/PATCH/YAML round-trip；session inspector 只展示 child 的 role、effective provider/model、reasoning/output、isolation 与 tool profile，不在默认首页新增 delegation dashboard
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 - Settings 页面还可暴露 provider `context_window_tokens` 数值输入，保存时持久化回当前生效的 config 文件
 - `runtime.compact.input_char_threshold` 默认 `0`，表示按模型 context window 自动推导字符阈值（`context_window_tokens × 4 × utilization_factor`）；显式正数即覆盖。`hysteresis_delta_chars`、`keep_recent_messages` 默认 `0` 表示自动推导（分别为 `threshold / 4` 与按阈值规模成比例的保留消息数），显式正数覆盖

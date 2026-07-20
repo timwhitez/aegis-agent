@@ -868,7 +868,7 @@ Completion record：
 
 ## Phase 3 — Advanced explorer 与可观测性
 
-### [ ] HARNESS-001 — 增加 model-led、只读、低噪声 explorer profile
+### [x] HARNESS-001 — 增加 model-led、只读、低噪声 explorer profile
 
 - Issue：HARNESS-001。
 - Priority：P2 advanced profile。
@@ -934,12 +934,12 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] explorer 由模型/调用方显式选择，runtime 不自动切任务或强制 spawn。
-- [ ] provider schema 与执行层使用同一 capability profile，不能只隐藏 UI/schema。
-- [ ] explorer 默认无法修改 repo/session task state、运行 shell 或派生 child。
-- [ ] effective provider/reasoning/output/isolation/options 全部 durable。
-- [ ] handoff 有尺寸上限且 child 原始输出不回灌 parent。
-- [ ] Web-first 默认页面与 root README 仍保持简短。
+- [x] explorer 由模型/调用方显式选择，runtime 不自动切任务或强制 spawn。
+- [x] provider schema 与执行层使用同一 capability profile，不能只隐藏 UI/schema。
+- [x] explorer 默认无法修改 repo/session task state、运行 shell 或派生 child。
+- [x] effective provider/reasoning/output/isolation/options 全部 durable。
+- [x] handoff 有尺寸上限且 child 原始输出不回灌 parent。
+- [x] Web-first 默认页面与 root README 仍保持简短。
 
 Validation：
 
@@ -965,10 +965,10 @@ Commit subject：`feat(runtime): add a read only explorer agent profile`
 
 Completion record：
 
-- Commit：`pending`
-- Effective allowlist：`pending`
-- Browser/tests/race：`pending`
-- HARNESS-001 status：`pending`
+- Commit：本任务提交 `feat(runtime): add a read only explorer agent profile`。
+- Effective allowlist：`read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`；同一 `explorer-readonly-v1` profile 同时过滤 provider schema、`Registry.Get/Definitions` 与执行 dispatch，禁用调用稳定返回 `schema_reject/tool_not_allowed_for_role`。
+- Browser/tests/race：HARNESS 聚焦回归、相关 Go 包完整回归、`CGO_ENABLED=1 go test -race ./internal/runtime ./internal/session -run 'Test.*(Explorer|Agent.*Background|Parent.*Resume).*'`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`node --check internal/webconsole/assets/*.js` 与 140 项 Web utility tests 均通过；deterministic parent/child fixture 证明 child raw trajectory sentinel 不进入 parent request；未启动 Docker。
+- HARNESS-001 status：`complete`；`issues.md` 已标记 Resolved，sync/background+wait/failure/pause/cancel/recovery、effective option snapshot、Web round-trip 与默认首页保持简洁均有永久回归。
 
 ### [ ] OBS-001 — 持久化 context budget telemetry 并聚合 root/child
 

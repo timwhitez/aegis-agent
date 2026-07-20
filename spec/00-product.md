@@ -85,6 +85,13 @@
 
 这条 profile 不要求把 worker pool、raw queue payload、isolation tuning 或 child orchestration 做成默认可见 UI，但要求它们具备真实 runtime、session、queue、notification、isolation 证据，而不只是保留兼容壳。Web 控制台可以提供轻量入口与观测链接，细粒度调参仍可留给 CLI / API。
 
+该 profile 还提供可选的 `explorer` child role，用于开放式、跨模块或入口不明且“原始检索量远大于最终结论”的只读探索：
+
+- 是否创建 explorer 仍由当前模型或调用方显式决定；runtime 不自动拆任务、不强制等待，也不把简单检查升级成 delegation。
+- explorer 复用现有 fresh child session、queue、parent coordination 和文件事实源，通过最小只读 tool capability profile 隔离一次性搜索输出。
+- parent 只接收有界的结论、`claim | file:line | confidence` 证据、未覆盖范围、关键疑点以及 child/session reference；child 原始 tool trajectory 保留在 child session，不复制进 parent transcript。
+- Web 只在现有 Settings role provider 区和 session inspector 中提供配置/观测，不在默认首页增加 orchestration dashboard。
+
 ### 3.4 明确不做
 
 - 不做 hosted multi-user Web SaaS

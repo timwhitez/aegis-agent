@@ -69,6 +69,8 @@
 - 注册内置工具与 skill 提供的工具
 - 输出 provider 可消费的 tool schema
 - 执行工具并返回结构化结果
+- 维护 versioned role capability profile 作为 tool 可见性和执行权限的唯一事实源；provider schema 过滤与 `Registry.Execute` 必须调用同一个 profile 判定，不能维护两份 allowlist
+- `explorer-readonly-v1` 只允许 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`；包括 trusted skill command 在内的其他工具既不进入 provider schema，也在直接/恢复/伪造调用时以 `failure_class=schema_reject`、`error_code=tool_not_allowed_for_role` fail closed
 
 ### 2.5 SkillCatalog
 
@@ -243,9 +245,13 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 - 维护 parent / root / depth 元数据
 - 为 child session 准备 isolation workdir
 - 统一 CLI 与 tool 的 delegation 契约
-- `agent_role` 可显式选择 `planner` / `generator` / `evaluator`，并作为 role hint 传入 child session；`agent_name` 只是人类可读标签，不参与 role provider override 匹配
-- Settings / config 可为 `planner`、`generator`、`evaluator` 单独声明 provider override；空字段继承默认 provider 或 parent session，显式请求中的 provider/model 仍优先
+- `agent_role` 可显式选择 `planner` / `generator` / `evaluator` / `explorer`，并作为 role hint 传入 child session；`agent_name` 只是人类可读标签，不参与 role provider override 匹配
+- Settings / config 可为四种 role 单独声明 provider、API provider、base URL、model、`reasoning_effort` 与 `max_output_tokens` override；空字段继承 parent session 的 effective provider options（provider 不同时继承该 provider profile defaults），显式请求中的 provider/model/provider options 仍优先
+- role routing override 继续只在调用方未显式选择 provider 时生效；`reasoning_effort` / `max_output_tokens` 是 role generation override，在 provider/model 解析后、显式 request provider options 之前合并
+- `explorer` 映射到 durable `tool_profile=explorer-readonly-v1`，其他 role 映射到 `tool_profile=default`；queue job、child `session.json`、创建/排队事件和 background notification 都保存 effective profile，旧记录缺字段时按 `agent_role` fail-secure 派生
+- `explorer` 未显式指定 `isolation_mode`（空值或兼容 `default`）时 effective mode 为 `off`；显式 `off` / `auto` / `git` / `copy` 保持调用方选择。effective mode 必须进入 queue job 与 child metadata
 - child handoff 必须依赖可见文件事实，例如 `reports/spec.md`、`reports/plan.md`、`reports/progress.md`、`reports/validation.md` 与 visible output 列表，而不是依赖进程内临时上下文
+- explorer role prompt 只约束只读身份与有界交付格式：简短结论、`claim | file:line | confidence`、未覆盖范围、关键疑点；不规定固定阅读顺序、审计路线、taskboard 节奏或必须 delegation
 
 ### 2.18 QueueStore And Worker
 
@@ -420,6 +426,7 @@ while true:
 ### 5.4 provider_call
 
 - 先基于 adapter 的真实 wire body 构造 request budget snapshot；只有 `fit=true` 才调用 provider adapter
+- tool schema 先经过当前 session durable `tool_profile` 过滤，再与 Plan Mode capability 取交集；过滤发生在 adapter 转换与 request budget 估算之前
 - 产生 `assistant.delta`、`tool.call.ready`、`provider.error`、`turn.stopped` 等事件
 
 ### 5.5 tool_execute
@@ -432,6 +439,7 @@ while true:
    - 不因 `read_file`、`grep`、`glob`、read-only shell 等只读检索调用次数而阻断工具；多文件分析可以按需继续读取
    - 当最新 interrupt steer 已明确要求立即交付时，guard 可以阻断继续的只读探索、todo/task bookkeeping 或 skill-loading detour，把执行拉回 `write_file` / `edit_file` / `finish`
    - artifact / project-memory / large-project coordination 默认通过 prompt note 或 harness reminder 提示，不作为普通读取、验证或 finish 的 hard guard，除非用户当轮明确指定为必须交付 contract
+   - role capability profile 在普通 CompletionController workflow guard 之前形成不可绕过的 capability boundary；恢复轨迹、兼容 provider 或伪造 call 即使请求了隐藏工具，也只能得到稳定 typed ToolResult，不能执行工具或 trusted command
 3. 执行工具
 4. 触发 `tool.after`；hook 可以改写 `llm_output` / `display_output`
 5. 恢复/确认 `ToolCallID`、`Name`、`IsError`、`Final` 与原 metadata 后，执行唯一的 `finalizeToolResultForContext`：分别限制 `llm_output` 与 `display_output`；需要保存的原始 `llm_output` 通过 Store 的 owner-only、no-symlink、quota-aware writer 写入当前 session 的 `artifacts/tool-outputs/`

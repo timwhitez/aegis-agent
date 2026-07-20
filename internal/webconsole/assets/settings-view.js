@@ -72,16 +72,18 @@ async function renderSettings() {
     const roleLabels = {
       planner: 'Planner',
       generator: 'Generator',
-      evaluator: 'Evaluator'
+      evaluator: 'Evaluator',
+      explorer: 'Explorer'
     };
     const roleDescriptions = {
       planner: 'Decomposition, plans, and handoff artifacts.',
       generator: 'Bounded implementation and drafting slices.',
-      evaluator: 'Independent review, audit, and validation passes.'
+      evaluator: 'Independent review, audit, and validation passes.',
+      explorer: 'Read-only repository exploration with a bounded evidence handoff.'
     };
-    const roleProviderRows = ['planner', 'generator', 'evaluator'].map((role) => {
+    const roleProviderRows = ['planner', 'generator', 'evaluator', 'explorer'].map((role) => {
       const override = roleProviders[role] || {};
-      const hasOverride = Boolean(override.provider || override.api_provider || override.base_url || override.model);
+      const hasOverride = Boolean(override.provider || override.api_provider || override.base_url || override.model || override.reasoning_effort || Number(override.max_output_tokens || 0) > 0);
       return `
         <details class="role-provider-panel" data-role-provider="${escapeAttr(role)}" ${hasOverride ? 'open' : ''}>
           <summary class="role-provider-summary">
@@ -111,6 +113,20 @@ async function renderSettings() {
             <label class="field">
               <span class="field-label">Model Name</span>
               <input class="settings-input" data-role-field="model" type="text" placeholder="Inherit provider model">
+            </label>
+            <label class="field">
+              <span class="field-label">Reasoning Effort</span>
+              <select class="settings-input" data-role-field="reasoning_effort">
+                <option value="">Inherit provider effort</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">XHigh</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Max Output Tokens</span>
+              <input class="settings-input" data-role-field="max_output_tokens" type="number" min="0" step="1" placeholder="Inherit provider limit">
             </label>
           </div>
         </details>
@@ -264,7 +280,7 @@ async function renderSettings() {
               <div>
                 <span class="field-label">Role Provider Overrides</span>
                 <p class="view-subtitle settings-help">
-                  Optional provider settings for planner, generator, and evaluator sessions. Blank fields inherit the selected provider defaults.
+                  Optional provider settings for planner, generator, evaluator, and explorer sessions. Blank fields inherit the selected provider defaults.
                 </p>
               </div>
             </div>
@@ -429,6 +445,8 @@ async function renderSettings() {
         panel.querySelector('[data-role-field="api_provider"]').value = override.api_provider || '';
         panel.querySelector('[data-role-field="base_url"]').value = override.base_url || '';
         panel.querySelector('[data-role-field="model"]').value = override.model || '';
+        panel.querySelector('[data-role-field="reasoning_effort"]').value = override.reasoning_effort || '';
+        panel.querySelector('[data-role-field="max_output_tokens"]').value = Number(override.max_output_tokens || 0) > 0 ? String(override.max_output_tokens) : '';
         syncRoleProviderState(panel);
         panel.querySelectorAll('[data-role-field]').forEach((node) => {
           node.addEventListener('input', () => syncRoleProviderState(panel));
@@ -445,7 +463,9 @@ async function renderSettings() {
           provider: panel.querySelector('[data-role-field="provider"]').value.trim(),
           api_provider: panel.querySelector('[data-role-field="api_provider"]').value.trim(),
           base_url: panel.querySelector('[data-role-field="base_url"]').value.trim(),
-          model: panel.querySelector('[data-role-field="model"]').value.trim()
+          model: panel.querySelector('[data-role-field="model"]').value.trim(),
+          reasoning_effort: panel.querySelector('[data-role-field="reasoning_effort"]').value.trim(),
+          max_output_tokens: Number.parseInt(panel.querySelector('[data-role-field="max_output_tokens"]').value || '0', 10)
         };
       });
       return out;

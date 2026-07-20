@@ -247,6 +247,8 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - `agent_status`
 - `agent_list`
 - 当 large-project profile 被显式启用时，这一 phase 需要有 parent/child linkage、child session durability、observability 和同步/异步 child 执行证据
+- 可选 `explorer` role 使用 fresh child session 与 `explorer-readonly-v1` capability profile隔离开放式探索；是否 spawn、如何分工、何时等待仍由模型或调用方决定
+- explorer 的 role provider/reasoning/output、默认 isolation off、双层 tool capability gate 与有界 structured handoff 作为 Phase 12/13 收敛项，不引入第二套 orchestration state
 
 ### 15.3 Phase 13 - Background Queue
 
@@ -263,6 +265,9 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - snapshot / interactive 观测面
 
 ### 15.5 Phase 15 - Web Console
+
+- Settings 的既有 role provider 区对 planner/generator/evaluator/explorer 做相同 GET/PATCH/YAML round-trip；session inspector 轻量显示 effective role/options/isolation/tool profile
+- 默认首页不增加 explorer/children dashboard，细粒度 orchestration 继续属于 advanced inspector、CLI 或 API
 
 - `go-cli-agent web`
 - `experimental web` 作为旧入口兼容别名

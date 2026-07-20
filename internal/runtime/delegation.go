@@ -41,6 +41,7 @@ type DelegateResult struct {
 	Workdir      string   `json:"workdir,omitempty"`
 	VisiblePaths []string `json:"visible_paths,omitempty"`
 	AgentRole    string   `json:"agent_role,omitempty"`
+	ToolProfile  string   `json:"tool_profile,omitempty"`
 }
 
 type ChildrenResult struct {
@@ -74,6 +75,7 @@ func (r *Runner) Delegate(ctx context.Context, req DelegateRequest) (DelegateRes
 		Workdir:      result.Workdir,
 		VisiblePaths: append([]string(nil), result.VisiblePaths...),
 		AgentRole:    result.AgentRole,
+		ToolProfile:  result.ToolProfile,
 	}, err
 }
 
@@ -92,6 +94,10 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		return tools.AgentSpawnResult{}, err
 	}
 	req.AgentRole = agentRole
+	toolProfile, err := resolveAgentToolProfile(req.AgentRole, "")
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
 	parentMeta, err := r.store.LoadMetadata(req.ParentSessionID)
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
@@ -107,7 +113,7 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
 	}
-	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, "auto")
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, isolationFallbackForAgentRole(req.AgentRole, "auto"))
 	if err != nil {
 		return tools.AgentSpawnResult{}, err
 	}
@@ -119,13 +125,17 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	if err != nil {
 		return tools.AgentSpawnResult{}, WrapConfigError(err)
 	}
-	providerOptions := providerOptionsFromConfig(providerName, providerCfg)
+	providerOptions, err := resolvedChildProviderOptions(r.cfg, &parentMeta, providerName, modelName, providerCfg, req.AgentRole, req.Provider, session.ProviderOptions{})
+	if err != nil {
+		return tools.AgentSpawnResult{}, err
+	}
 	if req.Background {
 		job, err := r.QueueSubmit(ctx, QueueSubmitRequest{
 			ParentSessionID: req.ParentSessionID,
 			Prompt:          req.Prompt,
 			AgentName:       req.AgentName,
 			AgentRole:       req.AgentRole,
+			ToolProfile:     toolProfile,
 			Provider:        providerName,
 			Model:           modelName,
 			ProviderOptions: providerOptions,
@@ -141,10 +151,11 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 			return tools.AgentSpawnResult{}, err
 		}
 		return tools.AgentSpawnResult{
-			QueueJobID: job.ID,
-			Status:     job.Status,
-			Workdir:    job.RequestedWorkdir,
-			AgentRole:  job.AgentRole,
+			QueueJobID:  job.ID,
+			Status:      job.Status,
+			Workdir:     job.RequestedWorkdir,
+			AgentRole:   job.AgentRole,
+			ToolProfile: job.ToolProfile,
 		}, nil
 	}
 	childSessionID := session.NewSessionID()
@@ -163,37 +174,45 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 	childRunner := NewRunner(r.cfg)
 	childRunner.SetRunLifecycleHooks(r.lifecycleHooksSnapshot())
 	result, err := childRunner.Start(ctx, StartRequest{
-		SessionID:       childSessionID,
-		Prompt:          req.Prompt,
-		Provider:        providerName,
-		Model:           modelName,
-		ProviderOptions: providerOptions,
-		Workdir:         workdir,
-		Mode:            mode,
-		SystemOverride:  req.SystemOverride,
-		ParentSessionID: req.ParentSessionID,
-		AgentName:       req.AgentName,
-		AgentRole:       req.AgentRole,
-		IsolationMode:   isolationMode,
-		IsolationRoot:   req.IsolationRoot,
+		SessionID:               childSessionID,
+		Prompt:                  req.Prompt,
+		Provider:                providerName,
+		Model:                   modelName,
+		ProviderOptions:         providerOptions,
+		ProviderOptionsResolved: true,
+		Workdir:                 workdir,
+		Mode:                    mode,
+		SystemOverride:          req.SystemOverride,
+		ParentSessionID:         req.ParentSessionID,
+		AgentName:               req.AgentName,
+		AgentRole:               req.AgentRole,
+		ToolProfile:             toolProfile,
+		IsolationMode:           isolationMode,
+		IsolationRoot:           req.IsolationRoot,
 	})
 	if releaseErr := r.store.ReleaseDirectChildSlot(childSessionID); releaseErr != nil {
 		err = errors.Join(err, fmt.Errorf("release active child slot for %s: %w", childSessionID, releaseErr))
 	}
 	out := tools.AgentSpawnResult{
-		SessionID: result.SessionID,
-		Status:    result.Status,
-		FinalText: result.FinalText,
-		LastError: result.LastError,
-		AgentRole: req.AgentRole,
+		SessionID:   result.SessionID,
+		Status:      result.Status,
+		FinalText:   result.FinalText,
+		LastError:   result.LastError,
+		AgentRole:   req.AgentRole,
+		ToolProfile: toolProfile,
 	}
 	requestedChildWorkdir := workdir
+	effectiveIsolationMode := isolationMode
 	coordinationStatus := result.Status
 	var handoffErr error
 	if result.SessionID != "" {
 		if meta, loadErr := childRunner.store.LoadMetadata(result.SessionID); loadErr == nil {
 			out.Workdir = meta.Workdir
 			out.AgentRole = meta.AgentRole
+			out.ToolProfile = meta.ToolProfile
+			if meta.Isolation != nil && strings.TrimSpace(meta.Isolation.Mode) != "" {
+				effectiveIsolationMode = meta.Isolation.Mode
+			}
 			requestedChildWorkdir = firstNonEmpty(meta.RequestedWorkdir, requestedChildWorkdir)
 		} else {
 			handoffErr = fmt.Errorf("load child session metadata for delegate handoff %s: %w", result.SessionID, loadErr)
@@ -224,11 +243,16 @@ func (r *Runner) SpawnAgent(ctx context.Context, req tools.AgentSpawnRequest) (t
 		}
 		eventsSnapshot, snapshotErr := r.store.LoadEvents(req.ParentSessionID)
 		if eventErr := r.appendEvent(req.ParentSessionID, "session.child.spawned", "delegate", map[string]any{
-			"session_id": result.SessionID,
-			"status":     out.Status,
-			"agent_name": req.AgentName,
-			"agent_role": out.AgentRole,
-			"wait_mode":  waitMode,
+			"session_id":       result.SessionID,
+			"status":           out.Status,
+			"agent_name":       req.AgentName,
+			"agent_role":       out.AgentRole,
+			"tool_profile":     out.ToolProfile,
+			"provider":         providerName,
+			"model":            modelName,
+			"provider_options": providerOptions,
+			"isolation_mode":   effectiveIsolationMode,
+			"wait_mode":        waitMode,
 		}); eventErr != nil {
 			return out, errors.Join(err, fmt.Errorf("append session.child.spawned event for child session %s: %w", result.SessionID, eventErr))
 		}
@@ -350,6 +374,7 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 			Workdir:         firstNonEmpty(job.EffectiveWorkdir, job.RequestedWorkdir),
 			AgentName:       job.AgentName,
 			AgentRole:       job.AgentRole,
+			ToolProfile:     job.ToolProfile,
 			EffectiveBudget: session.CloneEffectiveBudget(job.EffectiveBudget),
 		}, nil
 	}
@@ -378,6 +403,7 @@ func (r *Runner) AgentStatus(_ context.Context, req tools.AgentStatusRequest) (t
 		Workdir:         meta.Workdir,
 		AgentName:       meta.AgentName,
 		AgentRole:       meta.AgentRole,
+		ToolProfile:     meta.ToolProfile,
 		EffectiveBudget: session.CloneEffectiveBudget(meta.EffectiveBudget),
 	}, nil
 }
@@ -576,6 +602,12 @@ func (r *Runner) finalizeCancelledJob(parentSessionID string, previous, cancelle
 		"session_id":       cancelled.SessionID,
 		"previous_status":  previous.Status,
 		"status":           cancelled.Status,
+		"agent_role":       cancelled.AgentRole,
+		"tool_profile":     cancelled.ToolProfile,
+		"provider":         cancelled.Provider,
+		"model":            cancelled.Model,
+		"provider_options": cancelled.ProviderOptions,
+		"isolation_mode":   cancelled.IsolationMode,
 		"stop_reason":      cancelled.StopReason,
 		"last_error":       cancelled.LastError,
 		"effective_budget": effectiveBudgetEventData(cancelled.EffectiveBudget),
@@ -692,9 +724,15 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 				return tools.AgentPromptResult{}, err
 			}
 			if err := r.appendEvent(parentMeta.ID, "queue.job.requeued", "delegate", map[string]any{
-				"job_id":      requeued.ID,
-				"status":      requeued.Status,
-				"resume_from": session.QueueStopReasonParentStop,
+				"job_id":           requeued.ID,
+				"status":           requeued.Status,
+				"agent_role":       requeued.AgentRole,
+				"tool_profile":     requeued.ToolProfile,
+				"provider":         requeued.Provider,
+				"model":            requeued.Model,
+				"provider_options": requeued.ProviderOptions,
+				"isolation_mode":   requeued.IsolationMode,
+				"resume_from":      session.QueueStopReasonParentStop,
 			}); err != nil {
 				return tools.AgentPromptResult{}, err
 			}
@@ -1171,6 +1209,7 @@ type QueueSubmitRequest struct {
 	Prompt          string
 	AgentName       string
 	AgentRole       string
+	ToolProfile     string
 	Provider        string
 	Model           string
 	ProviderOptions session.ProviderOptions
@@ -1195,6 +1234,11 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		return session.QueueJob{}, err
 	}
 	req.AgentRole = agentRole
+	toolProfile, err := resolveAgentToolProfile(req.AgentRole, req.ToolProfile)
+	if err != nil {
+		return session.QueueJob{}, err
+	}
+	req.ToolProfile = toolProfile
 	mode, err := normalizeAndValidateRunMode(req.Mode, session.ModeExec)
 	if err != nil {
 		return session.QueueJob{}, err
@@ -1203,7 +1247,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	if err != nil {
 		return session.QueueJob{}, err
 	}
-	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, "auto")
+	isolationMode, err := normalizeAndValidateIsolationMode(req.IsolationMode, isolationFallbackForAgentRole(req.AgentRole, "auto"))
 	if err != nil {
 		return session.QueueJob{}, err
 	}
@@ -1232,7 +1276,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 	if err != nil {
 		return session.QueueJob{}, WrapConfigError(err)
 	}
-	providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
+	providerOptions, err := resolvedChildProviderOptions(r.cfg, parentMeta, providerName, modelName, providerCfg, req.AgentRole, req.Provider, req.ProviderOptions)
 	if err != nil {
 		return session.QueueJob{}, err
 	}
@@ -1247,6 +1291,7 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		RootSessionID:    rootSessionID,
 		AgentName:        req.AgentName,
 		AgentRole:        req.AgentRole,
+		ToolProfile:      req.ToolProfile,
 		Prompt:           req.Prompt,
 		Mode:             mode,
 		Provider:         providerName,
@@ -1280,11 +1325,16 @@ func (r *Runner) QueueSubmit(_ context.Context, req QueueSubmitRequest) (session
 		}
 		if err := retryQueuePersistence("append session.child.queued event for job "+job.ID, func() error {
 			return r.appendEvent(job.ParentSessionID, "session.child.queued", "delegate", map[string]any{
-				"job_id":        job.ID,
-				"agent_name":    job.AgentName,
-				"agent_role":    job.AgentRole,
-				"wait_mode":     job.WaitMode,
-				"resume_parent": job.ResumeParent,
+				"job_id":           job.ID,
+				"agent_name":       job.AgentName,
+				"agent_role":       job.AgentRole,
+				"tool_profile":     job.ToolProfile,
+				"provider":         job.Provider,
+				"model":            job.Model,
+				"provider_options": job.ProviderOptions,
+				"isolation_mode":   job.IsolationMode,
+				"wait_mode":        job.WaitMode,
+				"resume_parent":    job.ResumeParent,
 			})
 		}); err != nil {
 			if restoreErr := r.store.RestoreParentCoordination(job.ParentSessionID, previousCoordination); restoreErr != nil {
@@ -1325,6 +1375,12 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 				"claimed_by":       job.ClaimedBy,
 				"process_start_id": job.ProcessStartID,
 				"worker_pid":       job.WorkerPID,
+				"agent_role":       job.AgentRole,
+				"tool_profile":     job.ToolProfile,
+				"provider":         job.Provider,
+				"model":            job.Model,
+				"provider_options": job.ProviderOptions,
+				"isolation_mode":   job.IsolationMode,
 			})
 		}); err != nil {
 			restored := clearQueueClaim(job)
@@ -1345,21 +1401,23 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		return job, true, err
 	}
 	result, runErr := childRunner.Start(ctx, StartRequest{
-		SessionID:       childSessionID,
-		Prompt:          job.Prompt,
-		Provider:        job.Provider,
-		Model:           job.Model,
-		ProviderOptions: job.ProviderOptions,
-		Workdir:         job.RequestedWorkdir,
-		Mode:            job.Mode,
-		SystemOverride:  job.SystemOverride,
-		ParentSessionID: job.ParentSessionID,
-		AgentName:       job.AgentName,
-		AgentRole:       job.AgentRole,
-		QueueJobID:      job.ID,
-		IsolationMode:   job.IsolationMode,
-		IsolationRoot:   job.IsolationRoot,
-		EffectiveBudget: session.CloneEffectiveBudget(job.EffectiveBudget),
+		SessionID:               childSessionID,
+		Prompt:                  job.Prompt,
+		Provider:                job.Provider,
+		Model:                   job.Model,
+		ProviderOptions:         job.ProviderOptions,
+		ProviderOptionsResolved: job.ProviderOptions != (session.ProviderOptions{}),
+		Workdir:                 job.RequestedWorkdir,
+		Mode:                    job.Mode,
+		SystemOverride:          job.SystemOverride,
+		ParentSessionID:         job.ParentSessionID,
+		AgentName:               job.AgentName,
+		AgentRole:               job.AgentRole,
+		ToolProfile:             job.ToolProfile,
+		QueueJobID:              job.ID,
+		IsolationMode:           job.IsolationMode,
+		IsolationRoot:           job.IsolationRoot,
+		EffectiveBudget:         session.CloneEffectiveBudget(job.EffectiveBudget),
 	})
 	stopHeartbeat()
 	if heartbeatJob, heartbeatErr := r.store.RefreshQueueJobHeartbeat(job.ID); heartbeatErr == nil {
@@ -1375,6 +1433,10 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		if meta, err := childRunner.store.LoadMetadata(result.SessionID); err == nil {
 			job.EffectiveWorkdir = meta.Workdir
 			job.EffectiveBudget = session.CloneEffectiveBudget(meta.EffectiveBudget)
+			job.ToolProfile = meta.ToolProfile
+			if meta.Isolation != nil && strings.TrimSpace(meta.Isolation.Mode) != "" {
+				job.IsolationMode = meta.Isolation.Mode
+			}
 		} else {
 			handoffErr = fmt.Errorf("load child session metadata for queue job %s: %w", job.ID, err)
 		}
@@ -1570,12 +1632,17 @@ func (r *Runner) queueJobEventExists(parentSessionID, eventType, jobID string) (
 
 func (r *Runner) appendQueueJobEvent(parentSessionID, eventType string, job session.QueueJob) error {
 	data := map[string]any{
-		"job_id":      job.ID,
-		"session_id":  job.SessionID,
-		"status":      job.Status,
-		"agent_role":  job.AgentRole,
-		"stop_reason": job.StopReason,
-		"last_error":  job.LastError,
+		"job_id":           job.ID,
+		"session_id":       job.SessionID,
+		"status":           job.Status,
+		"agent_role":       job.AgentRole,
+		"tool_profile":     job.ToolProfile,
+		"provider":         job.Provider,
+		"model":            job.Model,
+		"provider_options": job.ProviderOptions,
+		"isolation_mode":   job.IsolationMode,
+		"stop_reason":      job.StopReason,
+		"last_error":       job.LastError,
 	}
 	if job.EffectiveBudget != nil {
 		data["effective_budget"] = effectiveBudgetEventData(job.EffectiveBudget)

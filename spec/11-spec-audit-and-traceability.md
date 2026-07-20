@@ -145,7 +145,9 @@
 - evaluator / reviewer 角色必须保持怀疑式评审，不应把模型自评当成通过标准
 - 模型升级后要持续复盘哪些 scaffold 仍然 load-bearing；角色化、evaluator pass、handoff guard 都应按任务强度启用，而不是无差别铺满所有任务
 - role hint 不应只停留在 prompt 文本里；当 session 或 child job 显式声明 `planner` / `generator` / `evaluator` 时，该 role 应持久化进 session metadata、queue job、background notification 和 provider request metadata，方便后续 traceability 与 comparator 验证
-- role hint 的 provider override 必须基于显式选择，而不是从 `agent_name` 或 orchestrator / worker / validator 文案做模糊匹配；模型需要在 `role_plan.role` 或 `agent_role` 中直接选择 `planner` / `generator` / `evaluator`
+- role hint 的 provider override 必须基于显式选择，而不是从 `agent_name` 或 orchestrator / worker / validator 文案做模糊匹配；模型需要在 `role_plan.role` 或 `agent_role` 中直接选择 `planner` / `generator` / `evaluator` / `explorer`
+- HARNESS-001 将显式 role 集合扩展为 `planner` / `generator` / `evaluator` / `explorer`。`explorer` 只是一种 optional large-project child profile：runtime 不自动拆任务；`explorer-readonly-v1` 的单一 allowlist同时裁 provider schema 与拒绝执行，default isolation 为 off，handoff 经过统一 ToolResult/background byte budget
+- role provider override 统一覆盖 provider/API/base/model/reasoning effort/max output；effective provider options、isolation 与 tool profile 必须在 queue job、child metadata、相关事件和 Web session detail 中可追踪，不能只存在于临时 prompt 或 Settings 表单
 - 三类 role hint 可以各自配置 provider override，覆盖只作为默认 provider/model/adapter 选择，不代表 runtime 自动创建 orchestrator / worker / validator 三段任务流
 - Codex 当前公开的普通 sub-agent 配置提供并发数、嵌套深度、steer/stop 等控制；`agents.job_max_runtime_seconds` 只对应 `spawn_agents_on_csv` worker，未提供通用的逐 child parent budget 字段。因此本项目不新增 `agent_spawn` 的逐 child budget 参数，只保留 Settings / config 中默认关闭的全局 optional child budget
 - child budget 一旦启用，必须同时提供可收敛控制：parent 能对 budget-paused foreground/background child 追加下一 attempt 的 turns/active runtime、延长 absolute deadline或清除对应限制，也能显式 cancel/settle 不再需要的 work；settle 只结算 queue / parent coordination，不把 paused child 伪造为 completed
@@ -280,6 +282,8 @@
 - 这只是给当前 master agent 提供 delegation 能力，不代表 runtime 会自动拆任务或自动新建 child session
 - `agent_prompt` 只是让 master agent 复用 Live Steer 给自己名下的 child/job 追加 prompt；是否收敛、等待或继续仍由 master agent 判断
 - 若部署方需要更窄的能力面，仍可显式设置 `runtime.multi_agent.enabled=false`
+- `agent_spawn` 可显式选择 `explorer`；description 只提供“原始检索量远大于结论时考虑 delegation”的信息经济启发，以及 context-isolation 场景的同步/background+wait 选项，不形成强制委派/等待 workflow
+- explorer 的 provider view 只含 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`，执行层复用相同 capability profile；trusted command、shell、write/edit、durable task mutation 与 agent control 均 fail closed
 
 ### 4.3 Provider generation 选项进入事实源
 

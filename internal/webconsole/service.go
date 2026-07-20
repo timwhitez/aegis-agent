@@ -4903,13 +4903,15 @@ func sameWebPath(a, b string) (bool, error) {
 
 func roleProviderOverridesResponse(cfg *config.Config) map[string]any {
 	out := map[string]any{}
-	for _, role := range []string{"planner", "generator", "evaluator"} {
+	for _, role := range []string{"planner", "generator", "evaluator", "explorer"} {
 		override := cfg.RoleProviderOverride(role)
 		out[role] = map[string]any{
-			"provider":     strings.TrimSpace(override.Provider),
-			"api_provider": strings.TrimSpace(override.APIProvider),
-			"base_url":     strings.TrimSpace(override.BaseURL),
-			"model":        strings.TrimSpace(override.Model),
+			"provider":          strings.TrimSpace(override.Provider),
+			"api_provider":      strings.TrimSpace(override.APIProvider),
+			"base_url":          strings.TrimSpace(override.BaseURL),
+			"model":             strings.TrimSpace(override.Model),
+			"reasoning_effort":  strings.ToLower(strings.TrimSpace(override.ReasoningEffort)),
+			"max_output_tokens": override.MaxOutputTokens,
 		}
 	}
 	return out
@@ -4929,6 +4931,8 @@ func roleProvidersFromRequest(cfg *config.Config, req map[string]RoleProviderOve
 			out.Generator = override
 		case "evaluator":
 			out.Evaluator = override
+		case "explorer":
+			out.Explorer = override
 		default:
 			return out, fmt.Errorf("unsupported role provider override: %s", role)
 		}
@@ -4941,6 +4945,10 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 	apiProvider := strings.TrimSpace(req.APIProvider)
 	baseURL := strings.TrimSpace(req.BaseURL)
 	model := strings.TrimSpace(req.Model)
+	reasoningEffort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	if req.MaxOutputTokens < 0 {
+		return config.RoleProviderOverride{}, newWebSettingsValidationError("role_providers.%s.max_output_tokens must be non-negative", strings.TrimSpace(role))
+	}
 	var providerCfg config.Provider
 	if providerName != "" {
 		var ok bool
@@ -4969,20 +4977,24 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 		}
 	}
 	return config.RoleProviderOverride{
-		Provider:    providerName,
-		APIProvider: apiProvider,
-		BaseURL:     baseURL,
-		Model:       model,
+		Provider:        providerName,
+		APIProvider:     apiProvider,
+		BaseURL:         baseURL,
+		Model:           model,
+		ReasoningEffort: reasoningEffort,
+		MaxOutputTokens: req.MaxOutputTokens,
 	}, nil
 }
 
 func roleProviderOverrideCount(cfg config.RoleProvidersConfig) int {
 	count := 0
-	for _, override := range []config.RoleProviderOverride{cfg.Planner, cfg.Generator, cfg.Evaluator} {
+	for _, override := range []config.RoleProviderOverride{cfg.Planner, cfg.Generator, cfg.Evaluator, cfg.Explorer} {
 		if strings.TrimSpace(override.Provider) != "" ||
 			strings.TrimSpace(override.APIProvider) != "" ||
 			strings.TrimSpace(override.BaseURL) != "" ||
-			strings.TrimSpace(override.Model) != "" {
+			strings.TrimSpace(override.Model) != "" ||
+			strings.TrimSpace(override.ReasoningEffort) != "" ||
+			override.MaxOutputTokens > 0 {
 			count++
 		}
 	}

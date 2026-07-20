@@ -186,6 +186,14 @@ adapter 负责转换为：
 - Anthropic: `input_schema`
 - Google: `functionDeclarations`
 
+role capability 约束在进入 adapter 之前完成：
+
+- session metadata 中的 effective `tool_profile` 是本轮 action space 的 durable identity；旧 metadata 缺失时 runtime 仅可按 `agent_role` 派生兼容值
+- `explorer-readonly-v1` 的 schema 必须精确来自 ToolRegistry 的 versioned allowlist：`read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`
+- role profile 与 Plan Mode 同时存在时取能力交集；adapter 不复制 profile 名单，也不能在 OpenAI / Anthropic / Google 转换后重新加入被过滤工具
+- provider request budget 的 `ToolCount` / `ToolSchemaBytes` 基于过滤后的真实 wire tool schema，因此 event 与实际发送 action space 一致
+- schema 隐藏不是唯一安全边界；相同 profile 还必须在 `Registry.Execute` 拒绝被恢复记录、兼容 provider 或伪造 tool call 请求的禁用工具
+
 ## 6. OpenAI Contract
 
 ### 6.1 接口与鉴权

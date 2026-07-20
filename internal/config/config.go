@@ -85,13 +85,16 @@ type RoleProvidersConfig struct {
 	Planner   RoleProviderOverride `yaml:"planner,omitempty"`
 	Generator RoleProviderOverride `yaml:"generator,omitempty"`
 	Evaluator RoleProviderOverride `yaml:"evaluator,omitempty"`
+	Explorer  RoleProviderOverride `yaml:"explorer,omitempty"`
 }
 
 type RoleProviderOverride struct {
-	Provider    string `yaml:"provider,omitempty"`
-	APIProvider string `yaml:"api_provider,omitempty"`
-	BaseURL     string `yaml:"base_url,omitempty"`
-	Model       string `yaml:"model,omitempty"`
+	Provider        string `yaml:"provider,omitempty"`
+	APIProvider     string `yaml:"api_provider,omitempty"`
+	BaseURL         string `yaml:"base_url,omitempty"`
+	Model           string `yaml:"model,omitempty"`
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
 }
 
 // WebConfig controls the local WebConsole adapter. The runtime and session
@@ -546,6 +549,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	normalizeRoleProviderOverride(&cfg.RoleProviders.Planner)
 	normalizeRoleProviderOverride(&cfg.RoleProviders.Generator)
 	normalizeRoleProviderOverride(&cfg.RoleProviders.Evaluator)
+	normalizeRoleProviderOverride(&cfg.RoleProviders.Explorer)
 	for name, provider := range cfg.Providers {
 		provider.APIProvider = normalizeAPIProvider(provider.APIProvider)
 		provider.ReasoningSummary = normalizeReasoningSummary(provider.ReasoningSummary)
@@ -712,6 +716,10 @@ func normalizeRoleProviderOverride(override *RoleProviderOverride) {
 	override.APIProvider = normalizeAPIProvider(override.APIProvider)
 	override.BaseURL = strings.TrimSpace(override.BaseURL)
 	override.Model = strings.TrimSpace(override.Model)
+	override.ReasoningEffort = strings.ToLower(strings.TrimSpace(override.ReasoningEffort))
+	if override.MaxOutputTokens < 0 {
+		override.MaxOutputTokens = 0
+	}
 }
 
 func (c *Config) RoleProviderOverride(role string) RoleProviderOverride {
@@ -722,6 +730,8 @@ func (c *Config) RoleProviderOverride(role string) RoleProviderOverride {
 		return c.RoleProviders.Generator
 	case "evaluator":
 		return c.RoleProviders.Evaluator
+	case "explorer":
+		return c.RoleProviders.Explorer
 	default:
 		return RoleProviderOverride{}
 	}
