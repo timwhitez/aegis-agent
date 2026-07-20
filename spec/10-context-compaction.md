@@ -184,6 +184,14 @@ v1 仍用字符数做近似估算，不做 provider 精确 token 计数；contex
 
 compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定。Phase A 对不 fit 请求本地拒绝；后续 Phase B 才负责在有限轮次内 pointerize/缩尾后重新估算。
 
+current-result cap、old-result micro-compaction 与 full compaction 是三个顺序明确的层次：
+
+1. 当前 ToolResult 在 hook 后、durable append 前执行 per-result byte cap；messages.jsonl 从产生时就是 bounded preview/pointer，原始动态正文只进入有 quota 的 session artifact
+2. provider view 对旧结果做 result-level micro-compaction 或 ephemeral sliding-window pointerization；优先复用第一层 artifact，不能再创建无 quota 副本
+3. 整体仍超阈值时才生成 transcript/summary；该层只改变 provider view，不回写前两层 durable facts
+
+第一层 artifact 完整性必须由 `artifact_complete` 证明；partial/quota/write-failed artifact 不能在第二、三层被重新标成 Full output。
+
 超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
 
 ## 6.1 Provider View 裁剪与指令边界
@@ -219,3 +227,4 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - CLI / SDK / future API 都能基于原始日志调试问题
 - stop-loss provider view 保留相同参数但不同结果的每个 ToolResult，也保留同一 tool message 中未被验证为等价的其他结果；构造 view 前后 durable message 日志逐字段不变
 - compaction 后的 main wire request 仍必须通过 request-budget preflight；semantic-summary 自身超预算时只省略语义补充并标记失败，不阻断确定性 summary/transcript 生成
+- 当前工具结果、hook amplification 与 child handoff 在进入 durable log 前已经受统一 byte cap；old-result pointerization 只复用或通过同一 quota writer 创建 artifact

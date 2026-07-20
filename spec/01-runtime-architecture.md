@@ -317,12 +317,14 @@ Message
 - `display_output`
 - `is_error`
 - `final`
+- `metadata`
 
 约束：
 
 - `llm_output` 面向模型
 - `display_output` 面向 CLI
 - `final` 仅由 `finish` 工具使用
+- 每个结果在落盘前都经过统一 byte finalizer；`metadata` 记录原始、inline、artifact 与丢失字节事实，不能把不完整 artifact 宣称为完整输出
 
 ## 4. 最小 Agent Loop
 
@@ -415,15 +417,17 @@ while true:
    - 当最新 interrupt steer 已明确要求立即交付时，guard 可以阻断继续的只读探索、todo/task bookkeeping 或 skill-loading detour，把执行拉回 `write_file` / `edit_file` / `finish`
    - artifact / project-memory / large-project coordination 默认通过 prompt note 或 harness reminder 提示，不作为普通读取、验证或 finish 的 hard guard，除非用户当轮明确指定为必须交付 contract
 3. 执行工具
-4. 触发 `tool.after`
-5. 成功的 `write_file` / `edit_file` 会更新 `artifact-tracker.json`，使 required-artifact gate 能区分“文件本来存在”和“本 session 确实写过或改过”
-6. `load_skill` 默认基于 session state 做幂等：同一 skill 已加载时返回 compact `already_loaded`，只有显式 `force_reload` 才再次注入完整 skill 正文
-7. `read_file` 可以重复读取同一路径或 line window；runtime 不写入重复读取 warning，也不阻断
-8. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
-9. 若执行在结果写回前被取消，生成一条可重放的中断错误结果
-10. 落盘最终 tool result
-11. 对标记为 ephemeral 的工具输出，只在 provider request view 中应用按工具类型计算的滑动窗口：最新 `EphemeralWindow` 个结果保持 inline，窗口之外且足够大的旧结果写入 session 私有 `artifacts/tool-outputs/`，并在该 request view 中替换成可由 `read_file(path=..., offset=..., limit=120)` 显式分页读取的指针；短输出与短错误摘要继续 inline。原始 `messages.jsonl`、tool event 和当前刚执行完的结果不得被 pointer-only 覆盖；`grep` / `grep_files` / `glob` 仍不得把 artifact 目录作为 discovery 输入。三个 discovery 工具必须在 workspace/skill resolver 前识别 `artifacts/tool-outputs` 及其子路径，返回 `unsupported_path_source`、保留原 path 并指向 `read_file` 精确读取，不能误报 `not_found`
-12. `await_input` 的成功结果会终止同批后续工具调用、先完整落盘 tool result，再把 session 转为 `awaiting_input`；它不设置 `ToolResult.final`，不触发 completed，也不改变 Goal 状态
+4. 触发 `tool.after`；hook 可以改写 `llm_output` / `display_output`
+5. 恢复/确认 `ToolCallID`、`Name`、`IsError`、`Final` 与原 metadata 后，执行唯一的 `finalizeToolResultForContext`：分别限制 `llm_output` 与 `display_output`；需要保存的原始 `llm_output` 通过 Store 的 owner-only、no-symlink、quota-aware writer 写入当前 session 的 `artifacts/tool-outputs/`
+6. finalizer 完成后才允许写 `tool.after` event 与 `messages.jsonl`；一个 batch 中每个 ToolResult 独立预算，hook、skill command、child handoff、synthetic/interrupted result 都不能绕过。artifact 失败或 quota 拒绝时仍落盘有界 preview，但必须标记 `recoverable=false`、准确 omitted bytes 和原因
+7. 成功的 `write_file` / `edit_file` 会更新 `artifact-tracker.json`，使 required-artifact gate 能区分“文件本来存在”和“本 session 确实写过或改过”
+8. `load_skill` 默认基于 session state 做幂等：同一 skill 已加载时返回 compact `already_loaded`，只有显式 `force_reload` 才再次注入完整 skill 正文
+9. `read_file` 可以重复读取同一路径或 line window；runtime 不写入重复读取 warning，也不阻断
+10. `todo_write` 对 content/status/priority/order 未变化的 snapshot 标记 `noop=true` / `changed=false`，不刷新 `todo.json` 时间戳
+11. 若执行在结果写回前被取消，生成一条可重放的中断错误结果；该结果也经过同一 finalizer
+12. 对标记为 ephemeral 的旧工具输出，只在 provider request view 中应用按工具类型计算的滑动窗口：最新 `EphemeralWindow` 个结果和短结果保持 inline；窗口外的旧结果优先复用 durable result 已有 artifact，确需新写时也只能调用相同 quota-aware Store writer。pointer 只有在 artifact 完整时才能称为 complete/full；短错误摘要继续 inline。原始 `messages.jsonl` 与 tool event 不被 provider-view 变换覆盖；`grep` / `grep_files` / `glob` 仍不得把 artifact 目录作为 discovery 输入。三个 discovery 工具必须在 workspace/skill resolver 前识别 `artifacts/tool-outputs` 及其子路径，返回 `unsupported_path_source`、保留原 path 并指向 `read_file` 精确读取，不能误报 `not_found`
+13. 同步 `agent_spawn` / `agent_status` 的长 `final_text` 随整个 ToolResult 经过相同预算；background notification 转成 parent 的 user message 并写入 `messages.jsonl` 前也使用同一 handoff byte cap，并保留 queue job、child session 与 artifact reference。原始 queue notification 仍是独立 durable fact，不属于 provider context view
+14. `await_input` 的成功结果会终止同批后续工具调用、先落盘有界 tool result，再把 session 转为 `awaiting_input`；它不设置 `ToolResult.final`，不触发 completed，也不改变 Goal 状态
 
 ### 5.6 turn_decide
 

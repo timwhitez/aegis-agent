@@ -1640,7 +1640,7 @@ func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error
 				"plan_mode_id":      planMode.PlanModeID,
 			},
 		}
-		if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+		if err := r.engine.appendFinalizedToolResults(sessionID, []session.ToolResult{result}); err != nil {
 			return err
 		}
 	}
@@ -1797,7 +1797,7 @@ func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string)
 	if len(results) == 0 {
 		return 0, nil
 	}
-	msg := session.NewToolMessage(results)
+	msg := r.engine.finalizedToolMessage(sessionID, results)
 	if err := r.store.AppendMessage(sessionID, msg); err != nil {
 		return 0, err
 	}
@@ -1906,7 +1906,7 @@ func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, 
 			"plan_mode_id": planMode.PlanModeID,
 		},
 	}
-	if err := r.store.AppendMessage(sessionID, session.NewToolMessage([]session.ToolResult{result})); err != nil {
+	if err := r.engine.appendFinalizedToolResults(sessionID, []session.ToolResult{result}); err != nil {
 		if restoreErr := r.restorePlanInputAnswerAfterMessageError(sessionID, planModeSnapshot, planModeHistory, err); restoreErr != nil {
 			return restoreErr
 		}

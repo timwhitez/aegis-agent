@@ -3867,7 +3867,14 @@ func TestEngineEphemeralProviderViewKeepsLatestWindowInline(t *testing.T) {
 	if durableResults != 4 {
 		t.Fatalf("expected four durable glob results, got %d", durableResults)
 	}
-	artifactAbs := engine.ephemeralArtifactPath(meta.ID, "glob", "call_1")
+	artifactMatches, err := filepath.Glob(filepath.Join(engine.ephemeralArtifactRoot(meta.ID), "glob-call_1-*.txt"))
+	if err != nil {
+		t.Fatalf("glob ephemeral artifact: %v", err)
+	}
+	if len(artifactMatches) != 1 {
+		t.Fatalf("expected one content-addressed artifact for call_1, got %v", artifactMatches)
+	}
+	artifactAbs := artifactMatches[0]
 	artifactData, err := os.ReadFile(artifactAbs)
 	if err != nil {
 		t.Fatalf("read ephemeral artifact: %v", err)
@@ -3904,23 +3911,22 @@ func TestEngineEphemeralProviderViewKeepsShortOldOutputInline(t *testing.T) {
 	}
 }
 
-func TestEngineEphemeralArtifactRejectsSymlinkTarget(t *testing.T) {
+func TestEngineEphemeralArtifactRejectsSymlinkRoot(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	for i := 1; i <= 5; i++ {
 		writeEvidenceFile(t, meta.Workdir, fmt.Sprintf("visible-%d.txt", i), "visible\n")
 	}
-	outside := filepath.Join(t.TempDir(), "outside.txt")
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "outside.txt")
 	if err := os.WriteFile(outside, []byte("keep\n"), 0o600); err != nil {
 		t.Fatalf("write outside file: %v", err)
 	}
-	for _, callID := range []string{"call_1", "call_2", "call_3", "call_4"} {
-		artifactPath := engine.ephemeralArtifactPath(meta.ID, "glob", callID)
-		if err := os.MkdirAll(filepath.Dir(artifactPath), 0o700); err != nil {
-			t.Fatalf("mkdir artifact dir: %v", err)
-		}
-		if err := os.Symlink(outside, artifactPath); err != nil {
-			t.Fatalf("symlink artifact path: %v", err)
-		}
+	artifactRoot := engine.ephemeralArtifactRoot(meta.ID)
+	if err := os.MkdirAll(filepath.Dir(artifactRoot), 0o700); err != nil {
+		t.Fatalf("mkdir artifact parent: %v", err)
+	}
+	if err := os.Symlink(outsideDir, artifactRoot); err != nil {
+		t.Fatalf("symlink artifact root: %v", err)
 	}
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Repeat glob output.")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -3947,7 +3953,7 @@ func TestEngineEphemeralArtifactRejectsSymlinkTarget(t *testing.T) {
 		t.Fatalf("read outside file: %v", err)
 	}
 	if string(data) != "keep\n" {
-		t.Fatalf("outside file was overwritten through ephemeral artifact symlink: %q", data)
+		t.Fatalf("outside file was overwritten through ephemeral artifact root symlink: %q", data)
 	}
 }
 

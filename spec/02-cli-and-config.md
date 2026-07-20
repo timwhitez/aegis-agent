@@ -394,6 +394,12 @@ runtime:
       enabled: true
       max_input_chars: 200000
       timeout_sec: 60
+  tool_output:
+    llm_output_max_bytes: 32768
+    display_output_max_bytes: 131072
+    artifact_file_max_bytes: 16777216
+    artifact_session_max_bytes: 134217728
+    artifact_max_files: 256
   ephemeral:
     enabled: true
     artifact_dir: .artifacts/tool-outputs
@@ -452,6 +458,11 @@ hooks:
 - output reserve 优先使用 effective `max_output_tokens`；其值 `<= 0`（包括旧配置缺失或负值）时使用本地默认 `8192` tokens。safety headroom 由 `runtime.compact.utilization_factor` 推导：`effective_window × (1-utilization_factor)`，默认保留 15%。预算判定统一为 `estimated_input + output_reserve + safety_headroom <= effective_window`
 - 估算基于 adapter 真正发送的 JSON wire body 字节数，以 `ceil(bytes / 4)` 做 v1 input token 近似；这是 fail-closed hard-fit 的单一公式，不在 Web/CLI/tool 层复制 provider JSON，也不声称是精确 tokenizer
 - `runtime.ephemeral.enabled` 默认 `true`：对高频大输出工具使用 provider-view 滑动窗口；每种工具最新 `EphemeralWindow` 个结果和短输出保持 inline，只有更老且较大的结果在 provider request view 中替换为 session 私有 artifact 路径。原始 messages/events 不被改写，当前结果不会 pointer-only；discovery 工具仍跳过该目录
+- `runtime.tool_output` 是 hook 后、落盘前的统一 ToolResult byte policy。旧配置未声明该段时使用以下默认值：`llm_output_max_bytes=32768`、`display_output_max_bytes=131072`、`artifact_file_max_bytes=16777216`、`artifact_session_max_bytes=134217728`、`artifact_max_files=256`
+- byte 字段 `<=0` 使用默认值；正数分别 clamp 到：LLM/Display `512..1048576` / `512..4194304`，单 artifact `1024..67108864`，session artifact 总字节 `1024..1073741824`。`artifact_max_files` clamp 到 `1..4096`。单文件和 session 总量独立生效，因此部署方可让 session 总量小于单文件上限，实际可写量取剩余额度
+- `runtime.tool_output` 限制的是 UTF-8/byte payload，不用字符数近似。`llm_output` 与 `display_output` 分别受限；artifact 只保存超出模型 inline budget 的原始 `llm_output`，UI 展示不能借 `display_output` 绕过内存/持久化边界
+- artifact quota 以 session artifact 目录事实为准，在跨 Store/进程文件锁内重新统计；重启后不依赖内存 counter。quota、symlink、磁盘错误都必须得到有界结果与明确 metadata，不能让工具执行因“保存完整输出”失败而再次把原文落入 `messages.jsonl`
+- `runtime.ephemeral.artifact_dir` 继续作为 tool-output artifact root 的兼容配置；默认 `.artifacts/tool-outputs` 映射到当前 session 的 `artifacts/tool-outputs/`。无论使用默认还是兼容自定义 root，写入都必须经过 Store 的 mode/symlink/quota gate
 - `runtime.degeneration.enabled` 默认 `true`：当连续 `done_candidate` turn 只有文本、没有 valid tool call，且未接纳 steer/background/finish 时，`reminder_after` 后注入 `degeneration_recovery_required` reminder，`give_up_after` 后用 `model_degeneration_no_progress` 显式停靠或失败；`detect_low_quality` 预留给乱码/重复 token 启发式，默认关闭
 
 ## 8. Provider 配置字段

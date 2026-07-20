@@ -14,7 +14,6 @@ import (
 	"go-cli-agent/internal/config"
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/filechanges"
-	"go-cli-agent/internal/fileutil"
 	"go-cli-agent/internal/hooks"
 	"go-cli-agent/internal/provider"
 	"go-cli-agent/internal/session"
@@ -798,7 +797,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if budgetStopRequested {
 			if len(result.ToolCalls) > 0 {
 				toolResults := syntheticToolResults(result.ToolCalls, "Error: goal budget limit reached and stop_on_budget is true; this tool call was not executed. Wrap up with record_goal_progress kind=\"budget_wrapup\" on the next turn.")
-				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+				if err := e.appendFinalizedToolResults(meta.ID, toolResults); err != nil {
 					return RunResult{}, err
 				}
 			}
@@ -864,7 +863,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				updatedBeforePayload, err := e.triggerActiveHook(ctx, hookManager, "tool.before", beforePayload)
 				if err != nil {
 					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex:], "Error: tool.before hook failed: "+err.Error())...)
-					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+					if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 						return RunResult{}, appendErr
 					}
 					if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
@@ -878,7 +877,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if trimmed != "" {
 						if !json.Valid([]byte(trimmed)) {
 							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex:], "Error: tool.before hook produced invalid arguments JSON")...)
-							if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+							if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 								return RunResult{}, appendErr
 							}
 							return e.fail(ctx, meta, state, errors.New("tool.before hook produced invalid arguments JSON"), hookManager)
@@ -932,7 +931,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if callIndex+1 < len(result.ToolCalls) {
 							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: completion event persistence failed before this call ran: "+decision.Err.Error())...)
 						}
-						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 							return RunResult{}, appendErr
 						}
 						return RunResult{}, decision.Err
@@ -955,7 +954,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						if callIndex+1 < len(result.ToolCalls) {
 							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.blocked event failed before this call ran: "+err.Error())...)
 						}
-						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 							return RunResult{}, fmt.Errorf("record blocked tool result after tool.blocked event failure for %s (%v): %w", call.Name, err, appendErr)
 						}
 						return RunResult{}, fmt.Errorf("record tool.blocked event for %s: %w", call.Name, err)
@@ -1007,7 +1006,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						toolResult.DisplayOutput = toolResult.LLMOutput
 						toolResults = append(toolResults, toolResult)
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: artifact tracker update failed before this call ran: "+err.Error())...)
-						if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+						if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 							return RunResult{}, appendErr
 						}
 						if isCompletionEventAppendError(err) {
@@ -1038,10 +1037,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 								tools.MetadataFailureClass: tools.FailureClassInterrupted,
 							},
 						}
+						toolResult = e.finalizeToolResultForContext(meta.ID, toolResult)
 						afterErr := e.appendEvent(meta.ID, "tool.after", "tool_execute", toolAfterEventData(call.ID, call.Name, toolResult))
 						toolResults = append(toolResults, toolResult)
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool execution was interrupted before this call ran")...)
-						if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+						if err := e.appendFinalizedToolResults(meta.ID, toolResults); err != nil {
 							if interruptedErr != nil {
 								return RunResult{}, fmt.Errorf("record interrupted tool result after tool.interrupted event failure for %s (%v): %w", call.Name, interruptedErr, err)
 							}
@@ -1113,7 +1113,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}
 					toolResults = append(toolResults, toolResult)
 					toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after hook failed before this call ran: "+err.Error())...)
-					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+					if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 						return RunResult{}, appendErr
 					}
 					if boundaryResult, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
@@ -1127,6 +1127,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				if value, ok := updatedPayload["display_output"].(string); ok {
 					toolResult.DisplayOutput = value
 				}
+				toolResult = e.finalizeToolResultForContext(meta.ID, toolResult)
 
 				toolResults = append(toolResults, toolResult)
 				e.recordFileChanges(meta, call.Name, call.ID, toolArgs, toolResult)
@@ -1134,7 +1135,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if callIndex+1 < len(result.ToolCalls) {
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: tool.after event failed before this call ran: "+err.Error())...)
 					}
-					if appendErr := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); appendErr != nil {
+					if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
 						return RunResult{}, fmt.Errorf("record tool results after tool.after event failure for %s (%v): %w", call.Name, err, appendErr)
 					}
 					return RunResult{}, fmt.Errorf("record tool.after event for %s: %w", call.Name, err)
@@ -1160,14 +1161,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if callIndex+1 < len(result.ToolCalls) {
 						toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: finish completed the session; this later tool call was not executed")...)
 					}
-					if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+					if err := e.appendFinalizedToolResults(meta.ID, toolResults); err != nil {
 						return RunResult{}, err
 					}
 					return e.complete(ctx, meta, state, toolResult.DisplayOutput, hookManager)
 				}
 			}
 			if len(toolResults) > 0 {
-				if err := e.store.AppendMessage(meta.ID, session.NewToolMessage(toolResults)); err != nil {
+				if err := e.appendFinalizedToolResults(meta.ID, toolResults); err != nil {
 					return RunResult{}, err
 				}
 			}
@@ -1422,14 +1423,60 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 				*result = cloneToolResults([]session.ToolResult{original})[0]
 				continue
 			}
-			artifactPath := e.ephemeralArtifactPath(sessionID, original.Name, original.ToolCallID)
-			if err := fileutil.AtomicWriteFileNoSymlink(artifactPath, []byte(original.LLMOutput), 0o600); err != nil {
+			if artifactPath, rawBytes, ok := completeFinalizedToolOutputArtifact(original); ok {
+				pointer := fmt.Sprintf(
+					"[Older %s output moved out of the provider context window. Complete artifact: %s (%d bytes). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
+					original.Name,
+					artifactPath,
+					rawBytes,
+					artifactPath,
+				)
+				result.LLMOutput = pointer
+				result.DisplayOutput = pointer
+				if result.Metadata == nil {
+					result.Metadata = make(map[string]any)
+				}
+				result.Metadata["ephemeral_artifact"] = artifactPath
+				result.Metadata["ephemeral_artifact_absolute"] = e.toolOutputArtifactAbsolutePath(sessionID, artifactPath)
+				result.Metadata["ephemeral_provider_view"] = true
 				continue
 			}
-			displayArtifactPath := e.ephemeralArtifactDisplayPath(sessionID, artifactPath)
+			if finalizedToolOutputIsUnrecoverable(original) {
+				rawBytes, _ := toolMetadataInt(original.Metadata, "raw_bytes")
+				reason, _ := original.Metadata["budget_reason"].(string)
+				notice := fmt.Sprintf(
+					"[Older %s output shortened in the provider context view. The original %d-byte result was already incomplete (reason=%s); full output is not recoverable.]",
+					original.Name,
+					rawBytes,
+					strings.TrimSpace(reason),
+				)
+				result.LLMOutput, _ = boundedToolOutputPreview(original.LLMOutput, notice, ephemeralInlineMaxChars)
+				result.DisplayOutput = result.LLMOutput
+				if result.Metadata == nil {
+					result.Metadata = make(map[string]any)
+				}
+				result.Metadata["ephemeral_provider_view"] = true
+				continue
+			}
+			policy := effectiveToolOutputPolicy(e.cfg)
+			artifact, err := e.store.WriteToolOutputArtifact(
+				sessionID,
+				e.ephemeralArtifactRoot(sessionID),
+				original.Name+"-"+original.ToolCallID,
+				[]byte(original.LLMOutput),
+				session.ToolOutputArtifactQuota{
+					FileMaxBytes:    policy.ArtifactFileMaxBytes,
+					SessionMaxBytes: policy.ArtifactSessionMaxBytes,
+					MaxFiles:        policy.ArtifactMaxFiles,
+				},
+			)
+			if err != nil || !artifact.Complete || artifact.AbsolutePath == "" {
+				continue
+			}
+			displayArtifactPath := e.ephemeralArtifactDisplayPath(sessionID, artifact.AbsolutePath)
 			lineCount := countTextLines(original.LLMOutput)
 			pointer := fmt.Sprintf(
-				"[Older %s output moved out of the provider context window. Full output: %s (%d lines). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
+				"[Older %s output moved out of the provider context window. Complete artifact: %s (%d lines). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
 				original.Name,
 				displayArtifactPath,
 				lineCount,
@@ -1441,11 +1488,44 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 				result.Metadata = make(map[string]any)
 			}
 			result.Metadata["ephemeral_artifact"] = displayArtifactPath
-			result.Metadata["ephemeral_artifact_absolute"] = artifactPath
+			result.Metadata["ephemeral_artifact_absolute"] = artifact.AbsolutePath
 			result.Metadata["ephemeral_provider_view"] = true
 		}
 	}
 	return view
+}
+
+func completeFinalizedToolOutputArtifact(result session.ToolResult) (string, int, bool) {
+	if !toolOutputBudgetVersionApplied(result.Metadata) {
+		return "", 0, false
+	}
+	complete, _ := result.Metadata["artifact_complete"].(bool)
+	recoverable, _ := result.Metadata["recoverable"].(bool)
+	artifactPath, _ := result.Metadata["artifact_path"].(string)
+	artifactPath = strings.TrimSpace(artifactPath)
+	if !complete || !recoverable || artifactPath == "" {
+		return "", 0, false
+	}
+	rawBytes, ok := toolMetadataInt(result.Metadata, "raw_bytes")
+	if !ok || rawBytes < 0 {
+		rawBytes = len(result.LLMOutput)
+	}
+	return artifactPath, rawBytes, true
+}
+
+func finalizedToolOutputIsUnrecoverable(result session.ToolResult) bool {
+	if !toolOutputBudgetVersionApplied(result.Metadata) {
+		return false
+	}
+	recoverable, ok := result.Metadata["recoverable"].(bool)
+	return ok && !recoverable
+}
+
+func (e *Engine) toolOutputArtifactAbsolutePath(sessionID, artifactPath string) string {
+	if filepath.IsAbs(artifactPath) {
+		return filepath.Clean(artifactPath)
+	}
+	return filepath.Join(e.store.SessionDir(sessionID), filepath.FromSlash(artifactPath))
 }
 
 func ephemeralToolResultKey(result session.ToolResult) string {
@@ -1459,11 +1539,6 @@ func ephemeralToolResultKey(result session.ToolResult) string {
 
 func shouldKeepEphemeralOutputInline(output string) bool {
 	return len(output) <= ephemeralInlineMaxChars && countTextLines(output) <= ephemeralInlineMaxLines
-}
-
-func (e *Engine) ephemeralArtifactPath(sessionID, toolName, callID string) string {
-	base := e.ephemeralArtifactRoot(sessionID)
-	return filepath.Join(base, fmt.Sprintf("%s-%s.txt", safeArtifactComponent(toolName), shortArtifactCallID(callID)))
 }
 
 func (e *Engine) ephemeralArtifactDisplayPath(sessionID, artifactPath string) string {
@@ -1480,41 +1555,6 @@ func (e *Engine) ephemeralArtifactRoot(sessionID string) string {
 		return filepath.Join(e.store.SessionDir(sessionID), "artifacts", "tool-outputs")
 	}
 	return filepath.Join(base, sessionID)
-}
-
-func shortArtifactCallID(callID string) string {
-	const maxLen = 8
-	component := safeArtifactComponent(callID)
-	if component == "" {
-		return "unknown"
-	}
-	if len(component) <= maxLen {
-		return component
-	}
-	return component[:maxLen]
-}
-
-func safeArtifactComponent(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	var builder strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			builder.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			builder.WriteRune(r)
-		case r >= '0' && r <= '9':
-			builder.WriteRune(r)
-		case r == '-' || r == '_':
-			builder.WriteRune(r)
-		default:
-			builder.WriteByte('_')
-		}
-	}
-	return strings.Trim(builder.String(), "_")
 }
 
 // recordFileChanges folds the file mutations from one successful tool call into
@@ -2903,7 +2943,7 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 		"background_results": backgroundPayload(pending),
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
-	text := "<background-agent-results>\n" + string(data) + "\n</background-agent-results>"
+	text := backgroundHandoffReferenceHeader(pending) + "\n<background-agent-results>\n" + string(data) + "\n</background-agent-results>"
 	hookPayload, err := e.triggerActiveHook(ctx, hookManager, "user.message", map[string]any{
 		"session_id": meta.ID,
 		"text":       text,
@@ -2915,10 +2955,34 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 	if value, ok := hookPayload["text"].(string); ok {
 		text = value
 	}
+	rawHandoffText := text
+	handoffResult := e.finalizeToolResultForContext(sessionID, session.ToolResult{
+		ToolCallID:    "background-" + pending[0].ID,
+		Name:          "background_handoff",
+		LLMOutput:     rawHandoffText,
+		DisplayOutput: rawHandoffText,
+	})
+	text = handoffResult.LLMOutput
+	policy := effectiveToolOutputPolicy(e.cfg)
+	if len(rawHandoffText) > policy.LLMOutputMaxBytes {
+		referenceNotice := backgroundHandoffReferenceHeader(pending)
+		if artifactPath, _ := handoffResult.Metadata["artifact_path"].(string); artifactPath != "" {
+			if complete, _ := handoffResult.Metadata["artifact_complete"].(bool); complete {
+				referenceNotice += " Complete artifact: " + artifactPath + "."
+			} else {
+				referenceNotice += " Partial artifact: " + artifactPath + "; full handoff is not recoverable."
+			}
+		} else {
+			referenceNotice += " No complete artifact was saved; full handoff is not recoverable."
+		}
+		text, _ = boundedToolOutputPreview(rawHandoffText, referenceNotice, policy.LLMOutputMaxBytes)
+		handoffResult.Metadata["inline_bytes"] = len(text)
+	}
 	msg := session.NewMessage("user", text)
 	msg.Meta = map[string]any{
-		"source": "background_results",
-		"count":  len(pending),
+		"source":         "background_results",
+		"count":          len(pending),
+		"handoff_budget": handoffResult.Metadata,
 	}
 	if err := e.store.AppendMessage(sessionID, msg); err != nil {
 		return 0, err
@@ -2958,6 +3022,15 @@ func (e *Engine) drainBackground(ctx context.Context, meta session.SessionMetada
 		return 0, fmt.Errorf("record background-results acceptance events: %w", err)
 	}
 	return len(pending), nil
+}
+
+func backgroundHandoffReferenceHeader(notifications []session.BackgroundNotification) string {
+	var builder strings.Builder
+	builder.WriteString("Background references (durable facts):")
+	for _, notification := range notifications {
+		fmt.Fprintf(&builder, " job=%s session=%s status=%s;", notification.QueueJobID, notification.SessionID, notification.Status)
+	}
+	return builder.String()
 }
 
 func backgroundPayload(notifications []session.BackgroundNotification) []map[string]any {

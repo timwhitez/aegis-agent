@@ -312,7 +312,7 @@ Completion record：
 
 ## Phase 1 — 收敛工具结果边界
 
-### [ ] TOOL-002A — 建立 hook 后通用 ToolResult 预算与 session artifact quota
+### [x] TOOL-002A — 建立 hook 后通用 ToolResult 预算与 session artifact quota
 
 - Issue：TOOL-002、TOOL-001 的公共基础。
 - Priority：P1 correctness/resource bound。
@@ -360,11 +360,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 所有模型可见 ToolResult 都经过 hook 后 finalizer；代码中不存在第二条直接 append 大结果的路径。
-- [ ] owner-only、no-symlink 与 quota 在 Store 层统一实现，TOOL-001 可直接复用。
-- [ ] `messages.jsonl` 持久化的是有界结果/pointer；原始动态内容只进入有 quota 的 owner-only artifact。
-- [ ] DisplayOutput 的上限与 UI 展示语义已明确，不让 provider cap 变成 session/UI 内存旁路。
-- [ ] child handoff 与 background notification 有相同尺寸边界。
+- [x] 所有模型可见 ToolResult 都经过 hook 后 finalizer；代码中不存在第二条直接 append 大结果的路径。
+- [x] owner-only、no-symlink 与 quota 在 Store 层统一实现，TOOL-001 可直接复用。
+- [x] `messages.jsonl` 持久化的是有界结果/pointer；原始动态内容只进入有 quota 的 owner-only artifact。
+- [x] DisplayOutput 的上限与 UI 展示语义已明确，不让 provider cap 变成 session/UI 内存旁路。
+- [x] child handoff 与 background notification 有相同尺寸边界。
 
 Validation：
 
@@ -388,9 +388,9 @@ Commit subject：`feat(runtime): bound model visible tool results`
 
 Completion record：
 
-- Commit：`pending`
-- Effective defaults：`pending`
-- Race/tests：`pending`
+- Commit：本任务提交 `feat(runtime): bound model visible tool results`。
+- Effective defaults：`runtime.tool_output.llm_output_max_bytes=32768`、`display_output_max_bytes=131072`、`artifact_file_max_bytes=16777216`、`artifact_session_max_bytes=134217728`、`artifact_max_files=256`；正值按 spec 的五组上下限 clamp，旧配置省略或非正值回落默认。
+- Race/tests：TDD 红测先证明缺少配置、Store quota writer、hook 后 finalizer 与 child/background handoff budget；审计补充红测还捕获了 runner plan-input recovery 直接落盘 8507-byte 结果、old-result 重复写/错误重标 partial artifact、宽松 session mode 下 artifact root 为 `0755`、伪造 version metadata 绕过 3023-byte cap。实现后聚焦命令、`go test ./internal/config ./internal/session ./internal/runtime ./internal/tools -count=1 -timeout=300s` 与 `go test ./... -count=1 -timeout=600s` 全通过；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime ./internal/tools -run 'Test.*(ToolOutputArtifact|ArtifactQuota|ToolResultBudget).*' -count=1 -timeout=240s` 通过。
 - TOOL-002 remaining work：`TOOL-002B pending`
 
 ### [ ] TOOL-002B — 为 read_file 与搜索结果增加可恢复 byte continuation

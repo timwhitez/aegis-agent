@@ -123,6 +123,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `grep` / `grep_files` 分别覆盖 0、limit-1、limit、limit+1；只在 limit+1 报 `has_more`
 - 请求 limit 超 cap 时 requested/effective/limit_capped 可观测；grep snippet 截短但集合完整时 `has_more=false`
 - include、多目录、UTF-8 snippet 与重复执行保持 deterministic ordering；`glob` 既有 exact-limit 行为不回退
+- 所有内置/skill/child/synthetic ToolResult 在 hook 后经过统一 byte cap；hook 把 1 KiB 放大到数 MiB 也不能绕过
+- artifact writer 覆盖单文件/session 字节/文件数 quota、并发竞争、跨 Store 重启重建、symlink、磁盘错误与 owner-only mode；metadata 与实际文件字节逐项一致
+- multi-call batch 按 result 独立预算并保持 ToolCallID/Name/IsError/Final/业务 metadata；messages.jsonl 只含 bounded preview/pointer
+- 同步 agent_spawn/agent_status 与 background notification 的超长 final_text 不整段进入 parent，且保留 child/session/job/artifact reference
 
 ### 4.2 Hooks
 

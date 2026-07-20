@@ -83,6 +83,16 @@ v1 内置工具固定为：
 - `final` 用于 `finish`
 - `await_input` 通过 metadata 请求 runtime 进入可恢复等待，不设置 `final`
 
+所有成功、失败、synthetic、interrupted 与 child-control ToolResult 都在 `tool.after` hook 之后、event/message 落盘之前执行统一 byte finalizer：
+
+- `llm_output` 与 `display_output` 分别受 `runtime.tool_output` 的 byte cap；finalizer 必须 UTF-8-safe 地生成短 notice 与 bounded head/tail preview
+- 超出 LLM inline cap 的原始结果写入当前 session 的 `artifacts/tool-outputs/`；模型只能获得精确 artifact path，不能通过 glob/grep discovery 枚举该目录
+- metadata 固定包含 `tool_output_budget_version=1`、`raw_bytes`、`persisted_bytes`、`inline_bytes`、`omitted_bytes`、`artifact_path`、`artifact_complete`、`artifact_truncated`、`budget_reason`、`recoverable`；Display 另报 `display_raw_bytes`、`display_inline_bytes`、`display_omitted_bytes`
+- `raw/persisted/inline/omitted` 指 LLM channel：inline 完整时 `persisted=0, omitted=0, recoverable=true`；完整 artifact 时 `persisted=raw, omitted=0, artifact_complete=true, recoverable=true`；部分/未写 artifact 时 `omitted=raw-persisted, recoverable=false`
+- artifact pointer 必须区分 `Complete artifact`、`Partial artifact` 和未保存；只有 `artifact_complete=true` 才能使用 complete/full 语义。quota 或写失败不得输出 `Full output:`
+- finalizer 幂等；同一 ToolResult 因 event rollback/retry 再次经过时不得重复占用 quota 或改写 ToolCallID/Name/IsError/Final/既有业务 metadata
+- 同步 child 的结构化状态/ID 位于 bounded preview；background notification 也保留 queue job/session reference 与相同预算产生的 artifact path
+
 ## 4. 工具行为约束
 
 ### 4.1 `shell`
@@ -447,7 +457,8 @@ registry 负责：
 1. 触发 `tool.before`
 2. 执行工具
 3. 触发 `tool.after`
-4. 落盘最终 tool result
+4. 恢复 ToolResult identity/flags/metadata，并执行统一 byte finalizer
+5. 写 `tool.after` event，随后落盘 finalized tool result
 
 hook 可修改最终进入模型的内容，但必须留下 trace。
 

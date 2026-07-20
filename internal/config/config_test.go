@@ -149,6 +149,62 @@ func TestDefaultDisablesChildBudgetAndConfiguresQueueReaper(t *testing.T) {
 	}
 }
 
+func TestDefaultToolResultBudgetConfig(t *testing.T) {
+	cfg := Default()
+	want := ToolOutputConfig{
+		LLMOutputMaxBytes:       DefaultToolOutputLLMMaxBytes,
+		DisplayOutputMaxBytes:   DefaultToolOutputDisplayMaxBytes,
+		ArtifactFileMaxBytes:    DefaultToolOutputArtifactFileMaxBytes,
+		ArtifactSessionMaxBytes: DefaultToolOutputArtifactSessionMaxBytes,
+		ArtifactMaxFiles:        DefaultToolOutputArtifactMaxFiles,
+	}
+	if cfg.Runtime.ToolOutput != want {
+		t.Fatalf("unexpected default tool output budget: got %#v want %#v", cfg.Runtime.ToolOutput, want)
+	}
+}
+
+func TestNormalizeToolResultBudgetConfigDefaultsAndClamps(t *testing.T) {
+	t.Run("omitted uses defaults", func(t *testing.T) {
+		cfg := Default()
+		cfg.Runtime.ToolOutput = ToolOutputConfig{}
+		normalizeConfig(cfg, "/tmp/work")
+		if cfg.Runtime.ToolOutput.LLMOutputMaxBytes != DefaultToolOutputLLMMaxBytes ||
+			cfg.Runtime.ToolOutput.DisplayOutputMaxBytes != DefaultToolOutputDisplayMaxBytes ||
+			cfg.Runtime.ToolOutput.ArtifactFileMaxBytes != DefaultToolOutputArtifactFileMaxBytes ||
+			cfg.Runtime.ToolOutput.ArtifactSessionMaxBytes != DefaultToolOutputArtifactSessionMaxBytes ||
+			cfg.Runtime.ToolOutput.ArtifactMaxFiles != DefaultToolOutputArtifactMaxFiles {
+			t.Fatalf("omitted tool output budget did not use defaults: %#v", cfg.Runtime.ToolOutput)
+		}
+	})
+
+	t.Run("positive values clamp independently", func(t *testing.T) {
+		cfg := Default()
+		cfg.Runtime.ToolOutput = ToolOutputConfig{
+			LLMOutputMaxBytes:       1,
+			DisplayOutputMaxBytes:   MaxToolOutputDisplayMaxBytes + 1,
+			ArtifactFileMaxBytes:    1,
+			ArtifactSessionMaxBytes: MaxToolOutputArtifactSessionMaxBytes + 1,
+			ArtifactMaxFiles:        MaxToolOutputArtifactMaxFiles + 1,
+		}
+		normalizeConfig(cfg, "/tmp/work")
+		if cfg.Runtime.ToolOutput.LLMOutputMaxBytes != MinToolOutputLLMMaxBytes {
+			t.Fatalf("llm output minimum not applied: %#v", cfg.Runtime.ToolOutput)
+		}
+		if cfg.Runtime.ToolOutput.DisplayOutputMaxBytes != MaxToolOutputDisplayMaxBytes {
+			t.Fatalf("display output maximum not applied: %#v", cfg.Runtime.ToolOutput)
+		}
+		if cfg.Runtime.ToolOutput.ArtifactFileMaxBytes != MinToolOutputArtifactFileMaxBytes {
+			t.Fatalf("artifact file minimum not applied: %#v", cfg.Runtime.ToolOutput)
+		}
+		if cfg.Runtime.ToolOutput.ArtifactSessionMaxBytes != MaxToolOutputArtifactSessionMaxBytes {
+			t.Fatalf("artifact session maximum not applied: %#v", cfg.Runtime.ToolOutput)
+		}
+		if cfg.Runtime.ToolOutput.ArtifactMaxFiles != MaxToolOutputArtifactMaxFiles {
+			t.Fatalf("artifact file-count maximum not applied: %#v", cfg.Runtime.ToolOutput)
+		}
+	})
+}
+
 func TestNormalizeClampsNegativeChildBudgetAndQueueReaper(t *testing.T) {
 	cfg := Default()
 	cfg.Runtime.ChildBudget.MaxActiveRuntimeSec = -5

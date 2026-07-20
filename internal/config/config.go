@@ -24,6 +24,21 @@ const (
 	DefaultChildBudgetActiveRuntimeCheckpointMS = 1000
 	MinChildBudgetActiveRuntimeCheckpointMS     = 100
 	MaxChildBudgetActiveRuntimeCheckpointMS     = 60000
+	DefaultToolOutputLLMMaxBytes                = 32 * 1024
+	MinToolOutputLLMMaxBytes                    = 512
+	MaxToolOutputLLMMaxBytes                    = 1024 * 1024
+	DefaultToolOutputDisplayMaxBytes            = 128 * 1024
+	MinToolOutputDisplayMaxBytes                = 512
+	MaxToolOutputDisplayMaxBytes                = 4 * 1024 * 1024
+	DefaultToolOutputArtifactFileMaxBytes       = 16 * 1024 * 1024
+	MinToolOutputArtifactFileMaxBytes           = 1024
+	MaxToolOutputArtifactFileMaxBytes           = 64 * 1024 * 1024
+	DefaultToolOutputArtifactSessionMaxBytes    = 128 * 1024 * 1024
+	MinToolOutputArtifactSessionMaxBytes        = 1024
+	MaxToolOutputArtifactSessionMaxBytes        = 1024 * 1024 * 1024
+	DefaultToolOutputArtifactMaxFiles           = 256
+	MinToolOutputArtifactMaxFiles               = 1
+	MaxToolOutputArtifactMaxFiles               = 4096
 )
 
 type Config struct {
@@ -132,6 +147,7 @@ type RuntimeConfig struct {
 	ExecPolicy         ExecPolicyConfig         `yaml:"exec_policy"`
 	ShellEnvAllowlist  []string                 `yaml:"shell_env_allowlist"`
 	Compact            CompactConfig            `yaml:"compact"`
+	ToolOutput         ToolOutputConfig         `yaml:"tool_output"`
 	Ephemeral          EphemeralConfig          `yaml:"ephemeral"`
 	Degeneration       DegenerationConfig       `yaml:"degeneration"`
 	RalphLoop          RalphLoopConfig          `yaml:"ralph_loop"`
@@ -216,6 +232,14 @@ type ProviderAutoResumeConfig struct {
 type EphemeralConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	ArtifactDir string `yaml:"artifact_dir"`
+}
+
+type ToolOutputConfig struct {
+	LLMOutputMaxBytes       int `yaml:"llm_output_max_bytes"`
+	DisplayOutputMaxBytes   int `yaml:"display_output_max_bytes"`
+	ArtifactFileMaxBytes    int `yaml:"artifact_file_max_bytes"`
+	ArtifactSessionMaxBytes int `yaml:"artifact_session_max_bytes"`
+	ArtifactMaxFiles        int `yaml:"artifact_max_files"`
 }
 
 type DegenerationConfig struct {
@@ -409,6 +433,13 @@ func Default() *Config {
 					TimeoutSec:    DefaultCompactSemanticSummaryTimeoutSec,
 				},
 			},
+			ToolOutput: ToolOutputConfig{
+				LLMOutputMaxBytes:       DefaultToolOutputLLMMaxBytes,
+				DisplayOutputMaxBytes:   DefaultToolOutputDisplayMaxBytes,
+				ArtifactFileMaxBytes:    DefaultToolOutputArtifactFileMaxBytes,
+				ArtifactSessionMaxBytes: DefaultToolOutputArtifactSessionMaxBytes,
+				ArtifactMaxFiles:        DefaultToolOutputArtifactMaxFiles,
+			},
 			Ephemeral: EphemeralConfig{
 				Enabled:     true,
 				ArtifactDir: ".artifacts/tool-outputs",
@@ -575,6 +606,7 @@ func normalizeConfig(cfg *Config, cwd string) {
 	if cfg.Runtime.Compact.SemanticSummary.TimeoutSec <= 0 {
 		cfg.Runtime.Compact.SemanticSummary.TimeoutSec = DefaultCompactSemanticSummaryTimeoutSec
 	}
+	normalizeToolOutput(&cfg.Runtime.ToolOutput)
 	if cfg.Runtime.ProviderAutoResume.MaxAttempts <= 0 {
 		cfg.Runtime.ProviderAutoResume.MaxAttempts = defaultProviderAutoResumeMaxAttempt
 	}
@@ -598,6 +630,30 @@ func normalizeConfig(cfg *Config, cwd string) {
 	for i, dir := range cfg.Skills.Dirs {
 		cfg.Skills.Dirs[i] = resolveMaybeRelative(cwd, dir)
 	}
+}
+
+func normalizeToolOutput(policy *ToolOutputConfig) {
+	if policy == nil {
+		return
+	}
+	policy.LLMOutputMaxBytes = normalizeBoundedPositive(policy.LLMOutputMaxBytes, DefaultToolOutputLLMMaxBytes, MinToolOutputLLMMaxBytes, MaxToolOutputLLMMaxBytes)
+	policy.DisplayOutputMaxBytes = normalizeBoundedPositive(policy.DisplayOutputMaxBytes, DefaultToolOutputDisplayMaxBytes, MinToolOutputDisplayMaxBytes, MaxToolOutputDisplayMaxBytes)
+	policy.ArtifactFileMaxBytes = normalizeBoundedPositive(policy.ArtifactFileMaxBytes, DefaultToolOutputArtifactFileMaxBytes, MinToolOutputArtifactFileMaxBytes, MaxToolOutputArtifactFileMaxBytes)
+	policy.ArtifactSessionMaxBytes = normalizeBoundedPositive(policy.ArtifactSessionMaxBytes, DefaultToolOutputArtifactSessionMaxBytes, MinToolOutputArtifactSessionMaxBytes, MaxToolOutputArtifactSessionMaxBytes)
+	policy.ArtifactMaxFiles = normalizeBoundedPositive(policy.ArtifactMaxFiles, DefaultToolOutputArtifactMaxFiles, MinToolOutputArtifactMaxFiles, MaxToolOutputArtifactMaxFiles)
+}
+
+func normalizeBoundedPositive(value, fallback, minimum, maximum int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 func normalizeChildBudget(budget *ChildBudgetConfig) {

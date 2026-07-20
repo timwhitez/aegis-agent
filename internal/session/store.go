@@ -126,6 +126,37 @@ func (s *Store) withFileLock(lockPath string, fn func() error) error {
 	return fn()
 }
 
+func (s *Store) withPrivateFileLock(lockPath string, fn func() error) error {
+	parent := filepath.Dir(filepath.Clean(lockPath))
+	if err := rejectSymlinkPathAncestors(parent); err != nil {
+		return err
+	}
+	if err := fileutil.MkdirAllNoSymlink(parent, 0o700); err != nil {
+		return err
+	}
+	if err := rejectSymlinkPathAncestors(parent); err != nil {
+		return err
+	}
+	if err := fileutil.ChmodPathNoSymlink(parent, 0o700); err != nil {
+		return err
+	}
+	file, err := openNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := file.Chmod(0o600); err != nil {
+		return err
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	}()
+	return fn()
+}
+
 func (s *Store) Create(meta SessionMetadata, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
