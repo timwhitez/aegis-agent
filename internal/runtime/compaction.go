@@ -49,7 +49,6 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	profile = normalizeCompactionProfile(profile)
 	sourceMessages := cloneMessages(messages)
 	cloned := cloneMessages(sourceMessages)
-	cloned = deduplicateToolResults(cloned)
 	compactOldToolContext(cloned, profile.KeepRecentToolResults)
 	size := estimateChars(cloned) + systemPromptChars
 	if size <= profile.InputCharThreshold {
@@ -236,7 +235,6 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 func fallbackCompactionDeferredView(messages []session.Message, profile compactionContextProfile, compactErr error, systemPromptChars int) ([]session.Message, int) {
 	profile = normalizeCompactionProfile(profile)
 	cloned := cloneMessages(messages)
-	cloned = deduplicateToolResults(cloned)
 	compactOldToolContext(cloned, 0)
 	inputChars := estimateChars(cloned) + systemPromptChars
 	recent := recentMessagesForCompaction(cloned, profile.KeepRecentMessages)
@@ -855,117 +853,6 @@ func shouldCompressToolResult(toolResult session.ToolResult) bool {
 		return true
 	}
 	return false
-}
-
-func detectDuplicateToolCalls(messages []session.Message) map[string][]int {
-	duplicates := make(map[string][]int)
-	for i, msg := range messages {
-		if msg.Role != "assistant" {
-			continue
-		}
-		for _, call := range msg.ToolCalls {
-			key := toolCallKey(call)
-			if key != "" {
-				duplicates[key] = append(duplicates[key], i)
-			}
-		}
-	}
-	result := make(map[string][]int)
-	for key, indices := range duplicates {
-		if len(indices) > 1 {
-			result[key] = indices
-		}
-	}
-	return result
-}
-
-func toolCallKey(call session.ToolCall) string {
-	switch call.Name {
-	case "read_file":
-		var args map[string]any
-		if err := json.Unmarshal(call.Arguments, &args); err == nil {
-			if path, ok := args["file_path"].(string); ok {
-				offset := ""
-				limit := ""
-				if o, ok := args["offset"].(float64); ok {
-					offset = fmt.Sprintf(":%d", int(o))
-				}
-				if l, ok := args["limit"].(float64); ok {
-					limit = fmt.Sprintf(":%d", int(l))
-				}
-				return fmt.Sprintf("read_file:%s%s%s", path, offset, limit)
-			}
-		}
-	case "grep":
-		var args map[string]any
-		if err := json.Unmarshal(call.Arguments, &args); err == nil {
-			pattern, _ := args["pattern"].(string)
-			path, _ := args["path"].(string)
-			return fmt.Sprintf("grep:%s:%s", pattern, path)
-		}
-	case "glob":
-		var args map[string]any
-		if err := json.Unmarshal(call.Arguments, &args); err == nil {
-			pattern, _ := args["pattern"].(string)
-			return fmt.Sprintf("glob:%s", pattern)
-		}
-	}
-	return ""
-}
-
-func deduplicateToolResults(messages []session.Message) []session.Message {
-	duplicates := detectDuplicateToolCalls(messages)
-	if len(duplicates) == 0 {
-		return messages
-	}
-
-	keep := make(map[int]bool)
-	for i := range messages {
-		keep[i] = true
-	}
-
-	for _, indices := range duplicates {
-		if len(indices) <= 1 {
-			continue
-		}
-		latestIndex := indices[len(indices)-1]
-		for _, idx := range indices[:len(indices)-1] {
-			if idx < len(messages) && messages[idx].Role == "assistant" {
-				for _, call := range messages[idx].ToolCalls {
-					toolResultIdx := findToolResultIndex(messages, call.ID, idx+1)
-					if toolResultIdx > 0 && toolResultIdx < latestIndex {
-						if messages[toolResultIdx].Role == "tool" {
-							for i := range messages[toolResultIdx].ToolResults {
-								messages[toolResultIdx].ToolResults[i].LLMOutput = "[Duplicate tool result removed; latest result retained]"
-								messages[toolResultIdx].ToolResults[i].DisplayOutput = "[Duplicate tool result removed; latest result retained]"
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	out := make([]session.Message, 0, len(messages))
-	for i, msg := range messages {
-		if keep[i] {
-			out = append(out, msg)
-		}
-	}
-	return out
-}
-
-func findToolResultIndex(messages []session.Message, toolCallID string, startFrom int) int {
-	for i := startFrom; i < len(messages); i++ {
-		if messages[i].Role == "tool" {
-			for _, result := range messages[i].ToolResults {
-				if result.ToolCallID == toolCallID {
-					return i
-				}
-			}
-		}
-	}
-	return -1
 }
 
 func estimateChars(messages []session.Message) int {

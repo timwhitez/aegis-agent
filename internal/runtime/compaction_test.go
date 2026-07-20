@@ -1601,13 +1601,13 @@ func TestCompactorPreservesProviderBlockToolCallsForRetainedToolResults(t *testi
 	}
 }
 
-func TestDeduplicateToolResults(t *testing.T) {
+func TestCompactorStopLossPreservesRealReadFilePathResults(t *testing.T) {
 	messages := []session.Message{
 		session.NewMessage("user", "Read the file"),
 		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "call_1",
 			Name:      "read_file",
-			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),
+			Arguments: json.RawMessage(`{"path":"src/file.go","offset":1,"limit":80}`),
 		}}),
 		session.NewToolMessage([]session.ToolResult{{
 			ToolCallID:    "call_1",
@@ -1618,7 +1618,7 @@ func TestDeduplicateToolResults(t *testing.T) {
 		session.NewAssistantMessage("", "", []session.ToolCall{{
 			ID:        "call_2",
 			Name:      "read_file",
-			Arguments: json.RawMessage(`{"file_path":"/test/file.go"}`),
+			Arguments: json.RawMessage(`{"path":"src/file.go","offset":1,"limit":80}`),
 		}}),
 		session.NewToolMessage([]session.ToolResult{{
 			ToolCallID:    "call_2",
@@ -1628,16 +1628,115 @@ func TestDeduplicateToolResults(t *testing.T) {
 		}}),
 	}
 
-	result := deduplicateToolResults(messages)
-	if len(result) != len(messages) {
-		t.Fatalf("expected same message count, got %d", len(result))
+	view, err := newCompactor(session.NewStore(t.TempDir())).Build("unused", t.TempDir(), session.State{}, messages, nil, nil, 1<<20, 100, nil)
+	if err != nil {
+		t.Fatalf("build provider view: %v", err)
+	}
+	if got := view[2].ToolResults[0].LLMOutput; got != "first read content" {
+		t.Fatalf("expected first read result to remain verbatim, got %q", got)
+	}
+	if got := view[4].ToolResults[0].LLMOutput; got != "second read content" {
+		t.Fatalf("expected second read result to remain verbatim, got %q", got)
+	}
+}
+
+func TestCompactorStopLossPreservesSameArgumentsWithChangedResults(t *testing.T) {
+	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
+	messages := []session.Message{
+		session.NewMessage("user", "Inspect state changes"),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_1", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_1", Name: "grep", LLMOutput: "old state", DisplayOutput: "old state"}}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_2", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_2", Name: "grep", LLMOutput: "new state", DisplayOutput: "new state"}}),
 	}
 
-	if !strings.Contains(result[2].ToolResults[0].LLMOutput, "Duplicate") {
-		t.Fatalf("expected first duplicate to be marked, got %s", result[2].ToolResults[0].LLMOutput)
+	view, err := newCompactor(session.NewStore(t.TempDir())).Build("unused", t.TempDir(), session.State{}, messages, nil, nil, 1<<20, 100, nil)
+	if err != nil {
+		t.Fatalf("build provider view: %v", err)
 	}
-	if result[4].ToolResults[0].LLMOutput != "second read content" {
-		t.Fatalf("expected latest result to be preserved, got %s", result[4].ToolResults[0].LLMOutput)
+	if got := view[2].ToolResults[0].LLMOutput; got != "old state" {
+		t.Fatalf("same arguments do not prove equivalent results; first result changed to %q", got)
+	}
+	if got := view[4].ToolResults[0].LLMOutput; got != "new state" {
+		t.Fatalf("expected latest result to remain verbatim, got %q", got)
+	}
+}
+
+func TestCompactorStopLossPreservesEveryResultInMultiCallBatch(t *testing.T) {
+	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
+	messages := []session.Message{
+		session.NewMessage("user", "Inspect a batch"),
+		session.NewAssistantMessage("", "", []session.ToolCall{
+			{ID: "grep_1", Name: "grep", Arguments: arguments},
+			{ID: "shell_1", Name: "shell", Arguments: json.RawMessage(`{"command":"pwd"}`)},
+		}),
+		session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "grep_1", Name: "grep", LLMOutput: "first grep", DisplayOutput: "first grep"},
+			{ToolCallID: "shell_1", Name: "shell", LLMOutput: "/workspace", DisplayOutput: "/workspace"},
+		}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_2", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_2", Name: "grep", LLMOutput: "second grep", DisplayOutput: "second grep"}}),
+	}
+
+	view, err := newCompactor(session.NewStore(t.TempDir())).Build("unused", t.TempDir(), session.State{}, messages, nil, nil, 1<<20, 100, nil)
+	if err != nil {
+		t.Fatalf("build provider view: %v", err)
+	}
+	if got := view[2].ToolResults[0].LLMOutput; got != "first grep" {
+		t.Fatalf("expected first batched result to remain verbatim, got %q", got)
+	}
+	if got := view[2].ToolResults[1].LLMOutput; got != "/workspace" {
+		t.Fatalf("duplicate candidate must not overwrite a sibling result, got %q", got)
+	}
+}
+
+func TestCompactorStopLossDoesNotMutateDurableMessages(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewStore(root)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "openai",
+		Model:            "test-model",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
+	messages := []session.Message{
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_1", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_1", Name: "grep", LLMOutput: "old state", DisplayOutput: "old state"}}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_2", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_2", Name: "grep", LLMOutput: "new state", DisplayOutput: "new state"}}),
+	}
+	for _, message := range messages {
+		if err := store.AppendMessage(meta.ID, message); err != nil {
+			t.Fatalf("append message: %v", err)
+		}
+	}
+	messagesPath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	before, err := os.ReadFile(messagesPath)
+	if err != nil {
+		t.Fatalf("read messages before build: %v", err)
+	}
+	durable, err := store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load durable messages: %v", err)
+	}
+	if _, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, durable, nil, nil, 1<<20, 100, nil); err != nil {
+		t.Fatalf("build provider view: %v", err)
+	}
+	after, err := os.ReadFile(messagesPath)
+	if err != nil {
+		t.Fatalf("read messages after build: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("provider-view construction changed durable messages.jsonl\nbefore: %s\nafter: %s", before, after)
 	}
 }
 

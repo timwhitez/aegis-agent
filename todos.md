@@ -49,7 +49,7 @@
 
 ## Phase 0 — 固定基线与止血
 
-### [ ] BASE-001 — 固定可重复基线与工作树边界
+### [x] BASE-001 — 固定可重复基线与工作树边界
 
 - Issue：全部任务的前置 gate。
 - Priority：P0 gate。
@@ -70,10 +70,10 @@ Permanent tests：无新增；只执行现有测试。
 
 Acceptance checklist：
 
-- [ ] 必读 spec 已逐份阅读，发现冲突时先修 spec 再实现。
-- [ ] HEAD、dirty path 清单、工具链版本和基线命令结果写入本任务 Completion record；不记录 secret、prompt 正文或 provider credential。
-- [ ] 若基线测试失败，先把失败和复现命令写入 Completion record；不得把后续同名失败误归因于本计划改动。
-- [ ] `git diff --check` 在 scoped docs/code 上通过。
+- [x] 必读 spec 已逐份阅读，未发现阻断 Phase 0 开始实施的既有冲突；后续仍按任务先同步专属 spec。
+- [x] HEAD、dirty path 清单、工具链版本和基线命令结果已写入本任务 Completion record；未记录 secret、prompt 正文或 provider credential。
+- [x] 基线聚焦测试无失败；后续出现同名失败时以本记录区分计划改动回归。
+- [x] `git diff --check` 在开始实施时通过。
 
 Validation：
 
@@ -96,12 +96,12 @@ Commit subject：N/A（执行 gate，不单独提交）。
 
 Completion record：
 
-- HEAD：`pending`
-- Dirty paths：`pending`
-- Toolchain：`pending`
-- Validation：`pending`
+- HEAD：`242ba195659a500174de030cb25476e20e565355`
+- Dirty paths：用户既有 `M .gitignore`、`M AGENTS.md`、`M go-cli-agent`、`D multica-plan.md`，以及未跟踪 `.tmp_multica_repo_preflight_edit/`、`AGENTS.md.bak`、`CLAUDE.md`、`refer_prompts/`、`skills/`、`ss.png`、`usable_skills/`、`workspace/`；后续仅暂存当前任务列出的文件。
+- Toolchain：`go version go1.24.5 linux/amd64`；`node v22.22.2`。
+- Validation：2026-07-20 运行计划列出的 runtime/tools/session/provider 聚焦测试全部通过（provider 包无匹配测试）；`git diff --check` 通过。
 
-### [ ] CTX-001A — 立即移除有损通用 tool-result 去重路径
+### [x] CTX-001A — 立即移除有损通用 tool-result 去重路径
 
 - Issue：CTX-001。
 - Priority：P0 stop-loss。
@@ -124,6 +124,7 @@ Implementation files：
 
 - `internal/runtime/compaction.go`
 - `internal/runtime/compaction_test.go`
+- `internal/provider/provider_test.go`
 
 Permanent tests：
 
@@ -135,10 +136,10 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 每轮 provider view 已不再执行当前 message-level dedup。
-- [ ] 过时 `file_path` 契约与旧测试已移除，不以改成 `path` 的方式继续启用危险逻辑。
-- [ ] micro-compaction、ephemeral pointer 和 full compaction 仍运行。
-- [ ] 上述永久测试通过并产生独立 commit。
+- [x] 每轮 provider view 已不再执行当前 message-level dedup。
+- [x] 过时 `file_path` 契约与旧测试已移除，没有以改成 `path` 的方式继续启用危险逻辑。
+- [x] micro-compaction、ephemeral pointer 和 full compaction 路径保持启用并由 runtime 全包回归覆盖。
+- [x] 上述永久测试通过并纳入本任务独立提交。
 
 Validation：
 
@@ -158,8 +159,8 @@ Commit subject：`fix(runtime): disable unsafe tool result deduplication`
 
 Completion record：
 
-- Commit：`pending`
-- Tests：`pending`
+- Commit：本任务提交 `fix(runtime): disable unsafe tool result deduplication`。
+- Tests：TDD 红测确认旧实现会覆盖相同参数的旧结果和 multi-call sibling；实现后聚焦 stop-loss/provider replay、计划正则测试及 `go test ./internal/runtime ./internal/provider -count=1 -timeout=180s` 全部通过；`gofmt -l` 与 `git diff --check` 无输出。
 - CTX-001 remaining work：`CTX-001B pending`
 
 ### [ ] CTX-003A — 建立共享 request budget 快照与 fail-closed 预检

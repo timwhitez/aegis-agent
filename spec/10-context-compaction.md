@@ -48,6 +48,7 @@ v1 只做最小但完整的三层压缩。
 - 原始 `messages.jsonl` 不做覆盖
 - 若某条保留的 `tool_result` 依赖更早的 assistant `tool_call` / provider call id，则必须把对应依赖链一起保留，不能只机械裁掉“最后 N 条”
 - 这一层无论总规模是否超阈值都会执行：始终对超出 `keep_recent_tool_results` 的旧大输出做 head/tail 截断，是最廉价的稳定裁剪
+- Phase 10 correctness stop-loss 期间不得按 tool name + arguments 推断两个结果语义相同，也不得在 message 级覆盖整批 `tool_results`。相同查询可能在两次调用之间观察到不同文件内容或外部状态；在 result-level canonical fingerprint、结果内容 hash、ToolCallID 配对和三 provider replay 约束一起落地前，不启用语义去重。
 
 示例：
 
@@ -214,3 +215,4 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - provider 输入视图被压缩，但原始消息未丢失
 - `messages.jsonl` 仍可用于完整重放
 - CLI / SDK / future API 都能基于原始日志调试问题
+- stop-loss provider view 保留相同参数但不同结果的每个 ToolResult，也保留同一 tool message 中未被验证为等价的其他结果；构造 view 前后 durable message 日志逐字段不变

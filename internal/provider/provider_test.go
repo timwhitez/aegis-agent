@@ -1676,6 +1676,70 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 	}
 }
 
+func TestProviderReplayPreservesSameArgumentsWithDistinctToolResults(t *testing.T) {
+	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
+	messages := []session.Message{
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_1", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_1", Name: "grep", LLMOutput: "old state"}}),
+		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_2", Name: "grep", Arguments: arguments}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_2", Name: "grep", LLMOutput: "new state"}}),
+	}
+
+	tests := []struct {
+		name      string
+		serialize func() ([]byte, error)
+		want      []string
+	}{
+		{
+			name: "openai",
+			serialize: func() ([]byte, error) {
+				input, err := openAIInput(messages, "gpt-5.5")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"call_id":"grep_1"`, `"output":"old state"`, `"call_id":"grep_2"`, `"output":"new state"`},
+		},
+		{
+			name: "anthropic",
+			serialize: func() ([]byte, error) {
+				input, err := anthropicMessages(messages, "claude-sonnet-4-6", "", "", false)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"grep_1"`, `"tool_use_id":"grep_1"`, `"content":"old state"`, `"id":"grep_2"`, `"tool_use_id":"grep_2"`, `"content":"new state"`},
+		},
+		{
+			name: "google",
+			serialize: func() ([]byte, error) {
+				input, err := googleContents(messages, "gemini-2.5-flash", "", "")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"grep_1"`, `"output":"old state"`, `"id":"grep_2"`, `"output":"new state"`},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := tc.serialize()
+			if err != nil {
+				t.Fatalf("serialize replay: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(string(body), want) {
+					t.Fatalf("expected %s in replay body: %s", want, body)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderReplayRejectsMalformedPersistedToolArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

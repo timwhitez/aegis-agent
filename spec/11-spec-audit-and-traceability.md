@@ -70,6 +70,8 @@
 - compaction 必须作为独立 harness 机制存在
 - 历史和工具输出不能无限增长
 - 原始日志必须和压缩视图分离
+- tool 参数相同不证明结果相同；当前 correctness gate 禁止通用 message-level tool-result 去重。后续若重新启用，只能在独立 ToolResult 粒度使用 canonical arguments、结果内容 hash 与 ToolCallID/replay 配对证明安全，并继续保证 durable message 日志不变
+- 永久回归必须覆盖真实 `read_file.path`、相同参数但不同结果、multi-call tool message、OpenAI/Anthropic/Google replay 以及 provider view 构造前后 durable log 一致性
 
 ### 2.6 薄 provider 层
 
