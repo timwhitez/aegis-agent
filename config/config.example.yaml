@@ -156,6 +156,7 @@ runtime:
     # 0 means derive from provider context_window_tokens / known-model / default.
     input_char_threshold: 0
     keep_recent_tool_results: 3
+    keep_recent_tool_result_bytes: 65536
     # 0 means derive from input_char_threshold / 4.
     hysteresis_delta_chars: 0
     # 0 means derive proportionally from input_char_threshold.

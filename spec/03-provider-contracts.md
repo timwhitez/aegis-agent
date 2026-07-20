@@ -94,6 +94,14 @@ RequestEstimator
 - `raw_provider.thinking_strategy` 记录 adapter 本轮实际采用的 thinking / reasoning 请求策略，例如 OpenAI Responses summary、Anthropic-compatible manual budget、Google thinking budget 或 provider default；它是诊断观测字段，不要求 CLI / Web 层据此构造 replay。
 - 当 session metadata 中的 `provider_options.raw_sidecar=true` 时，runtime 会把本次 turn 的诊断 envelope 另存为 `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json`。该 sidecar 只包含 provider、model、turn、timestamp、provider_response_id、内部归一化 `stop_reason` 和 adapter 已选择的 raw provider items；它只用于 replay 诊断和审计，不替代 `messages.jsonl` / `events.jsonl`，也不要求 CLI 或 Web 用 provider-native item 续跑。
 
+#### 2.2.1 Result-level micro-compaction replay contract
+
+- micro-compaction 的选择单位是独立 `ToolResult`，同一 tool message 允许较旧 result 已压缩、较新 result 完整；不得拆分或回写 durable message record
+- 每个被 micro-compact 的 result 必须按 `ToolCallID` 精确定位 assistant `ToolCall.ID` / `ProviderCallID` 以及 provider-native call block；只裁剪该 call 的大 arguments/input/args，不能改动同 batch sibling call
+- OpenAI function call/output 必须保留 `call_id`，Anthropic `tool_use` / `tool_result` 必须保留 tool-use id，Google `functionCall` / `functionResponse` 必须保留 function-call id/name 与原顺序。裁剪不能删除协议配对或把一个 result 的 metadata、error/final 状态串到另一个 result
+- 已经由 current-result budget 或 ephemeral view pointerize 的 result 不再生成 artifact、嵌套 pointer 或第二层 completion claim；pointer metadata 原样保留，且在统计分类中优先归入 pointerized
+- request budget snapshot 与 compact event 使用同一互斥分类：`pointerized` 优先于 `compacted`，其余为 `inline`。各类 bytes 都是最终 provider view 中 `llm_output` 的 UTF-8 byte 数，不包含 `display_output`、metadata 或 durable JSON envelope
+
 ### 2.3 EventSink
 
 adapter 可向 runtime 发出：

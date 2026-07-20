@@ -70,6 +70,32 @@ func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	}
 }
 
+func TestRequestBudgetSnapshotReportsToolResultContextStats(t *testing.T) {
+	adapter := &fixedEstimateAdapter{estimate: provider.WireRequestEstimate{
+		SchemaVersion:        1,
+		WireBodyBytes:        400,
+		EstimatedInputTokens: 100,
+	}}
+	req := provider.TurnRequest{
+		SessionID: "session-stats",
+		Model:     "model-stats",
+		Messages: []session.Message{session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "inline", Name: "shell", LLMOutput: "inline"},
+			{ToolCallID: "compacted", Name: "shell", LLMOutput: "short", Metadata: map[string]any{"compacted_for_context": true}},
+			{ToolCallID: "pointer", Name: "shell", LLMOutput: "ptr", Metadata: map[string]any{"compacted_for_context": true, "ephemeral_provider_view": true, "ephemeral_artifact": "artifact.log"}},
+		})},
+	}
+	snapshot, err := preflightProviderRequest(adapter, req, requestBudgetPolicy{EffectiveWindowTokens: 10000, UtilizationFactor: 1}, requestBudgetContext{RequestKind: requestKindMain, SessionID: req.SessionID})
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if snapshot.InlineToolResultCount != 1 || snapshot.InlineToolResultBytes != len("inline") ||
+		snapshot.CompactedToolResultCount != 1 || snapshot.CompactedToolResultBytes != len("short") ||
+		snapshot.PointerizedToolResultCount != 1 || snapshot.PointerizedToolResultBytes != len("ptr") {
+		t.Fatalf("unexpected result-level snapshot stats: %#v", snapshot)
+	}
+}
+
 func TestRequestBudgetPolicyCompatibilityDefaults(t *testing.T) {
 	for _, configured := range []int{0, -1} {
 		policy := newRequestBudgetPolicy("unknown-model", configured, 0)

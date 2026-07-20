@@ -549,7 +549,7 @@ Completion record：
 - Race/tests：TDD 红测先证明缺少 streaming artifact/collector API、shell/skill 仍走 `CombinedOutput()`、runtime interruption 丢弃当前 artifact；补充红测又捕获 write 后 sync/close 失败仍发布不确定 prefix、publish 后 reservation cleanup 隐藏已发布 artifact、reservation 更新先改内存、同 Store cross-session root 可越权写入、长 summary 截断 pointer/status、小型非法 UTF-8 被误标 inline recoverable，以及最终 header 二次裁剪造成 preview source bytes 对账失真。实现后 lifecycle 注入、并发 Store/quota/restart 回收、owner-only/cross-session/no-symlink/no-replace、持续输出 timeout、非零退出、manual interrupt、child budget/process-group cancel、shell/skill parity、UTF-8 byte-exact artifact、read_file 回捞和 ephemeral pointer 复用均进入永久测试；聚焦门禁、`CGO_ENABLED=1 go test -race ./internal/tools ./internal/runtime ./internal/session -run 'Test.*(OutputCollector|Shell.*Output|ArtifactQuota|ToolOutputArtifactStream).*' -count=1 -timeout=300s`、三包回归、`go test ./... -count=1 -timeout=600s` 与 `go vet` 全通过，`gofmt -l` / `git diff --check` 无输出。
 - TOOL-001 status：`complete`。
 
-### [ ] CTX-002 — 将 micro-compaction 改为独立 ToolResult 数量/字节窗口
+### [x] CTX-002 — 将 micro-compaction 改为独立 ToolResult 数量/字节窗口
 
 - Issue：CTX-002。
 - Priority：P1 provider-view predictability。
@@ -591,10 +591,10 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 实现中不再以 tool message 数量解释 `keep_recent_tool_results`。
-- [ ] 数量与字节预算同时生效，并进入 CTX-003/OBS-001 共用 snapshot。
-- [ ] mixed batch 可逐 result 压缩，不拆改 durable message schema。
-- [ ] 所有 provider replay 测试与 full compaction/hysteresis reuse 测试通过。
+- [x] 实现中不再以 tool message 数量解释 `keep_recent_tool_results`。
+- [x] 数量与字节预算同时生效，并进入 CTX-003/OBS-001 共用 snapshot。
+- [x] mixed batch 可逐 result 压缩，不拆改 durable message schema。
+- [x] 所有 provider replay 测试与 full compaction/hysteresis reuse 测试通过。
 
 Validation：
 
@@ -616,10 +616,10 @@ Commit subject：`fix(runtime): compact tool results by item and bytes`
 
 Completion record：
 
-- Commit：`pending`
-- Effective byte default：`pending`
-- Tests：`pending`
-- CTX-002 status：`pending`
+- Commit：本任务提交 `fix(runtime): compact tool results by item and bytes`。
+- Effective byte default：`65536` UTF-8 bytes；每个 ToolResult 占一个倒序最近位置，既有 pointer 不消耗完整 payload byte budget，exact boundary 保留、`+1` 关闭连续 inline 后缀。
+- Tests：TDD 红测先证明 config/profile/snapshot 缺少 byte/count 字段且单 batch 可绕过旧 message-level 窗口；实现后 1×N、N×1、mixed batch、count+bytes、exact/+1、大结果、pointer/artifact 复用、ToolCallID/ProviderCallID alias、OpenAI/Anthropic/Google replay、compact started/finished/reused telemetry、durable log 与重复 build 均进入永久回归。聚焦测试、三包回归、对应 `-race` 与 `go test ./... -count=1 -timeout=600s` 通过。
+- CTX-002 status：`complete`。
 
 ---
 

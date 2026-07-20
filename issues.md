@@ -109,7 +109,7 @@ read_file 的去重当前基本失效，重复读取仍持续占用上下文；g
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -140,6 +140,14 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 - OpenAI function_call/output、Anthropic tool_use/tool_result、Google functionCall/functionResponse 的 multi-call replay 回归均通过。
 - micro-compaction 继续只影响 provider view，不覆盖 messages.jsonl。
 - event/telemetry 同时报告 inline result count、compacted result count 和按字节计算的 provider-view tool-result 体积。
+
+### Resolution
+
+- micro-compaction 现在倒序按独立 `ToolResult` 计数，并用默认 `65536` bytes 的 `llm_output` 连续后缀预算与 count 同时筛选；同一 message 内可以逐 result 混合 inline、compacted 与 pointerized
+- 超出窗口的 result 只按其 ToolCallID/ProviderCallID alias 裁剪对应 assistant call 和 Anthropic/Google provider block，协议 ID、顺序与 sibling metadata/error/final 保持不变
+- 已有 ephemeral/current-result artifact 只复用现有 pointer，不创建第二份 artifact；provider-view 构造保持 clone-only，durable `messages.jsonl` 不变
+- compact events 与 versioned `RequestBudgetSnapshot` 统一报告 inline/compacted/pointerized 的 count 与最终 `llm_output` bytes；永久回归覆盖 batch 形状、count/byte 边界、三 provider replay、hysteresis、幂等与 durable log
+- Resolution commit：本任务提交 `fix(runtime): compact tool results by item and bytes`
 
 ### Non-goals
 

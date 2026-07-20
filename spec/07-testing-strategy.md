@@ -138,6 +138,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - artifact create/write/fsync/close/rename 注入失败均返回有界 ToolResult 与可诊断 metadata；失败不能阻塞 stdout/stderr drain，也不能让未发布 temp 被 `read_file` 当成完成 artifact
 - 大输出后的正常退出、非零退出、timeout、manual interrupt、child budget cancel 与 process-group kill 都会 finalize collector；interrupted durable ToolResult 保留 command artifact metadata并补 `failure_class=interrupted`
 - current command artifact 可由 `read_file` line/byte mode 用 exact path 分页；old ephemeral provider view 复用当前 artifact，不生成第二个文件
+- micro-compaction 永久矩阵覆盖 1×N、N×1、混合 batch 与 `keep_recent_tool_results=3`，证明最多最近三个独立 result 保留完整 payload，窗口边界可落在同一 tool message 内且 sibling 的 ToolCallID/Name/IsError/Final/metadata 不串位
+- `keep_recent_tool_result_bytes` 覆盖 exact boundary、`+1` byte、count 与 bytes 同时触发、最新单 result 自身超限、已 pointerize result；重复构造 provider view 不生成嵌套 marker/重复 artifact，durable `messages.jsonl` byte-for-byte 不变
+- OpenAI multi-call、Anthropic `tool_use/tool_result`、Google `functionCall/functionResponse` 分别验证只有对应旧 result 的 call arguments/provider block 被裁剪，call/result id、name、顺序和 replay wire shape 仍合法
+- `compact.started` / `compact.finished` / `compact.reused` 以及 main/semantic-summary/probe 共用的 `RequestBudgetSnapshot` 验证六个 result-level 字段：inline/compacted/pointerized 的 count 与 provider-view `llm_output` bytes；三类计数之和等于 request view 的 ToolResult 总数
 
 ### 4.2 Hooks
 

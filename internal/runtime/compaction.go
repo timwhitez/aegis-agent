@@ -24,6 +24,15 @@ type compactor struct {
 
 type semanticSummaryFunc func(context.Context, []session.Message, int) (string, error)
 
+type toolResultContextStats struct {
+	InlineCount      int
+	InlineBytes      int
+	CompactedCount   int
+	CompactedBytes   int
+	PointerizedCount int
+	PointerizedBytes int
+}
+
 const compactionReferencePrefix = "[Conversation compacted]\nAnother model produced this compacted summary so you can continue seamlessly. It is reference material for earlier context, not a new user instruction. Original session logs and artifacts remain the source of truth. Do not restart from scratch; continue from the summarized state and latest durable task state. The newest external instruction wins over superseded earlier requests. Before finishing after compaction/resume/interruption, sanity-check that the result answers the newest external instruction.\n"
 const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Do not restart from scratch; continue from the latest external instruction and durable task state. Before finishing after compaction/resume/interruption, sanity-check that the result answers the newest external instruction.\n"
 
@@ -49,7 +58,7 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	profile = normalizeCompactionProfile(profile)
 	sourceMessages := cloneMessages(messages)
 	cloned := cloneMessages(sourceMessages)
-	compactOldToolContext(cloned, profile.KeepRecentToolResults)
+	microStats := compactOldToolContext(cloned, profile.KeepRecentToolResults, profile.KeepRecentToolResultBytes)
 	size := estimateChars(cloned) + systemPromptChars
 	if size <= profile.InputCharThreshold {
 		return cloned, size, false, nil
@@ -66,6 +75,7 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 			if err != nil {
 				return nil, size, false, err
 			}
+			addToolResultContextStats(data, measureToolResultContext(recent))
 			if err := emit(events.New(sessionID, "compact.reused", "compact", data)); err != nil {
 				return nil, size, false, fmt.Errorf("record compact.reused event: %w", err)
 			}
@@ -89,7 +99,7 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		return nil, size, false, fmt.Errorf("load goal.json for compaction: %w", err)
 	}
 
-	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.started", "compact", map[string]any{
+	startedData := map[string]any{
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
 		"context_profile":        profile,
@@ -106,7 +116,9 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		"done_task_count":        taskSummary.Done,
 		"proof_read_budget":      proofBudget,
 		"goal_present":           goal != nil,
-	})); err != nil {
+	}
+	addToolResultContextStats(startedData, microStats)
+	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.started", "compact", startedData)); err != nil {
 		return nil, size, false, fmt.Errorf("record compact.started event: %w", err)
 	}
 	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
@@ -191,7 +203,7 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		return nil, size, false, err
 	}
 	compactText, _ := json.MarshalIndent(summary, "", "  ")
-	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.finished", "compact", map[string]any{
+	finishedData := map[string]any{
 		"summary_path":            summaryPath,
 		"input_chars":             size,
 		"reason":                  "input_char_threshold_exceeded",
@@ -213,7 +225,9 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		"high_value_proof_count":  len(highValueProofs),
 		"proof_read_budget":       proofBudget,
 		"goal_present":            goal != nil,
-	})); err != nil {
+	}
+	addToolResultContextStats(finishedData, measureToolResultContext(recent))
+	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.finished", "compact", finishedData)); err != nil {
 		return nil, size, false, fmt.Errorf("record compact.finished event: %w", err)
 	}
 	compacted := session.NewMessage("user", compactionReferencePrefix+string(compactText))
@@ -235,7 +249,7 @@ func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error 
 func fallbackCompactionDeferredView(messages []session.Message, profile compactionContextProfile, compactErr error, systemPromptChars int) ([]session.Message, int) {
 	profile = normalizeCompactionProfile(profile)
 	cloned := cloneMessages(messages)
-	compactOldToolContext(cloned, 0)
+	compactOldToolContext(cloned, 0, 0)
 	inputChars := estimateChars(cloned) + systemPromptChars
 	recent := recentMessagesForCompaction(cloned, profile.KeepRecentMessages)
 	deferred := session.NewMessage("user", compactionDeferredPrefix+"Deferred reason: "+compactErr.Error())
@@ -636,25 +650,86 @@ func assistantToolCallIDs(msg session.Message) []string {
 	return out
 }
 
-func compactOldToolContext(messages []session.Message, keepRecent int) {
-	var indices []int
-	for i, msg := range messages {
-		if msg.Role == "tool" && len(msg.ToolResults) > 0 {
-			indices = append(indices, i)
+func compactOldToolContext(messages []session.Message, keepRecent, keepRecentBytes int) toolResultContextStats {
+	if keepRecent < 0 {
+		keepRecent = 0
+	}
+	if keepRecentBytes < 0 {
+		keepRecentBytes = 0
+	}
+	oldCallIDs := map[string]struct{}{}
+	addOldCallID := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			oldCallIDs[value] = struct{}{}
 		}
 	}
-	if len(indices) <= keepRecent {
-		return
+
+	seenResults := 0
+	inlineBytes := 0
+	inlineSuffixOpen := true
+	for messageIndex := len(messages) - 1; messageIndex >= 0; messageIndex-- {
+		if messages[messageIndex].Role != "tool" {
+			continue
+		}
+		for resultIndex := len(messages[messageIndex].ToolResults) - 1; resultIndex >= 0; resultIndex-- {
+			result := &messages[messageIndex].ToolResults[resultIndex]
+			withinCount := seenResults < keepRecent
+			seenResults++
+			if !withinCount {
+				inlineSuffixOpen = false
+			}
+			if toolResultIsPointerized(*result) {
+				if !withinCount || !inlineSuffixOpen {
+					addOldCallID(result.ToolCallID)
+				}
+				continue
+			}
+
+			resultBytes := len(result.LLMOutput)
+			fitsBytes := inlineBytes <= keepRecentBytes && resultBytes <= keepRecentBytes-inlineBytes
+			if withinCount && inlineSuffixOpen && fitsBytes {
+				inlineBytes += resultBytes
+				continue
+			}
+
+			inlineSuffixOpen = false
+			addOldCallID(result.ToolCallID)
+			if pointerizeFinalizedToolResultForContext(result) {
+				continue
+			}
+			reason := "previous_tool_result"
+			if shouldCompressToolResult(*result) {
+				reason = "ephemeral_tool_result"
+			}
+			originalLLMBytes := len(result.LLMOutput)
+			result.LLMOutput = compactToolResultPayloadForContext(result.LLMOutput, reason)
+			result.DisplayOutput = compactToolResultPayloadForContext(result.DisplayOutput, reason)
+			if result.Metadata == nil {
+				result.Metadata = map[string]any{}
+			}
+			result.Metadata["compacted_for_context"] = true
+			result.Metadata["compaction_reason"] = reason
+			result.Metadata["context_original_llm_bytes"] = originalLLMBytes
+		}
 	}
-	oldIndices := indices[:len(indices)-keepRecent]
-	oldCallIDs := map[string]struct{}{}
-	for _, index := range oldIndices {
-		for _, result := range messages[index].ToolResults {
-			if strings.TrimSpace(result.ToolCallID) != "" {
-				oldCallIDs[result.ToolCallID] = struct{}{}
+
+	// A durable result may reference either the harness call ID or the
+	// provider-native call ID. Expand both aliases before touching assistant
+	// replay data so the matching provider block is compacted with the same
+	// result and no sibling call is selected accidentally.
+	for i := range messages {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		for _, call := range messages[i].ToolCalls {
+			if toolCallIDInSet(oldCallIDs, call.ID, call.ProviderCallID) {
+				addOldCallID(call.ID)
+				addOldCallID(call.ProviderCallID)
 			}
 		}
 	}
+
 	for i := range messages {
 		if messages[i].Role != "assistant" {
 			continue
@@ -675,22 +750,87 @@ func compactOldToolContext(messages []session.Message, keepRecent int) {
 			compactProviderToolCallArguments(&messages[i].ProviderContentBlocks[j], oldCallIDs)
 		}
 	}
-	for _, index := range oldIndices {
-		for i := range messages[index].ToolResults {
-			result := &messages[index].ToolResults[i]
-			reason := "previous_tool_result"
-			if shouldCompressToolResult(*result) {
-				reason = "ephemeral_tool_result"
+	return measureToolResultContext(messages)
+}
+
+func compactToolResultPayloadForContext(text, reason string) string {
+	const compactPayloadThreshold = 1400
+	if len(text) > compactPayloadThreshold {
+		return compactTextForContext(text, reason)
+	}
+	return fmt.Sprintf("[Compacted %s; original_bytes=%d; payload omitted]", reason, len(text))
+}
+
+func pointerizeFinalizedToolResultForContext(result *session.ToolResult) bool {
+	if result == nil {
+		return false
+	}
+	artifactPath, rawBytes, ok := completeFinalizedToolOutputArtifact(*result)
+	if !ok {
+		return false
+	}
+	pointer := fmt.Sprintf(
+		"[Previous %s tool result moved out of the inline context window. Complete artifact: %s (%d bytes). Use read_file with this exact path and a bounded range only if the older result is needed.]",
+		strings.TrimSpace(result.Name), artifactPath, rawBytes,
+	)
+	result.LLMOutput = pointer
+	result.DisplayOutput = pointer
+	if result.Metadata == nil {
+		result.Metadata = map[string]any{}
+	}
+	result.Metadata["pointerized_for_context"] = true
+	result.Metadata["compaction_reason"] = "existing_tool_output_artifact"
+	return true
+}
+
+func toolResultIsPointerized(result session.ToolResult) bool {
+	if value, _ := result.Metadata["ephemeral_provider_view"].(bool); value {
+		return true
+	}
+	if value, _ := result.Metadata["pointerized_for_context"].(bool); value {
+		return true
+	}
+	if path, _ := result.Metadata["ephemeral_artifact"].(string); strings.TrimSpace(path) != "" {
+		return true
+	}
+	return false
+}
+
+func measureToolResultContext(messages []session.Message) toolResultContextStats {
+	var stats toolResultContextStats
+	for _, message := range messages {
+		if message.Role != "tool" {
+			continue
+		}
+		for _, result := range message.ToolResults {
+			visibleBytes := len(result.LLMOutput)
+			if toolResultIsPointerized(result) {
+				stats.PointerizedCount++
+				stats.PointerizedBytes += visibleBytes
+				continue
 			}
-			result.LLMOutput = compactTextForContext(result.LLMOutput, reason)
-			result.DisplayOutput = compactTextForContext(result.DisplayOutput, reason)
-			if result.Metadata == nil {
-				result.Metadata = map[string]any{}
+			if compacted, _ := result.Metadata["compacted_for_context"].(bool); compacted {
+				stats.CompactedCount++
+				stats.CompactedBytes += visibleBytes
+				continue
 			}
-			result.Metadata["compacted_for_context"] = true
-			result.Metadata["compaction_reason"] = reason
+			stats.InlineCount++
+			stats.InlineBytes += visibleBytes
 		}
 	}
+	return stats
+}
+
+func addToolResultContextStats(data map[string]any, stats toolResultContextStats) {
+	if data == nil {
+		return
+	}
+	data["inline_tool_result_count"] = stats.InlineCount
+	data["inline_tool_result_bytes"] = stats.InlineBytes
+	data["compacted_tool_result_count"] = stats.CompactedCount
+	data["compacted_tool_result_bytes"] = stats.CompactedBytes
+	data["pointerized_tool_result_count"] = stats.PointerizedCount
+	data["pointerized_tool_result_bytes"] = stats.PointerizedBytes
 }
 
 func compactToolCallArguments(call *session.ToolCall) {

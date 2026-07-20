@@ -387,6 +387,7 @@ runtime:
   compact:
     input_char_threshold: 0
     keep_recent_tool_results: 3
+    keep_recent_tool_result_bytes: 65536
     hysteresis_delta_chars: 0
     keep_recent_messages: 0
     utilization_factor: 0.85
@@ -451,6 +452,9 @@ hooks:
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 - Settings 页面还可暴露 provider `context_window_tokens` 数值输入，保存时持久化回当前生效的 config 文件
 - `runtime.compact.input_char_threshold` 默认 `0`，表示按模型 context window 自动推导字符阈值（`context_window_tokens × 4 × utilization_factor`）；显式正数即覆盖。`hysteresis_delta_chars`、`keep_recent_messages` 默认 `0` 表示自动推导（分别为 `threshold / 4` 与按阈值规模成比例的保留消息数），显式正数覆盖
+- `runtime.compact.keep_recent_tool_results` 默认 `3`，按 provider view 中倒序的独立 `ToolResult` 计数，不按 `tool` message/batch 计数。每个 result 都占一个最近位置；只有位于最近窗口内且未超过 byte budget 的连续后缀可以保留完整 `llm_output`
+- `runtime.compact.keep_recent_tool_result_bytes` 默认 `65536`，限制上述完整 result 连续后缀的 `llm_output` UTF-8 bytes 合计；exact boundary 可保留，`+1` byte 会关闭完整后缀并压缩该 result 及更早的非 pointer result。已经 pointerize 的 result 保持原 pointer、占一个最近位置，但不消耗完整 payload byte budget
+- `runtime.compact.context_profiles` 可按 provider/model、model 或 provider 覆盖 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes`；未提供或非正值时继承顶层 normalized 默认值
 - 阈值优先级：`runtime.compact.context_profiles` 命中的 `input_char_threshold` > 顶层显式 `input_char_threshold` > 由 `context_window_tokens` / known-model / 200000 推导
 - `runtime.compact.utilization_factor` 默认 `0.85`，取值 `(0, 1]`
 - `runtime.compact.semantic_summary.enabled` 默认 `true`：对被裁掉的中段消息做一次有界、独立超时的 provider 语义摘要补充确定性结构化摘要；失败 / 超时不会使压缩失败，回退到确定性 baseline

@@ -94,6 +94,7 @@ func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMeta
 	}
 
 	deferredView, deferredInputChars := fallbackCompactionDeferredView(providerMessages, profile, err, systemPromptChars)
+	finalDeferredView := e.applyEphemeralProviderView(meta.ID, deferredView, messages, registry)
 	data := map[string]any{
 		"error":                 err.Error(),
 		"input_chars":           deferredInputChars,
@@ -103,13 +104,14 @@ func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMeta
 		"context_window_tokens": profile.ContextWindowTokens,
 		"keep_recent_messages":  profile.KeepRecentMessages,
 	}
+	addToolResultContextStats(data, measureToolResultContext(finalDeferredView))
 	evt := events.New(meta.ID, "compact.deferred", "compact", data)
 	if appendErr := e.store.AppendEvent(meta.ID, evt); appendErr != nil {
 		return providerViewBuild{}, fmt.Errorf("record compact.deferred event after compaction error %v: %w", err, appendErr)
 	}
 	e.bus.Publish(evt)
 	return providerViewBuild{
-		Messages:         e.applyEphemeralProviderView(meta.ID, deferredView, messages, registry),
+		Messages:         finalDeferredView,
 		InputChars:       deferredInputChars,
 		CompactionAction: "deferred",
 	}, nil
@@ -1411,6 +1413,9 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 		}
 		for resultIndex := range view[messageIndex].ToolResults {
 			result := &view[messageIndex].ToolResults[resultIndex]
+			if compacted, _ := result.Metadata["compacted_for_context"].(bool); compacted || toolResultIsPointerized(*result) {
+				continue
+			}
 			definition := registry.Get(result.Name)
 			if definition == nil || !definition.Ephemeral || definition.EphemeralWindow <= 0 {
 				continue

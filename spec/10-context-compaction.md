@@ -42,12 +42,14 @@ v1 只做最小但完整的三层压缩。
 
 ### 4.2 Layer 2 - Micro Compaction
 
-当准备发送给 provider 的上下文中，旧工具结果数量过多时：
+当准备发送给 provider 的上下文中，旧工具结果数量或体积过多时：
 
-- 只保留最近 `keep_recent_tool_results` 个完整 tool result
-- 更老的 tool result 在 provider 输入视图中替换为简短占位摘要（head/tail + 原始长度）
+- 倒序逐个遍历独立 `ToolResult`；每个 result 占一个最近位置，message/batch 边界不参与计数
+- 只有同时满足 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes` 的最新连续后缀保留完整 `llm_output`。byte 口径为 UTF-8 bytes，exact boundary 可保留；第一个超过 count 或 bytes 的 result 关闭完整后缀，该 result 与更早的非 pointer result 都替换为简短占位摘要（head/tail + 原始长度）
+- 同一 tool message 可以混合 compacted 和 inline result；ToolCallID、Name、IsError、Final 与业务 metadata 保持逐项对应
+- 已由 current-result budget / ephemeral view pointerize 的 result 占一个最近位置但不消耗完整 payload byte budget，并保持现有 pointer；不得再创建 artifact、嵌套 pointer 或把 partial/unavailable source 改写为 complete
 - 原始 `messages.jsonl` 不做覆盖
-- 若某条保留的 `tool_result` 依赖更早的 assistant `tool_call` / provider call id，则必须把对应依赖链一起保留，不能只机械裁掉“最后 N 条”
+- compacted result 仍保留对应 assistant `tool_call` / provider call id；只按 ToolCallID 裁剪该 call 的大 arguments/input/args，不触碰同 batch sibling。full-compaction 的最近消息选择若保留 result，也必须保留其 call/replay 依赖链
 - 这一层无论总规模是否超阈值都会执行：始终对超出 `keep_recent_tool_results` 的旧大输出做 head/tail 截断，是最廉价的稳定裁剪
 - Phase 10 correctness stop-loss 期间不得按 tool name + arguments 推断两个结果语义相同，也不得在 message 级覆盖整批 `tool_results`。相同查询可能在两次调用之间观察到不同文件内容或外部状态；在 result-level canonical fingerprint、结果内容 hash、ToolCallID 配对和三 provider replay 约束一起落地前，不启用语义去重。
 
@@ -171,6 +173,8 @@ effective context window 在 session 创建时解析并写入 session metadata�
 - `runtime.compact.input_char_threshold`
   - 默认 `0`（表示按 context window 自动推导）；正数表示显式覆盖。
 - `runtime.compact.keep_recent_tool_results`
+- `runtime.compact.keep_recent_tool_result_bytes`
+  - 默认 `65536`；与 result count 同时生效，context profile 可用同名字段覆盖。
 - `runtime.compact.hysteresis_delta_chars`
   - 默认 `0`（表示按 `threshold / 4` 自动推导）。
 - `runtime.compact.keep_recent_messages`
@@ -181,7 +185,9 @@ effective context window 在 session 创建时解析并写入 session metadata�
   - 可选，按 `provider/model`、`model` 或 `provider` 覆盖上述阈值。
   - 未配置命中时继续使用 context-window 推导的字符阈值，不引入 provider 原生 token 计数或 replay 依赖。
 
-v1 仍用字符数做近似估算，不做 provider 精确 token 计数；context window 只用于推导本地字符阈值，并写入 summary / compact event 作为诊断事实（`threshold_source`、`context_window_tokens`、`utilization_factor`、`keep_recent_messages`）。估算输入规模时还会计入本轮组装的 system prompt 字符数，避免 skills / goal / plan 注入很大时低估真实 provider 输入。
+v1 仍用字符数做整体 compaction trigger 的近似估算，不做 provider 精确 token 计数；result byte window 单独使用最终 `llm_output` 的 UTF-8 bytes。context window 只用于推导本地字符阈值，并写入 summary / compact event 作为诊断事实（`threshold_source`、`context_window_tokens`、`utilization_factor`、`keep_recent_messages`）。估算输入规模时还会计入本轮组装的 system prompt 字符数，避免 skills / goal / plan 注入很大时低估真实 provider 输入。
+
+micro-compaction 统计使用互斥分类：带既有 provider-view pointer 的 result 优先计入 `pointerized`，其次是本层标记的 `compacted`，其余计入 `inline`。`inline_tool_result_count/bytes`、`compacted_tool_result_count/bytes`、`pointerized_tool_result_count/bytes` 写入 compact event 与每次 provider request 的 versioned budget snapshot；bytes 均取最终 provider-view `llm_output`，不含 display、metadata 或 durable JSON envelope。
 
 compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定。Phase A 对不 fit 请求本地拒绝；后续 Phase B 才负责在有限轮次内 pointerize/缩尾后重新估算。
 
@@ -203,7 +209,7 @@ read_file byte window、grep/grep_files/glob page 都属于 source-recoverable p
 
 进入 provider view 和 compaction artifact 的历史内容只做上下文规模控制和指令边界处理，不做默认脱敏：
 
-- 旧 tool call arguments 与旧 tool result 只保留 head/tail、原始长度和关键 metadata；最近 `keep_recent_tool_results` 仍保留完整内容。
+- 旧 tool call arguments 与旧 tool result 只保留 head/tail、原始长度和关键 metadata；只有同时落在 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes` 连续后缀内的 result 保留完整内容。
 - transcript artifact 是 session 历史快照，不应因为默认安全策略改写 secret-like 字符串；裁剪只用于控制体积，不用于伪装或替换内容。
 - runtime 不根据 `API_KEY` / `TOKEN` / `SECRET` / `PASSWORD`、Bearer token 或 private key block 等模式做硬编码 redaction。
 - 若用户明确要求脱敏，脱敏应作为当轮 user prompt 指定的交付要求，由模型在目标报告或指定 artifact 中执行；runtime / compactor 不把它泛化成默认规则。

@@ -1677,6 +1677,72 @@ func TestProviderReplaySerializesCompactedProviderBlockToolCalls(t *testing.T) {
 	}
 }
 
+func TestProviderReplayPreservesMixedCompactedMultiCallBatch(t *testing.T) {
+	arguments := json.RawMessage(`{"command":"pwd"}`)
+	messages := []session.Message{
+		session.NewAssistantMessage("", "", []session.ToolCall{
+			{ID: "call_old", Name: "shell", Arguments: arguments},
+			{ID: "call_new", Name: "shell", Arguments: arguments},
+		}),
+		session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "call_old", Name: "shell", LLMOutput: "[Compacted previous_tool_result; original_bytes=4096]", Metadata: map[string]any{"compacted_for_context": true}},
+			{ToolCallID: "call_new", Name: "shell", LLMOutput: "new inline result"},
+		}),
+	}
+	tests := []struct {
+		name      string
+		serialize func() ([]byte, error)
+		want      []string
+	}{
+		{
+			name: "openai",
+			serialize: func() ([]byte, error) {
+				input, err := openAIInput(messages, "gpt-5.5")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"call_id":"call_old"`, `"call_id":"call_new"`, "Compacted previous_tool_result", "new inline result"},
+		},
+		{
+			name: "anthropic",
+			serialize: func() ([]byte, error) {
+				input, err := anthropicMessages(messages, "claude-sonnet-4-6", "", "", false)
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"call_old"`, `"tool_use_id":"call_old"`, `"id":"call_new"`, `"tool_use_id":"call_new"`, "Compacted previous_tool_result", "new inline result"},
+		},
+		{
+			name: "google",
+			serialize: func() ([]byte, error) {
+				input, err := googleContents(messages, "gemini-2.5-flash", "", "")
+				if err != nil {
+					return nil, err
+				}
+				return json.Marshal(input)
+			},
+			want: []string{`"id":"call_old"`, `"id":"call_new"`, "Compacted previous_tool_result", "new inline result"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := tc.serialize()
+			if err != nil {
+				t.Fatalf("serialize replay: %v", err)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(string(body), want) {
+					t.Fatalf("expected %s in mixed replay body: %s", want, body)
+				}
+			}
+		})
+	}
+}
+
 func TestProviderReplayPreservesSameArgumentsWithDistinctToolResults(t *testing.T) {
 	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
 	messages := []session.Message{

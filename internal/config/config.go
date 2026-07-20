@@ -39,6 +39,7 @@ const (
 	DefaultToolOutputArtifactMaxFiles           = 256
 	MinToolOutputArtifactMaxFiles               = 1
 	MaxToolOutputArtifactMaxFiles               = 4096
+	DefaultCompactKeepRecentToolResultBytes     = 64 * 1024
 )
 
 type Config struct {
@@ -202,20 +203,22 @@ type ExecPolicyConfig struct {
 }
 
 type CompactConfig struct {
-	InputCharThreshold    int                              `yaml:"input_char_threshold"`
-	KeepRecentToolResults int                              `yaml:"keep_recent_tool_results"`
-	HysteresisDeltaChars  int                              `yaml:"hysteresis_delta_chars,omitempty"`
-	KeepRecentMessages    int                              `yaml:"keep_recent_messages,omitempty"`
-	UtilizationFactor     float64                          `yaml:"utilization_factor,omitempty"`
-	SemanticSummary       CompactSemanticSummaryConfig     `yaml:"semantic_summary,omitempty"`
-	ContextProfiles       map[string]CompactContextProfile `yaml:"context_profiles,omitempty"`
+	InputCharThreshold        int                              `yaml:"input_char_threshold"`
+	KeepRecentToolResults     int                              `yaml:"keep_recent_tool_results"`
+	KeepRecentToolResultBytes int                              `yaml:"keep_recent_tool_result_bytes"`
+	HysteresisDeltaChars      int                              `yaml:"hysteresis_delta_chars,omitempty"`
+	KeepRecentMessages        int                              `yaml:"keep_recent_messages,omitempty"`
+	UtilizationFactor         float64                          `yaml:"utilization_factor,omitempty"`
+	SemanticSummary           CompactSemanticSummaryConfig     `yaml:"semantic_summary,omitempty"`
+	ContextProfiles           map[string]CompactContextProfile `yaml:"context_profiles,omitempty"`
 }
 
 type CompactContextProfile struct {
-	InputCharThreshold    int `yaml:"input_char_threshold,omitempty"`
-	KeepRecentToolResults int `yaml:"keep_recent_tool_results,omitempty"`
-	HysteresisDeltaChars  int `yaml:"hysteresis_delta_chars,omitempty"`
-	KeepRecentMessages    int `yaml:"keep_recent_messages,omitempty"`
+	InputCharThreshold        int `yaml:"input_char_threshold,omitempty"`
+	KeepRecentToolResults     int `yaml:"keep_recent_tool_results,omitempty"`
+	KeepRecentToolResultBytes int `yaml:"keep_recent_tool_result_bytes,omitempty"`
+	HysteresisDeltaChars      int `yaml:"hysteresis_delta_chars,omitempty"`
+	KeepRecentMessages        int `yaml:"keep_recent_messages,omitempty"`
 }
 
 type CompactSemanticSummaryConfig struct {
@@ -425,8 +428,9 @@ func Default() *Config {
 			},
 			ShellEnvAllowlist: []string{"PATH", "HOME", "LANG", "TERM"},
 			Compact: CompactConfig{
-				KeepRecentToolResults: 3,
-				UtilizationFactor:     DefaultCompactUtilizationFactor,
+				KeepRecentToolResults:     3,
+				KeepRecentToolResultBytes: DefaultCompactKeepRecentToolResultBytes,
+				UtilizationFactor:         DefaultCompactUtilizationFactor,
 				SemanticSummary: CompactSemanticSummaryConfig{
 					Enabled:       true,
 					MaxInputChars: DefaultCompactSemanticSummaryMaxInputChars,
@@ -593,6 +597,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	cfg.Runtime.ExecPolicy.Mode = normalizeExecPolicyMode(cfg.Runtime.ExecPolicy.Mode)
 	if cfg.Runtime.Compact.KeepRecentToolResults <= 0 {
 		cfg.Runtime.Compact.KeepRecentToolResults = 3
+	}
+	if cfg.Runtime.Compact.KeepRecentToolResultBytes <= 0 {
+		cfg.Runtime.Compact.KeepRecentToolResultBytes = DefaultCompactKeepRecentToolResultBytes
 	}
 	if cfg.Runtime.Compact.UtilizationFactor <= 0 || cfg.Runtime.Compact.UtilizationFactor > 1 {
 		cfg.Runtime.Compact.UtilizationFactor = DefaultCompactUtilizationFactor

@@ -78,6 +78,7 @@
 - TOOL-002A durability gate 要求所有 ToolResult 在 `tool.after` 后、event/message 前走 versioned finalizer；session Store 通过文件锁、目录重建、owner-only/no-symlink 与三维 quota 保存原始 LLM output，child sync/background handoff 使用相同预算且 partial artifact 不得冒充 Full output
 - TOOL-002B recovery gate 要求 read_file byte mode 仅复用 no-symlink range reader并返回 UTF-8-safe next offset；grep/grep_files/glob 用 schema v1、query-bound、checksum-protected cursor，在完整 record/footer 边界同时执行 count/byte budget，current-view 语义与 typed failures 可观测
 - TOOL-001 command-capture gate 要求 shell/trusted skill command 共用有界 streaming collector：stdout/stderr 经同一 writer 直接写 quota reservation 支持的 current-session artifact，内存不随总输出增长；complete/partial/unavailable 由 raw/persisted/omitted、fsync/close/rename 事实判定。caller cancellation 必须保留 collector artifact metadata，old ephemeral view 只能复用现有 pointer。永久测试覆盖并发/崩溃 reservation 回收、quota、write lifecycle、timeout/interrupt/process group、UTF-8 preview、read_file 回捞和 shell/skill parity
+- CTX-002 micro-compaction gate 要求倒序按独立 `ToolResult` 而非 message batch 应用 count + UTF-8 byte 双预算；同 batch 可混合 inline/compacted，已 pointerize result 不重复落盘。ToolCallID/ProviderCallID 与 OpenAI/Anthropic/Google provider block 精确配对，compact events 与 versioned request snapshot 共用 inline/compacted/pointerized count/bytes，durable `messages.jsonl` 不变
 
 ### 2.6 薄 provider 层
 

@@ -163,7 +163,7 @@
 职责：
 
 - 在每次 main、semantic-summary 和 probe provider 请求真正发送前，要求 adapter 用发送路径共享的 wire-body builder 生成版本化尺寸估算
-- 生成不含 prompt、tool schema 正文或 credential 的 `RequestBudgetSnapshot`，记录 request kind、session/turn/request correlation、provider/model、system/messages/tools/metadata 的数量与尺寸、wire body bytes、估算 input tokens、output reserve、safety headroom、effective context window、剩余 headroom、compaction action/summary id 与 fit 结果
+- 生成不含 prompt、tool schema 正文或 credential 的 `RequestBudgetSnapshot`，记录 request kind、session/turn/request correlation、provider/model、system/messages/tools/metadata 的数量与尺寸、inline/compacted/pointerized ToolResult count/bytes、wire body bytes、估算 input tokens、output reserve、safety headroom、effective context window、剩余 headroom、compaction action/summary id 与 fit 结果
 - 对已知超窗请求返回 typed local `request_budget_exceeded`；拒绝发生在 transport/retry 之前，不允许先向 provider “试发一次”
 - estimator 缺失或 wire body 无法编码时 fail closed；内置 OpenAI、Anthropic、Google、fake adapter 都必须实现 estimator，测试/第三方 adapter 不得静默跳过
 - main 请求拒绝时写 `provider.request.prepared(fit=false)`、budget/rejected 事件并按 provider-call failure 收敛；semantic-summary 拒绝只让语义摘要回退到确定性 baseline

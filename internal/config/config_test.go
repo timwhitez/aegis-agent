@@ -83,6 +83,28 @@ func TestExampleConfigUsesCurrentProviderTimeoutAndRetryDefaults(t *testing.T) {
 	if cfg.Hooks.DefaultTimeoutSec != 300 {
 		t.Fatalf("expected hook default_timeout_sec 300, got %d", cfg.Hooks.DefaultTimeoutSec)
 	}
+	if cfg.Runtime.Compact.KeepRecentToolResultBytes != DefaultCompactKeepRecentToolResultBytes {
+		t.Fatalf("expected example compact result byte window %d, got %d", DefaultCompactKeepRecentToolResultBytes, cfg.Runtime.Compact.KeepRecentToolResultBytes)
+	}
+}
+
+func TestNormalizeConfigSetsCompactToolResultByteWindowDefault(t *testing.T) {
+	cfg := Default()
+	if cfg.Runtime.Compact.KeepRecentToolResultBytes != DefaultCompactKeepRecentToolResultBytes {
+		t.Fatalf("default compact result byte window = %d, want %d", cfg.Runtime.Compact.KeepRecentToolResultBytes, DefaultCompactKeepRecentToolResultBytes)
+	}
+
+	cfg.Runtime.Compact.KeepRecentToolResultBytes = 0
+	normalizeConfig(cfg, t.TempDir())
+	if cfg.Runtime.Compact.KeepRecentToolResultBytes != DefaultCompactKeepRecentToolResultBytes {
+		t.Fatalf("normalized compact result byte window = %d, want %d", cfg.Runtime.Compact.KeepRecentToolResultBytes, DefaultCompactKeepRecentToolResultBytes)
+	}
+
+	cfg.Runtime.Compact.KeepRecentToolResultBytes = 12345
+	normalizeConfig(cfg, t.TempDir())
+	if cfg.Runtime.Compact.KeepRecentToolResultBytes != 12345 {
+		t.Fatalf("explicit compact result byte window was not preserved: %d", cfg.Runtime.Compact.KeepRecentToolResultBytes)
+	}
 }
 
 func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {

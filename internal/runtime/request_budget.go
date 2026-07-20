@@ -38,36 +38,42 @@ type requestBudgetContext struct {
 }
 
 type RequestBudgetSnapshot struct {
-	SchemaVersion             int     `json:"schema_version"`
-	RequestID                 string  `json:"request_id"`
-	RequestKind               string  `json:"request_kind"`
-	SessionID                 string  `json:"session_id"`
-	Turn                      int     `json:"turn"`
-	RequestSequence           int     `json:"request_sequence,omitempty"`
-	Provider                  string  `json:"provider"`
-	APIProvider               string  `json:"api_provider,omitempty"`
-	Model                     string  `json:"model"`
-	WireEstimateSchemaVersion int     `json:"wire_estimate_schema_version"`
-	SystemChars               int     `json:"system_chars"`
-	MessageCount              int     `json:"message_count"`
-	MessagesBytes             int     `json:"messages_bytes"`
-	ToolCount                 int     `json:"tool_count"`
-	ToolSchemaBytes           int     `json:"tool_schema_bytes"`
-	MetadataKeyCount          int     `json:"metadata_key_count"`
-	MetadataBytes             int     `json:"metadata_bytes"`
-	WireBodyBytes             int     `json:"wire_body_bytes"`
-	EstimatedInputTokens      int     `json:"estimated_input_tokens"`
-	ReservedOutputTokens      int     `json:"reserved_output_tokens"`
-	OutputReserveSource       string  `json:"output_reserve_source"`
-	SafetyHeadroomTokens      int     `json:"safety_headroom_tokens"`
-	UtilizationFactor         float64 `json:"utilization_factor"`
-	EffectiveWindowTokens     int     `json:"effective_window_tokens"`
-	RequiredTokens            int     `json:"required_tokens"`
-	HeadroomTokens            int     `json:"headroom_tokens"`
-	CompactionAction          string  `json:"compaction_action"`
-	CompactionSummaryID       string  `json:"compaction_summary_id,omitempty"`
-	Fit                       bool    `json:"fit"`
-	RejectionCode             string  `json:"rejection_code,omitempty"`
+	SchemaVersion              int     `json:"schema_version"`
+	RequestID                  string  `json:"request_id"`
+	RequestKind                string  `json:"request_kind"`
+	SessionID                  string  `json:"session_id"`
+	Turn                       int     `json:"turn"`
+	RequestSequence            int     `json:"request_sequence,omitempty"`
+	Provider                   string  `json:"provider"`
+	APIProvider                string  `json:"api_provider,omitempty"`
+	Model                      string  `json:"model"`
+	WireEstimateSchemaVersion  int     `json:"wire_estimate_schema_version"`
+	SystemChars                int     `json:"system_chars"`
+	MessageCount               int     `json:"message_count"`
+	MessagesBytes              int     `json:"messages_bytes"`
+	ToolCount                  int     `json:"tool_count"`
+	ToolSchemaBytes            int     `json:"tool_schema_bytes"`
+	MetadataKeyCount           int     `json:"metadata_key_count"`
+	MetadataBytes              int     `json:"metadata_bytes"`
+	WireBodyBytes              int     `json:"wire_body_bytes"`
+	EstimatedInputTokens       int     `json:"estimated_input_tokens"`
+	ReservedOutputTokens       int     `json:"reserved_output_tokens"`
+	OutputReserveSource        string  `json:"output_reserve_source"`
+	SafetyHeadroomTokens       int     `json:"safety_headroom_tokens"`
+	UtilizationFactor          float64 `json:"utilization_factor"`
+	EffectiveWindowTokens      int     `json:"effective_window_tokens"`
+	RequiredTokens             int     `json:"required_tokens"`
+	HeadroomTokens             int     `json:"headroom_tokens"`
+	CompactionAction           string  `json:"compaction_action"`
+	CompactionSummaryID        string  `json:"compaction_summary_id,omitempty"`
+	InlineToolResultCount      int     `json:"inline_tool_result_count"`
+	InlineToolResultBytes      int     `json:"inline_tool_result_bytes"`
+	CompactedToolResultCount   int     `json:"compacted_tool_result_count"`
+	CompactedToolResultBytes   int     `json:"compacted_tool_result_bytes"`
+	PointerizedToolResultCount int     `json:"pointerized_tool_result_count"`
+	PointerizedToolResultBytes int     `json:"pointerized_tool_result_bytes"`
+	Fit                        bool    `json:"fit"`
+	RejectionCode              string  `json:"rejection_code,omitempty"`
 }
 
 type RequestBudgetExceededError struct {
@@ -138,23 +144,30 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 		usableWindow = policy.EffectiveWindowTokens
 	}
 	safetyHeadroom := policy.EffectiveWindowTokens - usableWindow
+	toolResultStats := measureToolResultContext(req.Messages)
 	snapshot := RequestBudgetSnapshot{
-		SchemaVersion:         requestBudgetSnapshotSchemaVersion,
-		RequestID:             requestID,
-		RequestKind:           requestKind,
-		SessionID:             sessionID,
-		Turn:                  requestContext.Turn,
-		RequestSequence:       requestContext.RequestSequence,
-		Provider:              providerName,
-		APIProvider:           strings.TrimSpace(req.APIProvider),
-		Model:                 strings.TrimSpace(req.Model),
-		ReservedOutputTokens:  reserve,
-		OutputReserveSource:   reserveSource,
-		SafetyHeadroomTokens:  safetyHeadroom,
-		UtilizationFactor:     policy.UtilizationFactor,
-		EffectiveWindowTokens: policy.EffectiveWindowTokens,
-		CompactionAction:      compactionAction,
-		CompactionSummaryID:   strings.TrimSpace(requestContext.CompactionSummary),
+		SchemaVersion:              requestBudgetSnapshotSchemaVersion,
+		RequestID:                  requestID,
+		RequestKind:                requestKind,
+		SessionID:                  sessionID,
+		Turn:                       requestContext.Turn,
+		RequestSequence:            requestContext.RequestSequence,
+		Provider:                   providerName,
+		APIProvider:                strings.TrimSpace(req.APIProvider),
+		Model:                      strings.TrimSpace(req.Model),
+		ReservedOutputTokens:       reserve,
+		OutputReserveSource:        reserveSource,
+		SafetyHeadroomTokens:       safetyHeadroom,
+		UtilizationFactor:          policy.UtilizationFactor,
+		EffectiveWindowTokens:      policy.EffectiveWindowTokens,
+		CompactionAction:           compactionAction,
+		CompactionSummaryID:        strings.TrimSpace(requestContext.CompactionSummary),
+		InlineToolResultCount:      toolResultStats.InlineCount,
+		InlineToolResultBytes:      toolResultStats.InlineBytes,
+		CompactedToolResultCount:   toolResultStats.CompactedCount,
+		CompactedToolResultBytes:   toolResultStats.CompactedBytes,
+		PointerizedToolResultCount: toolResultStats.PointerizedCount,
+		PointerizedToolResultBytes: toolResultStats.PointerizedBytes,
 	}
 
 	estimate, err := provider.EstimateAdapterRequest(adapter, req)

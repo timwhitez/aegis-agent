@@ -76,6 +76,349 @@ func TestCompactRawJSONForContextPreservesClosedToolArgumentShape(t *testing.T) 
 	}
 }
 
+func TestMicroCompactionCountsIndependentToolResultsAcrossBatches(t *testing.T) {
+	result := func(id string) session.ToolResult {
+		return session.ToolResult{
+			ToolCallID:    id,
+			Name:          "shell",
+			LLMOutput:     id + strings.Repeat("x", 1800),
+			DisplayOutput: id + strings.Repeat("x", 1800),
+		}
+	}
+	tests := []struct {
+		name     string
+		messages []session.Message
+	}{
+		{
+			name: "one batch",
+			messages: []session.Message{session.NewToolMessage([]session.ToolResult{
+				result("call_1"), result("call_2"), result("call_3"), result("call_4"), result("call_5"),
+			})},
+		},
+		{
+			name: "one result per batch",
+			messages: []session.Message{
+				session.NewToolMessage([]session.ToolResult{result("call_1")}),
+				session.NewToolMessage([]session.ToolResult{result("call_2")}),
+				session.NewToolMessage([]session.ToolResult{result("call_3")}),
+				session.NewToolMessage([]session.ToolResult{result("call_4")}),
+				session.NewToolMessage([]session.ToolResult{result("call_5")}),
+			},
+		},
+		{
+			name: "mixed batches",
+			messages: []session.Message{
+				session.NewToolMessage([]session.ToolResult{result("call_1"), result("call_2")}),
+				session.NewToolMessage([]session.ToolResult{result("call_3")}),
+				session.NewToolMessage([]session.ToolResult{result("call_4"), result("call_5")}),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			view := buildMicroCompactionView(t, tc.messages, 3, 64*1024)
+			states := toolResultCompactionStates(view)
+			for _, id := range []string{"call_1", "call_2"} {
+				if !states[id] {
+					t.Fatalf("%s should be compacted: %#v", id, states)
+				}
+			}
+			for _, id := range []string{"call_3", "call_4", "call_5"} {
+				if states[id] {
+					t.Fatalf("%s should remain inline: %#v", id, states)
+				}
+			}
+		})
+	}
+}
+
+func TestMicroCompactionToolResultByteBoundary(t *testing.T) {
+	tests := []struct {
+		name      string
+		payload   string
+		compacted bool
+	}{
+		{name: "exact boundary", payload: "123456", compacted: false},
+		{name: "boundary plus one", payload: "1234567", compacted: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			messages := []session.Message{session.NewToolMessage([]session.ToolResult{{
+				ToolCallID: "call_boundary",
+				Name:       "shell",
+				LLMOutput:  tc.payload,
+			}})}
+			view := buildMicroCompactionView(t, messages, 3, 6)
+			got := toolResultCompactionStates(view)["call_boundary"]
+			if got != tc.compacted {
+				t.Fatalf("compacted=%t, want %t: %#v", got, tc.compacted, view)
+			}
+		})
+	}
+}
+
+func TestMicroCompactionCountAndByteBudgetsCompose(t *testing.T) {
+	messages := []session.Message{session.NewToolMessage([]session.ToolResult{
+		{ToolCallID: "call_1", Name: "shell", LLMOutput: "1111"},
+		{ToolCallID: "call_2", Name: "shell", LLMOutput: "2222"},
+		{ToolCallID: "call_3", Name: "shell", LLMOutput: "3333"},
+		{ToolCallID: "call_4", Name: "shell", LLMOutput: "4444"},
+	})}
+	view := buildMicroCompactionView(t, messages, 3, 8)
+	states := toolResultCompactionStates(view)
+	if !states["call_1"] || !states["call_2"] || states["call_3"] || states["call_4"] {
+		t.Fatalf("count+byte window did not keep the newest fitting continuous suffix: %#v", states)
+	}
+
+	large := []session.Message{session.NewToolMessage([]session.ToolResult{
+		{ToolCallID: "large_old", Name: "shell", LLMOutput: strings.Repeat("o", 40*1024)},
+		{ToolCallID: "large_new", Name: "shell", LLMOutput: strings.Repeat("n", 40*1024)},
+	})}
+	largeView := buildMicroCompactionView(t, large, 3, 64*1024)
+	largeStates := toolResultCompactionStates(largeView)
+	if !largeStates["large_old"] || largeStates["large_new"] {
+		t.Fatalf("byte budget should keep only the newest large result: %#v", largeStates)
+	}
+}
+
+func TestMicroCompactionMixedBatchPreservesSiblingFields(t *testing.T) {
+	messages := []session.Message{session.NewToolMessage([]session.ToolResult{
+		{ToolCallID: "call_old_error", Name: "old", LLMOutput: strings.Repeat("o", 1800), DisplayOutput: strings.Repeat("o", 1800), IsError: true, Final: true, Metadata: map[string]any{"sibling": "old"}},
+		{ToolCallID: "call_old_ok", Name: "middle", LLMOutput: strings.Repeat("m", 1800), DisplayOutput: strings.Repeat("m", 1800), Metadata: map[string]any{"sibling": "middle"}},
+		{ToolCallID: "call_new_error", Name: "new-error", LLMOutput: "new error", DisplayOutput: "new error display", IsError: true, Metadata: map[string]any{"sibling": "new-error"}},
+		{ToolCallID: "call_new_final", Name: "new-final", LLMOutput: "new final", DisplayOutput: "new final display", Final: true, Metadata: map[string]any{"sibling": "new-final"}},
+	})}
+
+	view := buildMicroCompactionView(t, messages, 2, 64*1024)
+	got := view[0].ToolResults
+	if len(got) != 4 {
+		t.Fatalf("result count changed: %#v", got)
+	}
+	for index, want := range messages[0].ToolResults {
+		if got[index].ToolCallID != want.ToolCallID || got[index].Name != want.Name || got[index].IsError != want.IsError || got[index].Final != want.Final || got[index].Metadata["sibling"] != want.Metadata["sibling"] {
+			t.Fatalf("sibling fields crossed at index %d: got=%#v want=%#v", index, got[index], want)
+		}
+	}
+	if got[0].Metadata["compacted_for_context"] != true || got[1].Metadata["compacted_for_context"] != true {
+		t.Fatalf("older siblings were not compacted independently: %#v", got)
+	}
+	if got[2].Metadata["compacted_for_context"] == true || got[3].Metadata["compacted_for_context"] == true {
+		t.Fatalf("newer siblings were unexpectedly compacted: %#v", got)
+	}
+}
+
+func TestMicroCompactionDoesNotNestExistingPointer(t *testing.T) {
+	pointer := "[Older shell output moved out of the provider context window. Complete artifact: artifacts/tool-outputs/call_old.log.]" + strings.Repeat("p", 1800)
+	messages := []session.Message{
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID: "call_old",
+			Name:       "shell",
+			LLMOutput:  pointer,
+			Metadata: map[string]any{
+				"ephemeral_provider_view": true,
+				"ephemeral_artifact":      "artifacts/tool-outputs/call_old.log",
+			},
+		}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_new", Name: "shell", LLMOutput: "new"}}),
+	}
+	first := buildMicroCompactionView(t, messages, 1, 64*1024)
+	second := buildMicroCompactionView(t, first, 1, 64*1024)
+	for pass, view := range [][]session.Message{first, second} {
+		got := view[0].ToolResults[0]
+		if got.LLMOutput != pointer || strings.Count(got.LLMOutput, "Complete artifact:") != 1 {
+			t.Fatalf("pass %d nested or rewrote existing pointer: %q", pass+1, got.LLMOutput)
+		}
+		if got.Metadata["compacted_for_context"] == true {
+			t.Fatalf("pass %d reclassified pointer as compacted: %#v", pass+1, got.Metadata)
+		}
+	}
+}
+
+func TestMicroCompactionReusesFinalizedArtifactWithoutCopy(t *testing.T) {
+	artifactPath := "artifacts/tool-outputs/call_old.log"
+	messages := []session.Message{
+		session.NewToolMessage([]session.ToolResult{{
+			ToolCallID: "call_old",
+			Name:       "shell",
+			LLMOutput:  strings.Repeat("preview", 400),
+			Metadata: map[string]any{
+				"tool_output_budget_version": 1,
+				"artifact_complete":          true,
+				"recoverable":                true,
+				"artifact_path":              artifactPath,
+				"raw_bytes":                  32768,
+			},
+		}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_new", Name: "shell", LLMOutput: "new"}}),
+	}
+	view := buildMicroCompactionView(t, messages, 1, 64*1024)
+	got := view[0].ToolResults[0]
+	if strings.Count(got.LLMOutput, artifactPath) != 1 || strings.Count(got.LLMOutput, "Complete artifact:") != 1 {
+		t.Fatalf("existing finalized artifact was not reused as one pointer: %q", got.LLMOutput)
+	}
+	if got.Metadata["pointerized_for_context"] != true || got.Metadata["compacted_for_context"] == true || got.Metadata["artifact_path"] != artifactPath {
+		t.Fatalf("existing artifact metadata was lost or misclassified: %#v", got.Metadata)
+	}
+}
+
+func TestMicroCompactionCompactsOnlyMatchingMultiCallReplayArguments(t *testing.T) {
+	longOld := strings.Repeat("old", 800)
+	longNew := strings.Repeat("new", 800)
+	tests := []struct {
+		name     string
+		provider string
+		oldBlock session.ProviderContentBlock
+		newBlock session.ProviderContentBlock
+	}{
+		{
+			name:     "anthropic",
+			oldBlock: session.ProviderContentBlock{Provider: "anthropic", Type: "tool_use", ID: "provider_old", Name: "shell", Input: json.RawMessage(`{"command":"` + longOld + `"}`)},
+			newBlock: session.ProviderContentBlock{Provider: "anthropic", Type: "tool_use", ID: "provider_new", Name: "shell", Input: json.RawMessage(`{"command":"` + longNew + `"}`)},
+		},
+		{
+			name:     "google",
+			oldBlock: session.ProviderContentBlock{Provider: "google", Type: "function_call", ID: "provider_old", Name: "shell", Args: json.RawMessage(`{"command":"` + longOld + `"}`)},
+			newBlock: session.ProviderContentBlock{Provider: "google", Type: "function_call", ID: "provider_new", Name: "shell", Args: json.RawMessage(`{"command":"` + longNew + `"}`)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assistant := session.NewAssistantMessage("", "", []session.ToolCall{
+				{ID: "internal_old", ProviderCallID: "provider_old", Name: "shell", Arguments: json.RawMessage(`{"command":"` + longOld + `"}`)},
+				{ID: "internal_new", ProviderCallID: "provider_new", Name: "shell", Arguments: json.RawMessage(`{"command":"` + longNew + `"}`)},
+			})
+			assistant.ProviderContentBlocks = []session.ProviderContentBlock{tc.oldBlock, tc.newBlock}
+			messages := []session.Message{
+				assistant,
+				session.NewToolMessage([]session.ToolResult{
+					{ToolCallID: "provider_old", Name: "shell", LLMOutput: strings.Repeat("O", 1800)},
+					{ToolCallID: "provider_new", Name: "shell", LLMOutput: "new result"},
+				}),
+			}
+
+			view := buildMicroCompactionView(t, messages, 1, 64*1024)
+			if string(view[0].ToolCalls[0].Arguments) == string(assistant.ToolCalls[0].Arguments) {
+				t.Fatalf("old OpenAI-style call arguments were not compacted: %s", view[0].ToolCalls[0].Arguments)
+			}
+			if string(view[0].ToolCalls[1].Arguments) != string(assistant.ToolCalls[1].Arguments) {
+				t.Fatalf("new sibling call arguments changed: %s", view[0].ToolCalls[1].Arguments)
+			}
+			oldProviderArgs := view[0].ProviderContentBlocks[0].Input
+			newProviderArgs := view[0].ProviderContentBlocks[1].Input
+			originalOldProviderArgs := assistant.ProviderContentBlocks[0].Input
+			originalNewProviderArgs := assistant.ProviderContentBlocks[1].Input
+			if tc.name == "google" {
+				oldProviderArgs = view[0].ProviderContentBlocks[0].Args
+				newProviderArgs = view[0].ProviderContentBlocks[1].Args
+				originalOldProviderArgs = assistant.ProviderContentBlocks[0].Args
+				originalNewProviderArgs = assistant.ProviderContentBlocks[1].Args
+			}
+			if string(oldProviderArgs) == string(originalOldProviderArgs) || string(newProviderArgs) != string(originalNewProviderArgs) {
+				t.Fatalf("provider block compaction crossed sibling boundary: got=%s / %s", oldProviderArgs, newProviderArgs)
+			}
+			if view[0].ProviderContentBlocks[0].ID != "provider_old" || view[0].ProviderContentBlocks[1].ID != "provider_new" || view[1].ToolResults[0].ToolCallID != "provider_old" || view[1].ToolResults[1].ToolCallID != "provider_new" {
+				t.Fatalf("replay IDs/order changed: %#v", view)
+			}
+		})
+	}
+}
+
+func TestMicroCompactionExpandsInternalAndProviderCallIDAliases(t *testing.T) {
+	longOld := strings.Repeat("old", 800)
+	longNew := strings.Repeat("new", 800)
+	assistant := session.NewAssistantMessage("", "", []session.ToolCall{
+		{ID: "internal_old", ProviderCallID: "provider_old", Name: "shell", Arguments: json.RawMessage(`{"command":"` + longOld + `"}`)},
+		{ID: "internal_new", ProviderCallID: "provider_new", Name: "shell", Arguments: json.RawMessage(`{"command":"` + longNew + `"}`)},
+	})
+	assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+		{Provider: "anthropic", Type: "tool_use", ID: "provider_old", Name: "shell", Input: json.RawMessage(`{"command":"` + longOld + `"}`)},
+		{Provider: "anthropic", Type: "tool_use", ID: "provider_new", Name: "shell", Input: json.RawMessage(`{"command":"` + longNew + `"}`)},
+	}
+	messages := []session.Message{
+		assistant,
+		session.NewToolMessage([]session.ToolResult{
+			{ToolCallID: "internal_old", Name: "shell", LLMOutput: strings.Repeat("O", 1800)},
+			{ToolCallID: "internal_new", Name: "shell", LLMOutput: "new result"},
+		}),
+	}
+	view := buildMicroCompactionView(t, messages, 1, 64*1024)
+	if string(view[0].ProviderContentBlocks[0].Input) == string(assistant.ProviderContentBlocks[0].Input) {
+		t.Fatalf("provider alias for compacted internal call ID was not selected: %s", view[0].ProviderContentBlocks[0].Input)
+	}
+	if string(view[0].ProviderContentBlocks[1].Input) != string(assistant.ProviderContentBlocks[1].Input) {
+		t.Fatalf("provider alias expansion crossed into the newer sibling: %s", view[0].ProviderContentBlocks[1].Input)
+	}
+}
+
+func TestMicroCompactionEventsReportResultCountsAndBytes(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{ID: session.NewSessionID(), Workdir: t.TempDir()}
+	state := session.State{}
+	messages := []session.Message{
+		session.NewMessage("user", "start"),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_old", Name: "shell", LLMOutput: strings.Repeat("o", 1800)}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "call_new", Name: "shell", LLMOutput: "new"}}),
+	}
+	var emitted []events.Event
+	profile := compactionContextProfile{InputCharThreshold: 1, KeepRecentToolResults: 1, KeepRecentToolResultBytes: 64 * 1024, KeepRecentMessages: 6, HysteresisDeltaChars: 1}
+	if _, _, _, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, func(evt events.Event) error {
+		emitted = append(emitted, evt)
+		return nil
+	}); err != nil {
+		t.Fatalf("build compacted view: %v", err)
+	}
+	for _, eventType := range []string{"compact.started", "compact.finished"} {
+		var found *events.Event
+		for index := range emitted {
+			if emitted[index].Type == eventType {
+				found = &emitted[index]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("missing %s event: %#v", eventType, emitted)
+		}
+		if found.Data["inline_tool_result_count"] != 1 || found.Data["compacted_tool_result_count"] != 1 || found.Data["pointerized_tool_result_count"] != 0 {
+			t.Fatalf("%s result counts missing or wrong: %#v", eventType, found.Data)
+		}
+		if intFromAny(found.Data["inline_tool_result_bytes"]) != len("new") || intFromAny(found.Data["compacted_tool_result_bytes"]) <= 0 {
+			t.Fatalf("%s result bytes missing or wrong: %#v", eventType, found.Data)
+		}
+	}
+}
+
+func buildMicroCompactionView(t *testing.T, messages []session.Message, keepRecent, keepRecentBytes int) []session.Message {
+	t.Helper()
+	profile := compactionContextProfile{
+		InputCharThreshold:        1 << 20,
+		KeepRecentToolResults:     keepRecent,
+		KeepRecentToolResultBytes: keepRecentBytes,
+		HysteresisDeltaChars:      1 << 18,
+		KeepRecentMessages:        6,
+	}
+	view, _, didCompact, err := newCompactor(session.NewStore(t.TempDir())).BuildWithProfile("unused", t.TempDir(), session.State{}, messages, nil, nil, profile, 0, nil)
+	if err != nil {
+		t.Fatalf("build provider view: %v", err)
+	}
+	if didCompact {
+		t.Fatal("micro-compaction test unexpectedly triggered full compaction")
+	}
+	return view
+}
+
+func toolResultCompactionStates(messages []session.Message) map[string]bool {
+	out := make(map[string]bool)
+	for _, message := range messages {
+		for _, result := range message.ToolResults {
+			compacted, _ := result.Metadata["compacted_for_context"].(bool)
+			out[result.ToolCallID] = compacted
+		}
+	}
+	return out
+}
+
 func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
@@ -784,6 +1127,15 @@ func TestCompactorReusesSummaryWithinHysteresisWindow(t *testing.T) {
 	if emitted[0].Data["summary_source"] != filepath.Join("compactions", "summary-20260521-010000.json") {
 		t.Fatalf("expected summary source in compact.reused event, got %#v", emitted[0].Data)
 	}
+	for _, key := range []string{
+		"inline_tool_result_count", "inline_tool_result_bytes",
+		"compacted_tool_result_count", "compacted_tool_result_bytes",
+		"pointerized_tool_result_count", "pointerized_tool_result_bytes",
+	} {
+		if _, ok := emitted[0].Data[key]; !ok {
+			t.Fatalf("compact.reused event missing %s: %#v", key, emitted[0].Data)
+		}
+	}
 	files, err := os.ReadDir(filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read compactions dir: %v", err)
@@ -940,18 +1292,20 @@ func TestCompactionAddsReferencePrefix(t *testing.T) {
 func TestCompactionProfileFromConfigUsesProviderModelOverride(t *testing.T) {
 	meta := session.SessionMetadata{Provider: "OpenAI", Model: "GPT-Test"}
 	profile := compactionProfileFromConfig(meta, config.CompactConfig{
-		InputCharThreshold:    160000,
-		KeepRecentToolResults: 3,
-		HysteresisDeltaChars:  40000,
+		InputCharThreshold:        160000,
+		KeepRecentToolResults:     3,
+		KeepRecentToolResultBytes: 65536,
+		HysteresisDeltaChars:      40000,
 		ContextProfiles: map[string]config.CompactContextProfile{
 			"openai/gpt-test": {
-				InputCharThreshold:    2048,
-				KeepRecentToolResults: 5,
-				HysteresisDeltaChars:  256,
+				InputCharThreshold:        2048,
+				KeepRecentToolResults:     5,
+				KeepRecentToolResultBytes: 8192,
+				HysteresisDeltaChars:      256,
 			},
 		},
 	})
-	if profile.InputCharThreshold != 2048 || profile.KeepRecentToolResults != 5 || profile.HysteresisDeltaChars != 256 {
+	if profile.InputCharThreshold != 2048 || profile.KeepRecentToolResults != 5 || profile.KeepRecentToolResultBytes != 8192 || profile.HysteresisDeltaChars != 256 {
 		t.Fatalf("expected provider/model override, got %#v", profile)
 	}
 	if profile.Source != "runtime.compact.context_profiles.openai/gpt-test" {
@@ -1728,8 +2082,18 @@ func TestCompactorStopLossDoesNotMutateDurableMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load durable messages: %v", err)
 	}
-	if _, err := newCompactor(store).Build(meta.ID, meta.Workdir, state, durable, nil, nil, 1<<20, 100, nil); err != nil {
+	view, _, _, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, durable, nil, nil, compactionContextProfile{
+		InputCharThreshold:        1 << 20,
+		KeepRecentToolResults:     1,
+		KeepRecentToolResultBytes: 64 * 1024,
+		HysteresisDeltaChars:      1 << 18,
+		KeepRecentMessages:        6,
+	}, 0, nil)
+	if err != nil {
 		t.Fatalf("build provider view: %v", err)
+	}
+	if view[1].ToolResults[0].Metadata["compacted_for_context"] != true || view[3].ToolResults[0].Metadata["compacted_for_context"] == true {
+		t.Fatalf("expected provider view to compact only the old result: %#v", view)
 	}
 	after, err := os.ReadFile(messagesPath)
 	if err != nil {

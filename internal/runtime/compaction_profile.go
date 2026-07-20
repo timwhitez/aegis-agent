@@ -8,16 +8,17 @@ import (
 )
 
 type compactionContextProfile struct {
-	Provider              string  `json:"provider,omitempty"`
-	Model                 string  `json:"model,omitempty"`
-	Source                string  `json:"source,omitempty"`
-	ThresholdSource       string  `json:"threshold_source,omitempty"`
-	ContextWindowTokens   int     `json:"context_window_tokens,omitempty"`
-	UtilizationFactor     float64 `json:"utilization_factor,omitempty"`
-	InputCharThreshold    int     `json:"input_char_threshold,omitempty"`
-	KeepRecentToolResults int     `json:"keep_recent_tool_results,omitempty"`
-	HysteresisDeltaChars  int     `json:"hysteresis_delta_chars,omitempty"`
-	KeepRecentMessages    int     `json:"keep_recent_messages,omitempty"`
+	Provider                  string  `json:"provider,omitempty"`
+	Model                     string  `json:"model,omitempty"`
+	Source                    string  `json:"source,omitempty"`
+	ThresholdSource           string  `json:"threshold_source,omitempty"`
+	ContextWindowTokens       int     `json:"context_window_tokens,omitempty"`
+	UtilizationFactor         float64 `json:"utilization_factor,omitempty"`
+	InputCharThreshold        int     `json:"input_char_threshold,omitempty"`
+	KeepRecentToolResults     int     `json:"keep_recent_tool_results,omitempty"`
+	KeepRecentToolResultBytes int     `json:"keep_recent_tool_result_bytes,omitempty"`
+	HysteresisDeltaChars      int     `json:"hysteresis_delta_chars,omitempty"`
+	KeepRecentMessages        int     `json:"keep_recent_messages,omitempty"`
 }
 
 func compactionProfileFromConfig(meta session.SessionMetadata, cfg config.CompactConfig) compactionContextProfile {
@@ -33,16 +34,17 @@ func compactionProfileFromConfig(meta session.SessionMetadata, cfg config.Compac
 		thresholdSource = "context_window"
 	}
 	profile := compactionContextProfile{
-		Provider:              strings.TrimSpace(meta.Provider),
-		Model:                 strings.TrimSpace(meta.Model),
-		Source:                "runtime.compact",
-		ThresholdSource:       thresholdSource,
-		ContextWindowTokens:   contextWindowTokens,
-		UtilizationFactor:     utilizationFactor,
-		InputCharThreshold:    inputThreshold,
-		KeepRecentToolResults: cfg.KeepRecentToolResults,
-		HysteresisDeltaChars:  cfg.HysteresisDeltaChars,
-		KeepRecentMessages:    cfg.KeepRecentMessages,
+		Provider:                  strings.TrimSpace(meta.Provider),
+		Model:                     strings.TrimSpace(meta.Model),
+		Source:                    "runtime.compact",
+		ThresholdSource:           thresholdSource,
+		ContextWindowTokens:       contextWindowTokens,
+		UtilizationFactor:         utilizationFactor,
+		InputCharThreshold:        inputThreshold,
+		KeepRecentToolResults:     cfg.KeepRecentToolResults,
+		KeepRecentToolResultBytes: cfg.KeepRecentToolResultBytes,
+		HysteresisDeltaChars:      cfg.HysteresisDeltaChars,
+		KeepRecentMessages:        cfg.KeepRecentMessages,
 	}
 	if len(cfg.ContextProfiles) == 0 {
 		return normalizeCompactionProfile(profile)
@@ -87,6 +89,9 @@ func applyCompactionProfileOverride(profile *compactionContextProfile, override 
 	if override.KeepRecentToolResults > 0 {
 		profile.KeepRecentToolResults = override.KeepRecentToolResults
 	}
+	if override.KeepRecentToolResultBytes > 0 {
+		profile.KeepRecentToolResultBytes = override.KeepRecentToolResultBytes
+	}
 	if override.HysteresisDeltaChars > 0 {
 		profile.HysteresisDeltaChars = override.HysteresisDeltaChars
 	}
@@ -101,6 +106,9 @@ func normalizeCompactionProfile(profile compactionContextProfile) compactionCont
 	}
 	if profile.KeepRecentToolResults <= 0 {
 		profile.KeepRecentToolResults = 3
+	}
+	if profile.KeepRecentToolResultBytes <= 0 {
+		profile.KeepRecentToolResultBytes = config.DefaultCompactKeepRecentToolResultBytes
 	}
 	if profile.HysteresisDeltaChars <= 0 {
 		profile.HysteresisDeltaChars = profile.InputCharThreshold / 4
@@ -128,11 +136,12 @@ func normalizeCompactionProfile(profile compactionContextProfile) compactionCont
 
 func compactionProfileForPolicy(threshold, keepRecent, hysteresisDelta int) compactionContextProfile {
 	return normalizeCompactionProfile(compactionContextProfile{
-		Source:                "legacy_policy",
-		InputCharThreshold:    threshold,
-		KeepRecentToolResults: keepRecent,
-		HysteresisDeltaChars:  hysteresisDelta,
-		KeepRecentMessages:    deriveKeepRecentMessages(threshold),
+		Source:                    "legacy_policy",
+		InputCharThreshold:        threshold,
+		KeepRecentToolResults:     keepRecent,
+		KeepRecentToolResultBytes: config.DefaultCompactKeepRecentToolResultBytes,
+		HysteresisDeltaChars:      hysteresisDelta,
+		KeepRecentMessages:        deriveKeepRecentMessages(threshold),
 	})
 }
 
