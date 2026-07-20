@@ -213,7 +213,7 @@
 
 来源：
 
-- CLOSE-001 复核发现 transcript 与 summary 只使用秒级时间命名，同一 session 同秒内的第二次真实 compaction 会原位替换第一组 artifact
+- CTX-005：CLOSE-001 复核发现 transcript 与 summary 只使用秒级时间命名，同一 session 同秒内的第二次真实 compaction 会原位替换第一组 artifact
 
 锁定结论：
 

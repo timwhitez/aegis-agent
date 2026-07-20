@@ -20,7 +20,7 @@
 - agent_spawn 默认可用，描述已提示 broad investigation、context control 和 independent validation；同步 child 会阻塞父级直到稳定返回，后台路径有 resume_parent 与 agent_wait。
 - child 使用独立 fresh session，不继承 parent 的完整消息轨迹；planner / generator / evaluator 已支持 role-specific provider override。
 
-在这些基线上仍确认 9 项优化需求：2 项 P0、5 项 P1、2 项 P2。两项 P0 是 provider-view 正确性与请求可发送性问题，应先处理；P2 explorer/telemetry 属于 large-project / advanced profile，不应扩大默认 Web 首页或变成强制委派 workflow。
+初次审计在这些基线上确认 9 项优化需求：2 项 P0、5 项 P1、2 项 P2。CLOSE-001 复核又确认 CTX-005，当前共 10 项：2 项 P0、6 项 P1、2 项 P2。两项 P0 是 provider-view 正确性与请求可发送性问题，应先处理；P2 explorer/telemetry 属于 large-project / advanced profile，不应扩大默认 Web 首页或变成强制委派 workflow。
 
 | ID | Priority | 主题 | 主要风险 |
 | --- | --- | --- | --- |
@@ -33,6 +33,7 @@
 | CTX-004 | P1 | 压缩历史没有受控回捞工具 | 压缩后只能依赖 summary 或重新探索仓库 |
 | HARNESS-001 | P2 | 缺少 first-class read-only explorer profile | 有 child 隔离能力，但缺少低噪声探索契约 |
 | OBS-001 | P2 | 缺少上下文预算与 root/child 对比 telemetry | 无法量化压缩、工具剪枝和委派是否有效 |
+| CTX-005 | P1 | 同秒 compaction artifact identity 可覆盖 | 旧 event 可指向已被后续压缩替换的证据 |
 
 建议按以下顺序推进，每一项都先同步相应 spec，再写实现和永久回归：
 
@@ -40,10 +41,11 @@
 2. CTX-002、TOOL-001、TOOL-002、TOOL-003：收敛工具输出的计数、持久化和可恢复边界。
 3. CTX-004：为 compaction 后的定点恢复补最小只读入口。
 4. HARNESS-001、OBS-001：作为 large-project / advanced profile 增强，不改变 Web-first 默认产品面。
+5. CTX-005：作为 CLOSE-001 新发现的恢复/审计正确性问题，先补不可覆盖 identity，再关闭总账。
 
 ## 二次准确性复核
 
-二次复核逐项对照了当前 schema、provider request 组装、compaction、tool-after hook、session Store 分页、child role/provider override、Web Settings 与现有永久测试。9 项均能由当前实现直接证实，没有发现误报；优先级也保持不变。实施时需要补入以下已存在能力和遗漏边界，避免重复造轮子或只修主请求的一半：
+二次复核逐项对照了当前 schema、provider request 组装、compaction、tool-after hook、session Store 分页、child role/provider override、Web Settings 与现有永久测试。初始 9 项均能由审计基线实现直接证实，没有发现误报；CLOSE-001 又从真实 artifact writer 与同秒连续 compaction 路径确认 CTX-005。实施时需要补入以下已存在能力和遗漏边界，避免重复造轮子或只修主请求的一半：
 
 | ID | 复核结论 | 实施口径补充 |
 | --- | --- | --- |
@@ -56,6 +58,7 @@
 | CTX-004 | 准确 | `Store.LoadMessagesTail` / `LoadMessagesBefore` 与 Web message pagination 已存在；新工具应复用 canonical `messages.jsonl` 分页，不另写 transcript parser。 |
 | HARNESS-001 | 准确 | explorer 仍须 model-led；tool allowlist 要同时约束 provider schema 与执行层，并完整接入 role provider/config/Web Settings round-trip。 |
 | OBS-001 | 准确 | 必须直接复用 CTX-003 的 `RequestBudgetSnapshot`，否则 hard-fit 与观测会再次产生两套漂移估算。 |
+| CTX-005 | 准确（CLOSE-001 新增） | compaction artifact 必须使用共享 collision-resistant identity 与 no-replace writer；秒级 wall clock 不能独立充当证据主键。 |
 
 本复核没有把文章中的成本、token 曲线或外部产品默认行为转写为本项目事实，也没有建议通过 runtime guard 强制委派、固定探索路线或等待策略。
 
@@ -227,7 +230,7 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -264,6 +267,16 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 - owner-only 权限、symlink/path escape、session ownership、quota、write failure、timeout、interrupt 和 UTF-8 边界均有永久测试。
 - 原有 timeout、最小环境 allowlist、sandbox 和进程组取消语义不回退。
 
+### Resolution
+
+- `0d9a0a0 feat(tools): stream command output into bounded artifacts` 让 `shell` 与 trusted skill command 共用 `commandOutputCollector`；stdout/stderr 接到同一个并发安全 writer，执行路径不再使用 `CombinedOutput()`，内存只保留有界 pending/head/tail，并通过 `collector_buffer_limit` / `collector_peak_buffered_bytes` 对账
+- collector 从第一批输出开始累计真实 `raw_bytes`，越过 inline boundary 后直接写当前 session 的 quota-aware stream。单文件或 session quota 截断后仍持续 drain 进程输出并累计 raw bytes，只把已获准 prefix 发布为 partial artifact，避免把内存压力转成无界磁盘写入
+- artifact stream 使用 owner-only temp/reservation、跨 Store 文件锁、重启 usage rebuild、dead reservation/orphan 回收、no-symlink 与 atomic no-replace publish；当前 ToolResult 返回精确 `artifact_path`，`read_file` byte mode 可直接分页读取该路径，discovery 工具不能枚举 artifact tree
+- 统一 metadata 报告 `raw/persisted/inline/omitted`、complete/truncated/recoverable、budget reason 与 collector buffer 上界；文案只使用 `Complete artifact`、`Partial artifact` 或 `Artifact unavailable`，不再把 bounded preview 标成 `Full output`
+- 正常结束、非零退出、timeout、caller interrupt、child budget cancel 与 process-group kill 都 finalize collector，并保留既有 failure class、最小环境、sandbox/exec-policy 与 workdir 安全语义
+- 永久回归覆盖有界内存、stdout/stderr 并发序列化、byte-exact/invalid UTF-8、quota 与 write/fsync/close/rename failure、restart/concurrent Store、timeout/non-zero/interrupt、shell/skill parity、artifact `read_file` 回捞以及生产 command path 不含 `CombinedOutput()`；聚焦 Go 测试和 `CGO_ENABLED=1` race 在 CLOSE-001 复核中通过
+- Resolution commit：`0d9a0a0 feat(tools): stream command output into bounded artifacts`
+
 ### Non-goals
 
 - 不把长输出重新整段注入 provider context。
@@ -273,7 +286,7 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -310,6 +323,16 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 - UTF-8 多字节边界、minified JS、超长 JSONL、无换行日志、超长路径和并行 multi-result batch 均有测试。
 - 现有 workspace/symlink escape 与 16 MiB 源文件读取安全边界不回退。
 
+### Resolution
+
+- `f1bc762 feat(runtime): bound model visible tool results` 新增唯一 hook 后 finalizer：所有正常、失败、synthetic、interrupted、Plan input recovery、同步 child handoff 与 background notification 都在 event/message 落盘前执行同一 `runtime.tool_output` LLM/Display byte cap
+- current-result artifact writer 提供单文件、session bytes、文件数三维 quota，并验证 owner-only、cross-session root、symlink、并发 writer、restart rebuild 与 write lifecycle failure；partial/unavailable artifact 一律 `recoverable=false`，不会在 old-result ephemeral view 中被升级为完整证据
+- `75b7f00 feat(tools): add bounded file and search continuations` 为 `read_file` 增加与 line mode 互斥的 `byte_offset` / `byte_limit`，直接复用 `ReadRegularFileRangeNoSymlink`。16 MiB minified 单行、JSONL、无换行日志和 session command artifact 都通过 UTF-8-safe `next_byte_offset` 分页，不先全量读取再切片
+- `grep`、`grep_files` 与 `glob` 同时执行 count/byte budget，在完整 record/footer 边界停止；v1 opaque cursor 绑定 tool/query/root fingerprint 与 checksum，明确 `snapshot_semantics=current_view`，并给出 source span、stop reason、next cursor 或稳定 typed failure
+- snippet 截短、集合 overflow 与 byte overflow 使用独立字段；超长 path/header 无法容纳最小可恢复 record 时 fail closed，不依赖通用 head/tail finalizer 截断 cursor
+- 永久回归覆盖 hook amplification、multi-result batch、child handoff、artifact quota/concurrency/restart，16 MiB/minified/JSONL/no-newline、UTF-8 跨页、symlink/escape、超长 path、cursor tamper/query mismatch 与 current-view deterministic ordering；TOOL-002 聚焦测试和相关 race 在 CLOSE-001 复核中通过
+- Resolution commits：`f1bc762 feat(runtime): bound model visible tool results`、`75b7f00 feat(tools): add bounded file and search continuations`
+
 ### Non-goals
 
 - 不把 read_file 变成浏览器端文件编辑器或复杂 IDE surface。
@@ -319,7 +342,7 @@ micro-compaction 以 session.Message 为最小裁剪单位，而 tool replay 的
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -352,6 +375,14 @@ grep/grep_files 把 errGrepLimitReached 同时用作早停控制流和隐式 ove
 - 请求 limit 超过实现上限时 limit_capped=true，并报告 requested/effective 值。
 - grep 的某行片段被截短但集合完整时，truncated_snippet_count>0、has_more=false。
 - 测试覆盖 0、limit-1、limit、limit+1、多目录/include、limit cap、UTF-8 snippet 和 deterministic ordering。
+
+### Resolution
+
+- `6abf8ea fix(tools): report grep result set overflow` 让 `grep` / `grep_files` 在 stable walk order 下收集 `effective_limit + 1`；只有真实第 N+1 项存在时才设置 `has_more=true`，exact-limit 完整集合保持 `false`
+- metadata 固定报告 returned/requested/effective limit、limit cap、has_more 与 truncated snippet count；snippet 文本截短不再代表集合 overflow，真实 overflow 才显示缩小 `path/include/pattern` 的模型可见提示
+- 后续 TOOL-002B 在不改变 exact-limit 语义的前提下补齐 byte limit、stop reason、match/byte reached、opaque `next_cursor`、cursor version 与 `snapshot_semantics=current_view`
+- 永久边界矩阵覆盖 0、limit-1、limit、limit+1、请求 cap、snippet-only truncation、include、多目录、UTF-8、重复运行顺序，以及 grep/grep_files/glob 的 count+byte cursor continuation；CLOSE-001 聚焦回归全部通过
+- Resolution commit：`6abf8ea fix(tools): report grep result set overflow`
 
 ### Non-goals
 

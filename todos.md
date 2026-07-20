@@ -1,6 +1,6 @@
 # Context Compaction And Harness Convergence Todo
 
-目标：按可审查、可回滚的提交顺序，完整关闭 `issues.md` 中 9 项 context compaction、tool output、history recovery、explorer 与 telemetry 问题。
+目标：按可审查、可回滚的提交顺序，完整关闭 `issues.md` 中 10 项 context compaction、tool output、history recovery、explorer、telemetry 与 compaction artifact identity 问题。
 
 规划基线：
 
@@ -35,15 +35,16 @@
 | CTX-004 | CTX-004 | current-session-only canonical history 分页与超长 record byte paging |
 | HARNESS-001 | HARNESS-001 | explorer role、双层 allowlist、role options、短 handoff 与 Web Settings round-trip |
 | OBS-001 | OBS-001 | 共用预算快照、lineage 聚合、确定性三结构 fixture |
+| CTX-005 | CTX-005 | UTC 纳秒 + collision-resistant identity、no-replace writer 与同秒双 compaction 回归 |
 
 ## 全局不可回退边界
 
-- [ ] 原始 session 日志不会被 provider-view 变换覆盖；所有测试都对落盘前后 hash 或逐字段内容做断言。
-- [ ] 最新外部用户指令、最新 steer 约束和合法 tool-call/tool-result replay 配对不会被 hard-fit 静默删除。
-- [ ] workspace/path/symlink escape、session ownership、owner-only mode、shell timeout、最小环境 allowlist、sandbox 与进程组取消保持现状或更严格。
-- [ ] 每个模型可见结果和每个 provider request 都有明确的数量/字节/估算 token 边界、stop reason、continuation 或 typed failure。
-- [ ] 预算观测与预算拒绝使用同一 `RequestBudgetSnapshot`；不接受“事件显示 fit，但发送路径用另一套公式”的实现。
-- [ ] fake provider、OpenAI、Anthropic、Google adapter 和 Web/CLI/SDK 对新增字段均有兼容回归；旧配置不写新字段时保持有效。
+- [x] 原始 session 日志不会被 provider-view 变换覆盖；所有测试都对落盘前后 hash 或逐字段内容做断言。
+- [x] 最新外部用户指令、最新 steer 约束和合法 tool-call/tool-result replay 配对不会被 hard-fit 静默删除。
+- [x] workspace/path/symlink escape、session ownership、owner-only mode、shell timeout、最小环境 allowlist、sandbox 与进程组取消保持现状或更严格。
+- [x] 每个模型可见结果和每个 provider request 都有明确的数量/字节/估算 token 边界、stop reason、continuation 或 typed failure。
+- [x] 预算观测与预算拒绝使用同一 `RequestBudgetSnapshot`；不接受“事件显示 fit，但发送路径用另一套公式”的实现。
+- [x] fake provider、OpenAI、Anthropic、Google adapter 和 Web/CLI/SDK 对新增字段均有兼容回归；旧配置不写新字段时保持有效。
 
 ---
 
@@ -161,7 +162,7 @@ Completion record：
 
 - Commit：本任务提交 `fix(runtime): disable unsafe tool result deduplication`。
 - Tests：TDD 红测确认旧实现会覆盖相同参数的旧结果和 multi-call sibling；实现后聚焦 stop-loss/provider replay、计划正则测试及 `go test ./internal/runtime ./internal/provider -count=1 -timeout=180s` 全部通过；`gofmt -l` 与 `git diff --check` 无输出。
-- CTX-001 remaining work：`CTX-001B pending`
+- CTX-001 remaining work：`complete via CTX-001B`；后续安全 result-level 去重提交已关闭该 issue。
 
 ### [x] CTX-003A — 建立共享 request budget 快照与 fail-closed 预检
 
@@ -1139,7 +1140,7 @@ Completion record：
 
 ---
 
-### [ ] CLOSE-001 — 对齐 spec、issue 状态与全量回归
+### [x] CLOSE-001 — 对齐 spec、issue 状态与全量回归
 
 - Issue：CTX-001、CTX-002、CTX-003、TOOL-001、TOOL-002、TOOL-003、CTX-004、HARNESS-001、OBS-001、CTX-005。
 - Priority：release gate。
@@ -1149,7 +1150,7 @@ Scope：
 
 - 逐条对照 `issues.md` acceptance criteria 与本文件 completion record；没有 commit+test 证据的 issue 保持 Open。
 - 对已完成 issue 更新 `Status: Resolved`、resolution、commit、永久测试和验证命令；若实现选择改变推荐方向，更新 root cause/acceptance 保持事实准确。
-- 复核 `spec/00`、`01`、`02`、`03`、`04`、`07`、`09`、`10`、`11`、`12`、`13`、`14` 的术语、schema、默认值、phase 与 traceability 无矛盾。
+- 复核 `spec/00`、`01`、`02`、`03`、`04`、`07`、`08`、`09`、`10`、`11`、`12`、`13`、`14`、`17` 的术语、schema、默认值、phase 与 traceability 无矛盾。
 - 只在用户默认入口或配置发生变化时最小更新 root `README.md` / help；详细实现继续留在 spec。
 - 运行全量 Go、race、Node、Web headless smoke、format、vet、build 和 diff 检查；保存机器可读 harness fixture/report path。
 - 核对 git 历史中每个任务都有真实 commit，且工作树只剩用户原有或明确记录的无关 dirty state。
@@ -1172,24 +1173,31 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 9 项 issue 均有 resolution commit 和永久测试；无证据项未被误标 Resolved。
-- [ ] main 与 semantic-summary provider request 均 fail-closed；三 provider replay 全矩阵通过。
-- [ ] 大 file/search/command/child/history 输出均有界、可恢复或返回明确 typed failure。
-- [ ] explorer 保持可选/model-led/只读，默认 Web 首页无复杂化。
-- [ ] context report 使用 hard-fit 同一 snapshot，并能对账 root/child。
-- [ ] 全量命令全部成功；任何 skip 都说明原因且不用于替代必需 acceptance。
-- [ ] `git status --short` 没有本计划产生的未提交代码、spec、fixture 或 build 产物。
+- [x] 10 项 issue 均有 resolution commit 和永久测试；无证据项未被误标 Resolved。
+- [x] main 与 semantic-summary provider request 均 fail-closed；三 provider replay 全矩阵通过。
+- [x] 大 file/search/command/child/history 输出均有界、可恢复或返回明确 typed failure。
+- [x] explorer 保持可选/model-led/只读，默认 Web 首页无复杂化。
+- [x] context report 使用 hard-fit 同一 snapshot，并能对账 root/child。
+- [x] 全量命令全部成功；任何 skip 都说明原因且不用于替代必需 acceptance。
+- [x] `git status --short` 没有本计划产生的未提交代码、spec、fixture 或 build 产物。
 
 Required validation：
 
 ```bash
-go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1 -timeout=300s
-go vet ./internal/config ./internal/session ./internal/provider ./internal/runtime ./internal/tools ./internal/webconsole
-CGO_ENABLED=1 go test -race ./internal/runtime ./internal/tools ./internal/session -count=1 -timeout=300s
-node --check internal/webconsole/assets/*.js
+go test ./... -count=1 -timeout=600s
+CGO_ENABLED=1 go test -race ./internal/runtime ./internal/session ./internal/tools ./internal/webconsole -count=1 -timeout=600s
+go vet ./...
+go build ./...
+node --check internal/webconsole/assets/app.js
+node --check internal/webconsole/assets/session-view.js
+node --check internal/webconsole/assets/settings-view.js
 node --check validation/scripts/webconsole_ui_smoke.mjs
 node --test validation/scripts/webconsole_utils_test.mjs
 gofmt -l cmd internal pkg validation/cmd
+go run ./validation/cmd/contextharnessfixture > /tmp/context-harness-close-1.json
+go run ./validation/cmd/contextharnessfixture > /tmp/context-harness-close-2.json
+cmp /tmp/context-harness-close-1.json /tmp/context-harness-close-2.json
+validation/run_budget_browser_smoke.sh /tmp/go-cli-agent-context-closeout-smoke
 git diff --check
 git status --short
 go build -o /tmp/go-cli-agent-context-harness ./cmd/go-cli-agent
@@ -1209,11 +1217,11 @@ Commit subject：`docs(harness): close context convergence ledger`
 
 Completion record：
 
-- Commit：`pending`
-- Full Go tests：`pending`
-- Race：`pending`
-- Vet/format/diff：`pending`
-- Node/Web smoke：`pending`
-- Harness fixture/report：`pending`
-- Final HEAD：`pending`
-- Remaining unrelated dirty paths：`pending`
+- Commit：本任务提交 `docs(harness): close context convergence ledger`；其父提交为 `ab49cee test(web): cover context harness closeout`。提交对象自身不写入自身内容，最终 object ID 以 `git log -1` 为准。
+- Full Go tests：`go test ./... -count=1 -timeout=600s` 全通过；provider、runtime、session、tools、Web console 与两个 validation command package 均纳入全量矩阵。
+- Race：`CGO_ENABLED=1 go test -race ./internal/runtime ./internal/session ./internal/tools ./internal/webconsole -count=1 -timeout=600s` 全通过。
+- Vet/format/diff：`go vet ./...`、`go build ./...`、独立 CLI binary build、`gofmt -l cmd internal pkg validation/cmd`、`git diff --check` 全通过；格式命令无输出。
+- Node/Web smoke：4 个 Node syntax check 与 `node --test validation/scripts/webconsole_utils_test.mjs` 全通过（142/142）；`validation/run_budget_browser_smoke.sh /tmp/go-cli-agent-context-closeout-smoke` 全通过，machine-readable 报告为 `/tmp/go-cli-agent-context-closeout-smoke/budget-browser-smoke.json`，覆盖 Explorer Settings round-trip、Context lazy load/refresh、70000-byte command artifact、`read_file` byte page、history record/content continuation，并且无 runtime exception 或 console error。
+- Harness fixture/report：`/tmp/context-harness-close-1.json` 与 `/tmp/context-harness-close-2.json` 双运行 byte-identical；`cmp` 通过。峰值为 broad root 1200、narrowed root 700、delegated root 500，delegated root/child/total aggregate 分别为 950/1400/2350。
+- Final HEAD：包含本 Completion record 的 `docs(harness): close context convergence ledger` 提交；实际 object ID 以最终 `git log -1 --format=%H` 输出为准。
+- Remaining unrelated dirty paths：`.gitignore`、`AGENTS.md`、本地二进制 `go-cli-agent`、已删除的 `multica-plan.md`，以及 `.tmp_multica_repo_preflight_edit/`、`AGENTS.md.bak`、`CLAUDE.md`、`refer_prompts/`、`skills/`、`ss.png`、`usable_skills/`、`workspace/`；均为本计划开始前已有状态，未暂存、覆盖或删除。
