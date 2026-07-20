@@ -1070,9 +1070,78 @@ Completion record：
 
 ## Phase 4 — 全量收敛与发布门槛
 
+### [x] CTX-005 — 为 compaction transcript/summary 建立不可覆盖 identity
+
+- Issue：CTX-005。
+- Priority：P1 recovery/audit correctness。
+- Depends on：CTX-003B、CTX-004、OBS-001。
+
+Scope：
+
+- 每次真实 compaction 生成 UTC 纳秒时间 + collision-resistant run id 的共享 stem；transcript 与 summary 使用同一个 `compaction_id`。
+- Store 增加 owner-only、no-symlink、no-replace 的 artifact/transcript 写入入口；collision 必须 fail closed，旧文件保持不变。
+- summary 的 transcript reference、`compact.started` / `compact.finished` event 与文件 stem 精确关联；hysteresis reuse 继续引用已有 summary。
+- 不改变阈值、summary 选择、hard-fit 或 model-led harness 行为。
+
+Spec changes：
+
+- `spec/07-testing-strategy.md`
+- `spec/10-context-compaction.md`
+- `spec/11-spec-audit-and-traceability.md`
+
+Implementation files：
+
+- `internal/session/store.go`
+- `internal/session/store_test.go`
+- `internal/runtime/compaction.go`
+- `internal/runtime/compaction_test.go`
+
+Permanent tests：
+
+- 固定同一 wall clock 连续两次真实 compaction，保留两组不同 artifact。
+- summary 的 compaction id/transcript path 与 started/finished event 一一对应。
+- 强制相同 id 时第二次写入失败，旧 transcript/summary bytes 不变。
+- existing owner-only/symlink/latest-summary/reuse 回归通过。
+
+Acceptance checklist：
+
+- [x] 同秒多次 compaction 不覆盖旧证据。
+- [x] transcript/summary/event 共享稳定 compaction id。
+- [x] no-replace collision fail closed，旧文件不变。
+- [x] compaction/reuse/session Store 安全回归通过。
+
+Validation：
+
+```bash
+go test ./internal/session ./internal/runtime \
+  -run 'Test.*(Compaction.*Artifact|Write.*NoReplace|SameSecond|SummaryReuse).*' \
+  -count=1 -timeout=240s
+CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime \
+  -run 'Test.*(Compaction.*Artifact|Write.*NoReplace|SameSecond).*' \
+  -count=1 -timeout=300s
+gofmt -l internal/session internal/runtime
+git diff --check
+```
+
+Non-goals：
+
+- 不迁移或重命名历史 artifact，不引入外部 artifact index。
+
+Commit subject：`fix(runtime): preserve same-second compaction artifacts`
+
+Completion record：
+
+- Commit：本任务提交 `fix(runtime): preserve same-second compaction artifacts`。
+- Artifact identity：每次真实 compaction 使用单个 compactor 内单调归一的 UTC 纳秒时间 + 128-bit crypto-random、严格字符集的 `compaction_id` 构造共享 stem；clock 相同/回拨时递增 1 ns，started/summary/finished 与 transcript reference 一一对应。Store 通过 temp write + sync/close + no-replace/no-symlink rename 发布 immutable evidence。
+- TDD：红测先因 `WriteTranscriptNoReplace` / `WriteArtifactNoReplace` 与 compactor clock/id seam 不存在而编译失败；新增反向字典序 id 的 reuse 红测又证明相同纳秒会选中旧 summary。实现后固定同一时间连续两次 compaction 保留两组文件并正确 reuse 后一组，重建 compactor 强制相同完整 identity 时第二次写入失败且首组 bytes 不变。
+- Tests/race：CTX-005 聚焦测试、`go test ./internal/session ./internal/runtime -count=1 -timeout=600s`、对应 compaction/no-replace race、`go test ./... -count=1 -timeout=600s` 与 scoped `go vet` 全通过；`gofmt -l` / `git diff --check` 无输出，未启动 Docker。
+- CTX-005 status：`complete`；`issues.md` 已标记 Resolved。
+
+---
+
 ### [ ] CLOSE-001 — 对齐 spec、issue 状态与全量回归
 
-- Issue：CTX-001、CTX-002、CTX-003、TOOL-001、TOOL-002、TOOL-003、CTX-004、HARNESS-001、OBS-001。
+- Issue：CTX-001、CTX-002、CTX-003、TOOL-001、TOOL-002、TOOL-003、CTX-004、HARNESS-001、OBS-001、CTX-005。
 - Priority：release gate。
 - Depends on：全部前置任务。
 

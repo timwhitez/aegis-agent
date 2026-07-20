@@ -3434,6 +3434,31 @@ func (s *Store) WriteArtifact(sessionID, relativePath string, payload any) (stri
 	return path, nil
 }
 
+// WriteArtifactNoReplace persists immutable artifact evidence. Unlike
+// WriteArtifact, it fails when the target already exists so a later run cannot
+// silently rewrite a path referenced by an earlier durable event.
+func (s *Store) WriteArtifactNoReplace(sessionID, relativePath string, payload any) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	artifactPath, err := validateStoreRelativePath("artifact", relativePath)
+	if err != nil {
+		return "", err
+	}
+	path, err := s.sessionPath(sessionID, "artifacts", artifactPath)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	data = append(data, '\n')
+	if err := s.writeBytesFileNoReplace(path, data); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func (s *Store) ReadArtifact(sessionID, relativePath string, target any) error {
 	artifactPath, err := validateStoreRelativePath("artifact", relativePath)
 	if err != nil {
@@ -3463,6 +3488,36 @@ func (s *Store) WriteTranscript(sessionID, name string, messages []Message) (str
 	if err := s.writeJSONL(path, messages); err != nil {
 		return "", err
 	}
+	return path, nil
+}
+
+// WriteTranscriptNoReplace writes an immutable transcript snapshot. A name
+// collision is an error and leaves the existing evidence byte-for-byte intact.
+func (s *Store) WriteTranscriptNoReplace(sessionID, name string, messages []Message) (string, error) {
+	if err := validateMessages(messages); err != nil {
+		return "", fmt.Errorf("validate transcript messages: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	transcriptPath, err := validateStoreRelativePath("transcript", name)
+	if err != nil {
+		return "", err
+	}
+	path, err := s.sessionPath(sessionID, "artifacts", "transcripts", transcriptPath)
+	if err != nil {
+		return "", err
+	}
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	for _, message := range messages {
+		if err := encoder.Encode(message); err != nil {
+			return "", err
+		}
+	}
+	if err := s.writeBytesFileNoReplace(path, data.Bytes()); err != nil {
+		return "", err
+	}
+	delete(s.jsonlValidated, path)
 	return path, nil
 }
 
@@ -3670,6 +3725,43 @@ func (s *Store) writeBytesFile(path string, data []byte) error {
 		return err
 	}
 	return fileutil.AtomicWriteFileNoSymlink(path, data, s.fileMode)
+}
+
+func (s *Store) writeBytesFileNoReplace(path string, data []byte) error {
+	parent := filepath.Dir(path)
+	if err := s.ensureDir(parent); err != nil {
+		return err
+	}
+	base := filepath.Base(path)
+	temp, err := fileutil.CreateTempNoSymlink(parent, "."+base+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	renamed := false
+	defer func() {
+		_ = temp.Close()
+		if !renamed {
+			_ = fileutil.RemoveFileNoSymlink(tempPath)
+		}
+	}()
+	if _, err := temp.Write(data); err != nil {
+		return err
+	}
+	if err := temp.Chmod(s.fileMode); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := fileutil.RenamePathNoSymlink(tempPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return fileutil.ChmodPathNoSymlink(path, s.fileMode)
 }
 
 func readJSONFile(path string, target any) error {

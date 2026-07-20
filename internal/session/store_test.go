@@ -1294,6 +1294,66 @@ func TestStoreWriteTranscriptIgnoresPredictableTempSymlink(t *testing.T) {
 	}
 }
 
+func TestStoreNoReplaceCompactionWritersPreserveExistingFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions")
+	store := NewStoreWithDirMode(root, 0o700)
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: meta.CreatedAt}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	transcriptName := "transcript-collision.jsonl"
+	firstMessages := []Message{NewMessage("user", "first transcript evidence")}
+	transcriptPath, err := store.WriteTranscriptNoReplace(meta.ID, transcriptName, firstMessages)
+	if err != nil {
+		t.Fatalf("write first transcript: %v", err)
+	}
+	beforeTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read first transcript: %v", err)
+	}
+	if _, err := store.WriteTranscriptNoReplace(meta.ID, transcriptName, []Message{NewMessage("user", "replacement transcript")}); err == nil || !strings.Contains(err.Error(), "existing path") {
+		t.Fatalf("expected transcript collision, got %v", err)
+	}
+	afterTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read transcript after collision: %v", err)
+	}
+	if string(afterTranscript) != string(beforeTranscript) {
+		t.Fatalf("transcript collision changed existing bytes:\nbefore=%q\nafter=%q", beforeTranscript, afterTranscript)
+	}
+
+	artifactName := filepath.Join("compactions", "summary-collision.json")
+	artifactPath, err := store.WriteArtifactNoReplace(meta.ID, artifactName, map[string]any{"value": "first summary evidence"})
+	if err != nil {
+		t.Fatalf("write first summary: %v", err)
+	}
+	beforeArtifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read first summary: %v", err)
+	}
+	if _, err := store.WriteArtifactNoReplace(meta.ID, artifactName, map[string]any{"value": "replacement summary"}); err == nil || !strings.Contains(err.Error(), "existing path") {
+		t.Fatalf("expected summary collision, got %v", err)
+	}
+	afterArtifact, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read summary after collision: %v", err)
+	}
+	if string(afterArtifact) != string(beforeArtifact) {
+		t.Fatalf("summary collision changed existing bytes:\nbefore=%q\nafter=%q", beforeArtifact, afterArtifact)
+	}
+}
+
 func TestStoreSaveStateIgnoresPredictableTempSymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "sessions")
 	store := NewStoreWithDirMode(root, 0o700)

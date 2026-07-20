@@ -117,6 +117,8 @@ compaction 只影响：
 - 发给 provider 的上下文视图
 - `artifacts/compactions/summary-*.json`
 
+每次真实 compaction 必须生成一组不可覆盖的 transcript/summary artifact。两者共享同一个 `compaction_id`，文件名包含单个 compactor 内单调归一的 UTC 纳秒时间与 collision-resistant run id；即使 wall clock 相同或回拨、同一 session 在同一秒内连续压缩，也必须保留两组可按文件名选出最新项的独立文件。artifact writer 使用 no-replace 语义，目标已存在时 fail closed，不能覆盖先前证据。summary 中的 `transcript` 必须指向同组 transcript，`compact.started` / `compact.finished` 也记录该 `compaction_id`。
+
 当前 summary 里允许额外包含：
 
 - `artifact_memory`

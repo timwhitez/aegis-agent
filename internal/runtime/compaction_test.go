@@ -669,6 +669,184 @@ func TestCompactorWritesDurableSummaryArtifact(t *testing.T) {
 	}
 }
 
+func TestCompactorSameSecondArtifactsUseDistinctLinkedIdentity(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        "2026-07-20T08:00:00Z",
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fixture",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: meta.CreatedAt}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	messages := []session.Message{
+		session.NewMessage("user", strings.Repeat("same-second compaction evidence ", 24)),
+		session.NewAssistantMessage(strings.Repeat("result ", 96), "", nil),
+	}
+	fixed := time.Date(2026, 7, 20, 8, 0, 0, 123456789, time.UTC)
+	ids := []string{"compact-run-z", "compact-run-a"}
+	compactor := newCompactor(store)
+	compactor.now = func() time.Time { return fixed }
+	compactor.newRunID = func() (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	}
+
+	wantIDs := []string{"compact-run-z", "compact-run-a"}
+	lastInputChars := 0
+	for _, wantID := range wantIDs {
+		var emitted []events.Event
+		_, inputChars, didCompact, err := compactor.BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, 0, 0, func(evt events.Event) error {
+			emitted = append(emitted, evt)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("build %s: %v", wantID, err)
+		}
+		if !didCompact {
+			t.Fatalf("build %s did not compact", wantID)
+		}
+		var startedID, finishedID string
+		for _, evt := range emitted {
+			switch evt.Type {
+			case "compact.started":
+				startedID, _ = evt.Data["compaction_id"].(string)
+			case "compact.finished":
+				finishedID, _ = evt.Data["compaction_id"].(string)
+			}
+		}
+		if startedID != wantID || finishedID != wantID {
+			t.Fatalf("event identity mismatch for %s: started=%q finished=%q events=%#v", wantID, startedID, finishedID, emitted)
+		}
+		lastInputChars = inputChars
+	}
+
+	summaryDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+	summaryFiles, err := os.ReadDir(summaryDir)
+	if err != nil {
+		t.Fatalf("read summary dir: %v", err)
+	}
+	transcriptDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "transcripts")
+	transcriptFiles, err := os.ReadDir(transcriptDir)
+	if err != nil {
+		t.Fatalf("read transcript dir: %v", err)
+	}
+	if len(summaryFiles) != 2 || len(transcriptFiles) != 2 {
+		t.Fatalf("same-second compactions must preserve two artifact pairs: summaries=%v transcripts=%v", summaryFiles, transcriptFiles)
+	}
+	seen := map[string]bool{}
+	for _, entry := range summaryFiles {
+		data, err := os.ReadFile(filepath.Join(summaryDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read summary %s: %v", entry.Name(), err)
+		}
+		var summary map[string]any
+		if err := json.Unmarshal(data, &summary); err != nil {
+			t.Fatalf("decode summary %s: %v", entry.Name(), err)
+		}
+		compactionID, _ := summary["compaction_id"].(string)
+		transcriptPath, _ := summary["transcript"].(string)
+		if compactionID == "" || transcriptPath == "" || !strings.Contains(entry.Name(), compactionID) || !strings.Contains(filepath.Base(transcriptPath), compactionID) {
+			t.Fatalf("summary and transcript are not linked by identity: name=%s summary=%#v", entry.Name(), summary)
+		}
+		if _, err := os.Stat(transcriptPath); err != nil {
+			t.Fatalf("summary %s references missing transcript %s: %v", entry.Name(), transcriptPath, err)
+		}
+		seen[compactionID] = true
+	}
+	for _, wantID := range wantIDs {
+		if !seen[wantID] {
+			t.Fatalf("missing artifact pair for %s: %#v", wantID, seen)
+		}
+	}
+	reused, _, didCompact, err := compactor.BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 32, 1, lastInputChars, 100000, func(events.Event) error { return nil })
+	if err != nil {
+		t.Fatalf("reuse latest same-second summary: %v", err)
+	}
+	if didCompact || len(reused) == 0 || !strings.Contains(reused[0].Text, `"compaction_id": "compact-run-a"`) {
+		t.Fatalf("reuse selected an older same-second summary: %#v", reused)
+	}
+}
+
+func TestCompactorArtifactIdentityCollisionFailsWithoutReplacingEvidence(t *testing.T) {
+	store := session.NewStore(t.TempDir())
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        "2026-07-20T08:00:00Z",
+		Workdir:          t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fixture",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	state := session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: meta.CreatedAt}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	compactor := newCompactor(store)
+	compactor.now = func() time.Time { return time.Date(2026, 7, 20, 8, 0, 0, 123456789, time.UTC) }
+	compactor.newRunID = func() (string, error) { return "forced-collision", nil }
+	firstMessages := []session.Message{
+		session.NewMessage("user", strings.Repeat("first immutable evidence ", 24)),
+		session.NewAssistantMessage(strings.Repeat("first result ", 96), "", nil),
+	}
+	if _, _, didCompact, err := compactor.BuildWithPolicy(meta.ID, meta.Workdir, state, firstMessages, nil, nil, 32, 1, 0, 0, func(events.Event) error { return nil }); err != nil {
+		t.Fatalf("first compaction: %v", err)
+	} else if !didCompact {
+		t.Fatal("first build did not compact")
+	}
+	summaryDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "compactions")
+	transcriptDir := filepath.Join(store.SessionDir(meta.ID), "artifacts", "transcripts")
+	summaryFiles, err := os.ReadDir(summaryDir)
+	if err != nil || len(summaryFiles) != 1 {
+		t.Fatalf("first summary files=%v err=%v", summaryFiles, err)
+	}
+	transcriptFiles, err := os.ReadDir(transcriptDir)
+	if err != nil || len(transcriptFiles) != 1 {
+		t.Fatalf("first transcript files=%v err=%v", transcriptFiles, err)
+	}
+	summaryPath := filepath.Join(summaryDir, summaryFiles[0].Name())
+	transcriptPath := filepath.Join(transcriptDir, transcriptFiles[0].Name())
+	beforeSummary, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read first summary: %v", err)
+	}
+	beforeTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read first transcript: %v", err)
+	}
+
+	secondMessages := []session.Message{
+		session.NewMessage("user", strings.Repeat("replacement evidence must not win ", 24)),
+		session.NewAssistantMessage(strings.Repeat("replacement result ", 96), "", nil),
+	}
+	restartedCompactor := newCompactor(store)
+	restartedCompactor.now = compactor.now
+	restartedCompactor.newRunID = compactor.newRunID
+	if _, _, _, err := restartedCompactor.BuildWithPolicy(meta.ID, meta.Workdir, state, secondMessages, nil, nil, 32, 1, 0, 0, func(events.Event) error { return nil }); err == nil || !strings.Contains(err.Error(), "existing path") {
+		t.Fatalf("expected no-replace collision, got %v", err)
+	}
+	afterSummary, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read summary after collision: %v", err)
+	}
+	afterTranscript, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("read transcript after collision: %v", err)
+	}
+	if string(afterSummary) != string(beforeSummary) || string(afterTranscript) != string(beforeTranscript) {
+		t.Fatalf("compaction collision replaced immutable evidence")
+	}
+}
+
 func TestCompactorIncludesSemanticSummaryWhenProviderSummarySucceeds(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()

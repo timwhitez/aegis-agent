@@ -540,3 +540,51 @@ multi-agent 能力最初围绕 planner/generator/evaluator 与 large-project exe
 - 不根据 telemetry 自动改写 prompt、自动委派或强制调整 compaction threshold。
 - 不引入 hosted SaaS observability、复杂 dashboard 或第二套状态权威源。
 - 不把一次 benchmark 结果当作所有模型、仓库和 provider 的固定最优策略。
+
+## CTX-005 — 同一秒内多次 compaction 会覆盖 transcript 与 summary
+
+- Severity: P1
+- Confidence: High
+- Status: Resolved
+
+### Evidence
+
+- `internal/runtime/compaction.go` 使用 `time.Now().UTC().Format("20060102-150405")` 生成 `transcript-<second>.jsonl` 与 `compactions/summary-<second>.json`；文件名只有秒级精度。
+- `internal/session.Store.WriteTranscript` 与 `WriteArtifact` 最终调用 replace-capable atomic writer；相同路径已存在时会替换旧 regular file，不会返回 collision。
+- 一次真实 compaction 会先写 transcript、再写包含该 transcript path 的 summary；同一 session 在同一秒再次压缩时，两份旧证据都会被新内容覆盖，旧 event 中的 path 也会指向已经变化的文件。
+
+### Why it matters
+
+session/events 是事实源，compaction artifact 是压缩后恢复和审计的证据。旧 event 引用的 transcript/summary 若被后续压缩原位替换，operator 与恢复中的 agent 会读到错误历史；OBS-001 的 compaction/report correlation 也无法可靠对应某次压缩。
+
+### Root cause
+
+artifact identity 由秒级 wall clock 单独决定，writer 又把“保存新证据”当成可覆盖的普通 snapshot write，没有独立 compaction id 与 no-replace 边界。
+
+### Recommended direction
+
+- 每次真实 compaction 生成一个 collision-resistant run id，并与同一次 UTC 纳秒时间共同构造 transcript/summary 共享 stem。
+- transcript/summary 使用 no-replace writer；目标存在时 fail closed，绝不覆盖旧证据。
+- summary 保存同组 transcript path 与 compaction id；compact.started/finished 事件同步记录该 id。
+- reusable summary 继续引用已有 artifact，不为 reuse 伪造新的 compaction id。
+
+### Acceptance criteria
+
+- 固定 wall clock 到同一秒连续执行两次真实 compaction，目录中保留两份 transcript 和两份 summary。
+- 每份 summary 的 compaction id 与 transcript reference 一一对应；started/finished event 使用同一个 id。
+- 强制复用同一 artifact id 时第二次写入返回 collision/no-replace 错误，第一组文件 byte-for-byte 不变。
+- owner-only、no-symlink、latest summary 选择与 hysteresis reuse 行为不回退。
+
+### Resolution
+
+- 每次真实 compaction 在写 artifact 前生成 128-bit crypto-random `compaction_id`，并用单个 compactor 内单调归一的 UTC 纳秒时间 + id 构造 transcript/summary 共享 stem；clock 相同或回拨时按 1 ns 递增，文件名排序仍选择后一次 summary。id 只允许有界 ASCII 字母、数字、`-`、`_`，entropy failure 或非法 id 在写文件前 fail closed
+- `compact.started`、summary payload 与 `compact.finished` 记录同一个 `compaction_id`；summary 的 `transcript` 指向同 stem transcript。hysteresis reuse 继续引用已有 summary path，不创建伪 artifact identity
+- Store 新增 `WriteTranscriptNoReplace` / `WriteArtifactNoReplace`；数据先写同目录 owner-only temp、sync/close，再通过 no-replace/no-symlink rename 发布。目标已存在时返回 collision，旧文件 byte-for-byte 不变
+- 永久回归固定同一 wall clock、反向字典序 id 连续两次真实 compaction，验证两组 transcript/summary 与 event 一一对应且 reuse 选择后一次；重建 compactor 并强制相同完整 identity 时第二次 compaction 失败且第一组证据不变；Store 层另覆盖 transcript/summary collision
+- 聚焦测试、runtime/session 完整回归、对应 race、`go test ./...`、scoped `go vet`、`gofmt -l` 与 `git diff --check` 全部通过，未启动 Docker
+- Resolution commit：本任务提交 `fix(runtime): preserve same-second compaction artifacts`
+
+### Non-goals
+
+- 不改变 compaction threshold、summary 内容策略或 provider-view hard-fit 顺序。
+- 不为历史 artifact 引入外部数据库或 hosted storage。

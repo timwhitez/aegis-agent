@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -20,7 +23,11 @@ import (
 )
 
 type compactor struct {
-	store *session.Store
+	store            *session.Store
+	now              func() time.Time
+	newRunID         func() (string, error)
+	artifactTimeMu   sync.Mutex
+	lastArtifactTime time.Time
 }
 
 type semanticSummaryFunc func(context.Context, []session.Message, int) (string, error)
@@ -38,7 +45,34 @@ const compactionReferencePrefix = "[Conversation compacted]\nAnother model produ
 const compactionDeferredPrefix = "[Conversation compaction deferred]\nCompaction failed inside the harness, so this provider view keeps only recent context and compacted older tool details. Original session logs and artifacts remain the source of truth. Do not restart from scratch; continue from the latest external instruction and durable task state. Before finishing after compaction/resume/interruption, sanity-check that the result answers the newest external instruction.\n"
 
 func newCompactor(store *session.Store) *compactor {
-	return &compactor{store: store}
+	return &compactor{
+		store:    store,
+		now:      time.Now,
+		newRunID: newCompactionRunID,
+	}
+}
+
+func newCompactionRunID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate compaction id: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
+}
+
+func (c *compactor) nextArtifactTime() time.Time {
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	candidate := now().UTC()
+	c.artifactTimeMu.Lock()
+	defer c.artifactTimeMu.Unlock()
+	if !c.lastArtifactTime.IsZero() && !candidate.After(c.lastArtifactTime) {
+		candidate = c.lastArtifactTime.Add(time.Nanosecond)
+	}
+	c.lastArtifactTime = candidate
+	return candidate
 }
 
 func (c *compactor) Build(sessionID, workdir string, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, threshold, keepRecent int, emit func(events.Event) error) ([]session.Message, error) {
@@ -100,7 +134,23 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 		return nil, size, false, fmt.Errorf("load goal.json for compaction: %w", err)
 	}
 
+	newRunID := newCompactionRunID
+	if c.newRunID != nil {
+		newRunID = c.newRunID
+	}
+	createdAt := c.nextArtifactTime()
+	compactionID, err := newRunID()
+	if err != nil {
+		return nil, size, false, err
+	}
+	if !validCompactionID(compactionID) {
+		return nil, size, false, fmt.Errorf("generate compaction id: invalid value %q", compactionID)
+	}
+	artifactStem := createdAt.Format("20060102-150405.000000000") + "-" + compactionID
+
 	startedData := map[string]any{
+		"compaction_id":          compactionID,
+		"created_at":             createdAt.Format(time.RFC3339Nano),
 		"input_chars":            size,
 		"reason":                 "input_char_threshold_exceeded",
 		"context_profile":        profile,
@@ -122,8 +172,8 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	if err := emitCompactionEvent(emit, events.New(sessionID, "compact.started", "compact", startedData)); err != nil {
 		return nil, size, false, fmt.Errorf("record compact.started event: %w", err)
 	}
-	transcriptName := fmt.Sprintf("transcript-%s.jsonl", time.Now().UTC().Format("20060102-150405"))
-	transcriptPath, err := c.store.WriteTranscript(sessionID, transcriptName, sourceMessages)
+	transcriptName := fmt.Sprintf("transcript-%s.jsonl", artifactStem)
+	transcriptPath, err := c.store.WriteTranscriptNoReplace(sessionID, transcriptName, sourceMessages)
 	if err != nil {
 		return nil, size, false, err
 	}
@@ -161,6 +211,8 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	}
 
 	summary := map[string]any{
+		"compaction_id":               compactionID,
+		"created_at":                  createdAt.Format(time.RFC3339Nano),
 		"completed_items":             completedItems,
 		"artifact_memory":             artifactMemory,
 		"context_profile":             profile,
@@ -199,13 +251,14 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	if goal != nil {
 		summary["goal_snapshot"] = compactGoalSnapshot(*goal)
 	}
-	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", time.Now().UTC().Format("20060102-150405")))
-	summaryPath, err := c.store.WriteArtifact(sessionID, summaryName, summary)
+	summaryName := filepath.Join("compactions", fmt.Sprintf("summary-%s.json", artifactStem))
+	summaryPath, err := c.store.WriteArtifactNoReplace(sessionID, summaryName, summary)
 	if err != nil {
 		return nil, size, false, err
 	}
 	compactText, _ := json.MarshalIndent(summary, "", "  ")
 	finishedData := map[string]any{
+		"compaction_id":           compactionID,
 		"summary_path":            summaryPath,
 		"input_chars":             size,
 		"reason":                  "input_char_threshold_exceeded",
@@ -239,6 +292,19 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	out := []session.Message{compacted}
 	out = append(out, recent...)
 	return out, size, true, nil
+}
+
+func validCompactionID(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func emitCompactionEvent(emit func(events.Event) error, evt events.Event) error {

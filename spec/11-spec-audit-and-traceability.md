@@ -209,6 +209,19 @@
 - lineage aggregate 同时报告 root peak、child peak、root/child/total aggregate、provider-view/tool-artifact bytes 与 usage，避免只用 total 或只用 root peak 描述委派收益；时间边界按 RFC3339Nano 实际时序而非字符串顺序计算
 - deterministic 三结构 fixture 进入普通 CI，delegated total 用 root aggregate + child aggregate 对账；不根据 fixture 自动修改 threshold、prompt 或 delegation，也不把 live provider/cost 设为无 credential 环境的门禁
 
+### 2.13 Compaction artifact identity
+
+来源：
+
+- CLOSE-001 复核发现 transcript 与 summary 只使用秒级时间命名，同一 session 同秒内的第二次真实 compaction 会原位替换第一组 artifact
+
+锁定结论：
+
+- 每次真实 compaction 生成一个 collision-resistant `compaction_id`，并用同一 compactor 内单调归一的 UTC 纳秒时间构造 transcript/summary 共享 stem；即使 clock 相同或回拨，文件名排序仍能选到后一次 summary
+- transcript 与 summary 使用 no-replace writer；目标已存在时返回错误并保留旧文件，不允许通过 atomic replace 静默覆盖审计证据
+- summary 保存同组 transcript path 与 `compaction_id`；started/finished event 同步记录该 id，reuse 继续引用已存在 summary，不制造新 artifact identity
+- 永久回归覆盖固定同秒连续 compaction、transcript/summary 一一对应、同名 collision fail-closed、owner-only/no-symlink 与已有 latest-summary reuse 行为
+
 ## 3. 已验证的 provider 协议事实
 
 ### 3.1 OpenAI Responses

@@ -231,6 +231,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - 超过阈值时只压缩 provider 输入视图
 - `messages.jsonl` 仍保留完整原始消息
 - compaction artifact 被写入
+- 固定同一 UTC 时间连续执行两次真实 compaction 时生成两组不同 transcript/summary；每份 summary 的 `compaction_id` 与 transcript reference 对应，预占同名目标时第二次写入 fail closed 且旧文件 byte-for-byte 不变
 - todo 与 task graph 不因 compaction 丢失
 - main 与 semantic-summary 请求都生成版本化 request budget snapshot；semantic-summary 不 fit 时确定性 compaction 仍成功
 - 已知估算超窗在本地拒绝，fake/httptest provider 调用计数保持 0；刚好等于预算可发送，超过一个 token 单位拒绝
