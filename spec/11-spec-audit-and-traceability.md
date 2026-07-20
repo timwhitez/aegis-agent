@@ -76,6 +76,7 @@
 - 预算拒绝与预算观测必须来自同一 snapshot/公式；已知超窗不得进入 transport retry/auto-resume，semantic-summary 拒绝则回退确定性摘要
 - TOOL-003 completeness gate 要求 `grep` / `grep_files` 用 `effective_limit + 1` 识别真实集合 overflow，并把 `has_more` 与 snippet 文本截短分开；永久边界矩阵覆盖 exact-limit、cap、include、多目录、UTF-8 与重复排序
 - TOOL-002A durability gate 要求所有 ToolResult 在 `tool.after` 后、event/message 前走 versioned finalizer；session Store 通过文件锁、目录重建、owner-only/no-symlink 与三维 quota 保存原始 LLM output，child sync/background handoff 使用相同预算且 partial artifact 不得冒充 Full output
+- TOOL-002B recovery gate 要求 read_file byte mode 仅复用 no-symlink range reader并返回 UTF-8-safe next offset；grep/grep_files/glob 用 schema v1、query-bound、checksum-protected cursor，在完整 record/footer 边界同时执行 count/byte budget，current-view 语义与 typed failures 可观测
 
 ### 2.6 薄 provider 层
 

@@ -39,21 +39,25 @@ type Definition struct {
 }
 
 const (
-	MetadataFailureClass            = "failure_class"
-	MetadataAwaitInput              = "await_input"
-	MetadataAwaitInputKind          = "await_input_kind"
-	MetadataAwaitInputReason        = "await_input_reason"
-	MetadataAwaitInputBlockers      = "await_input_blockers"
-	MetadataAwaitInputResume        = "await_input_resume_condition"
-	FailureClassHarnessError        = "harness_error"
-	FailureClassCommandNonzero      = "command_nonzero_exit"
-	FailureClassTimeout             = "command_timeout"
-	FailureClassInterrupted         = "interrupted"
-	FailureClassSchemaReject        = "schema_reject"
-	FailureClassNotFound            = "not_found"
-	FailureClassUnsupportedPath     = "unsupported_path_source"
-	InterruptedToolExecutionMessage = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
-	TimedOutToolExecutionMessage    = "[Command timed out and was terminated after the timeout window. This is a command/network timeout, not a bug in the command syntax; any spawned process may still be running. Consider an offline approach, a narrower command, or a larger timeout; verify state before re-running side-effecting commands.]"
+	MetadataFailureClass             = "failure_class"
+	MetadataAwaitInput               = "await_input"
+	MetadataAwaitInputKind           = "await_input_kind"
+	MetadataAwaitInputReason         = "await_input_reason"
+	MetadataAwaitInputBlockers       = "await_input_blockers"
+	MetadataAwaitInputResume         = "await_input_resume_condition"
+	FailureClassHarnessError         = "harness_error"
+	FailureClassCommandNonzero       = "command_nonzero_exit"
+	FailureClassTimeout              = "command_timeout"
+	FailureClassInterrupted          = "interrupted"
+	FailureClassSchemaReject         = "schema_reject"
+	FailureClassNotFound             = "not_found"
+	FailureClassUnsupportedPath      = "unsupported_path_source"
+	FailureClassUnsupportedEncoding  = "unsupported_encoding"
+	FailureClassInvalidCursor        = "invalid_cursor"
+	FailureClassOutputBudgetTooSmall = "output_budget_too_small"
+	FailureClassSearchRecordTooLarge = "search_record_exceeds_byte_limit"
+	InterruptedToolExecutionMessage  = "[Tool execution was interrupted. This tool call may have partially executed, and any spawned process may still be running. Verify state before re-running side-effecting commands.]"
+	TimedOutToolExecutionMessage     = "[Command timed out and was terminated after the timeout window. This is a command/network timeout, not a bug in the command syntax; any spawned process may still be running. Consider an offline approach, a narrower command, or a larger timeout; verify state before re-running side-effecting commands.]"
 )
 
 type ExecContext struct {
@@ -888,7 +892,7 @@ func commandWorkdirSandboxSource(dir *os.File, fallback string) (string, []*os.F
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a known text file with 1-based offset and limit. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. A session ephemeral tool-output artifact path shown by a prior tool result is readable explicitly, but discovery tools still skip those artifacts. Each call returns an annotated line window and is capped at 120 lines, so use grep_files or grep first for workspace discovery and then read the owning file slices you need. This reads files only, not directories, and rejects internal generated artifacts.",
+		Description: "Read a known text file as UTF-8; use grep_files or grep first for workspace discovery, then read the owning file slices. The default line mode uses 1-based offset/limit and is capped at 120 lines. For minified files, long records, or exact tool-output artifacts, use the mutually exclusive 0-based byte_offset/byte_limit mode and continue with next_byte_offset; byte_limit is capped at 24 KiB and every page contains complete UTF-8 runes. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. A current-session ephemeral tool-output artifact path shown by a prior tool result is readable explicitly, but discovery tools skip those artifacts. This reads files only, not directories, and rejects internal generated artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -904,18 +908,65 @@ func defReadFile() Definition {
 					"type":        "integer",
 					"description": "Maximum lines to return. Values above 120 are capped to 120.",
 				},
+				"byte_offset": map[string]any{
+					"type":        "integer",
+					"minimum":     0,
+					"description": "0-based source byte offset for byte mode. Omit to start at byte 0. Do not combine with offset or limit.",
+				},
+				"byte_limit": map[string]any{
+					"type":        "integer",
+					"minimum":     1,
+					"description": fmt.Sprintf("Positive source-byte window for byte mode. Capped at %d bytes and adjusted to complete UTF-8 runes. Required whenever byte_offset is present; do not combine with line offset or limit.", readFileMaxByteLimit),
+				},
 			},
 			"required":             []string{"path"},
 			"additionalProperties": false,
+			"oneOf": []any{
+				map[string]any{
+					"not": map[string]any{"anyOf": []any{
+						map[string]any{"required": []string{"byte_offset"}},
+						map[string]any{"required": []string{"byte_limit"}},
+					}},
+				},
+				map[string]any{
+					"required": []string{"byte_limit"},
+					"not": map[string]any{"anyOf": []any{
+						map[string]any{"required": []string{"offset"}},
+						map[string]any{"required": []string{"limit"}},
+					}},
+				},
+			},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Path   string `json:"path"`
-				Offset int    `json:"offset"`
-				Limit  int    `json:"limit"`
+				Path       string `json:"path"`
+				Offset     *int   `json:"offset"`
+				Limit      *int   `json:"limit"`
+				ByteOffset *int64 `json:"byte_offset"`
+				ByteLimit  *int64 `json:"byte_limit"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("read_file", err), nil
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				return errorResult("read_file", err), nil
+			}
+			hasLineFields := fields["offset"] != nil || fields["limit"] != nil
+			hasByteFields := fields["byte_offset"] != nil || fields["byte_limit"] != nil
+			if hasLineFields && hasByteFields {
+				return schemaRejectResult("read_file", errors.New("line offset/limit and byte_offset/byte_limit are mutually exclusive")), nil
+			}
+			if hasByteFields {
+				if input.ByteLimit == nil || input.ByteOffset == nil && fields["byte_offset"] != nil {
+					return schemaRejectResult("read_file", errors.New("byte mode requires integer byte_limit and any byte_offset must be an integer")), nil
+				}
+				if *input.ByteLimit <= 0 {
+					return schemaRejectResult("read_file", errors.New("byte_limit must be positive")), nil
+				}
+				if input.ByteOffset != nil && *input.ByteOffset < 0 {
+					return schemaRejectResult("read_file", errors.New("byte_offset must be non-negative")), nil
+				}
 			}
 			if err := validateToolPath(input.Path); err != nil {
 				return errorResult("read_file", err), nil
@@ -927,16 +978,31 @@ func defReadFile() Definition {
 			if source == "workspace" && (isInternalGeneratedArtifactInput(input.Path) || isInternalGeneratedArtifactPath(execCtx.Workdir, path)) {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
+			if hasByteFields {
+				byteOffset := int64(0)
+				if input.ByteOffset != nil {
+					byteOffset = *input.ByteOffset
+				}
+				return executeReadFileByteMode(execCtx, path, displayBase, source, skillName, byteOffset, *input.ByteLimit), nil
+			}
 			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {
 				return readFileErrorResult(input.Path, err), nil
 			}
 			lines := strings.Split(string(data), "\n")
-			offset := max(input.Offset, 1) - 1
+			requestedOffset := 0
+			if input.Offset != nil {
+				requestedOffset = *input.Offset
+			}
+			offset := max(requestedOffset, 1) - 1
 			if offset > len(lines) {
 				offset = len(lines)
 			}
-			limit := input.Limit
+			requestedLimit := 0
+			if input.Limit != nil {
+				requestedLimit = *input.Limit
+			}
+			limit := requestedLimit
 			if limit <= 0 {
 				limit = readFileDefaultLimit
 			}
@@ -950,7 +1016,14 @@ func defReadFile() Definition {
 				end = len(lines)
 			}
 			selected := strings.Join(lines[offset:end], "\n")
-			selected = annotateReadWindow(displayBase, path, offset, end, len(lines), input.Limit, capped, selected)
+			selected = annotateReadWindow(displayBase, path, offset, end, len(lines), requestedLimit, capped, selected)
+			if len(selected) > toolOutputLLMMaxBytes(execCtx.Config) {
+				result := typedToolErrorResult("read_file", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, fmt.Sprintf("line window is %d bytes and exceeds the model-visible output budget; retry this exact path with byte_offset=0 and a positive byte_limit", len(selected)))
+				result.Metadata["path"] = path
+				result.Metadata["path_source"] = source
+				result.Metadata["total_bytes"] = len(data)
+				return result, nil
+			}
 			metadata := map[string]any{
 				"path":        path,
 				"offset":      offset,
@@ -1148,7 +1221,7 @@ func lineNumberOfExact(content, anchor string) int {
 func defGlob() Definition {
 	return Definition{
 		Name:            "glob",
-		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory, and optional include applies an additional file filter. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. Generated, cache, and internal artifact directories are skipped. Results are capped (default 100, max 200); narrow the pattern or raise limit if the output is truncated.",
+		Description:     "Find workspace paths by glob pattern and return file paths only. Use this when you know the filename shape or extension; use grep_files or grep when you need content-based discovery. Optional path scopes the search to a workspace or registered skill directory, and optional include applies an additional file filter. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. Generated, cache, and internal artifact directories are skipped. Results use both a count limit and a model-visible byte_limit. When has_more is true, pass the opaque next_cursor back with the same pattern/path/include; limit and byte_limit may change between pages. Cursor pages are current-view best effort, not a transactional snapshot.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1170,15 +1243,26 @@ func defGlob() Definition {
 					"type":        "integer",
 					"description": fmt.Sprintf("Optional maximum number of matching paths to return. Defaults to %d and is capped at %d.", defaultGrepFilesLimit, maxGrepFilesLimit),
 				},
+				"byte_limit": map[string]any{
+					"type":        "integer",
+					"minimum":     minSearchOutputByteLimit,
+					"description": fmt.Sprintf("Optional maximum model-visible page bytes, including the continuation footer. Defaults to %d and is capped at %d.", defaultSearchOutputByteLimit, maxSearchOutputByteLimit),
+				},
+				"cursor": map[string]any{
+					"type":        "string",
+					"description": "Opaque next_cursor from a prior glob page with the same resolved path, pattern, and include filter.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Pattern string `json:"pattern"`
-				Path    string `json:"path"`
-				Include string `json:"include"`
-				Limit   int    `json:"limit"`
+				Pattern   string `json:"pattern"`
+				Path      string `json:"path"`
+				Include   string `json:"include"`
+				Limit     int    `json:"limit"`
+				ByteLimit *int   `json:"byte_limit"`
+				Cursor    string `json:"cursor"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("glob", err), nil
@@ -1204,8 +1288,16 @@ func defGlob() Definition {
 				return errorResult("glob", fmt.Errorf("path %q is not a directory", input.Path)), nil
 			}
 			limit := normalizeGrepFilesLimit(input.Limit)
-			var matches []string
-			truncated := false
+			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			if err != nil {
+				return typedToolErrorResult("glob", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
+			}
+			query := newSearchCursorQuery("glob", root, input.Pattern, input.Include)
+			startIndex, err := decodeSearchCursor(input.Cursor, query)
+			if err != nil {
+				return searchCursorFailureResult("glob", err), nil
+			}
+			collector := newSearchRecordCollector(startIndex, limit)
 			if err := doublestar.GlobWalk(os.DirFS(root.path), input.Pattern, func(path string, d os.DirEntry) error {
 				fullPath := filepath.Join(root.path, path)
 				displayPath := relativeOrAbsolute(root.displayBase, fullPath)
@@ -1227,12 +1319,7 @@ func defGlob() Definition {
 					if input.Include != "" && !pathMatchesInclude(root.displayBase, fullPath, input.Include) {
 						return nil
 					}
-					matches = append(matches, displayPath)
-					// Collect one past the limit so an exact-limit result is not
-					// mislabeled as truncated; only a genuine overflow trips the notice.
-					if len(matches) > limit {
-						truncated = true
-						matches = matches[:limit]
+					if collector.add(plainSearchPageRecord(displayPath, displayPath, 0)) {
 						return errGrepLimitReached
 					}
 				}
@@ -1240,14 +1327,26 @@ func defGlob() Definition {
 			}); err != nil && !errors.Is(err, errGrepLimitReached) {
 				return errorResult("glob", err), nil
 			}
-			output := strings.Join(matches, "\n")
-			if output == "" {
-				output = "(no matches)"
+			page, err := buildSearchPage(searchPageOptions{
+				Tool:               "glob",
+				Query:              query,
+				StartIndex:         startIndex,
+				Records:            collector.records,
+				ScanComplete:       !collector.stopped,
+				RequestedLimit:     input.Limit,
+				EffectiveLimit:     limit,
+				RequestedByteLimit: outputBudget.Requested,
+				EffectiveByteLimit: outputBudget.Effective,
+				ByteLimitCapped:    outputBudget.Capped,
+			})
+			if err != nil {
+				return searchPageFailureResult("glob", outputBudget, err), nil
 			}
-			if truncated {
-				output += fmt.Sprintf("\n[Truncated at limit=%d matches; narrow the pattern or raise limit to see more.]", limit)
+			page.Metadata["path_source"] = root.source
+			if root.skillName != "" {
+				page.Metadata["skill"] = root.skillName
 			}
-			return session.ToolResult{Name: "glob", LLMOutput: output, DisplayOutput: output}, nil
+			return session.ToolResult{Name: "glob", LLMOutput: page.Output, DisplayOutput: page.Output, Metadata: page.Metadata}, nil
 		},
 	}
 }
@@ -1268,7 +1367,7 @@ func validateGlobMatchedPath(execCtx ExecContext, root resolvedSearchRoot, path,
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search workspace text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Patterns are treated as regex when valid and literal substring otherwise; build/cache/internal artifacts and binary files are skipped.",
+		Description: "Search workspace UTF-8 text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results stop on either match limit or total byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Long snippets expose source and match byte spans for read_file byte mode. Cursor pages are current-view best effort.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1288,15 +1387,26 @@ func defGrep() Definition {
 					"type":        "integer",
 					"description": fmt.Sprintf("Optional maximum matching lines to return. Defaults to %d and is capped at %d.", defaultGrepMatchesLimit, maxGrepMatches),
 				},
+				"byte_limit": map[string]any{
+					"type":        "integer",
+					"minimum":     minSearchOutputByteLimit,
+					"description": fmt.Sprintf("Optional maximum model-visible page bytes, including complete records and continuation footer. Defaults to %d and is capped at %d.", defaultSearchOutputByteLimit, maxSearchOutputByteLimit),
+				},
+				"cursor": map[string]any{
+					"type":        "string",
+					"description": "Opaque next_cursor from a prior grep page with the same resolved path, pattern, and include filter.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Pattern string `json:"pattern"`
-				Path    string `json:"path"`
-				Include string `json:"include"`
-				Limit   int    `json:"limit"`
+				Pattern   string `json:"pattern"`
+				Path      string `json:"path"`
+				Include   string `json:"include"`
+				Limit     int    `json:"limit"`
+				ByteLimit *int   `json:"byte_limit"`
+				Cursor    string `json:"cursor"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep", err), nil
@@ -1319,12 +1429,18 @@ func defGrep() Definition {
 			if input.Path != "" && root.source == "workspace" && isInternalGeneratedArtifactPath(execCtx.Workdir, root.path) {
 				return errorResult("grep", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
-			matcher, regexErr := regexp.Compile(input.Pattern)
-			useRegex := regexErr == nil
 			limit := normalizeGrepMatchesLimit(input.Limit)
-			var lines []string
-			truncatedLineCount := 0
-			hasMore := false
+			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			if err != nil {
+				return typedToolErrorResult("grep", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
+			}
+			query := newSearchCursorQuery("grep", root, input.Pattern, input.Include)
+			startIndex, err := decodeSearchCursor(input.Cursor, query)
+			if err != nil {
+				return searchCursorFailureResult("grep", err), nil
+			}
+			matcher, useRegex := compileGrepMatcher(input.Pattern)
+			collector := newSearchRecordCollector(startIndex, limit)
 			walkErr := filepath.Walk(root.path, func(path string, info os.FileInfo, err error) error {
 				if err != nil {
 					if sameCleanPath(path, root.path) {
@@ -1354,42 +1470,83 @@ func defGrep() Definition {
 				if shouldSkipGrepBinary(data) {
 					return nil
 				}
-				for lineNo, line := range strings.Split(string(data), "\n") {
-					matched := false
-					if useRegex {
-						matched = matcher.MatchString(line)
-					} else {
-						matched = strings.Contains(line, input.Pattern)
+				lineStart := 0
+				lineNo := 1
+				for {
+					relativeEnd := bytes.IndexByte(data[lineStart:], '\n')
+					lineEnd := len(data)
+					if relativeEnd >= 0 {
+						lineEnd = lineStart + relativeEnd
 					}
+					lineBytes := data[lineStart:lineEnd]
+					line := string(lineBytes)
+					matchStart, matchEnd, matched := firstGrepMatchSpan(line, matcher, useRegex, input.Pattern)
 					if matched {
-						formatted, truncated := formatGrepMatchLine(root.displayBase, path, lineNo+1, line)
-						lines = append(lines, formatted)
-						if len(lines) > limit {
-							hasMore = true
+						displayPath := relativeOrAbsolute(root.displayBase, path)
+						rawSnippet := strings.TrimSpace(line)
+						preferredSnippet, snippetTruncated := truncateGrepMatchedText(rawSnippet, maxGrepLineOutputBytes)
+						globalLineStart := int64(lineStart)
+						globalLineEnd := int64(lineEnd)
+						globalMatchStart := globalLineStart + int64(matchStart)
+						globalMatchEnd := globalLineStart + int64(matchEnd)
+						spanSuffix := fmt.Sprintf(" [source_bytes=%d-%d match_bytes=%d-%d]", globalLineStart, globalLineEnd, globalMatchStart, globalMatchEnd)
+						recordMetadata := map[string]any{
+							"path":              displayPath,
+							"line":              lineNo,
+							"line_start_byte":   globalLineStart,
+							"line_end_byte":     globalLineEnd,
+							"match_start_byte":  globalMatchStart,
+							"match_end_byte":    globalMatchEnd,
+							"snippet_truncated": snippetTruncated,
+						}
+						record := grepSearchPageRecord(
+							fmt.Sprintf("%s:%d:", displayPath, lineNo),
+							rawSnippet,
+							preferredSnippet,
+							spanSuffix,
+							displayPath,
+							lineNo,
+							snippetTruncated,
+							recordMetadata,
+						)
+						if collector.add(record) {
 							return errGrepLimitReached
 						}
-						if truncated {
-							truncatedLineCount++
-						}
 					}
+					if relativeEnd < 0 {
+						break
+					}
+					lineStart = lineEnd + 1
+					lineNo++
 				}
 				return nil
 			})
 			if walkErr != nil && !errors.Is(walkErr, errGrepLimitReached) {
 				return errorResult("grep", walkErr), nil
 			}
-			if hasMore {
-				lines = lines[:limit]
+			page, err := buildSearchPage(searchPageOptions{
+				Tool:               "grep",
+				Query:              query,
+				StartIndex:         startIndex,
+				Records:            collector.records,
+				ScanComplete:       !collector.stopped,
+				RequestedLimit:     input.Limit,
+				EffectiveLimit:     limit,
+				RequestedByteLimit: outputBudget.Requested,
+				EffectiveByteLimit: outputBudget.Effective,
+				ByteLimitCapped:    outputBudget.Capped,
+			})
+			if err != nil {
+				return searchPageFailureResult("grep", outputBudget, err), nil
 			}
-			output := strings.Join(lines, "\n")
-			if output == "" {
-				output = "(no matches)"
+			page.Metadata["truncated"] = page.TruncatedSnippetCount > 0
+			page.Metadata["truncated_matching_lines"] = page.TruncatedSnippetCount
+			page.Metadata["match_records"] = page.RenderedRecordMetadata
+			page.Metadata["path_source"] = root.source
+			if root.skillName != "" {
+				page.Metadata["skill"] = root.skillName
 			}
-			output = appendSearchOverflowNotice(output, limit, hasMore)
-			metadata := searchResultMetadata(input.Limit, limit, len(lines), hasMore, truncatedLineCount)
-			metadata["truncated"] = truncatedLineCount > 0
-			metadata["truncated_matching_lines"] = truncatedLineCount
-			return session.ToolResult{Name: "grep", LLMOutput: output, DisplayOutput: output, Metadata: metadata}, nil
+			return session.ToolResult{Name: "grep", LLMOutput: page.Output, DisplayOutput: page.Output, Metadata: page.Metadata}, nil
 		},
 	}
 }
@@ -1397,7 +1554,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Search workspace text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file when you need to locate owning files without flooding the context. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory, not a multi-path or glob expression; use include for file filters. Supports regex-or-literal matching, optional path/include filters, and skips build/cache/internal artifacts and binary files.",
+		Description:     "Search workspace UTF-8 text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results use both a path count limit and a model-visible byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Cursor pages are current-view best effort.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -1419,15 +1576,26 @@ func defGrepFiles() Definition {
 					"type":        "integer",
 					"description": "Maximum number of matching file paths to return. Defaults to 100 and is capped at 200.",
 				},
+				"byte_limit": map[string]any{
+					"type":        "integer",
+					"minimum":     minSearchOutputByteLimit,
+					"description": fmt.Sprintf("Optional maximum model-visible page bytes, including the continuation footer. Defaults to %d and is capped at %d.", defaultSearchOutputByteLimit, maxSearchOutputByteLimit),
+				},
+				"cursor": map[string]any{
+					"type":        "string",
+					"description": "Opaque next_cursor from a prior grep_files page with the same resolved path, pattern, and include filter.",
+				},
 			},
 			"required": []string{"pattern"},
 		},
 		Execute: func(_ context.Context, execCtx ExecContext, raw json.RawMessage) (session.ToolResult, error) {
 			var input struct {
-				Pattern string `json:"pattern"`
-				Path    string `json:"path"`
-				Include string `json:"include"`
-				Limit   int    `json:"limit"`
+				Pattern   string `json:"pattern"`
+				Path      string `json:"path"`
+				Include   string `json:"include"`
+				Limit     int    `json:"limit"`
+				ByteLimit *int   `json:"byte_limit"`
+				Cursor    string `json:"cursor"`
 			}
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("grep_files", err), nil
@@ -1450,15 +1618,22 @@ func defGrepFiles() Definition {
 			}
 			matcher, useRegex := compileGrepMatcher(input.Pattern)
 			limit := normalizeGrepFilesLimit(input.Limit)
-			var matches []string
-			hasMore := false
+			outputBudget, err := normalizeSearchOutputByteLimit(execCtx.Config, input.ByteLimit)
+			if err != nil {
+				return typedToolErrorResult("grep_files", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, err.Error()), nil
+			}
+			query := newSearchCursorQuery("grep_files", root, input.Pattern, input.Include)
+			startIndex, err := decodeSearchCursor(input.Cursor, query)
+			if err != nil {
+				return searchCursorFailureResult("grep_files", err), nil
+			}
+			collector := newSearchRecordCollector(startIndex, limit)
 			err = walkTextSearchFiles(root.displayBase, root.path, input.Include, func(path string, data string) error {
 				if !textMatchesPattern(data, matcher, useRegex, input.Pattern) {
 					return nil
 				}
-				matches = append(matches, relativeOrAbsolute(root.displayBase, path))
-				if len(matches) > limit {
-					hasMore = true
+				displayPath := relativeOrAbsolute(root.displayBase, path)
+				if collector.add(plainSearchPageRecord(displayPath, displayPath, 0)) {
 					return errGrepLimitReached
 				}
 				return nil
@@ -1466,16 +1641,26 @@ func defGrepFiles() Definition {
 			if err != nil && !errors.Is(err, errGrepLimitReached) {
 				return errorResult("grep_files", err), nil
 			}
-			if hasMore {
-				matches = matches[:limit]
+			page, err := buildSearchPage(searchPageOptions{
+				Tool:               "grep_files",
+				Query:              query,
+				StartIndex:         startIndex,
+				Records:            collector.records,
+				ScanComplete:       !collector.stopped,
+				RequestedLimit:     input.Limit,
+				EffectiveLimit:     limit,
+				RequestedByteLimit: outputBudget.Requested,
+				EffectiveByteLimit: outputBudget.Effective,
+				ByteLimitCapped:    outputBudget.Capped,
+			})
+			if err != nil {
+				return searchPageFailureResult("grep_files", outputBudget, err), nil
 			}
-			output := strings.Join(matches, "\n")
-			if output == "" {
-				output = "(no matches)"
+			page.Metadata["path_source"] = root.source
+			if root.skillName != "" {
+				page.Metadata["skill"] = root.skillName
 			}
-			output = appendSearchOverflowNotice(output, limit, hasMore)
-			metadata := searchResultMetadata(input.Limit, limit, len(matches), hasMore, 0)
-			return session.ToolResult{Name: "grep_files", LLMOutput: output, DisplayOutput: output, Metadata: metadata}, nil
+			return session.ToolResult{Name: "grep_files", LLMOutput: page.Output, DisplayOutput: page.Output, Metadata: page.Metadata}, nil
 		},
 	}
 }
@@ -1508,11 +1693,6 @@ const (
 	maxGrepMatches          = 200
 	maxGrepLineOutputBytes  = 4096
 )
-
-func formatGrepMatchLine(workdir, path string, lineNo int, line string) (string, bool) {
-	text, truncated := truncateGrepMatchedText(strings.TrimSpace(line), maxGrepLineOutputBytes)
-	return fmt.Sprintf("%s:%d:%s", relativeOrAbsolute(workdir, path), lineNo, text), truncated
-}
 
 func truncateGrepMatchedText(text string, limit int) (string, bool) {
 	rawLength := len(text)
@@ -1960,6 +2140,21 @@ func compileGrepMatcher(pattern string) (*regexp.Regexp, bool) {
 	return matcher, err == nil
 }
 
+func firstGrepMatchSpan(line string, matcher *regexp.Regexp, useRegex bool, pattern string) (int, int, bool) {
+	if useRegex {
+		span := matcher.FindStringIndex(line)
+		if span == nil {
+			return 0, 0, false
+		}
+		return span[0], span[1], true
+	}
+	start := strings.Index(line, pattern)
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, start + len(pattern), true
+}
+
 func validateGrepPattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("pattern is required")
@@ -1999,24 +2194,6 @@ func normalizeGrepMatchesLimit(limit int) int {
 		return maxGrepMatches
 	}
 	return limit
-}
-
-func searchResultMetadata(requestedLimit, effectiveLimit, returnedCount int, hasMore bool, truncatedSnippetCount int) map[string]any {
-	return map[string]any{
-		"returned_count":          returnedCount,
-		"requested_limit":         requestedLimit,
-		"effective_limit":         effectiveLimit,
-		"has_more":                hasMore,
-		"limit_capped":            requestedLimit > effectiveLimit,
-		"truncated_snippet_count": truncatedSnippetCount,
-	}
-}
-
-func appendSearchOverflowNotice(output string, effectiveLimit int, hasMore bool) string {
-	if !hasMore {
-		return output
-	}
-	return output + fmt.Sprintf("\n[More matches exist beyond effective_limit=%d; narrow path, include, or pattern to retrieve a complete result set.]", effectiveLimit)
 }
 
 func walkTextSearchFiles(workdir, root, include string, fn func(path string, data string) error) error {

@@ -391,9 +391,9 @@ Completion record：
 - Commit：本任务提交 `feat(runtime): bound model visible tool results`。
 - Effective defaults：`runtime.tool_output.llm_output_max_bytes=32768`、`display_output_max_bytes=131072`、`artifact_file_max_bytes=16777216`、`artifact_session_max_bytes=134217728`、`artifact_max_files=256`；正值按 spec 的五组上下限 clamp，旧配置省略或非正值回落默认。
 - Race/tests：TDD 红测先证明缺少配置、Store quota writer、hook 后 finalizer 与 child/background handoff budget；审计补充红测还捕获了 runner plan-input recovery 直接落盘 8507-byte 结果、old-result 重复写/错误重标 partial artifact、宽松 session mode 下 artifact root 为 `0755`、伪造 version metadata 绕过 3023-byte cap。实现后聚焦命令、`go test ./internal/config ./internal/session ./internal/runtime ./internal/tools -count=1 -timeout=300s` 与 `go test ./... -count=1 -timeout=600s` 全通过；`CGO_ENABLED=1 go test -race ./internal/session ./internal/runtime ./internal/tools -run 'Test.*(ToolOutputArtifact|ArtifactQuota|ToolResultBudget).*' -count=1 -timeout=240s` 通过。
-- TOOL-002 remaining work：`TOOL-002B pending`
+- TOOL-002 remaining work：`complete via TOOL-002B`
 
-### [ ] TOOL-002B — 为 read_file 与搜索结果增加可恢复 byte continuation
+### [x] TOOL-002B — 为 read_file 与搜索结果增加可恢复 byte continuation
 
 - Issue：TOOL-002，扩展 TOOL-003。
 - Priority：P1 context efficiency。
@@ -421,6 +421,7 @@ Implementation files：
 - `internal/fileutil/safe.go`（只在现有 range API 缺 metadata 时做最小扩展）
 - `internal/fileutil/safe_test.go`
 - `internal/tools/registry.go`
+- `internal/tools/read_file_byte.go`
 - 新文件建议：`internal/tools/search_cursor.go`、`internal/tools/search_cursor_test.go`
 - `internal/tools/registry_test.go`
 - `internal/runtime/tool_result_budget_test.go`
@@ -436,11 +437,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] read_file schema 清楚表达两种模式的互斥；provider adapters 都能正确传递新字段。
-- [ ] `ReadRegularFileRangeNoSymlink` 是 byte mode 的唯一底层文件读取入口。
-- [ ] grep/grep_files 同时报告集合完整性和 byte stop reason。
-- [ ] 所有 continuation 均是有界、版本化、与原查询绑定的 opaque cursor。
-- [ ] 现有 120 行默认、16 MiB source guard 和 path/symlink 安全测试不回退。
+- [x] read_file schema 清楚表达两种模式的互斥；provider adapters 都能正确传递新字段。
+- [x] `ReadRegularFileRangeNoSymlink` 是 byte mode 的唯一底层文件读取入口。
+- [x] grep/grep_files 同时报告集合完整性和 byte stop reason。
+- [x] 所有 continuation 均是有界、版本化、与原查询绑定的 opaque cursor。
+- [x] 现有 120 行默认、16 MiB source guard 和 path/symlink 安全测试不回退。
 
 Validation：
 
@@ -462,10 +463,10 @@ Commit subject：`feat(tools): add bounded file and search continuations`
 
 Completion record：
 
-- Commit：`pending`
-- Cursor schema version：`pending`
-- Tests：`pending`
-- TOOL-002 status：`pending`
+- Commit：本任务提交 `feat(tools): add bounded file and search continuations`。
+- Cursor schema version：`1`；base64url token 上限 2048 bytes，绑定 tool + resolved root/source + pattern + include 的 SHA-256 fingerprint，携带 next current-view index、有界 last path/line 诊断与 checksum；`limit` / `byte_limit` 可在续页时调整。
+- Tests：TDD 红测先证明 `read_file`/`grep`/`grep_files`/`glob` schema 拒绝 byte/cursor 字段且没有 continuation。实现后，UTF-8 mid-rune/跨页重组、16 MiB minified、JSONL/no-newline、EOF/空文件、workspace/skill/session artifact 与 symlink/escape、count/byte/同点 stop、match span、cursor version/checksum/query mismatch/tamper、long-path typed failure 均进入永久测试；聚焦命令、`go test ./internal/fileutil ./internal/tools ./internal/runtime -count=1 -timeout=300s`、`go test ./... -count=1 -timeout=600s` 与对应 `-race` 聚焦门禁通过。
+- TOOL-002 status：`complete`（TOOL-002A + TOOL-002B）。
 
 ### [ ] TOOL-001 — 用有界流式 collector 保存 command 原始输出
 

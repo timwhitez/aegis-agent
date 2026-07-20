@@ -114,13 +114,16 @@ v1 内置工具固定为：
 - 路径必须限制在工作区内
 - 例外：已注册 skill bundle 文件属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径读取；不得把这些路径误解析成 `workspace/skills/...`
 - skill 文件读取必须校验 symlink escape，且不赋予写入权限
-- 例外：session 私有的 ephemeral tool-output artifact 允许用工具结果返回的显式路径只读读取；该路径必须落在当前 session 的 ephemeral artifact root 内，仍要拒绝 symlink escape，并继续套用 120 行 `offset` / `limit` 分页窗口
+- 例外：session 私有的 ephemeral tool-output artifact 允许用工具结果返回的显式路径只读读取；该路径必须落在当前 session 的 ephemeral artifact root 内，仍要拒绝 symlink escape，并使用同一套 line/byte 分页契约
 - workspace 内 `.artifacts` 这类内部生成物仍默认拒绝读取；`glob` / `grep` / `grep_files` discovery 也必须跳过 session ephemeral artifacts，避免把临时大输出重新作为候选噪音回灌
 - 当 `glob` / `grep` / `grep_files` 显式收到 `artifacts/tool-outputs` 或其子路径时，必须在普通 workspace/skill path resolver 之前返回稳定的 `unsupported_path_source` 错误：提示该 session artifact 不可 discovery，保留原始 path，并要求用 `read_file` 精确读取；不得把它归类为 workspace `not_found`，也不得建议猜路径或重跑生成命令
-- 默认支持 `offset` / `limit`
-- v1 采用小窗口读取，默认与最大返回窗口都限制为 120 行
-- 读取前必须拒绝超大 regular file；当前共享文件读取上限为 16 MiB，避免 `offset` / `limit` 窗口化之前先把异常大文件完整读入内存
-- 返回结果应包含实际窗口范围，便于模型基于行号继续做下一次定点读取
+- 有两种互斥模式：line mode 使用 1-based `offset` / `limit`；byte mode 使用 0-based `byte_offset` / `byte_limit`。调用中出现任一 byte 字段时不得再出现 line 字段；byte mode 必须给出正数 `byte_limit`，`byte_offset` 省略时为 0
+- line mode 保持默认与最大 120 行，仍通过 `ReadRegularFileNoSymlink` 执行 16 MiB source guard；旧调用不写 byte 字段时输出与语义兼容
+- byte mode 只通过 `fileutil.ReadRegularFileRangeNoSymlink` 读取有界 range，调用方必须显式给出 `byte_limit`（建议常规页使用 16 KiB），最高 24 KiB，并进一步受当前 `runtime.tool_output.llm_output_max_bytes` 约束；不得先全量读取再切片。workspace / skill source 的总文件大小仍受 16 MiB guard，session tool-output artifact 可在 no-symlink exact-path gate 后读取更大的有界 range
+- byte mode 只返回完整 UTF-8 rune：requested offset 落在 rune 中间时向前调整到下一个边界，requested end 落在 rune 中间时向后调整；返回 `requested_byte_offset`、`requested_byte_limit`、`effective_byte_start`、`effective_byte_end`、`start_adjusted`、`end_adjusted`、`returned_bytes`、`total_bytes`、`has_more`、`next_byte_offset` 与 `encoding=utf-8`
+- 从 0 开始并始终使用工具返回的 `next_byte_offset` 可无重复、无漏 rune 地重组原文；人为从 rune 中间开始会得到明确的 start adjustment。窗口含非法 UTF-8 或 limit 小到无法容纳一个完整 rune 时返回稳定 typed error，不用替换字符伪装原字节
+- line/byte 两种模式都必须让 header/body 一起落在模型可见 byte budget 内；超长 header 无法容纳最小可恢复窗口时返回 typed `output_budget_too_small`，不能靠最终 head/tail 截断破坏 continuation
+- 返回结果包含实际窗口范围，便于模型继续定点读取
 
 ### 4.3 `write_file`
 
@@ -140,6 +143,7 @@ v1 内置工具固定为：
 - 返回相对工作区路径列表
 - 支持可选 `limit` 控制返回路径数，默认与 `grep_files` 对齐、超大值必须被 cap 到实现上限；触发截断时在结果中给出可观测提示
 - 默认跳过常见构建产物、缓存目录和内部生成物
+- 支持与 `grep_files` 相同的 `cursor` / `byte_limit` page contract；真实 count/byte overflow 返回 source cursor，不把可重建路径列表复制成 tool-output artifact
 
 ### 4.6 `grep_files`
 
@@ -150,6 +154,8 @@ v1 内置工具固定为：
 - 默认跳过常见构建产物、缓存目录和二进制文件
 - 实现必须按 stable walk order 收集 `effective_limit + 1` 个候选，只在确实存在第 `limit + 1` 项时返回 `has_more=true`；恰好等于 limit 不得误报不完整
 - metadata 固定包含 `returned_count`、原始 `requested_limit`（省略/非正数保持原值）、`effective_limit`、`has_more`、`limit_capped`、`truncated_snippet_count=0`。真实 overflow 时模型可见输出还要提示缩小 `path` / `include` / `pattern`
+- 同时受 path count 与模型可见总字节限制：`byte_limit` 默认 24 KiB、最高 32 KiB，并被 `runtime.tool_output.llm_output_max_bytes` 进一步收紧。metadata 增加 `requested_byte_limit`、`effective_byte_limit`、`byte_limit_capped`、`output_bytes`、`stop_reason=match_limit|byte_limit|complete`、`match_limit_reached`、`byte_limit_reached`
+- `cursor` 是 v1 base64url opaque token，绑定 tool + resolved root/source + pattern + include 的 canonical fingerprint；limit/byte_limit 只是 page size，可在续页时调整。cursor 带 checksum、下一 current-view index 及有界的 last path/line 诊断，错误版本、损坏 token 或换 query 复用必须返回 typed cursor error
 
 ### 4.7 `grep`
 
@@ -164,6 +170,15 @@ v1 内置工具固定为：
 - 集合完整性与单条 snippet 裁剪是两个独立维度：同样按 stable walk/line order 收集 `effective_limit + 1`，只有第 `limit + 1` 项存在时 `has_more=true`；返回项正文被截短只增加 `truncated_snippet_count`，不得据此推断还有未返回匹配
 - metadata 固定包含 `returned_count`、`requested_limit`、`effective_limit`、`has_more`、`limit_capped`、`truncated_snippet_count`。兼容字段 `truncated` / `truncated_matching_lines` 只继续表示返回 snippet 被截短，不能表示 result-set overflow
 - 真实 overflow 时模型可见输出提示缩小 `path` / `include` / `pattern`；恰好等于 limit 时不添加该提示
+- 与 `grep_files` 共用 `byte_limit`、opaque `cursor`、fingerprint/version/checksum 与 stop metadata。count 和 byte 同点触发时 `stop_reason=byte_limit`，同时把 `match_limit_reached=true` 与 `byte_limit_reached=true` 写清楚
+- 每个返回 record 的 metadata 包含 path、line、line byte range 与首个 match byte range；超长行 snippet 被收缩时，模型可见 record 同时显示 source/match byte span，随后可直接使用 `read_file` byte mode 展开，而不是重跑 grep
+- page builder 在完整 record 边界停止，并为完整 cursor footer 预留预算；预算不足时先减少 record / snippet，绝不截断 cursor JSON。单个 path/header 连最小 recoverable record 都放不下时返回 typed `search_record_exceeds_byte_limit`
+
+### 4.7.1 Search cursor current-view 语义
+
+- cursor schema version 固定为 `1`，encoded token 最大 2048 bytes；cursor 只保存 bounded continuation state，不保存搜索正文
+- continuation 重新扫描当前 workspace/skill view 并跳过 token 记录的稳定顺序位置，不承诺跨调用事务快照。两页之间外部修改可能改变 index 对应集合；这类 current-view/best-effort 语义必须由 metadata `snapshot_semantics=current_view` 明示
+- 相同静态 view 上连续分页必须无重复、无漏项；query fingerprint 不匹配时不得静默从新 query 的错误位置继续
 
 ### 4.8 `finish`
 

@@ -127,6 +127,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - artifact writer 覆盖单文件/session 字节/文件数 quota、并发竞争、跨 Store 重启重建、symlink、磁盘错误与 owner-only mode；metadata 与实际文件字节逐项一致
 - multi-call batch 按 result 独立预算并保持 ToolCallID/Name/IsError/Final/业务 metadata；messages.jsonl 只含 bounded preview/pointer
 - 同步 agent_spawn/agent_status 与 background notification 的超长 final_text 不整段进入 parent，且保留 child/session/job/artifact reference
+- read_file byte mode 覆盖 16 MiB 单行/minified JS/JSONL/无换行日志、空文件/EOF/越界 offset、UTF-8 rune 跨页与人为 mid-rune offset；按 `next_byte_offset` 重组不得重复或漏 rune
+- byte mode 的 workspace、skill、session artifact exact path、symlink file/parent 与 escape matrix 复用 line mode 安全 gate；生产路径必须可证明只调用 range reader
+- grep/grep_files/glob 覆盖 count limit、byte limit、同点触发、complete、长 path/record typed failure；v1 cursor 的 checksum/version/query fingerprint/tamper 与 current-view deterministic ordering 均有永久测试
+- 搜索 cursor footer、record/header 和 metadata 一起计入 output cap；测试确认 cap 收缩删除完整 record 或 snippet，不产生被截断的 cursor
 
 ### 4.2 Hooks
 

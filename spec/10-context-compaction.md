@@ -192,6 +192,8 @@ current-result cap、old-result micro-compaction 与 full compaction 是三个�
 
 第一层 artifact 完整性必须由 `artifact_complete` 证明；partial/quota/write-failed artifact 不能在第二、三层被重新标成 Full output。
 
+read_file byte window、grep/grep_files/glob page 都属于 source-recoverable payload：它们在当前结果中优先返回 path/range 或 versioned query cursor。runtime finalizer 仍是最后的 correctness cap，但正常工具输出必须已为 header + bounded records + intact cursor，不能先超量生成再依赖 head/tail artifact 截断；只有动态且无法从 source cursor 重建的正文才进入 tool-output artifact。
+
 超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
 
 ## 6.1 Provider View 裁剪与指令边界
