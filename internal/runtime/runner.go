@@ -2233,7 +2233,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 	}
 	reasoningSummary := strings.TrimSpace(firstNonEmpty(req.ReasoningSummary, providerCfg.ReasoningSummary))
 	apiProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
-	result, err := adapter.RunTurn(ctx, provider.TurnRequest{
+	turnRequest := provider.TurnRequest{
 		SessionID:    "probe",
 		Model:        model,
 		SystemPrompt: "You are a provider probe. Follow the user instruction exactly.",
@@ -2244,6 +2244,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Temperature:      providerCfg.Temperature,
 		TopP:             providerCfg.TopP,
 		MaxOutputTokens:  providerCfg.MaxOutputTokens,
+		ProviderProfile:  providerName,
 		APIProvider:      apiProvider,
 		ReasoningEffort:  strings.TrimSpace(providerCfg.ReasoningEffort),
 		ReasoningSummary: reasoningSummary,
@@ -2252,7 +2253,14 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		IncludeThoughts:  providerCfg.IncludeThoughts,
 		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
 		Store:            defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
-	}, func(string, map[string]any) {})
+	}
+	if _, err := preflightProviderRequest(adapter, turnRequest, newRequestBudgetPolicy(model, providerCfg.ContextWindowTokens, r.cfg.Runtime.Compact.UtilizationFactor), requestBudgetContext{
+		RequestKind: requestKindProbe,
+		SessionID:   "probe",
+	}); err != nil {
+		return ProbeResult{}, WrapProviderError(err)
+	}
+	result, err := adapter.RunTurn(ctx, turnRequest, func(string, map[string]any) {})
 	if err != nil {
 		return ProbeResult{}, WrapProviderError(err)
 	}

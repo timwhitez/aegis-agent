@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1737,6 +1738,130 @@ func TestProviderReplayPreservesSameArgumentsWithDistinctToolResults(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestWireEstimateMatchesActuallySentBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		newAdapter func(string, *http.Client) Adapter
+		buildBody  func(TurnRequest) (map[string]any, error)
+		response   string
+	}{
+		{
+			name: "openai",
+			newAdapter: func(baseURL string, client *http.Client) Adapter {
+				return NewOpenAI(baseURL, "key", client)
+			},
+			buildBody: func(req TurnRequest) (map[string]any, error) { return buildOpenAIRequestBody(req, true) },
+			response:  `{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+		},
+		{
+			name: "anthropic",
+			newAdapter: func(baseURL string, client *http.Client) Adapter {
+				return NewAnthropic(baseURL, "key", "2023-06-01", client)
+			},
+			buildBody: buildAnthropicRequestBody,
+			response:  `{"id":"msg_1","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`,
+		},
+		{
+			name: "google",
+			newAdapter: func(baseURL string, client *http.Client) Adapter {
+				return NewGoogle(baseURL, "key", client)
+			},
+			buildBody: buildGoogleRequestBody,
+			response:  `{"responseId":"resp_1","candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var captured []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request: %v", err)
+				}
+				captured = append([]byte(nil), body...)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+
+			adapter := tc.newAdapter(server.URL, server.Client())
+			estimator, ok := adapter.(RequestEstimator)
+			if !ok {
+				t.Fatalf("production adapter %T does not implement RequestEstimator", adapter)
+			}
+			req := TurnRequest{
+				SessionID:        "wire-estimate",
+				Model:            "test-model",
+				SystemPrompt:     "system prompt",
+				Messages:         []session.Message{session.NewMessage("user", "hello")},
+				Tools:            []ToolSchema{{Name: "finish", Description: "finish", InputSchema: map[string]any{"type": "object"}}},
+				Metadata:         map[string]any{"session_id": "wire-estimate"},
+				MaxOutputTokens:  64,
+				ProviderProfile:  tc.name,
+				APIProvider:      tc.name,
+				ReasoningSummary: "none",
+			}
+			estimate, err := estimator.EstimateRequest(req)
+			if err != nil {
+				t.Fatalf("estimate request: %v", err)
+			}
+			if _, err := adapter.RunTurn(context.Background(), req, func(string, map[string]any) {}); err != nil {
+				t.Fatalf("run turn: %v", err)
+			}
+			if estimate.SchemaVersion != wireRequestEstimateSchemaVersion {
+				t.Fatalf("unexpected estimate schema: %#v", estimate)
+			}
+			if estimate.WireBodyBytes != len(captured) {
+				t.Fatalf("estimator/body drift: estimate=%d captured=%d\n%s", estimate.WireBodyBytes, len(captured), captured)
+			}
+			expectedBody, err := tc.buildBody(req)
+			if err != nil {
+				t.Fatalf("build expected body: %v", err)
+			}
+			expectedPayload, err := json.Marshal(expectedBody)
+			if err != nil {
+				t.Fatalf("marshal expected body: %v", err)
+			}
+			if !bytes.Equal(expectedPayload, captured) {
+				t.Fatalf("builder/sent fields drifted\nexpected: %s\ncaptured: %s", expectedPayload, captured)
+			}
+			if estimate.EstimatedInputTokens != (len(captured)+3)/4 {
+				t.Fatalf("unexpected token approximation: %#v", estimate)
+			}
+		})
+	}
+}
+
+func TestFakeWireEstimateIsDeterministic(t *testing.T) {
+	adapter := NewFake()
+	estimator, ok := any(adapter).(RequestEstimator)
+	if !ok {
+		t.Fatal("fake adapter must implement RequestEstimator")
+	}
+	req := TurnRequest{
+		SessionID:        "fake-estimate",
+		Model:            "fake",
+		SystemPrompt:     "system",
+		Messages:         []session.Message{session.NewMessage("user", "hello")},
+		Tools:            []ToolSchema{{Name: "finish", Description: "finish", InputSchema: map[string]any{"type": "object"}}},
+		Metadata:         map[string]any{"session_id": "fake-estimate"},
+		MaxOutputTokens:  64,
+		ReasoningSummary: "none",
+	}
+	first, err := estimator.EstimateRequest(req)
+	if err != nil {
+		t.Fatalf("first estimate: %v", err)
+	}
+	second, err := estimator.EstimateRequest(req)
+	if err != nil {
+		t.Fatalf("second estimate: %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("fake estimate changed: first=%#v second=%#v", first, second)
 	}
 }
 

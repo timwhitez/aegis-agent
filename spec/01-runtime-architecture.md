@@ -158,6 +158,21 @@
 - 在不丢失原始日志的前提下压缩提供给模型的上下文
 - 生成压缩摘要与 transcript artifact
 
+### 2.11.1 ProviderRequestBudgeter
+
+职责：
+
+- 在每次 main、semantic-summary 和 probe provider 请求真正发送前，要求 adapter 用发送路径共享的 wire-body builder 生成版本化尺寸估算
+- 生成不含 prompt、tool schema 正文或 credential 的 `RequestBudgetSnapshot`，记录 request kind、session/turn/request correlation、provider/model、system/messages/tools/metadata 的数量与尺寸、wire body bytes、估算 input tokens、output reserve、safety headroom、effective context window、剩余 headroom、compaction action/summary id 与 fit 结果
+- 对已知超窗请求返回 typed local `request_budget_exceeded`；拒绝发生在 transport/retry 之前，不允许先向 provider “试发一次”
+- estimator 缺失或 wire body 无法编码时 fail closed；内置 OpenAI、Anthropic、Google、fake adapter 都必须实现 estimator，测试/第三方 adapter 不得静默跳过
+- main 请求拒绝时写 `provider.request.prepared(fit=false)`、budget/rejected 事件并按 provider-call failure 收敛；semantic-summary 拒绝只让语义摘要回退到确定性 baseline
+
+边界：
+
+- Phase A 只负责单次最终预检与拒绝；pointerize、recent-tail 收缩和多轮 hard-fit 属于后续 Phase B
+- `provider.call` 只能在 snapshot `fit=true`、prepared event 已落盘且 pause gate 已通过后发出，避免把本地拒绝记成已发送调用
+
 ### 2.12 SessionContractManager
 
 职责：
@@ -386,7 +401,7 @@ while true:
 
 ### 5.4 provider_call
 
-- 调用 provider adapter
+- 先基于 adapter 的真实 wire body 构造 request budget snapshot；只有 `fit=true` 才调用 provider adapter
 - 产生 `assistant.delta`、`tool.call.ready`、`provider.error`、`turn.stopped` 等事件
 
 ### 5.5 tool_execute

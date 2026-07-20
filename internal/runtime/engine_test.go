@@ -2714,6 +2714,36 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 	if timeoutPolicy["request_timeout_sec"] != float64(240) || timeoutPolicy["stream_idle_timeout_ms"] != float64(300000) {
 		t.Fatalf("unexpected timeout policy event payload: %#v", timeoutPolicy)
 	}
+	budget, ok := evt.Data["request_budget"].(map[string]any)
+	if !ok || budget["schema_version"] != float64(requestBudgetSnapshotSchemaVersion) || budget["fit"] != true {
+		t.Fatalf("expected versioned fitting request budget snapshot, got %#v", evt.Data["request_budget"])
+	}
+	if evt.Data["request_kind"] != requestKindMain || strings.TrimSpace(stringFromAny(evt.Data["request_id"])) == "" {
+		t.Fatalf("expected main request correlation fields, got %#v", evt.Data)
+	}
+	stopped, ok := findEventByType(events, "turn.stopped")
+	if !ok {
+		t.Fatalf("expected turn.stopped usage event, got %#v", events)
+	}
+	if stopped.Data["request_id"] != evt.Data["request_id"] || stopped.Data["request_kind"] != requestKindMain || stopped.Data["turn"] != budget["turn"] {
+		t.Fatalf("prepared/usage correlation drift: prepared=%#v stopped=%#v", evt.Data, stopped.Data)
+	}
+	preparedIndex, callIndex := -1, -1
+	for i, recorded := range events {
+		switch recorded.Type {
+		case "provider.request.prepared":
+			if preparedIndex == -1 {
+				preparedIndex = i
+			}
+		case "provider.call":
+			if callIndex == -1 {
+				callIndex = i
+			}
+		}
+	}
+	if preparedIndex == -1 || callIndex == -1 || preparedIndex >= callIndex {
+		t.Fatalf("provider.call must follow a fitting prepared event: prepared=%d call=%d events=%#v", preparedIndex, callIndex, events)
+	}
 }
 
 func TestEngineProviderRequestPreparedReportsEventAppendErrorBeforeProviderCall(t *testing.T) {
@@ -6211,6 +6241,16 @@ type emittingAdapter struct {
 
 func (a emittingAdapter) Name() string {
 	return "emitting"
+}
+
+func (a emittingAdapter) EstimateRequest(req provider.TurnRequest) (provider.WireRequestEstimate, error) {
+	return provider.EstimateWireRequest(map[string]any{
+		"model":         req.Model,
+		"system_prompt": req.SystemPrompt,
+		"messages":      req.Messages,
+		"tools":         req.Tools,
+		"metadata":      req.Metadata,
+	}, req)
 }
 
 func (a emittingAdapter) RunTurn(ctx context.Context, req provider.TurnRequest, emit provider.EmitFunc) (provider.TurnResult, error) {

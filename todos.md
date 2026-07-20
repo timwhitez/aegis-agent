@@ -163,7 +163,7 @@ Completion record：
 - Tests：TDD 红测确认旧实现会覆盖相同参数的旧结果和 multi-call sibling；实现后聚焦 stop-loss/provider replay、计划正则测试及 `go test ./internal/runtime ./internal/provider -count=1 -timeout=180s` 全部通过；`gofmt -l` 与 `git diff --check` 无输出。
 - CTX-001 remaining work：`CTX-001B pending`
 
-### [ ] CTX-003A — 建立共享 request budget 快照与 fail-closed 预检
+### [x] CTX-003A — 建立共享 request budget 快照与 fail-closed 预检
 
 - Issue：CTX-003、OBS-001 的公共基础。
 - Priority：P0 correctness。
@@ -198,9 +198,10 @@ Implementation files：
 - `internal/provider/fake.go`
 - `internal/provider/provider_test.go`
 - `internal/runtime/engine.go`
-- 新文件建议：`internal/runtime/request_budget.go`、`internal/runtime/request_budget_test.go`
+- `internal/runtime/request_budget.go`、`internal/runtime/request_budget_test.go`
 - `internal/runtime/engine_test.go`
-- `internal/runtime/compaction_test.go`
+- `internal/runtime/provider_attempts.go`
+- `internal/runtime/runner.go`、`internal/runtime/runner_test.go`
 - 如引入新配置：`internal/config/config.go`、`internal/config/config_test.go`
 
 Permanent tests：
@@ -214,12 +215,12 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 所有生产 provider call 都经过同一 preflight；没有旁路 `adapter.RunTurn`。
-- [ ] 已知估算超窗的 main request 从不触达 provider。
-- [ ] semantic-summary 超预算只降级语义摘要，主 compaction 继续。
-- [ ] `provider.request.prepared`、budget reject 和后续 usage 可由 session+turn+request_kind 关联。
-- [ ] adapter wire 差异未泄漏到 Web/CLI/tool 层。
-- [ ] snapshot schema 已版本化并有向后兼容读取测试。
+- [x] main、semantic-summary、probe 三个生产 `adapter.RunTurn` 调用点都先经过同一 preflight；缺 estimator 同样 fail closed。
+- [x] 已知估算超窗的 main request 不触达 fake/HTTP provider，也不写 `provider.call` 或进入 transport retry/auto-resume。
+- [x] semantic-summary 超预算只记录 rejected/budget 事实并将 `semantic_summary_status` 置为 `failed`，确定性 compaction 继续成功。
+- [x] `provider.request.prepared`、budget reject 和带 usage 的 `turn.stopped` 通过 session、turn、request_id、request_kind 关联。
+- [x] OpenAI、Anthropic、Google wire 差异仅留在各 adapter 的共享 body builder；Web/CLI/tool 层没有 provider JSON 副本。
+- [x] `RequestBudgetSnapshot` schema version 为 1，旧 shape/未知字段读取兼容测试通过。
 
 Validation：
 
@@ -241,9 +242,9 @@ Commit subject：`feat(runtime): fail closed on oversized provider requests`
 
 Completion record：
 
-- Commit：`pending`
-- Snapshot schema version：`pending`
-- Tests：`pending`
+- Commit：本任务提交 `feat(runtime): fail closed on oversized provider requests`。
+- Snapshot schema version：`1`；wire estimate schema version 同为 `1`。
+- Tests：TDD 首轮因 estimator/snapshot/preflight 尚不存在而编译失败；实现后计划聚焦测试、wire body 逐字节 parity、main/semantic/probe 零调用拒绝、边界/旧配置/内容不落 snapshot、provider timeout/child budget/manual interrupt 分类回归，以及 `go test ./internal/provider ./internal/runtime ./internal/config -count=1 -timeout=240s` 全部通过；`gofmt -l` 与 scoped `git diff --check` 无输出。
 - CTX-003 remaining work：`CTX-003B pending`
 
 ### [ ] TOOL-003 — 让 grep / grep_files 集合截断可观测

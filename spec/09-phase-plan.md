@@ -214,6 +214,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
 - optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
 - context correctness stop-loss：移除按 tool 参数执行的通用 message-level 结果去重；在 result-level fingerprint/hash 与 provider replay 证明完成前，只保留既有 micro-compaction 和 full compaction
+- provider request hard-fit Phase A：main/semantic-summary/probe 调用共享 adapter wire estimator 和版本化预算快照，已知超窗本地 fail closed；Phase B 再加入严格递减、有界轮数的自动收缩
 
 验收补充：
 

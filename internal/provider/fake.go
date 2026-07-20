@@ -23,6 +23,59 @@ func NewFake(sequence ...func(context.Context, TurnRequest) (TurnResult, error))
 
 func (f *FakeAdapter) Name() string { return f.name }
 
+func buildFakeRequestBody(req TurnRequest) map[string]any {
+	body := map[string]any{
+		"model":         req.Model,
+		"system_prompt": req.SystemPrompt,
+		"messages":      req.Messages,
+		"tools":         req.Tools,
+	}
+	if len(req.Metadata) > 0 {
+		body["metadata"] = req.Metadata
+	}
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		body["top_p"] = *req.TopP
+	}
+	if req.MaxOutputTokens > 0 {
+		body["max_output_tokens"] = req.MaxOutputTokens
+	}
+	if strings.TrimSpace(req.ProviderProfile) != "" {
+		body["provider_profile"] = req.ProviderProfile
+	}
+	if strings.TrimSpace(req.APIProvider) != "" {
+		body["api_provider"] = req.APIProvider
+	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		body["reasoning_effort"] = req.ReasoningEffort
+	}
+	if strings.TrimSpace(req.ReasoningSummary) != "" {
+		body["reasoning_summary"] = req.ReasoningSummary
+	}
+	if strings.TrimSpace(req.TextVerbosity) != "" {
+		body["text_verbosity"] = req.TextVerbosity
+	}
+	if req.ThinkingBudget > 0 {
+		body["thinking_budget"] = req.ThinkingBudget
+	}
+	if req.IncludeThoughts != nil {
+		body["include_thoughts"] = *req.IncludeThoughts
+	}
+	if req.PromptCache != nil {
+		body["prompt_cache"] = *req.PromptCache
+	}
+	if req.Store != nil {
+		body["store"] = *req.Store
+	}
+	return body
+}
+
+func (f *FakeAdapter) EstimateRequest(req TurnRequest) (WireRequestEstimate, error) {
+	return EstimateWireRequest(buildFakeRequestBody(req), req)
+}
+
 func (f *FakeAdapter) RunTurn(ctx context.Context, req TurnRequest, _ EmitFunc) (TurnResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

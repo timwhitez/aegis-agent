@@ -29,6 +29,20 @@ ProviderAdapter
   RunTurn(ctx, TurnRequest, EventSink) -> TurnResult
 ```
 
+adapter 还必须实现只读的 request estimator 能力：
+
+```text
+RequestEstimator
+  EstimateRequest(TurnRequest) -> WireRequestEstimate
+```
+
+约束：
+
+- `EstimateRequest` 和 `RunTurn` 必须调用同一个 adapter-internal wire-body builder；估算结果中的 `wire_body_bytes` 等于发送前对该 body 执行 `json.Marshal` 的字节数
+- estimator 只向 runtime 返回尺寸、计数与估算 token，不返回 body、prompt、tool schema 正文、metadata value 或 credential
+- OpenAI metadata capability fallback 可在首个明确 unsupported 响应后改变后续 body；每次新请求的 estimator 必须读取 adapter 当前 capability state，与该次真正发送的首个 body 一致
+- estimator 缺失是本地 preflight error；production runtime 不得降级为直接调用 `RunTurn`
+
 ### 2.1 TurnRequest
 
 字段：
@@ -55,6 +69,7 @@ ProviderAdapter
 - 不是每个 provider 都会使用全部字段
 - 未使用的字段必须被 adapter 安静忽略，而不是报错
 - 这些字段必须可由 config -> runtime -> session metadata -> adapter 全链路传递
+- runtime 额外为每次调用指定 `request_kind`（至少 `main`、`semantic_summary`、`probe`）并生成 correlation snapshot；`request_kind` 属于 harness 观测事实，不要求透传为 provider prompt 或 metadata
 
 ### 2.2 TurnResult
 
@@ -391,6 +406,7 @@ adapter 至少要把 provider 错误归类为：
 - stop_reason 映射
 - 非 2xx 错误分类
 - cancel 传播
+- estimator 与真实发送 body 共用 builder，固定 fixture 的 `wire_body_bytes` 与捕获的请求体字节数一致
 
 ## 12. 当前范围边界
 

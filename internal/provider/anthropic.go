@@ -29,10 +29,10 @@ func NewAnthropicWithRetry(baseURL, apiKey, version string, httpClient *http.Cli
 
 func (a *AnthropicAdapter) Name() string { return "anthropic" }
 
-func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+func buildAnthropicRequestBody(req TurnRequest) (map[string]any, error) {
 	messages, err := anthropicMessages(req.Messages, req.Model, req.ProviderProfile, req.APIProvider, promptCacheEnabled(req.PromptCache))
 	if err != nil {
-		return TurnResult{}, err
+		return nil, err
 	}
 	systemBlocks := anthropicSystemBlocks(req.SystemPrompt, promptCacheEnabled(req.PromptCache))
 	body := map[string]any{
@@ -50,10 +50,26 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if req.TopP != nil {
 		body["top_p"] = *req.TopP
 	}
-	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts)
 	if thinking := anthropicThinking(req.ThinkingBudget, req.IncludeThoughts); thinking != nil {
 		body["thinking"] = thinking
 	}
+	return body, nil
+}
+
+func (a *AnthropicAdapter) EstimateRequest(req TurnRequest) (WireRequestEstimate, error) {
+	body, err := buildAnthropicRequestBody(req)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	return EstimateWireRequest(body, req)
+}
+
+func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+	body, err := buildAnthropicRequestBody(req)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts)
 	var resp struct {
 		ID         string `json:"id"`
 		StopReason string `json:"stop_reason"`

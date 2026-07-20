@@ -32,10 +32,10 @@ func NewOpenAIWithRetry(baseURL, apiKey string, httpClient *http.Client, retry R
 
 func (a *OpenAIAdapter) Name() string { return "openai" }
 
-func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+func buildOpenAIRequestBody(req TurnRequest, includeMetadata bool) (map[string]any, error) {
 	input, err := openAIInput(req.Messages, req.Model, req.ProviderProfile, req.APIProvider)
 	if err != nil {
-		return TurnResult{}, err
+		return nil, err
 	}
 	body := map[string]any{
 		"model":        req.Model,
@@ -63,7 +63,6 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		body["reasoning"] = reasoning
 		body["include"] = []string{"reasoning.encrypted_content"}
 	}
-	thinkingStrategy := openAIThinkingStrategy(req)
 	if strings.TrimSpace(req.TextVerbosity) != "" {
 		body["text"] = map[string]any{
 			"verbosity": req.TextVerbosity,
@@ -72,12 +71,29 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if req.Store != nil {
 		body["store"] = *req.Store
 	}
+	if includeMetadata && len(req.Metadata) > 0 {
+		body["metadata"] = req.Metadata
+	}
+	return body, nil
+}
+
+func (a *OpenAIAdapter) EstimateRequest(req TurnRequest) (WireRequestEstimate, error) {
+	body, err := buildOpenAIRequestBody(req, !a.metadataUnsupported.Load())
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	return EstimateWireRequest(body, req)
+}
+
+func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
 	metadataRequested := len(req.Metadata) > 0
 	metadataSent := metadataRequested && !a.metadataUnsupported.Load()
 	metadataFallback := false
-	if metadataSent {
-		body["metadata"] = req.Metadata
+	body, err := buildOpenAIRequestBody(req, metadataSent)
+	if err != nil {
+		return TurnResult{}, err
 	}
+	thinkingStrategy := openAIThinkingStrategy(req)
 	var resp struct {
 		ID     string `json:"id"`
 		Status string `json:"status"`

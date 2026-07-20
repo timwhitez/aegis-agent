@@ -38,6 +38,15 @@ func recordProviderFailure(store *session.Store, meta session.SessionMetadata, t
 		attempt.ErrorClass = httpErr.Class
 		attempt.TimeoutKind = httpErr.TimeoutKind
 		attempt.StatusCode = httpErr.StatusCode
+	} else {
+		var budgetErr *RequestBudgetExceededError
+		var preflightErr *RequestBudgetPreflightError
+		switch {
+		case errors.As(err, &budgetErr):
+			attempt.ErrorClass = budgetErr.Code
+		case errors.As(err, &preflightErr):
+			attempt.ErrorClass = preflightErr.Code
+		}
 	}
 	return store.AppendProviderAttempt(meta.ID, attempt)
 }

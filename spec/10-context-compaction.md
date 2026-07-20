@@ -182,6 +182,8 @@ effective context window 在 session 创建时解析并写入 session metadata�
 
 v1 仍用字符数做近似估算，不做 provider 精确 token 计数；context window 只用于推导本地字符阈值，并写入 summary / compact event 作为诊断事实（`threshold_source`、`context_window_tokens`、`utilization_factor`、`keep_recent_messages`）。估算输入规模时还会计入本轮组装的 system prompt 字符数，避免 skills / goal / plan 注入很大时低估真实 provider 输入。
 
+compaction trigger 与最终 provider request hard-fit 是两个独立 gate：字符阈值决定是否值得生成 transcript/summary，不能证明最终 wire request 一定落在 provider 窗口内。每次 main 和 semantic-summary 请求仍需在发送前用 adapter 的真实 wire body 做 token 近似、output reserve 和 safety headroom 判定。Phase A 对不 fit 请求本地拒绝；后续 Phase B 才负责在有限轮次内 pointerize/缩尾后重新估算。
+
 超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
 
 ## 6.1 Provider View 裁剪与指令边界
@@ -216,3 +218,4 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - `messages.jsonl` 仍可用于完整重放
 - CLI / SDK / future API 都能基于原始日志调试问题
 - stop-loss provider view 保留相同参数但不同结果的每个 ToolResult，也保留同一 tool message 中未被验证为等价的其他结果；构造 view 前后 durable message 日志逐字段不变
+- compaction 后的 main wire request 仍必须通过 request-budget preflight；semantic-summary 自身超预算时只省略语义补充并标记失败，不阻断确定性 summary/transcript 生成

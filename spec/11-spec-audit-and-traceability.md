@@ -72,6 +72,8 @@
 - 原始日志必须和压缩视图分离
 - tool 参数相同不证明结果相同；当前 correctness gate 禁止通用 message-level tool-result 去重。后续若重新启用，只能在独立 ToolResult 粒度使用 canonical arguments、结果内容 hash 与 ToolCallID/replay 配对证明安全，并继续保证 durable message 日志不变
 - 永久回归必须覆盖真实 `read_file.path`、相同参数但不同结果、multi-call tool message、OpenAI/Anthropic/Google replay 以及 provider view 构造前后 durable log 一致性
+- compaction 字符 trigger 只负责决定何时压缩，不能作为最终 request fit 证明；CTX-003A correctness gate 要求 main/semantic-summary/probe 共用 adapter wire estimator、版本化 `RequestBudgetSnapshot` 与发送前 fail-closed 预检
+- 预算拒绝与预算观测必须来自同一 snapshot/公式；已知超窗不得进入 transport retry/auto-resume，semantic-summary 拒绝则回退确定性摘要
 
 ### 2.6 薄 provider 层
 

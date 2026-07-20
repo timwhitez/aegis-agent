@@ -239,6 +239,39 @@ func TestCustomAnthropicAPIProviderUsesAnthropicAdapter(t *testing.T) {
 	}
 }
 
+func TestProbeRequestBudgetRejectsBeforeHTTPCall(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"completed","output":[]}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Runtime.Compact.UtilizationFactor = 1
+	cfg.DefaultProvider = "probe-budget"
+	cfg.Providers["probe-budget"] = config.Provider{
+		APIProvider:         "openai-compatible",
+		APIKeyEnv:           "PROBE_BUDGET_API_KEY",
+		BaseURL:             server.URL,
+		Model:               "probe-model",
+		ContextWindowTokens: 4,
+		MaxOutputTokens:     1,
+		WireAPI:             "responses",
+	}
+	t.Setenv("PROBE_BUDGET_API_KEY", "test-key")
+
+	_, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "probe-budget"})
+	var budgetErr *RequestBudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("expected typed probe budget error, got %v", err)
+	}
+	if budgetErr.Snapshot.RequestKind != requestKindProbe || calls != 0 {
+		t.Fatalf("probe preflight did not fail before HTTP: snapshot=%#v calls=%d", budgetErr.Snapshot, calls)
+	}
+}
+
 func TestProbeHonorsPromptCacheFalseForAnthropicCompatible(t *testing.T) {
 	var seenBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

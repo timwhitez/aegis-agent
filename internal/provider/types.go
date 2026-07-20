@@ -103,6 +103,66 @@ type Adapter interface {
 	RunTurn(context.Context, TurnRequest, EmitFunc) (TurnResult, error)
 }
 
+const wireRequestEstimateSchemaVersion = 1
+
+type WireRequestEstimate struct {
+	SchemaVersion        int `json:"schema_version"`
+	WireBodyBytes        int `json:"wire_body_bytes"`
+	EstimatedInputTokens int `json:"estimated_input_tokens"`
+	SystemChars          int `json:"system_chars"`
+	MessageCount         int `json:"message_count"`
+	MessagesBytes        int `json:"messages_bytes"`
+	ToolCount            int `json:"tool_count"`
+	ToolSchemaBytes      int `json:"tool_schema_bytes"`
+	MetadataKeyCount     int `json:"metadata_key_count"`
+	MetadataBytes        int `json:"metadata_bytes"`
+}
+
+type RequestEstimator interface {
+	EstimateRequest(TurnRequest) (WireRequestEstimate, error)
+}
+
+var ErrRequestEstimatorUnavailable = errors.New("provider request estimator unavailable")
+
+func EstimateAdapterRequest(adapter Adapter, req TurnRequest) (WireRequestEstimate, error) {
+	estimator, ok := adapter.(RequestEstimator)
+	if !ok {
+		return WireRequestEstimate{}, fmt.Errorf("%w: %T", ErrRequestEstimatorUnavailable, adapter)
+	}
+	return estimator.EstimateRequest(req)
+}
+
+func EstimateWireRequest(body any, req TurnRequest) (WireRequestEstimate, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	messages, err := json.Marshal(req.Messages)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	toolSchemas, err := json.Marshal(req.Tools)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	metadata, err := json.Marshal(req.Metadata)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	return WireRequestEstimate{
+		SchemaVersion:        wireRequestEstimateSchemaVersion,
+		WireBodyBytes:        len(payload),
+		EstimatedInputTokens: (len(payload) + 3) / 4,
+		SystemChars:          len(req.SystemPrompt),
+		MessageCount:         len(req.Messages),
+		MessagesBytes:        len(messages),
+		ToolCount:            len(req.Tools),
+		ToolSchemaBytes:      len(toolSchemas),
+		MetadataKeyCount:     len(req.Metadata),
+		MetadataBytes:        len(metadata),
+	}, nil
+}
+
 type RetryConfig struct {
 	MaxAttempts       int
 	BaseDelay         time.Duration

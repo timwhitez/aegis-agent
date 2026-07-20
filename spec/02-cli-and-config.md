@@ -448,6 +448,9 @@ hooks:
 - 阈值优先级：`runtime.compact.context_profiles` 命中的 `input_char_threshold` > 顶层显式 `input_char_threshold` > 由 `context_window_tokens` / known-model / 200000 推导
 - `runtime.compact.utilization_factor` 默认 `0.85`，取值 `(0, 1]`
 - `runtime.compact.semantic_summary.enabled` 默认 `true`：对被裁掉的中段消息做一次有界、独立超时的 provider 语义摘要补充确定性结构化摘要；失败 / 超时不会使压缩失败，回退到确定性 baseline
+- 最终 provider request hard-fit 使用 session metadata 中已快照的 `context_window_tokens` 作为 effective window；`<= 0` 或旧 session 缺失该字段时继续通过 known-model / `200000` 默认值解析，保证旧配置与旧 session 有确定行为
+- output reserve 优先使用 effective `max_output_tokens`；其值 `<= 0`（包括旧配置缺失或负值）时使用本地默认 `8192` tokens。safety headroom 由 `runtime.compact.utilization_factor` 推导：`effective_window × (1-utilization_factor)`，默认保留 15%。预算判定统一为 `estimated_input + output_reserve + safety_headroom <= effective_window`
+- 估算基于 adapter 真正发送的 JSON wire body 字节数，以 `ceil(bytes / 4)` 做 v1 input token 近似；这是 fail-closed hard-fit 的单一公式，不在 Web/CLI/tool 层复制 provider JSON，也不声称是精确 tokenizer
 - `runtime.ephemeral.enabled` 默认 `true`：对高频大输出工具使用 provider-view 滑动窗口；每种工具最新 `EphemeralWindow` 个结果和短输出保持 inline，只有更老且较大的结果在 provider request view 中替换为 session 私有 artifact 路径。原始 messages/events 不被改写，当前结果不会 pointer-only；discovery 工具仍跳过该目录
 - `runtime.degeneration.enabled` 默认 `true`：当连续 `done_candidate` turn 只有文本、没有 valid tool call，且未接纳 steer/background/finish 时，`reminder_after` 后注入 `degeneration_recovery_required` reminder，`give_up_after` 后用 `model_degeneration_no_progress` 显式停靠或失败；`detect_low_quality` 预留给乱码/重复 token 启发式，默认关闭
 

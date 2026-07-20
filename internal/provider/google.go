@@ -28,10 +28,10 @@ func NewGoogleWithRetry(baseURL, apiKey string, httpClient *http.Client, retry R
 
 func (a *GoogleAdapter) Name() string { return "google" }
 
-func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+func buildGoogleRequestBody(req TurnRequest) (map[string]any, error) {
 	contents, err := googleContents(req.Messages, req.Model, req.ProviderProfile, req.APIProvider)
 	if err != nil {
-		return TurnResult{}, err
+		return nil, err
 	}
 	body := map[string]any{
 		"systemInstruction": map[string]any{
@@ -44,6 +44,22 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	if generationConfig := googleGenerationConfig(req); len(generationConfig) > 0 {
 		body["generationConfig"] = generationConfig
+	}
+	return body, nil
+}
+
+func (a *GoogleAdapter) EstimateRequest(req TurnRequest) (WireRequestEstimate, error) {
+	body, err := buildGoogleRequestBody(req)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	return EstimateWireRequest(body, req)
+}
+
+func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
+	body, err := buildGoogleRequestBody(req)
+	if err != nil {
+		return TurnResult{}, err
 	}
 	thinkingStrategy := googleThinkingStrategy(req)
 	var resp struct {
