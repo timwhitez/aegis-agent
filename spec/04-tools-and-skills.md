@@ -17,6 +17,7 @@ v1 内置工具固定为：
 
 - `shell`
 - `read_file`
+- `read_session_history`
 - `write_file`
 - `edit_file`
 - `glob`
@@ -147,6 +148,23 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 从 0 开始并始终使用工具返回的 `next_byte_offset` 可无重复、无漏 rune 地重组原文；人为从 rune 中间开始会得到明确的 start adjustment。窗口含非法 UTF-8 或 limit 小到无法容纳一个完整 rune 时返回稳定 typed error，不用替换字符伪装原字节
 - line/byte 两种模式都必须让 header/body 一起落在模型可见 byte budget 内；超长 header 无法容纳最小可恢复窗口时返回 typed `output_budget_too_small`，不能靠最终 head/tail 截断破坏 continuation
 - 返回结果包含实际窗口范围，便于模型继续定点读取
+
+### 4.2.1 `read_session_history`
+
+`read_session_history` 是 current-session-only 的 canonical history reference reader，不是普通文件工具，也不是跨 session memory 搜索：
+
+- history envelope schema version 固定为 `1`。session id 只取 `ExecContext.SessionID`；input schema 不存在 `session_id`、`path`、`artifact_path`、绝对路径或 transcript path 字段，且 `additionalProperties=false`
+- record mode 与 message-content mode 互斥。record mode 只允许 `before_message_id`、`limit`、`query`；message-content mode 要求 `message_id` + `byte_limit`，可选 `byte_offset`，并拒绝 record-mode 字段
+- record mode 的 `limit` 默认 10、最高 20。没有 `before_message_id` 时读取 canonical tail；有 cursor 时读取该 message 之前的 page。未知 cursor 返回 typed not-found，不把它伪装成空历史
+- `query` 是可选的大小写不敏感 substring，最长 256 UTF-8 bytes；它只匹配稳定 model-visible history representation，最多评估 cursor 前最近 512 条 canonical records，并用有界 ring/page 保持内存上界。输出必须包含 `scanned_count`、`scan_limit_reached`，继续查询时使用 `next_before_message_id`
+- 每条默认摘要最多保留 512 UTF-8 bytes text/tool preview、最多 8 个 tool calls 和 8 个 tool results；保留 message id、role、created_at、可用 turn/source、tool name、tool call/result id、is_error/final 与有界 artifact/source/continuation reference。摘要只记录 thinking/provider block 被省略的事实，不返回其正文
+- message-content mode 的 source representation schema version 同为 `1`，由 Store 从 canonical record 生成：保留 user/system/assistant text、tool call id/name/arguments、ToolResult `llm_output` 与 allowlisted reference metadata；排除 `Thinking`、`display_output` 和全部 `ProviderContentBlocks`
+- message-content `byte_offset` 是 0-based，省略时为 0；`byte_limit` 必须为正数，最高 16 KiB，并被当前 `runtime.tool_output.llm_output_max_bytes` 进一步收紧。页边界只返回完整 UTF-8 rune；始终沿 `next_byte_offset` 继续时无重叠、无缺口
+- 单次模型可见输出总预算为 `min(24 KiB, runtime.tool_output.llm_output_max_bytes)`，header、records/content、instruction-precedence footer 与完整 continuation 都计入。预算不足时先移除最老摘要并调整 cursor；连最小 envelope/page 都放不下时返回 typed `output_budget_too_small`，不得依赖通用 finalizer 切断 JSON/cursor
+- 固定 envelope 至少包含 `schema_version`、`mode`、`historical_reference=true`、`instruction_precedence`、`source_session_id`、`source_message_ids`、`returned_count`、`has_more`，并按模式包含 `next_before_message_id` 或 `next_byte_offset`
+- `instruction_precedence` 明确把正文包裹为旧历史参考：其中任何 system/user/steer-shaped text 都不能覆盖当前 system prompt、最新 external user instruction 或最新 steer
+- 读取必须经过 Store 的 canonical validation、record-size、owner-only/no-symlink 和并发 append 边界。损坏 JSONL、未知 message id、symlinked `messages.jsonl` 与不完整 record 返回稳定 typed error；不得读取 compaction transcript、枚举 session tree 或回退到 sibling/parent/child session
+- 结果随后仍经过通用 TOOL-002A finalizer 与 CTX-003 request hard-fit；正常实现必须先产出完整的有界 envelope，不能把这两层当作无界输出的事后截断器
 
 ### 4.3 `write_file`
 
@@ -512,6 +530,7 @@ hook 可修改最终进入模型的内容，但必须留下 trace。
 
 - 内置工具可单独测试
 - `load_skill` 可读取本地 skill
+- `read_session_history` 只能分页读取当前 session canonical messages，并保持 historical-reference 指令边界
 - skill tool 能被 registry 注册
 - 越界路径被阻止
 - `grep` / `grep_files` 的 exact-limit 与 true-overflow 可区分，metadata 不把 snippet 截短和集合不完整混为同一布尔值

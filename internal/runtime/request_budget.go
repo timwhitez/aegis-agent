@@ -54,6 +54,7 @@ var deterministicSummaryCoreFields = []string{
 	"latest_external_instruction",
 	"latest_steer_constraints",
 	"transcript",
+	"history_reference",
 }
 
 type requestBudgetPolicy struct {
@@ -828,10 +829,15 @@ func deterministicRequestBudgetSummaryCore(summary map[string]any) map[string]an
 		"latest_external_instruction": 2048,
 		"latest_steer_constraints":    2048,
 		"transcript":                  1024,
+		"history_reference":           2048,
 	}
 	core := make(map[string]any, len(deterministicSummaryCoreFields))
 	for _, field := range deterministicSummaryCoreFields {
-		core[field] = boundedRequestBudgetSummaryValue(summary[field], limits[field])
+		value := summary[field]
+		if field == "history_reference" && value == nil {
+			value = canonicalSessionHistoryReference("current_session")
+		}
+		core[field] = boundedRequestBudgetSummaryValue(value, limits[field])
 	}
 	return core
 }

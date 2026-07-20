@@ -198,7 +198,7 @@ type Registry struct {
 var beforeShellCommandStart func(workdir string) error
 
 var reservedNames = map[string]struct{}{
-	"shell": {}, "read_file": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
+	"shell": {}, "read_file": {}, "read_session_history": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
 	"finish": {}, "await_input": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
 	"task_update": {}, "task_list": {}, "task_get": {}, "agent_spawn": {}, "agent_wait": {}, "agent_stop": {}, "agent_status": {},
 	"agent_prompt": {}, "agent_list": {}, "feature_list_create": {}, "feature_list_update": {}, "feature_list_read": {},
@@ -443,6 +443,7 @@ func builtinDefinitions(cfg *config.Config, catalog *skills.Catalog, control Con
 	defs := []Definition{
 		defShell(),
 		defReadFile(),
+		defReadSessionHistory(),
 		defWriteFile(),
 		defEditFile(),
 		defGlob(),

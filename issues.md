@@ -362,7 +362,7 @@ grep/grep_files 把 errGrepLimitReached 同时用作早停控制流和隐式 ove
 
 - Severity: P1
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -397,6 +397,17 @@ grep/grep_files 把 errGrepLimitReached 同时用作早停控制流和隐式 ove
 - 单条历史 message 超长时仍按字节分页，不会绕过 TOOL-002 与 CTX-003。
 - 输出明确标记 source session/message/turn、historical_reference=true、has_more/next cursor，并声明指令优先级不变。
 - OpenAI/Anthropic/Google opaque replay 数据、含 tool call/result 的历史、压缩复用、多次 transcript 和损坏 artifact 都有安全回归。
+
+### Resolution
+
+- 新增内置只读工具 `read_session_history`，schema version 为 `1`。session id 只来自 `ExecContext.SessionID`；closed schema 只表达 record mode（tail/before/query）或互斥的 `message_id + byte_offset + byte_limit` content mode，无法传入 session/path/artifact/transcript 或绝对路径
+- record limit 默认 10、最高 20；query 最长 256 UTF-8 bytes且每页只评估 cursor 前最近 512 条 canonical records；单 message content page 最高 16 KiB；完整模型可见 envelope 受 `min(24 KiB, runtime.tool_output.llm_output_max_bytes)` 约束，无法容纳完整 record/page 时返回 typed `output_budget_too_small`
+- Store 复用 `LoadMessagesTail` / `LoadMessagesBefore` 并增加稳定 message representation 的 UTF-8 byte paging。JSONL reader 在共享锁内捕获完整 append boundary，再用 fixed snapshot streaming visit；invalid UTF-8、损坏 record、未知 cursor/message、symlink 与 cross-session id 均 fail closed
+- 默认摘要和 content representation 保留 message/tool 定位字段、ToolResult `llm_output` 与有界 reference metadata；`Thinking`、`DisplayOutput`、任意非 allowlist metadata和 OpenAI/Anthropic/Google `ProviderContentBlocks` opaque 正文不进入返回值
+- 所有成功结果都带 `historical_reference=true`、source session/message ids、完整 count/cursor 与 instruction-precedence 说明。system prompt 同步声明旧 system/user/steer-shaped text 只是引用；TOOL-002A finalizer 与 CTX-003 hard-fit 回归证明完整 JSON/cursor 不被事后截断或提升为当前 external instruction
+- new/reused compaction summary 与 deterministic hard-fit core 保留 versioned `history_reference`，指向当前 session 的 `messages.jsonl`；压缩后可直接找回已从 provider view 删除的早期 message/tool 事实，不需重跑原工具，也没有新增 transcript parser
+- 永久回归覆盖 empty/exact/overflow tail、before、bounded query及continuation、并发 append fixed view、UTF-8 continuous pages、long-id/单页预算、parent/child/sibling隔离、symlink/corruption、三 provider opaque sentinel、prompt-injection-shaped history、compaction new/reuse、finalizer、hard-fit和 RequestBudgetSnapshot tool schema accounting
+- Resolution commit：本任务提交 `feat(tools): add bounded current session history reads`
 
 ### Non-goals
 

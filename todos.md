@@ -783,7 +783,7 @@ Completion record：
 - Tests/race：TDD 首轮按预期因 `fitProviderRequestToBudget`、`RequestBudgetAction`、`RequestBudgetUnfitError` 与 action/component 常量尚不存在而编译失败；实现后聚焦 hard-fit/oversized/compaction/semantic 回归、runtime/provider 完整回归、对应 runtime/session `-race`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`gofmt -l`、`git diff --check`、Web JS syntax 与 140 项 Web utility 测试全部通过；未启动 Docker。
 - CTX-003 status：`complete`；CTX-003A 的统一 estimator/snapshot fail-closed gate 与 CTX-003B 的有界收缩/typed unfit 共同关闭该 issue。
 
-### [ ] CTX-004 — 增加 current-session-only 的 read_session_history
+### [x] CTX-004 — 增加 current-session-only 的 read_session_history
 
 - Issue：CTX-004。
 - Priority：P1 recovery。
@@ -810,12 +810,15 @@ Spec changes：
 Implementation files：
 
 - `internal/session/store.go`
-- `internal/session/store_test.go`
+- `internal/session/history.go`
+- `internal/session/history_test.go`
 - `internal/tools/registry.go`
-- 新文件建议：`internal/tools/session_history.go`、`internal/tools/session_history_test.go`
-- `internal/runtime/prompt.go` 或现有 system prompt builder（只加通用 historical-reference 解释，不固定阅读路线）
-- `internal/runtime/prompt_test.go`
-- `internal/runtime/engine_test.go`
+- `internal/tools/session_history.go`
+- `internal/tools/session_history_test.go`
+- `internal/runtime/prompt.go`
+- `internal/runtime/compaction.go`
+- `internal/runtime/request_budget.go`
+- `internal/runtime/session_history_test.go`
 
 Permanent tests：
 
@@ -828,17 +831,17 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] 工具只访问当前 session canonical messages，不枚举 session tree。
-- [ ] 记录分页复用现有 Store API；新增逻辑只补 query/单 record byte range。
-- [ ] 输出总字节、query scan 和单 record read 都有界。
-- [ ] compaction 后无需重跑原工具即可找回早期 message/tool 摘要或内容片段。
-- [ ] 新 tool schema 已计入 RequestBudgetSnapshot。
+- [x] 工具只访问当前 session canonical messages，不枚举 session tree。
+- [x] 记录分页复用现有 Store API；新增逻辑只补 query/单 record byte range。
+- [x] 输出总字节、query scan 和单 record read 都有界。
+- [x] compaction 后无需重跑原工具即可找回早期 message/tool 摘要或内容片段。
+- [x] 新 tool schema 已计入 RequestBudgetSnapshot。
 
 Validation：
 
 ```bash
 go test ./internal/session ./internal/tools ./internal/runtime \
-  -run 'Test.*(SessionHistory|MessagesBefore|MessagesTail|MessageContentRange|HistoricalReference).*' \
+  -run 'Test.*(SessionHistory|MessagesBefore|MessagesTail|MessageContentRange|HistoryReference|HistoricalReference).*' \
   -count=1 -timeout=180s
 CGO_ENABLED=1 go test -race ./internal/session ./internal/tools \
   -run 'Test.*(SessionHistory|MessageContentRange).*' \
@@ -856,10 +859,10 @@ Commit subject：`feat(tools): add bounded current session history reads`
 
 Completion record：
 
-- Commit：`pending`
-- History schema version：`pending`
-- Tests/race：`pending`
-- CTX-004 status：`pending`
+- Commit：本任务提交 `feat(tools): add bounded current session history reads`。
+- History schema version：`1`；record 默认/最大 limit 为 10/20，query 最长 256 UTF-8 bytes且每页 scan 上限 512 records，message content page 上限 16 KiB，完整 envelope 上限为 `min(24 KiB, runtime.tool_output.llm_output_max_bytes)`。
+- Tests/race：TDD 首轮按预期因 `LoadMessageContentRange`、history schema/cap常量和 `ErrMessageNotFound` 尚不存在而编译失败；实现后 history 聚焦回归、session/tools/runtime 完整回归、对应三包 `-race`、`go test ./... -count=1 -timeout=600s`、20 次 tools history重复回归、scoped `go vet`、`gofmt -l`、`git diff --check`、Web JS syntax与140项Web utility测试全部通过；未启动 Docker。
+- CTX-004 status：`complete`；`issues.md` 已标记 Resolved，compaction new/reuse/hard-fit history reference与 current-session-only分页入口共同关闭该 issue。
 
 ---
 

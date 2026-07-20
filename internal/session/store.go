@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/events"
 	"go-cli-agent/internal/fileutil"
@@ -3978,6 +3979,10 @@ func lockFileExclusive(file *os.File) error {
 	return unix.Flock(int(file.Fd()), unix.LOCK_EX)
 }
 
+func lockFileShared(file *os.File) error {
+	return unix.Flock(int(file.Fd()), unix.LOCK_SH)
+}
+
 func unlockFileBestEffort(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
@@ -4998,6 +5003,10 @@ func readJSONLTailLines(path string, limit int) ([][]byte, bool, error) {
 		return nil, false, err
 	}
 	defer file.Close()
+	if err := lockFileShared(file); err != nil {
+		return nil, false, err
+	}
+	defer unlockFileBestEffort(file)
 	info, err := file.Stat()
 	if err != nil {
 		return nil, false, err
@@ -5044,6 +5053,9 @@ func readJSONLTailLines(path string, limit int) ([][]byte, bool, error) {
 	for _, line := range lines {
 		if len(line) > int(fileutil.MaxRegularFileReadBytes) {
 			return nil, false, fmt.Errorf("session JSONL record exceeds maximum readable size: %s (> %d bytes)", path, fileutil.MaxRegularFileReadBytes)
+		}
+		if !utf8.Valid(line) {
+			return nil, false, fmt.Errorf("session JSONL record is not valid UTF-8: %s", path)
 		}
 	}
 	return lines, hasMore, nil
@@ -5125,12 +5137,33 @@ func readJSONLVisit[T any](path string, visit func(T) error) error {
 		return err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
+	if err := lockFileShared(file); err != nil {
+		return err
+	}
+	locked := true
+	defer func() {
+		if locked {
+			unlockFileBestEffort(file)
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	// Capture a complete append boundary under the shared lock, then release
+	// it before invoking visitor callbacks. The fixed section excludes later
+	// appends without making a callback that writes to the same store deadlock.
+	unlockFileBestEffort(file)
+	locked = false
+	scanner := bufio.NewScanner(io.NewSectionReader(file, 0, info.Size()))
 	scanner.Buffer(make([]byte, 64*1024), int(fileutil.MaxRegularFileReadBytes))
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
+		}
+		if !utf8.Valid(line) {
+			return fmt.Errorf("session JSONL record is not valid UTF-8: %s", path)
 		}
 		var item T
 		if err := json.Unmarshal(line, &item); err != nil {

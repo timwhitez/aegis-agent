@@ -146,6 +146,13 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - result-content hash 覆盖 inline、超过 cap 后仍基于 cap 前原文、重复 finalizer 和 source metadata clone；没有可靠 hash 的 legacy result 不参与去重
 - 安全去重覆盖同 canonical 请求的同结果/异结果、文件或 grep 命中变化、error↔success、complete↔truncated、ProviderCallID alias 与 mixed multi-call batch；只替换目标旧 result，第二次 provider-view build 不嵌套 marker，durable `messages.jsonl` byte-for-byte 不变
 - duplicate marker 与 retained full result 的混合 batch 分别通过 OpenAI、Anthropic、Google replay serialization，保留每个 call/result id、name、顺序和 error 语义
+- `read_session_history` record mode 覆盖空 tail、exact limit、真实 `has_more`、第一页、未知 `before_message_id`、确定性顺序，以及未知字段、session/path/artifact 字段、绝对路径、模式冲突和负数/超 cap schema rejection
+- history query 覆盖大小写、无命中、match limit、512-record scan limit、byte-output limit 与连续 `next_before_message_id`；测试证明实现只保留有界 window/ring，不调用 `LoadMessages` 全量过滤
+- history message-content mode 覆盖超长 user/assistant/tool message、tool call arguments、UTF-8 mid-rune offset/end、连续 page 重组、EOF、未知 id 与过小输出预算；representation 不出现 thinking、display output、OpenAI/Anthropic/Google opaque replay sentinel
+- history 摘要保留 tool name/call id/error/final 与 artifact/source continuation reference；单条或多条摘要超预算时只在完整 record 边界收缩，输出 JSON、source ids 和 next cursor 始终完整
+- current session 能读取自己的 canonical history；把 sibling/parent/child message id 传入只能得到 not-found。schema 不提供 session/path 输入，因此 path traversal 和 cross-session 不能表达
+- symlinked `messages.jsonl`、损坏 JSON/invalid UTF-8、未知 cursor 与并发 append 分别返回稳定结果；损坏记录不能被跳过后伪装为 complete page
+- prompt-injection-shaped 旧 system/user/steer text 始终位于 `historical_reference=true` envelope，system prompt 同时说明 current system/latest external/latest steer precedence
 
 ### 4.2 Hooks
 
@@ -210,6 +217,8 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - tail fixture 同时保留最新 external user message、较早但最新的 steer、最新 tool result 与 ToolCallID/ProviderCallID replay closure；OpenAI、Anthropic、Google multi-call 编码在 pointer/删尾后都无 dangling pair
 - system、tool schemas、metadata/provider envelope、不可恢复最新 tool result、最新 external instruction 和最小 deterministic summary 的单体/组合超限分别返回 typed `request_budget_unfit`；blocking component 与 estimated/available/reserved 数值稳定且事件/错误中不出现正文 sentinel
 - main local unfit 的 fake/HTTP provider、transport retry、provider auto-resume 与 max-token resume 调用/事件计数均为 0；semantic-summary unfit 继续生成 transcript 与 deterministic summary
+- compaction new/reuse 的 summary 都包含 versioned canonical `history_reference`；经 deterministic summary hard-fit 后该字段仍存在。压缩后由 `read_session_history` 找回已从 provider view 删除的早期 message/tool reference，不需重跑原工具
+- 新 history tool schema 进入 main `RequestBudgetSnapshot.ToolCount/ToolSchemaBytes`；history ToolResult 先满足自身 envelope cap，再通过 TOOL-002A finalizer 与 CTX-003 hard-fit
 
 ### 4.6 Providers
 

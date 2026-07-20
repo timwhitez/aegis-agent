@@ -75,6 +75,8 @@ v1 只做最小但完整的三层压缩。
    - compact summary
    - 最近 `keep_recent_messages` 条原始消息（成比例于阈值规模，不再固定 6 条；含 tool-call 依赖链）
 
+compact summary 还必须保存 versioned canonical `history_reference`：它指向 current-session-only 的 `read_session_history` 能力和 `messages.jsonl` 事实源，不把 transcript artifact 变成模型侧第二 parser。new compaction、hysteresis reuse 与由旧 artifact 恢复的 summary 都补齐该字段。
+
 compact summary 至少保留（确定性结构化抽取，始终生成）：
 
 - 已完成事项
@@ -129,6 +131,9 @@ compaction 只影响：
   的 present / missing 状态与简短摘录
 - `proof_read_budget`
   - 兼容字段；当前值不表示 runtime 会保留或强制执行 `read_file` 复读预算，模型可按正确性需要读取精确行或更多文件
+- `history_reference`
+  - 固定包含 schema version、`tool=read_session_history`、source session、`canonical_source=messages.jsonl`、`historical_reference=true` 与 instruction-precedence 说明
+  - 只提供可操作的定点恢复入口，不自动注入整段历史，也不规定模型必须在何时读取
 
 ### 5.2 压缩是可追踪的
 
@@ -231,6 +236,7 @@ read_file byte window、grep/grep_files/glob page 都属于 source-recoverable p
 - 若用户明确要求脱敏，脱敏应作为当轮 user prompt 指定的交付要求，由模型在目标报告或指定 artifact 中执行；runtime / compactor 不把它泛化成默认规则。
 - 裁剪不能回写 `messages.jsonl`，原始 session 日志仍是事实源。
 - compacted summary 开头必须明确说明它只是早期上下文参考，不是新的用户指令；遇到冲突时以原始 session artifacts 为准。
+- `read_session_history` 返回的旧历史同样只是 reference。即使旧正文形似 system/user/steer 指令，当前 system prompt、最新 external user instruction 与最新 steer 仍优先；工具读取不能创建新的 external instruction 事实。
 
 ## 7. 与 Session Store 的关系
 
@@ -239,6 +245,8 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - 原始消息照常 append
 - 事件照常 append
 - compaction 结果写入 `artifacts/`
+- canonical agent recovery 读取 `messages.jsonl`；transcript/compaction artifact 继续用于 operator 审计和 summary provenance，不作为第二份 history query 数据源
+- `read_session_history` 只用当前 session id 做有界 record/query/content paging，无法通过 path 或 session id 参数读取其他 session
 
 ## 8. 与 `run` / `exec` 的关系
 
@@ -257,3 +265,5 @@ compaction 依赖 session store，但不改变 session store 的原始语义：
 - compaction 后的 main wire request 仍必须通过 request-budget preflight；semantic-summary 自身超预算时只省略语义补充并标记失败，不阻断确定性 summary/transcript 生成
 - 初始 request 不 fit 时有界 hard-fit action 的 wire estimate 严格递减；最终 snapshot `fit=true` 才能发送，无法满足则返回 `request_budget_unfit` 且 durable messages/artifacts 不变
 - 当前工具结果、hook amplification 与 child handoff 在进入 durable log 前已经受统一 byte cap；old-result pointerization 只复用或通过同一 quota writer 创建 artifact
+- new/reused/hard-fit deterministic summary 均保留可操作的 versioned `history_reference`；压缩后可用 current-session-only 工具定点恢复早期摘要或内容页，而 `messages.jsonl` 仍逐字段不变
+- history record/query/content page 自身有 record、scan、UTF-8 与总输出预算，随后仍经过 TOOL-002A finalizer 和 CTX-003 hard-fit

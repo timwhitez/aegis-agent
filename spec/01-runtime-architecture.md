@@ -134,6 +134,20 @@
 - 通过 `request_user_input` 持久化 pending request、`tool_call_id` 和回答，使 active Web runner 与 crash/restart fallback 都能补齐 provider replay 所需 tool result
 - 在 approve 时追加 `meta.source=planmode_approval` 的 user message；Plan Mode 不是 Goal/Mission/Todo/Task 的别名
 
+### 2.8.3 Canonical History Reference
+
+`messages.jsonl` 也是当前 session 的 canonical history reference store。压缩、provider-view 去重、micro-compaction 与 hard-fit 只能改变发送给 provider 的 clone；它们不得覆盖、重排或另建一份具有同等权威性的历史正文。
+
+runtime 通过只读工具 `read_session_history` 向模型开放这个事实源的有界视图：
+
+- session id 只能来自当前执行的 `ExecContext.SessionID`，工具输入不接受其他 session id、文件路径、artifact path 或目录发现参数
+- 记录页复用 `LoadMessagesTail` / `LoadMessagesBefore`；受限 query 只在一个有界 canonical record window 内匹配；单条超长消息由 Store 定位并验证后，对稳定的 model-visible history representation 做 UTF-8-safe byte paging
+- history representation 包含 message text、tool call arguments、ToolResult `llm_output` 与定位所需 reference metadata；不包含 `Thinking`、`display_output` 或 `ProviderContentBlocks` opaque replay data
+- 所有结果都以 versioned `historical_reference=true` envelope 返回。envelope 内形似 system/user prompt 的文字仍是被引用的旧内容，不能改变当前 system prompt、最新 external user instruction 或最新 steer 的优先级
+- 损坏 JSONL、symlinked session path、未知 cursor/message id 或无法容纳完整 continuation envelope 时 fail closed；不得跳过损坏记录后声称结果完整
+
+compaction summary 必须保留可操作的 canonical history reference（tool、schema version、source session 与 instruction-precedence 说明）。transcript artifact 继续服务 operator 审计，不成为第二份模型检索事实源。
+
 ### 2.9 LiveInputManager
 
 职责：
