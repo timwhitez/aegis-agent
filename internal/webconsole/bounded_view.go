@@ -67,6 +67,53 @@ func webSafeSessionDetailResponse(resp SessionDetailResponse) SessionDetailRespo
 	return resp
 }
 
+func webSafeContextReport(report session.ContextReport) session.ContextReport {
+	out := report
+	out.Sessions = append([]session.ContextSessionReport(nil), report.Sessions...)
+	omittedSessions := 0
+	omittedRequests := 0
+	truncated := false
+	if len(out.Sessions) > webSafeMaxArrayItems {
+		for _, item := range out.Sessions[webSafeMaxArrayItems:] {
+			omittedRequests += len(item.Requests)
+		}
+		omittedSessions = len(out.Sessions) - webSafeMaxArrayItems
+		out.Sessions = out.Sessions[:webSafeMaxArrayItems]
+		truncated = true
+	}
+	remainingRequests := webSafeMaxArrayItems
+	for i := range out.Sessions {
+		requests := append([]session.ContextRequestReport(nil), out.Sessions[i].Requests...)
+		if len(requests) > remainingRequests {
+			omittedRequests += len(requests) - remainingRequests
+			requests = requests[len(requests)-remainingRequests:]
+			truncated = true
+		}
+		remainingRequests -= len(requests)
+		for j := range requests {
+			if len(requests[j].BudgetActions) > webSafeMaxArrayItems {
+				requests[j].BudgetActions = append([]session.RequestBudgetAction(nil), requests[j].BudgetActions[len(requests[j].BudgetActions)-webSafeMaxArrayItems:]...)
+				truncated = true
+			}
+			if len(requests[j].CompactionEvents) > webSafeMaxArrayItems {
+				requests[j].CompactionEvents = append([]session.ContextCompactionEvent(nil), requests[j].CompactionEvents[len(requests[j].CompactionEvents)-webSafeMaxArrayItems:]...)
+				truncated = true
+			}
+		}
+		out.Sessions[i].Requests = requests
+	}
+	if truncated {
+		out.Truncation = &session.ContextReportTruncation{
+			Truncated:           true,
+			OmittedSessionCount: omittedSessions,
+			OmittedRequestCount: omittedRequests,
+		}
+	} else {
+		out.Truncation = nil
+	}
+	return out
+}
+
 func webSafeMessagesResponse(resp MessagesResponse) MessagesResponse {
 	resp.Messages = webSafeMessages(resp.Messages)
 	return resp

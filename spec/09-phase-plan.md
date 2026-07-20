@@ -258,6 +258,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - `experimental queue worker`
 - parent background notification
 - 当 large-project profile 被显式启用时，这一 phase 需要有真实 worker 消费、job/session 关联和 background notification 回流证据
+- advanced context report 可递归聚合 root/child request budget、usage 与 compaction；它是 session 文件事实的只读派生视图，不改变 queue/worker 调度
 
 ### 15.4 Phase 14 - Terminal TUI
 
@@ -268,6 +269,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 
 - Settings 的既有 role provider 区对 planner/generator/evaluator/explorer 做相同 GET/PATCH/YAML round-trip；session inspector 轻量显示 effective role/options/isolation/tool profile
 - 默认首页不增加 explorer/children dashboard，细粒度 orchestration 继续属于 advanced inspector、CLI 或 API
+- session inspector 增加懒加载、bounded 的 Context tab 与独立只读 endpoint；默认 overview/home polling 不递归扫描 lineage，也不增加 telemetry dashboard
 
 - `go-cli-agent web`
 - `experimental web` 作为旧入口兼容别名

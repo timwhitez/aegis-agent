@@ -826,6 +826,17 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch parts[1] {
+	case "context":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		report, err := s.store.ContextReport(sessionID)
+		if err != nil {
+			writeError(w, sessionStoreStatus(err), err)
+			return
+		}
+		writeJSON(w, http.StatusOK, webSafeContextReport(report))
 	case "planmode":
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))

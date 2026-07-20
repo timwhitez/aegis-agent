@@ -383,6 +383,14 @@ parent-child 关系必须落在文件事实中，不能只留在内存里。
 
 默认不自动删除 child 隔离目录，避免丢失排障现场。清理由调用方自行决定。
 
+### 9.4 lineage context report
+
+- 对任意 root/child session 查询 context report 时，runtime 先解析 `root_session_id`，再递归遍历完整 child tree；visited session id 去重，父链/子链 cycle 或指向其他 root 的元数据 fail closed
+- 每个 session 保留自己的 request/turn/tool-call、peak/aggregate input、compaction、artifact/provider-view bytes、known/unknown usage 和 wall time；child trajectory 不复制进 root event/message 文件
+- aggregate 明确分开 `root_peak_estimated_input_tokens`、`child_peak_estimated_input_tokens`、root/child/total aggregate input 与 provider usage、root/child compaction 和 tool-call 数。`child_session_count` 只计唯一后代
+- 用 child id 查询返回同一 root tree，并在报告中保留 `requested_session_id`；这保证 CLI/Web 从 child inspector 进入时仍能看到 root 是否受保护和全树总消耗
+- 报告是只读观测面。runtime 不依据这些指标自动 spawn、强制 parent wait、停止 child 或调整 isolation/compaction policy
+
 ## 10. 验收标准
 
 - child session 可以同步执行并返回结构化结果
@@ -394,3 +402,4 @@ parent-child 关系必须落在文件事实中，不能只留在内存里。
 - explorer default isolation off、显式 canonical isolation 保持；effective role provider/reasoning/output/isolation/tool profile 在 direct/background facts 中一致
 - deterministic sync/background fixture 证明 parent provider messages 不包含 child 原始 tool trajectory，只包含经过统一 byte budget 的 handoff/reference；失败、暂停、取消与 parent recovery 不绕过该 cap
 - Web Settings 有 Explorer row 和完整 role override round-trip；session inspector 轻量显示 effective profile/options，默认首页没有新的 orchestration panel
+- root/child ContextReport 数学可对账，既显示 root peak，也显示 root/child aggregate、provider-view/tool-artifact bytes 与 total；Web 通过现有 inspector 的懒加载 bounded Context tab 暴露，不增加首页 dashboard

@@ -999,6 +999,10 @@ func TestEngineRejectsOversizedMainRequestBeforeProviderCall(t *testing.T) {
 	if _, ok := findEventByType(events, "provider.call"); ok {
 		t.Fatalf("locally rejected request must not emit provider.call: %#v", events)
 	}
+	terminal := terminalRequestEvents(events, stringFromAny(prepared.Data["request_id"]))
+	if len(terminal) != 1 || terminal[0].Type != "provider.request.failed" || terminal[0].Data["status"] != "rejected" {
+		t.Fatalf("budget rejection must have one terminal lifecycle event: %#v", terminal)
+	}
 	for _, forbidden := range []string{"provider.retry", "provider.auto_resume", "provider.max_tokens_resume"} {
 		if _, ok := findEventByType(events, forbidden); ok {
 			t.Fatalf("local unfit must not enter %s: %#v", forbidden, events)
@@ -1041,7 +1045,8 @@ func TestSemanticSummaryBudgetRejectionFallsBackToDeterministicCompaction(t *tes
 	for i := 0; i < 8; i++ {
 		messages = append(messages, session.NewMessage("user", strings.Repeat("earlier context ", 12)))
 	}
-	view, _, didCompact, err := engine.compactor.build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, engine.semanticSummaryFunc(adapter, meta, state.Turn, profile), func(evt events.Event) error {
+	requestContext := requestBudgetContext{RequestKind: requestKindMain, SessionID: meta.ID, Turn: state.Turn}
+	view, _, didCompact, err := engine.compactor.build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, engine.semanticSummaryFunc(adapter, meta, requestContext, profile), func(evt events.Event) error {
 		return engine.store.AppendEvent(meta.ID, evt)
 	})
 	if err != nil {
@@ -1060,15 +1065,19 @@ func TestSemanticSummaryBudgetRejectionFallsBackToDeterministicCompaction(t *tes
 	if loadErr != nil {
 		t.Fatalf("load events: %v", loadErr)
 	}
-	var found bool
+	var semanticRequestID string
 	for _, evt := range events {
 		if evt.Type == "provider.request.prepared" && evt.Data["request_kind"] == requestKindSemanticSummary && evt.Data["fit"] == false {
-			found = true
+			semanticRequestID = stringFromAny(evt.Data["request_id"])
 			break
 		}
 	}
-	if !found {
+	if semanticRequestID == "" {
 		t.Fatalf("expected semantic-summary rejected snapshot, got %#v", events)
+	}
+	terminal := terminalRequestEvents(events, semanticRequestID)
+	if len(terminal) != 1 || terminal[0].Type != "provider.request.failed" || terminal[0].Data["status"] != "rejected" {
+		t.Fatalf("semantic budget rejection must have one terminal lifecycle event: %#v", terminal)
 	}
 	finished, ok := findEventByType(events, "compact.finished")
 	if !ok || finished.Data["semantic_summary_status"] != "failed" {

@@ -94,6 +94,14 @@ RequestEstimator
 - `raw_provider.thinking_strategy` 记录 adapter 本轮实际采用的 thinking / reasoning 请求策略，例如 OpenAI Responses summary、Anthropic-compatible manual budget、Google thinking budget 或 provider default；它是诊断观测字段，不要求 CLI / Web 层据此构造 replay。
 - 当 session metadata 中的 `provider_options.raw_sidecar=true` 时，runtime 会把本次 turn 的诊断 envelope 另存为 `.go-cli-agent/sessions/<id>/provider-raw/<turn>.json`。该 sidecar 只包含 provider、model、turn、timestamp、provider_response_id、内部归一化 `stop_reason` 和 adapter 已选择的 raw provider items；它只用于 replay 诊断和审计，不替代 `messages.jsonl` / `events.jsonl`，也不要求 CLI 或 Web 用 provider-native item 续跑。
 
+usage presence 是 provider contract 的一部分：
+
+- `Usage.Reported=true` 表示上游响应确实包含 usage / usageMetadata 对象；对象存在且计数为零仍是 known zero
+- 上游未返回 usage 对象时 `Reported=false`，runtime/report 必须显示 unknown，不能把 Go 零值当成实测 0
+- 兼容旧 adapter 或旧 event 时，任一 token counter 非零可标记为 `legacy_inferred` known usage；没有 presence 标记且全部为零仍为 unknown
+- OpenAI、Anthropic 与 Google 的响应 usage 字段必须按可空对象解析，不能用内嵌零值 struct 丢失 presence
+- lifecycle/report 中的 usage source 只接受稳定 `provider` / `legacy_inferred`；旧 event 缺 source 时按 presence/counter 规则推导，任意其他字符串不得进入 ContextReport
+
 #### 2.2.1 Result-level micro-compaction replay contract
 
 - micro-compaction 的选择单位是独立 `ToolResult`，同一 tool message 允许较旧 result 已压缩、较新 result 完整；不得拆分或回写 durable message record
@@ -118,6 +126,16 @@ RequestEstimator
 - tail 收缩必须按 call/result alias 闭包删除，不能留下 dangling OpenAI function call/output、Anthropic tool_use/tool_result 或 Google functionCall/functionResponse；最新 external instruction、最新 steer 与最新 tool result replay closure 不得删除
 - tool schemas、system prompt、metadata/provider envelope 或不可丢单条消息本身不可满足时，runtime 返回 `request_budget_unfit`。错误至少包含 request_kind、blocking_component、estimated_input_tokens、available_input_tokens、reserved_output_tokens、effective_window_tokens 与最终 snapshot，不包含请求正文
 - 最终 `provider.request.prepared` 与随后 `provider.call` 使用同一个 fitted TurnRequest/snapshot；`fit=false` 只写 local rejection/attempt facts，不进入 adapter retry/auto-resume。每个 `provider.request.budget_action` 通过 request id/kind 记录 pass、action、before/after wire bytes/tokens 与受影响 id/count
+
+#### 2.2.4 Request lifecycle correlation
+
+- 每个 `main` / `semantic_summary` preflight 生成稳定 request id：`<session>:<turn>:<request_kind>:<request_sequence>`；prepared event 同时保存 turn、request sequence、parent/root/queue id 和 canonical budget snapshot
+- `compact.started` / `finished` / `reused` / `deferred` 关联触发该 provider view 的 main request id；semantic-summary 自身使用 `request_kind=semantic_summary`，不能与 main usage 合并
+- adapter callback 事件（包括 `provider.retry` / `provider.error`）由 runtime 补入同一 request id/kind/turn/sequence；transport retry 是 request 内 attempt，不生成新的 budget snapshot
+- 成功请求写 `provider.request.completed`，字段至少包含 request correlation、stop reason、provider response id 和 `{reported,input/output/cache counters}` usage
+- transport/local 失败写 `provider.request.failed`，字段至少包含 correlation、`status=failed|cancelled|rejected`、`usage.reported=false` 与安全的 typed error/rejection class；不保存错误正文
+- 每个 prepared request 最多写一个 completed/failed terminal lifecycle；budget rejection、semantic-summary timeout、provider cancellation、provider call 前 pause 与 retry-attempt 事实写入失败都必须落入这一规则。provider call 前 pause 使用稳定 `paused_before_provider_call`，retry-attempt 持久化失败使用 `provider_attempt_record_failed`
+- main success 继续写兼容 `turn.stopped`。新报告优先使用 completed/failed，旧 session 才回退到 `turn.stopped`；同一 lifecycle 事件不得重复计费
 
 ### 2.3 EventSink
 

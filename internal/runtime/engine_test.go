@@ -1288,6 +1288,18 @@ func TestEngineProviderAutoResumeReportsProviderAttemptAppendError(t *testing.T)
 	if callCount != 1 {
 		t.Fatalf("expected provider to stop after first failed call, got %d calls", callCount)
 	}
+	events, loadErr := loadEvents(engine.store, meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	prepared, ok := findRequestEvent(events, "provider.request.prepared", requestKindMain)
+	if !ok {
+		t.Fatalf("missing prepared request before provider-attempt failure: %#v", events)
+	}
+	terminal := terminalRequestEvents(events, stringFromAny(prepared.Data["request_id"]))
+	if len(terminal) != 1 || terminal[0].Type != "provider.request.failed" || terminal[0].Data["status"] != "failed" || terminal[0].Data["error_class"] != "upstream_timeout" {
+		t.Fatalf("provider failure must retain its single upstream terminal event before auto-resume bookkeeping fails: %#v", terminal)
+	}
 }
 
 func TestEngineProviderAutoResumeReportsEventAppendError(t *testing.T) {
@@ -1378,14 +1390,13 @@ func TestEngineGoalAccountingReportsEventAppendError(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	eventsPath := filepath.Join(engine.store.SessionDir(meta.ID), "events.jsonl")
+	engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type == "goal.accounting.updated" {
+			blockPathAsDir(t, eventsPath, "events")
+		}
+	}
 	adapter := emittingAdapter{
 		run: func(_ context.Context, _ provider.TurnRequest, _ provider.EmitFunc) (provider.TurnResult, error) {
-			if err := os.Remove(eventsPath); err != nil && !os.IsNotExist(err) {
-				t.Fatalf("remove events: %v", err)
-			}
-			if err := os.Mkdir(eventsPath, 0o700); err != nil {
-				t.Fatalf("block events path: %v", err)
-			}
 			return provider.TurnResult{
 				Text:       "accounting should fail before this persists",
 				StopReason: "done_candidate",

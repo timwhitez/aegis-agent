@@ -970,7 +970,7 @@ Completion record：
 - Browser/tests/race：HARNESS 聚焦回归、相关 Go 包完整回归、`CGO_ENABLED=1 go test -race ./internal/runtime ./internal/session -run 'Test.*(Explorer|Agent.*Background|Parent.*Resume).*'`、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、`node --check internal/webconsole/assets/*.js` 与 140 项 Web utility tests 均通过；deterministic parent/child fixture 证明 child raw trajectory sentinel 不进入 parent request；未启动 Docker。
 - HARNESS-001 status：`complete`；`issues.md` 已标记 Resolved，sync/background+wait/failure/pause/cancel/recovery、effective option snapshot、Web round-trip 与默认首页保持简洁均有永久回归。
 
-### [ ] OBS-001 — 持久化 context budget telemetry 并聚合 root/child
+### [x] OBS-001 — 持久化 context budget telemetry 并聚合 root/child
 
 - Issue：OBS-001。
 - Priority：P2 observability/benchmark。
@@ -1027,11 +1027,11 @@ Permanent tests：
 
 Acceptance checklist：
 
-- [ ] hard-fit 与 telemetry 读取同一 snapshot 对象/序列化，不存在公式复制。
-- [ ] 每次 provider request 都能关联 budget、compaction action 与真实/unknown usage。
-- [ ] root/child report 可同时回答“主窗口是否受保护”和“总 token 是否增加”。
-- [ ] advanced JSON/SDK/Web inspector 可查询，默认首页没有 dashboard 化。
-- [ ] deterministic fixture 进入普通 CI；live provider 与 cost 不成为无 credential 环境的隐式依赖。
+- [x] hard-fit 与 telemetry 读取同一 snapshot 对象/序列化，不存在公式复制。
+- [x] 每次 provider request 都能关联 budget、compaction action 与真实/unknown usage。
+- [x] root/child report 可同时回答“主窗口是否受保护”和“总 token 是否增加”。
+- [x] advanced JSON/SDK/Web inspector 可查询，默认首页没有 dashboard 化。
+- [x] deterministic fixture 进入普通 CI；live provider 与 cost 不成为无 credential 环境的隐式依赖。
 
 Validation：
 
@@ -1057,11 +1057,14 @@ Commit subject：`feat(runtime): expose context budget and lineage telemetry`
 
 Completion record：
 
-- Commit：`pending`
-- Report schema version：`pending`
-- Fixture artifact：`pending`
-- Tests/race/browser：`pending`
-- OBS-001 status：`pending`
+- Commit：本任务提交 `feat(runtime): expose context budget and lineage telemetry`。
+- Report schema version：`1`；canonical `session.RequestBudgetSnapshot` schema 同为 `1`，runtime hard-fit 使用该类型的 alias，报告直接读取 prepared event 中的同一 JSON。
+- Lifecycle/usage：main 与 semantic-summary 的 prepared、budget action、compaction、callback/retry 和唯一 completed/failed terminal event 以 request id/kind/turn/sequence 关联；OpenAI/Anthropic/Google 区分 missing usage 与 reported zero，稳定 source 仅为 `provider` / `legacy_inferred`。
+- Lineage/report surfaces：Store/Core/SDK、`sessions context <id> --json` 与 Web `/api/sessions/<id>/context` 共用 report schema；递归 lineage 分列 root/child peak、root/child/total aggregate、三类 provider-view bytes、artifact bytes、usage 和 unknown usage，RFC3339Nano 时间按真实时序对账。Web Context tab 懒加载/手工刷新，detail 总预算 64，aggregate 不截断。
+- Fixture artifact：`validation/cmd/contextharnessfixture`；三种 scenario 名为 `single_root_broad`、`single_root_narrowed`、`delegated_explorer`。delegated 输出 `root_peak=500`、`root_aggregate=950`、`child_aggregate=1400`、`total=2350`，并断言 total 使用 root aggregate 对账；连续两次 `go run` 输出 byte-for-byte 相同。
+- Tests/race/browser：OBS 聚焦测试、runtime/session telemetry race、相关包完整回归、`go test ./... -count=1 -timeout=600s`、scoped `go vet`、fixture 双运行 `cmp`、`node --check` 与 142 项 Web utility tests 全通过；`gofmt -l` / `git diff --check` 无输出，未启动 Docker。
+- Spec sync：`spec/01`、`02`、`03`、`07`、`08`、`09`、`10`、`11`、`14`、`17` 已同步 canonical snapshot、request lifecycle/usage、lineage aggregation、CLI/SDK/Web 查询面与 deterministic comparator。
+- OBS-001 status：`complete`；`issues.md` 已标记 Resolved。
 
 ---
 

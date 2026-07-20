@@ -191,6 +191,27 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 - 收缩 pass 有固定上限，已提交 action 的 adapter wire bytes 必须严格递减；每个 action 以 request id/kind 关联 before/after estimate 和受影响的 message/tool-call id/count，不记录内容正文
 - `provider.call` 只能在最终 snapshot `fit=true`、prepared event 已落盘且 pause gate 已通过后发出，避免把本地拒绝记成已发送调用；local unfit 不进入 provider transport retry、auto-resume 或 max-token resume
 
+### 2.11.2 ContextTelemetryReporter
+
+职责：
+
+- 把 `events.jsonl`、`messages.jsonl` 与 `session.json` 中已经存在的事实派生成 versioned `ContextReport`；报告不写回 session，不保存第二套请求状态，也不参与 compaction、threshold 或 delegation 决策
+- 直接反序列化 `provider.request.prepared.data.request_budget` 中的同一个 `session.RequestBudgetSnapshot`；runtime 只保留类型别名，hard-fit 与报告不得复制 estimator 公式或维护字段相同的另一种 snapshot
+- 以 `request_id=<session>:<turn>:<request_kind>:<request_sequence>` 归并 prepared、budget action、compaction、provider callback、completed/failed 与 legacy `turn.stopped`；`main` 和 `semantic_summary` 是不同 request kind，transport retry 仍属于同一个 request id
+- 只输出尺寸、计数、ID、状态、时间与 provider 已报告的 usage；不得复制 system/user/tool 正文、tool schema、metadata value、error 正文、display output 或 raw provider payload
+- 从请求 session 自动解析 root，递归遍历 child，按 session id 去重并对 lineage cycle fail closed；root 指标和 child 指标必须分列，不能只给 total
+- session 报告至少包含 request/turn/tool-call 数、compaction lifecycle 计数、request peak/aggregate、provider-view inline/compacted/pointerized bytes、唯一 tool artifact persisted bytes、known provider usage、unknown usage request 数和 wall time
+- root aggregate 至少分别给出 root peak、child peak、root/child/total aggregate input、root/child/total provider-view inline/compacted/pointerized bytes、root/child/total artifact bytes 与 known usage、root/child request/turn/tool-call/compaction 数、child session 数、unknown usage 数与 lineage wall time
+
+查询面：
+
+- Store：`ContextReport(sessionID)`，使用 streaming `VisitEvents` / `VisitMessages`，不要求把超长 JSONL 整体载入内存
+- SDK/Core：`Context(sessionID)`
+- CLI：`go-cli-agent sessions context <session-id> --json`
+- Web：`GET /api/sessions/<id>/context`；只在用户打开现有 inspector 的 Context tab 时懒加载，并对 session/request detail 设 64 项总预算和显式 truncation metadata，aggregate 不截断
+
+`ContextReport` 是 operator/read-only advanced surface。默认 Web 首页不增加 telemetry dashboard，也不按报告结果自动改 prompt、threshold 或委派策略。
+
 ### 2.12 SessionContractManager
 
 职责：

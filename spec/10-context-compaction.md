@@ -156,6 +156,14 @@ compaction 只影响：
 - 当前 todo / ready-task / blocked-task / completed-task 计数
 - 当前 `proof_read_budget` 兼容摘要，以及 artifact/proof 摘要数量等足以支持 proof-at-boundary 复核的上下文指标
 
+### 5.3 Request correlation 与只读报告
+
+- runtime 在构造 provider view 前确定 main request correlation；`compact.started`、`compact.finished`、`compact.reused`、`compact.deferred` 都记录同一 `request_id`、`request_kind=main`、`turn` 与 `request_sequence`
+- full compaction 内的 semantic summary 是独立 provider request，使用 `request_kind=semantic_summary`；它自己的 prepared/completed/failed/usage 不能覆盖或伪装成 main request usage
+- hard-fit shrink action、最终 prepared snapshot 与 compaction lifecycle 以 request id 归并。snapshot 使用 adapter wire estimator 的最终结果；compact `input_chars` 只保留为 trigger 诊断值，不能替代 request estimate
+- ContextReport 从 canonical event/message/session 文件按需派生，不写入 prompt、summary 或第二套 telemetry store；报告只带尺寸/计数/ID/usage，不带 compaction summary 正文、错误正文或 tool output
+- provider 未返回 usage 时报告 `reported=false`；已报告的真实零值与 unknown 必须可区分，报告中的 source 只允许 `provider` / `legacy_inferred`
+
 ## 6. 触发条件
 
 ### 6.0 Context Window 与阈值推导

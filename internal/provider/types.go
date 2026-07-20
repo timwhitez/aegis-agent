@@ -49,10 +49,11 @@ type ToolCall struct {
 }
 
 type Usage struct {
-	InputTokens              int `json:"input_tokens,omitempty"`
-	OutputTokens             int `json:"output_tokens,omitempty"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	Reported                 bool `json:"reported"`
+	InputTokens              int  `json:"input_tokens,omitempty"`
+	OutputTokens             int  `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int  `json:"cache_read_input_tokens,omitempty"`
 }
 
 type TurnResult struct {

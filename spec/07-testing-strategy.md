@@ -217,6 +217,15 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - sync、background + wait、失败、暂停、取消与 parent resume/recovery 沿用现有 lifecycle；handoff 经过统一 ToolResult/background budget，deterministic fake-provider fixture 证明 parent provider messages 不含 child 原始 tool trajectory，只含有界 final/reference
 - Web Settings 渲染 Explorer row 与 reasoning/output 字段；session inspector 显示 role、provider/model、effective reasoning/output/isolation/tool profile；默认首页 fixture 不出现新的 orchestration panel
 
+### 4.4.3 Context report 与 harness comparator
+
+- `internal/session` 用固定 event/message 时间线验证 canonical `RequestBudgetSnapshot` 反序列化、request lifecycle 归并、usage known/unknown 与稳定 source allowlist、artifact bytes 去重、RFC3339Nano 亚秒时间边界、crash 后 unknown request 与坏 lineage fail-closed
+- root/recursive-child fixture 验证 session id 去重、root peak、child peak、root/child/total aggregate、provider-view 三类 bytes、artifact bytes、known usage 与 unknown usage 数学对账；用 child id 查询仍返回同一 root tree，并保留 `requested_session_id`
+- runtime fixture 验证 main/semantic-summary、compaction lifecycle、transport retry 和 completed/failed 都带同一 request correlation；同一 request 的 transport retry 不生成新 snapshot，budget rejection、semantic-summary timeout、provider cancellation、call 前 pause 与 retry-attempt 持久化失败各只有一个 typed terminal event；event/report 中的 sentinel prompt、tool output、secret-shaped metadata value 不得出现
+- CLI `sessions context <id> --json`、SDK `Context` 与 Web `/api/sessions/<id>/context` 共享 schema version；Web detail 总预算为 64，aggregate 保持完整并明确标记 omitted session/request 数
+- `validation/cmd/contextharnessfixture` 生成 versioned deterministic JSON，对相同事实比较 `single_root_broad`、`single_root_narrowed`、`delegated_explorer`。普通 CI 断言 narrowed root peak 不高于 broad、delegated root peak 小于 broad、delegated child aggregate 非零、delegated total 等于 root aggregate 加 child aggregate 且单列、重复运行 JSON 完全一致
+- fixture 使用 repo-owned fixed workspace/scripted fake facts，不调用收费 provider、不要求 credential；live-provider/cost smoke 只能作为显式可选 validation，unknown usage 不参与 cost 推算
+
 ### 4.5 Compaction
 
 - 超过阈值时只压缩 provider 输入视图

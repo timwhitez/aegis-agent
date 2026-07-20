@@ -18,6 +18,7 @@ type ProbeResult = runtime.ProbeResult
 type SessionState = session.State
 type TaskBoard = session.TaskBoard
 type SessionSummary = session.SessionSummary
+type ContextReport = session.ContextReport
 
 // Runner is the public core SDK facade. Experimental queue/delegation surfaces
 // stay behind the CLI/internal layer until they are stabilized separately.
@@ -59,4 +60,8 @@ func (r *Runner) Tasks(sessionID string) (TaskBoard, error) {
 
 func (r *Runner) List(limit int) ([]SessionSummary, error) {
 	return r.core.List(limit)
+}
+
+func (r *Runner) Context(sessionID string) (ContextReport, error) {
+	return r.core.Context(sessionID)
 }

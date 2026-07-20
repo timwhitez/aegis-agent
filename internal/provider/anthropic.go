@@ -83,7 +83,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			Name      string          `json:"name"`
 			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
-		Usage struct {
+		Usage *struct {
 			InputTokens              int `json:"input_tokens"`
 			OutputTokens             int `json:"output_tokens"`
 			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
@@ -96,6 +96,16 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	}, body, &resp, emit)
 	if err != nil {
 		return TurnResult{}, err
+	}
+	usage := Usage{}
+	if resp.Usage != nil {
+		usage = Usage{
+			Reported:                 true,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+		}
 	}
 	stopReasonRaw := strings.TrimSpace(resp.StopReason)
 	var textParts []string
@@ -216,12 +226,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		ToolCalls:             calls,
 		StopReason:            stopReason,
 		ProviderResponseID:    resp.ID,
-		Usage: Usage{
-			InputTokens:              resp.Usage.InputTokens,
-			OutputTokens:             resp.Usage.OutputTokens,
-			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
-		},
+		Usage:                 usage,
 		RawProvider: rawProviderEnvelope("stop_reason", resp.StopReason, map[string]any{
 			"thinking_block_count":        thinkingBlockCount,
 			"redacted_thinking_count":     redactedThinkingCount,
@@ -229,8 +234,8 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			"thinking_replay_observed":    thinkingReplayObserved,
 			"thinking_strategy":           thinkingStrategy,
 			"prompt_cache_enabled":        promptCacheEnabled(req.PromptCache),
-			"cache_creation_input_tokens": resp.Usage.CacheCreationInputTokens,
-			"cache_read_input_tokens":     resp.Usage.CacheReadInputTokens,
+			"cache_creation_input_tokens": usage.CacheCreationInputTokens,
+			"cache_read_input_tokens":     usage.CacheReadInputTokens,
 		}),
 	}, nil
 }

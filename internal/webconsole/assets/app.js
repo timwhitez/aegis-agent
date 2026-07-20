@@ -97,6 +97,14 @@ const inspectorViewState = {
   tab: 'tasks'
 };
 
+const contextReportViewState = {
+  sessionID: '',
+  report: null,
+  loading: false,
+  error: '',
+  requestSeq: 0
+};
+
 const historyExpansionViewState = {
   parentIds: new Set()
 };
@@ -473,6 +481,48 @@ function activeInspectorTab() {
 
 function setInspectorTab(tab) {
   inspectorViewState.tab = String(tab || 'tasks');
+}
+
+function resetSessionContextReportState() {
+  contextReportViewState.sessionID = '';
+  contextReportViewState.report = null;
+  contextReportViewState.loading = false;
+  contextReportViewState.error = '';
+  contextReportViewState.requestSeq += 1;
+}
+
+async function loadSessionContextReport(options = {}) {
+  const sessionID = String(state.sessionDetail?.metadata?.id || state.sessionId || '').trim();
+  if (!sessionID || isEphemeralSessionId(sessionID)) {
+    return;
+  }
+  if (!options.force && contextReportViewState.sessionID === sessionID && contextReportViewState.report) {
+    return;
+  }
+  const requestSeq = contextReportViewState.requestSeq + 1;
+  contextReportViewState.requestSeq = requestSeq;
+  contextReportViewState.sessionID = sessionID;
+  contextReportViewState.loading = true;
+  contextReportViewState.error = '';
+  renderCurrentSession();
+  try {
+    const report = await requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/context`);
+    if (contextReportViewState.requestSeq !== requestSeq || state.sessionId !== sessionID) {
+      return;
+    }
+    contextReportViewState.report = report;
+  } catch (err) {
+    if (contextReportViewState.requestSeq !== requestSeq || state.sessionId !== sessionID) {
+      return;
+    }
+    contextReportViewState.report = null;
+    contextReportViewState.error = err?.message || 'Unable to load context telemetry.';
+  } finally {
+    if (contextReportViewState.requestSeq === requestSeq && state.sessionId === sessionID) {
+      contextReportViewState.loading = false;
+      renderCurrentSession();
+    }
+  }
 }
 
 function createEmptyChatRenderCache() {
@@ -1079,8 +1129,19 @@ function setupEventListeners() {
 
     const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
     if (inspectorTab) {
-      setInspectorTab(inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks');
+      const tab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
+      setInspectorTab(tab);
       renderCurrentSession();
+      if (tab === 'context') {
+        await loadSessionContextReport();
+      }
+      return;
+    }
+
+    const contextRefresh = event.target.closest('[data-context-report-refresh]');
+    if (contextRefresh) {
+      contextRefresh.disabled = true;
+      await loadSessionContextReport({ force: true });
       return;
     }
 
@@ -1712,6 +1773,7 @@ function adoptSession(sessionID, backed) {
     resetMessagePagingWindowState();
     resetWorkspaceSessionSync();
     resetSessionFileChangesState();
+    resetSessionContextReportState();
     if (typeof clearMarkdownCache === 'function') {
       clearMarkdownCache();
     }
@@ -1729,6 +1791,7 @@ function resetChatSession() {
   state.sessionId = nextEphemeralSessionId();
   state.sessionBacked = false;
   state.sessionDetail = null;
+  resetSessionContextReportState();
   resetOptimisticMessages();
   resetLiveEvents();
   setNextSendInterruptArmed(false);

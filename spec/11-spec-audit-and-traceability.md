@@ -193,6 +193,22 @@
 - `request_user_input` 保存 `pending_request.tool_call_id`，使 Web active runner、server restart fallback、取消和回答都能补齐 provider replay 所需 tool result
 - 以 pending Plan Mode session 为 parent 的 child/delegate/queue 提交必须拒绝；独立新 session 或无 parent queue job 不受影响
 
+### 2.12 Context budget 与 lineage observability
+
+来源：
+
+- OBS-001 对 compaction、hard-fit 与 delegation 效率缺少可比较证据的审计
+- CTX-003B 已落地的 adapter wire estimator 与 `RequestBudgetSnapshot`
+- HARNESS-001 已落地的 root/parent/role/tool-profile durable lineage
+
+锁定结论：
+
+- `session.RequestBudgetSnapshot` 是 hard-fit 与 telemetry 唯一预算对象；runtime 保留 alias，ContextReport 直接解析 prepared event 的同一 JSON，不复制公式
+- main/semantic-summary 请求都有唯一 completed/failed terminal lifecycle 和 usage presence；compact/provider callback 事件带 request id/kind/turn/sequence，transport retry 不生成新 snapshot，unknown usage 不计为零且 source 只允许 provider/legacy_inferred
+- Store/SDK/CLI 提供完整只读报告；Web 只在 session inspector 懒加载 64 项 bounded view，aggregate 不截断，默认首页不增加 dashboard
+- lineage aggregate 同时报告 root peak、child peak、root/child/total aggregate、provider-view/tool-artifact bytes 与 usage，避免只用 total 或只用 root peak 描述委派收益；时间边界按 RFC3339Nano 实际时序而非字符串顺序计算
+- deterministic 三结构 fixture 进入普通 CI，delegated total 用 root aggregate + child aggregate 对账；不根据 fixture 自动修改 threshold、prompt 或 delegation，也不把 live provider/cost 设为无 credential 环境的门禁
+
 ## 3. 已验证的 provider 协议事实
 
 ### 3.1 OpenAI Responses

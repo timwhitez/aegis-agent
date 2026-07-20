@@ -2089,6 +2089,7 @@ function renderInspectorPanel() {
     ['plan', 'Plan'],
     ['tasks', 'Tasks'],
     ['agents', 'Background'],
+    ['context', 'Context'],
     ['timeline', 'Timeline']
   ];
   const selectedTab = activeInspectorTab();
@@ -2101,6 +2102,8 @@ function renderInspectorPanel() {
       ? renderPlanPanel(detail)
     : active === 'agents'
       ? renderAgentsPanel(detail)
+      : active === 'context'
+        ? renderContextPanel(detail)
       : active === 'timeline'
         ? renderTimelinePanel(detail)
         : renderTasksPanel(detail);
@@ -2117,6 +2120,95 @@ function renderInspectorPanel() {
     </div>
     <div class="inspector-content">${panel}</div>
   `;
+}
+
+function renderContextPanel(detail) {
+  const sessionID = String(detail?.metadata?.id || '').trim();
+  const loading = contextReportViewState.loading && contextReportViewState.sessionID === sessionID;
+  const error = contextReportViewState.sessionID === sessionID ? contextReportViewState.error : '';
+  const report = contextReportViewState.sessionID === sessionID ? contextReportViewState.report : null;
+  if (loading && !report) {
+    return '<div class="empty-panel">Loading context budget and lineage telemetry…</div>';
+  }
+  if (error && !report) {
+    return `
+      <div class="empty-panel">${escapeHTML(error)}</div>
+      <button class="mini-link-btn" type="button" data-context-report-refresh>Retry</button>
+    `;
+  }
+  if (!report) {
+    return `
+      <div class="empty-panel">Context telemetry is loaded only when this inspector tab is opened.</div>
+      <button class="mini-link-btn" type="button" data-context-report-refresh>Load context</button>
+    `;
+  }
+  const aggregate = report.aggregate || {};
+  const usage = aggregate.total_provider_usage || {};
+  const truncation = report.truncation;
+  const sessions = maybeArray(report.sessions);
+  return `
+    <div class="goal-panel context-panel">
+      <div class="goal-panel-head">
+        <div>
+          <div class="inspector-eyebrow">Context report v${escapeHTML(String(report.schema_version || 1))}</div>
+          <h4>${escapeHTML(shortId(report.root_session_id || sessionID))}</h4>
+        </div>
+        <button class="mini-link-btn" type="button" data-context-report-refresh ${loading ? 'disabled' : ''}>Refresh</button>
+      </div>
+      <div class="goal-budget-row">
+        ${renderMiniMetric('Root peak', contextMetric(aggregate.root_peak_estimated_input_tokens))}
+        ${renderMiniMetric('Child peak', contextMetric(aggregate.child_peak_estimated_input_tokens))}
+        ${renderMiniMetric('Root aggregate', contextMetric(aggregate.root_aggregate_estimated_input_tokens))}
+        ${renderMiniMetric('Child aggregate', contextMetric(aggregate.child_aggregate_estimated_input_tokens))}
+        ${renderMiniMetric('Total input', contextMetric(aggregate.total_estimated_input_tokens))}
+        ${renderMiniMetric('Unknown usage', contextMetric(aggregate.unknown_usage_request_count))}
+      </div>
+      <div class="goal-section">
+        <div class="goal-section-title">Provider usage</div>
+        <div class="kv-list">
+          ${renderKVRow('Input tokens', contextMetric(usage.input_tokens))}
+          ${renderKVRow('Output tokens', contextMetric(usage.output_tokens))}
+          ${renderKVRow('Cache read', contextMetric(usage.cache_read_input_tokens))}
+          ${renderKVRow('Cache creation', contextMetric(usage.cache_creation_input_tokens))}
+        </div>
+      </div>
+      <div class="goal-section">
+        <div class="goal-section-title">Lineage</div>
+        <div class="kv-list">
+          ${renderKVRow('Sessions', contextMetric(aggregate.session_count))}
+          ${renderKVRow('Child sessions', contextMetric(aggregate.child_session_count))}
+          ${renderKVRow('Requests', contextMetric(aggregate.total_request_count))}
+          ${renderKVRow('Turns', contextMetric(aggregate.total_turn_count))}
+          ${renderKVRow('Tool calls', contextMetric(aggregate.total_tool_call_count))}
+          ${renderKVRow('Compactions', contextMetric(aggregate.total_compaction_count))}
+          ${renderKVRow('Wall time', `${contextMetric(aggregate.wall_time_ms)} ms`)}
+        </div>
+      </div>
+      <div class="goal-section">
+        <div class="goal-section-title">Session detail</div>
+        <div class="goal-item-list">
+          ${sessions.map((item) => `
+            <div class="goal-item">
+              <div class="goal-item-top">
+                <span>${escapeHTML(shortId(item.session_id || 'session'))}</span>
+                <span class="status-badge ${item.session_id === report.root_session_id ? 'completed' : 'queued'}">${item.session_id === report.root_session_id ? 'root' : escapeHTML(item.agent_role || 'child')}</span>
+              </div>
+              <div class="goal-meta-line">peak ${contextMetric(item.metrics?.peak_estimated_input_tokens)} · aggregate ${contextMetric(item.metrics?.aggregate_estimated_input_tokens)} · requests ${contextMetric(item.metrics?.request_count)}</div>
+            </div>
+          `).join('') || '<div class="empty-panel compact">No request snapshots recorded.</div>'}
+        </div>
+      </div>
+      ${truncation?.truncated ? `<div class="goal-meta-line">Bounded view: ${contextMetric(truncation.omitted_session_count)} sessions and ${contextMetric(truncation.omitted_request_count)} requests omitted. Aggregate totals are complete.</div>` : ''}
+    </div>
+  `;
+}
+
+function contextMetric(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) {
+    return '0';
+  }
+  return Math.trunc(number).toLocaleString('en-US');
 }
 
 function renderPlanPanel(detail) {

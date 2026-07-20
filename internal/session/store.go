@@ -666,6 +666,31 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 	return out, nil
 }
 
+// VisitEvents streams the canonical events.jsonl up to a stable append
+// boundary. It preserves the same validation and missing-file semantics as
+// LoadEvents without materializing the complete event history.
+func (s *Store) VisitEvents(sessionID string, visit func(events.Event) error) error {
+	path, err := s.sessionPath(sessionID, "events.jsonl")
+	if err != nil {
+		return err
+	}
+	seen := map[string]struct{}{}
+	err = readJSONLVisit(path, func(event events.Event) error {
+		if err := validateEvent(sessionID, event); err != nil {
+			return err
+		}
+		if _, exists := seen[event.ID]; exists {
+			return fmt.Errorf("duplicate event id: %s", event.ID)
+		}
+		seen[event.ID] = struct{}{}
+		return visit(event)
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 func (s *Store) LoadEventsTail(sessionID string, limit int) ([]events.Event, bool, error) {
 	path, err := s.sessionPath(sessionID, "events.jsonl")
 	if err != nil {

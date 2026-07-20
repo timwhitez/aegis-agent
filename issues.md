@@ -485,7 +485,7 @@ multi-agent 能力最初围绕 planner/generator/evaluator 与 large-project exe
 
 - Severity: P2
 - Confidence: High
-- Status: Open
+- Status: Resolved
 
 ### Evidence
 
@@ -522,6 +522,18 @@ multi-agent 能力最初围绕 planner/generator/evaluator 与 large-project exe
 - deterministic fixture 在 CI 中输出机器可读对比，不依赖外部收费 provider；可选 live-provider smoke 单独运行。
 - Web-first 默认页面保持简洁；operator 可在 session detail/CLI JSON 中查看高级指标。
 - telemetry 只记录尺寸、计数、ID 和已存在的 provider usage，不复制 prompt/tool 原文，也不改变项目“不做默认 runtime redaction”的既有边界。
+
+### Resolution
+
+- `session.RequestBudgetSnapshot` 成为 hard-fit 与 telemetry 的唯一 versioned 预算对象，runtime 仅保留 type alias；prepared snapshot、budget action、main/semantic-summary compaction lifecycle、provider callback、transport retry 与 completed/failed terminal event 共享 `request_id` / kind / turn / sequence correlation
+- 每个已 prepared request 只有一个 durable completed/failed terminal lifecycle；budget rejection、semantic-summary timeout、provider cancellation、provider-call 前 pause 与 retry-attempt 事实持久化失败均有稳定 status/error class。transport retry 继续属于同一 request/snapshot，不制造伪请求
+- 三个 provider adapter 用显式 usage presence 区分“未返回”与“已报告 0”；报告只接受 `provider` / `legacy_inferred` source，unknown usage 不计入 known total，也不复制 provider error、raw payload 或 metadata value
+- `Store.ContextReport` 从 canonical metadata/messages/events streaming 派生 schema v1 报告；root/递归 child 同时对账 root/child peak、root/child/total aggregate input、provider-view inline/compacted/pointerized bytes、唯一 tool artifact bytes、request/turn/tool-call/compaction 数、known usage 与 unknown usage request 数
+- request/session/lineage 时间边界解析 RFC3339Nano 后比较并计算 wall time；不会因 `...00.100Z` 与 `...01Z` 字符串格式差异得到错误顺序。坏 lineage、foreign root、cycle/duplicate session fail closed
+- Core/SDK 提供 `Context(sessionID)`，CLI 提供 `sessions context <session-id> --json`，Web 提供 `GET /api/sessions/<id>/context`；现有 Session inspector 的 Context tab 才懒加载/手工刷新，detail 共用 64 项预算并显式报告 omitted session/request，aggregate 保持完整，默认首页不增加 dashboard
+- `validation/cmd/contextharnessfixture` 输出 deterministic schema v1 JSON，比较 `single_root_broad`、`single_root_narrowed`、`delegated_explorer`；delegated comparator 明确使用 root aggregate + child aggregate 对账 total，而不是误用 root peak
+- 永久回归覆盖 snapshot/lifecycle/usage/lineage/secret sentinel、CLI/SDK/Web bounded schema、fixture 确定性和 Web lazy behavior；聚焦测试、runtime/session race、相关包回归、`go test ./...`、scoped `go vet`、fixture 双运行 `cmp`、Web JS syntax 与 142 项 Node utility tests 全部通过，未启动 Docker
+- Resolution commit：本任务提交 `feat(runtime): expose context budget and lineage telemetry`
 
 ### Non-goals
 

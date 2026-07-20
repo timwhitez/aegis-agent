@@ -208,12 +208,15 @@ Plan Mode 行为：
 
 - 列出最近 session
 - 展示 ID、状态、时间、phase
+- `sessions context <session-id>` 从 canonical session/message/event 文件派生 versioned context budget 与 root/child lineage 报告；该查询只读，不写回 runtime state
 
 高频参数：
 
 - `--limit`
 - `--json`
 - `--config`
+
+`sessions context` 只接受一个 session id；`--json` 返回与 SDK `Context`、Web `GET /api/sessions/{id}/context` 相同的 `ContextReport` schema。文本模式只输出 root/session/request、root/child peak、total input、unknown usage 与 wall time 摘要，不展开 prompt、tool schema、metadata value、tool output 或 provider raw payload。
 
 ### 5.7 `goal`
 

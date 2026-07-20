@@ -2480,6 +2480,10 @@ func (r *Runner) List(limit int) ([]session.SessionSummary, error) {
 	return r.store.List(limit)
 }
 
+func (r *Runner) Context(sessionID string) (session.ContextReport, error) {
+	return r.store.ContextReport(sessionID)
+}
+
 func (r *Runner) Store() *session.Store {
 	return r.store
 }

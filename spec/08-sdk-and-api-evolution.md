@@ -34,10 +34,13 @@ type Runner interface {
   State(sessionID string) (SessionState, error)
   Tasks(sessionID string) (TaskBoard, error)
   List(ctx, ListSessionsRequest) ([]SessionSummary, error)
+  Context(sessionID string) (ContextReport, error)
 }
 ```
 
 扩展 phase 的 `delegate` / `queue` / `store-view` 能力若未来要进入 SDK，应通过单独的 experimental facade 或 package 暴露，而不是重新塞回默认 `Runner`。
+
+`Context` 是只读 advanced observability surface：它从 session 事实源派生 versioned budget/request/lineage 报告，不保存第二套状态，也不参与 compaction、threshold 或 delegation 决策。报告只含尺寸、计数、ID、时间、状态和 provider 已报告的 usage。
 
 ### 3.1 StartRequest
 
@@ -107,6 +110,7 @@ type Runner interface {
 - `GET /sessions/{id}/todo`
 - `GET /sessions/{id}/tasks`
 - `GET /sessions/{id}`
+- `GET /sessions/{id}/context`
 - `GET /sessions`
 - `GET /sessions/{id}/events`
 
@@ -173,6 +177,17 @@ type Runner interface {
 
 - child sessions
 - queued / running jobs
+
+### 5.8.1 `GET /sessions/{id}/context`
+
+响应：
+
+- versioned `ContextReport`
+- requested session 与解析后的 root session id
+- bounded or full session/request detail（具体 transport 可设 view budget）
+- root/child peak、root/child/total aggregate、provider-view/tool-artifact bytes、known provider usage 与 unknown usage request 数
+
+该资源必须只读并复用 canonical session/message/event 事实；不得返回 prompt/tool 原文、metadata value、错误正文、display output 或 raw provider payload。
 
 ### 5.9 `POST /queue/jobs`
 

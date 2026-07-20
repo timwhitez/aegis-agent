@@ -40,6 +40,8 @@ type fakeRunner struct {
 	delegateErr    error
 	startErr       error
 	listResult     []session.SessionSummary
+	contextResult  session.ContextReport
+	contextErr     error
 	taskBoard      session.TaskBoard
 	store          *session.Store
 	queueJob       session.QueueJob
@@ -159,6 +161,10 @@ func (f *fakeRunner) Tasks(string) (session.TaskBoard, error) {
 
 func (f *fakeRunner) List(int) ([]session.SessionSummary, error) {
 	return f.listResult, nil
+}
+
+func (f *fakeRunner) Context(string) (session.ContextReport, error) {
+	return f.contextResult, f.contextErr
 }
 
 func (f *fakeRunner) Store() *session.Store {
@@ -1652,6 +1658,39 @@ func TestSessionsCommandRendersSummary(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "s1") || !strings.Contains(stdout.String(), "awaiting_input") || !strings.Contains(stdout.String(), "phase=turn_decide") {
 		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestSessionsContextCommandEmitsVersionedJSONWithInterspersedFlag(t *testing.T) {
+	fake := newFakeRunner()
+	fake.contextResult = session.ContextReport{
+		SchemaVersion:      session.ContextReportSchemaVersion,
+		RequestedSessionID: "context-cli-root",
+		RootSessionID:      "context-cli-root",
+		Sessions:           []session.ContextSessionReport{},
+		Aggregate: session.ContextLineageAggregate{
+			SessionCount:              1,
+			RootRequestCount:          2,
+			TotalRequestCount:         2,
+			TotalEstimatedInputTokens: 123,
+		},
+	}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return fake, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	if err := Run(context.Background(), []string{"sessions", "context", "context-cli-root", "--json"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	var report session.ContextReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode context report: %v output=%s", err, stdout.String())
+	}
+	if report.SchemaVersion != session.ContextReportSchemaVersion || report.RootSessionID != "context-cli-root" || report.Aggregate.TotalEstimatedInputTokens != 123 {
+		t.Fatalf("unexpected context report: %#v", report)
 	}
 }
 

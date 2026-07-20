@@ -80,7 +80,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
-		UsageMetadata struct {
+		UsageMetadata *struct {
 			PromptTokenCount     int `json:"promptTokenCount"`
 			CandidatesTokenCount int `json:"candidatesTokenCount"`
 		} `json:"usageMetadata"`
@@ -95,15 +95,20 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	if err != nil {
 		return TurnResult{}, err
 	}
+	usage := Usage{}
+	if resp.UsageMetadata != nil {
+		usage = Usage{
+			Reported:     true,
+			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+		}
+	}
 	if len(resp.Candidates) == 0 {
 		if blockReason := strings.TrimSpace(resp.PromptFeedback.BlockReason); blockReason != "" {
 			return TurnResult{
 				StopReason:         "blocked",
 				ProviderResponseID: resp.ResponseID,
-				Usage: Usage{
-					InputTokens:  resp.UsageMetadata.PromptTokenCount,
-					OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-				},
+				Usage:              usage,
 				RawProvider: rawProviderEnvelope("block_reason", blockReason, map[string]any{
 					"model_version":             resp.ModelVersion,
 					"thinking_visible_observed": false,
@@ -246,10 +251,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		ToolCalls:             calls,
 		StopReason:            stopReason,
 		ProviderResponseID:    resp.ResponseID,
-		Usage: Usage{
-			InputTokens:  resp.UsageMetadata.PromptTokenCount,
-			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
-		},
+		Usage:                 usage,
 		RawProvider: rawProviderEnvelope("finish_reason", candidate.FinishReason, map[string]any{
 			"model_version":             resp.ModelVersion,
 			"thought_part_count":        thoughtPartCount,

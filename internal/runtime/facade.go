@@ -49,6 +49,10 @@ func (r *CoreRunner) List(limit int) ([]session.SessionSummary, error) {
 	return r.runner.List(limit)
 }
 
+func (r *CoreRunner) Context(sessionID string) (session.ContextReport, error) {
+	return r.runner.Context(sessionID)
+}
+
 func (r *CoreRunner) Bus() *events.Bus {
 	return r.runner.Bus()
 }

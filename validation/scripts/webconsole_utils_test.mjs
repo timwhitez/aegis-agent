@@ -61,6 +61,7 @@ vm.runInContext(`
   const optimisticMessagesViewState = { messages: [] };
   const queueJobViewState = { selectedJobId: '', selectedJobDetail: null };
   const inspectorViewState = { tab: 'tasks' };
+  const contextReportViewState = { sessionID: '', report: null, loading: false, error: '', requestSeq: 0 };
   const stopActionViewState = { sessionIds: new Set() };
   const messagePagingViewState = { loadingEarlier: false, preserveScrollAfterRender: null, hasMoreMessages: false };
   function selectedQueueJobId() {
@@ -406,6 +407,124 @@ function createAppHarnessContext(initialStorage = {}) {
   appContext.storage = storage;
   return appContext;
 }
+
+test('session inspector exposes a lazy Context tab and renders bounded lineage telemetry without raw content', () => {
+  const rendered = vm.runInContext(`(() => {
+    state.sessionId = 'context_session';
+    state.sessionDetail = {
+      metadata: { id: 'context_session' },
+      state: { status: 'completed' },
+      task_board: { todo: [], tasks: [] },
+      children: { sessions: [], jobs: [] }
+    };
+    setInspectorTab('tasks');
+    const ordinary = renderInspectorPanel();
+    setInspectorTab('context');
+    const lazy = renderInspectorPanel();
+    contextReportViewState.sessionID = 'context_session';
+    contextReportViewState.report = {
+      schema_version: 1,
+      root_session_id: 'context_session',
+      aggregate: {
+        root_peak_estimated_input_tokens: 900,
+        child_peak_estimated_input_tokens: 800,
+        root_aggregate_estimated_input_tokens: 950,
+        child_aggregate_estimated_input_tokens: 1400,
+        total_estimated_input_tokens: 2350,
+        unknown_usage_request_count: 2,
+        total_provider_usage: {
+          input_tokens: 1400,
+          output_tokens: 100,
+          cache_read_input_tokens: 25,
+          cache_creation_input_tokens: 5
+        },
+        session_count: 3,
+        child_session_count: 2,
+        total_request_count: 4,
+        total_turn_count: 4,
+        total_tool_call_count: 11,
+        total_compaction_count: 1,
+        wall_time_ms: 1200
+      },
+      sessions: [
+        { session_id: 'context_session', metrics: { peak_estimated_input_tokens: 900, aggregate_estimated_input_tokens: 950, request_count: 2 } },
+        { session_id: 'context_child', agent_role: 'explorer', metrics: { peak_estimated_input_tokens: 800, aggregate_estimated_input_tokens: 1400, request_count: 2 }, requests: [{ raw_prompt: 'WEB_CONTEXT_PROMPT_SENTINEL', tool_output: 'WEB_CONTEXT_TOOL_SENTINEL' }] }
+      ],
+      truncation: { truncated: true, omitted_session_count: 1, omitted_request_count: 7 }
+    };
+    const loaded = renderInspectorPanel();
+    return { ordinary, lazy, loaded };
+  })()`, context);
+
+  assert.match(rendered.ordinary, /data-inspector-tab="context"/);
+  assert.match(rendered.lazy, /loaded only when this inspector tab is opened/);
+  assert.match(rendered.loaded, /Root peak/);
+  assert.match(rendered.loaded, />900</);
+  assert.match(rendered.loaded, /Child aggregate/);
+  assert.match(rendered.loaded, />1,400</);
+  assert.match(rendered.loaded, /Total input/);
+  assert.match(rendered.loaded, />2,350</);
+  assert.match(rendered.loaded, /Unknown usage/);
+  assert.match(rendered.loaded, />2</);
+  assert.match(rendered.loaded, /Bounded view: 1 sessions and 7 requests omitted\. Aggregate totals are complete\./);
+  assert.doesNotMatch(rendered.loaded, /WEB_CONTEXT_(PROMPT|TOOL)_SENTINEL/);
+});
+
+test('context endpoint is called only after opening Context or requesting Refresh', async () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+  vm.runInContext(`
+    setupEventListeners();
+    renderCurrentSession = function() {};
+    state.sessionId = 'context_lazy_session';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'context_lazy_session' },
+      state: { status: 'completed' }
+    };
+  `, appContext);
+
+  const delegatedClick = (selector, attributes = {}) => {
+    const button = {
+      disabled: false,
+      getAttribute(name) {
+        return Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
+      },
+      querySelector() {
+        return null;
+      }
+    };
+    return {
+      button,
+      event: {
+        target: {
+          closest(candidate) {
+            return candidate === selector ? button : null;
+          }
+        }
+      }
+    };
+  };
+
+  const tasksClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'tasks' });
+  await appContext.document.listeners.click(tasksClick.event);
+  assert.equal(appContext.pendingRequests.length, 0);
+
+  const contextClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'context' });
+  const firstLoad = appContext.document.listeners.click(contextClick.event);
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.equal(appContext.pendingRequests[0].url, '/api/sessions/context_lazy_session/context');
+  appContext.pendingRequests[0].resolve({ schema_version: 1, root_session_id: 'context_lazy_session', aggregate: {}, sessions: [] });
+  await firstLoad;
+
+  const refreshClick = delegatedClick('[data-context-report-refresh]');
+  const refresh = appContext.document.listeners.click(refreshClick.event);
+  assert.equal(refreshClick.button.disabled, true);
+  assert.equal(appContext.pendingRequests.length, 2);
+  assert.equal(appContext.pendingRequests[1].url, '/api/sessions/context_lazy_session/context');
+  appContext.pendingRequests[1].resolve({ schema_version: 1, root_session_id: 'context_lazy_session', aggregate: {}, sessions: [] });
+  await refresh;
+});
 
 test('confirmLocalAction resolves from local dialog controls without native confirm', async () => {
   const previousDocument = context.document;

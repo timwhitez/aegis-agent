@@ -344,7 +344,8 @@ func TestSafeDedupProviderViewBuildLeavesMessagesJSONLByteForByteUnchanged(t *te
 		KeepRecentToolResultBytes: 1 << 20,
 		HysteresisDeltaChars:      1 << 18,
 	}
-	view, err := engine.buildProviderView(t.Context(), meta, state, messages, nil, nil, registry, profile, 0, nil)
+	requestContext := requestBudgetContext{RequestKind: requestKindMain, SessionID: meta.ID, Turn: state.Turn}
+	view, err := engine.buildProviderView(t.Context(), meta, state, messages, nil, nil, registry, profile, 0, requestContext, nil)
 	if err != nil {
 		t.Fatalf("build provider view: %v", err)
 	}
@@ -358,7 +359,7 @@ func TestSafeDedupProviderViewBuildLeavesMessagesJSONLByteForByteUnchanged(t *te
 	if view.Messages[1].ToolResults[0].Metadata["duplicate_tool_result"] != true {
 		t.Fatalf("provider view did not contain duplicate marker: %#v", view.Messages)
 	}
-	second, err := engine.buildProviderView(t.Context(), meta, state, view.Messages, nil, nil, registry, profile, 0, nil)
+	second, err := engine.buildProviderView(t.Context(), meta, state, view.Messages, nil, nil, registry, profile, 0, requestContext, nil)
 	if err != nil {
 		t.Fatalf("build provider view twice: %v", err)
 	}

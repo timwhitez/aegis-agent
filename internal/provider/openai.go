@@ -108,7 +108,7 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			Content          []openAIReasoningText `json:"content"`
 			Summary          []openAIReasoningText `json:"summary"`
 		} `json:"output"`
-		Usage struct {
+		Usage *struct {
 			InputTokens        int `json:"input_tokens"`
 			OutputTokens       int `json:"output_tokens"`
 			InputTokensDetails struct {
@@ -241,21 +241,34 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case status == "":
 		stopReason = "error"
 	}
+	usage := Usage{}
+	if resp.Usage != nil {
+		usage = Usage{
+			Reported:                 true,
+			InputTokens:              resp.Usage.InputTokens,
+			OutputTokens:             resp.Usage.OutputTokens,
+			CacheCreationInputTokens: resp.Usage.InputTokensDetails.CacheWriteTokens,
+			CacheReadInputTokens:     resp.Usage.InputTokensDetails.CachedTokens,
+		}
+	}
 	rawStopSource := "status"
 	rawStopReason := resp.Status
 	rawExtras := map[string]any{
 		"reasoning_summary_count":      reasoningSummaryCount,
 		"reasoning_text_count":         reasoningTextCount,
 		"reasoning_encrypted_count":    reasoningEncryptedCount,
-		"reasoning_tokens":             resp.Usage.OutputTokensDetails.ReasoningTokens,
-		"cache_creation_input_tokens":  resp.Usage.InputTokensDetails.CacheWriteTokens,
-		"cache_read_input_tokens":      resp.Usage.InputTokensDetails.CachedTokens,
+		"reasoning_tokens":             0,
+		"cache_creation_input_tokens":  usage.CacheCreationInputTokens,
+		"cache_read_input_tokens":      usage.CacheReadInputTokens,
 		"thinking_visible_observed":    len(thinkingParts) > 0,
 		"thinking_replay_observed":     reasoningEncryptedCount > 0,
 		"thinking_strategy":            thinkingStrategy,
 		"metadata_requested":           metadataRequested,
 		"metadata_sent":                metadataSent,
 		"metadata_capability_fallback": metadataFallback,
+	}
+	if resp.Usage != nil {
+		rawExtras["reasoning_tokens"] = resp.Usage.OutputTokensDetails.ReasoningTokens
 	}
 	if incompleteReason != "" {
 		rawStopSource = "incomplete_details.reason"
@@ -269,13 +282,8 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		ToolCalls:             calls,
 		StopReason:            stopReason,
 		ProviderResponseID:    resp.ID,
-		Usage: Usage{
-			InputTokens:              resp.Usage.InputTokens,
-			OutputTokens:             resp.Usage.OutputTokens,
-			CacheCreationInputTokens: resp.Usage.InputTokensDetails.CacheWriteTokens,
-			CacheReadInputTokens:     resp.Usage.InputTokensDetails.CachedTokens,
-		},
-		RawProvider: rawProviderEnvelope(rawStopSource, rawStopReason, rawExtras),
+		Usage:                 usage,
+		RawProvider:           rawProviderEnvelope(rawStopSource, rawStopReason, rawExtras),
 	}, nil
 }
 

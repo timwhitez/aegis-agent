@@ -37,6 +37,7 @@ type coreRunner interface {
 	Interrupt(string) error
 	Tasks(string) (session.TaskBoard, error)
 	List(int) ([]session.SessionSummary, error)
+	Context(string) (session.ContextReport, error)
 	Bus() *events.Bus
 }
 
@@ -634,6 +635,9 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 }
 
 func sessionsCommand(args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "context" {
+		return sessionsContextCommand(args[1:], stdout)
+	}
 	fs := flag.NewFlagSet("sessions", flag.ContinueOnError)
 	var (
 		configPath = fs.String("config", "", "")
@@ -665,6 +669,49 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "%s  %s  %s  %s  created=%s  updated=%s  phase=%s\n",
 			item.ID, item.Status, item.Provider, item.Model, item.CreatedAt, item.UpdatedAt, item.Phase)
 	}
+	return nil
+}
+
+func sessionsContextCommand(args []string, stdout io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json"})
+	fs := flag.NewFlagSet("sessions context", flag.ContinueOnError)
+	var (
+		configPath = fs.String("config", "", "")
+		jsonMode   = fs.Bool("json", false, "")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		return errors.New("sessions context requires <session-id>")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	runner, _, err := runnerLoader(*configPath, cwd)
+	if err != nil {
+		return err
+	}
+	report, err := runner.Context(strings.TrimSpace(fs.Arg(0)))
+	if err != nil {
+		return err
+	}
+	if *jsonMode {
+		return json.NewEncoder(stdout).Encode(report)
+	}
+	_, _ = fmt.Fprintf(
+		stdout,
+		"root=%s sessions=%d requests=%d root_peak=%d child_peak=%d total_input=%d unknown_usage=%d wall_ms=%d\n",
+		report.RootSessionID,
+		report.Aggregate.SessionCount,
+		report.Aggregate.TotalRequestCount,
+		report.Aggregate.RootPeakEstimatedInputTokens,
+		report.Aggregate.ChildPeakEstimatedInputTokens,
+		report.Aggregate.TotalEstimatedInputTokens,
+		report.Aggregate.UnknownUsageRequestCount,
+		report.Aggregate.WallTimeMS,
+	)
 	return nil
 }
 

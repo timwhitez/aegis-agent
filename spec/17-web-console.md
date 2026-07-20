@@ -425,6 +425,15 @@ Settings API：
 - `goal?`：当前 `goal.json` snapshot，缺失时为空
 - `plan_mode?`：当前 `planmode.json` snapshot，缺失时为空
 
+#### 7.4.1 `GET /api/sessions/{id}/context`
+
+返回从 canonical session/message/event 文件即时派生的 versioned `ContextReport`。该 endpoint：
+
+- 只读，不写回 session，不维护第二套 telemetry 状态
+- 保留完整 aggregate，但 session/request detail 共用 64 项预算；发生截断时返回 omitted session/request 计数
+- 只在用户打开 Session inspector 的 Context tab 或点击 Refresh 时请求；普通 session polling 与默认首页不主动加载
+- 只返回尺寸、计数、ID、状态、时间和 provider 已报告的 usage，不复制 prompt/tool schema/metadata value/error/tool output/raw provider payload
+
 ### 7.5 `POST /api/sessions/start`
 
 输入：
