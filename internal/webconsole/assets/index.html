@@ -53,7 +53,7 @@
           <span class="session-chip" id="session-id-display">ID: 0x8F9A2B</span>
         </div>
         <div class="header-actions">
-          <button class="icon-action-btn inspector-toggle-btn" id="inspector-toggle-btn" aria-label="Toggle inspector" data-tooltip="Inspector">
+          <button class="icon-action-btn inspector-toggle-btn" id="inspector-toggle-btn" aria-label="Toggle inspector" aria-controls="inspector-slide-out" aria-expanded="false" data-tooltip="Inspector">
             <i data-lucide="panel-right"></i>
           </button>
           <button class="icon-action-btn stop" id="stop-session-btn" aria-label="Stop session" title="Stop session" data-tooltip="Stop">
@@ -188,8 +188,8 @@
 
     </main>
   </div>
-  <div class="inspector-backdrop" id="inspector-backdrop"></div>
-  <div class="inspector-slide-out" id="inspector-slide-out"></div>
+  <div class="inspector-backdrop" id="inspector-backdrop" aria-hidden="true"></div>
+  <div class="inspector-slide-out" id="inspector-slide-out" aria-hidden="true"></div>
   <div class="toast-rack" id="toast-rack" aria-live="polite" aria-atomic="true"></div>
   <script src="utils.js"></script>
   <script src="icons.js"></script>

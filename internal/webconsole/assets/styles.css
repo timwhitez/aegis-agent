@@ -997,6 +997,10 @@ textarea {
 .skill-btn.install { background-color: var(--accent); color: white; }
 .skill-btn.uninstall { color: var(--error); }
 
+.empty-upload-btn {
+  margin-top: 12px;
+}
+
 /* Workspace View */
 .workspace-header-actions {
   display: flex;
@@ -2889,7 +2893,7 @@ textarea {
 
 /* Inspector slide-out (tablet/mobile) */
 .inspector-toggle-btn {
-  display: none;
+  display: inline-flex;
 }
 
 .inspector-backdrop {
@@ -4351,6 +4355,7 @@ textarea {
 }
 
 .tf-progress-fill {
+  width: var(--progress, 0%);
   height: 100%;
   border-radius: 2px;
   background: var(--accent, #0d9488);
@@ -4625,6 +4630,40 @@ textarea {
 
 .sa-tree-row:hover {
   background: var(--surface-hover);
+}
+
+.sa-tree-row.sa-tree-row-static,
+.sa-tree-row[data-static-row] {
+  cursor: default;
+}
+
+.sa-tree-row.sa-tree-row-static {
+  padding: 0;
+  background: transparent;
+}
+
+.sa-tree-row.parent.sa-tree-row-static,
+.sa-tree-row.orphan.sa-tree-row-static {
+  padding-left: 0;
+}
+
+.sa-tree-open {
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
+.tool-special-error {
+  margin-top: 4px;
+  color: var(--error);
+  font-size: 11px;
+}
+
+.tool-special-title-row {
+  padding-bottom: 6px;
+}
+
+.tool-special-count {
+  margin-left: auto;
 }
 
 /* Parent (session) row */

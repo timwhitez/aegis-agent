@@ -527,13 +527,15 @@ async function loadSessionContextReport(options = {}) {
 
 function createEmptyChatRenderCache() {
   return {
-    activity: '',
-    flow: '',
-    body: '',
-    pending: '',
-    rail: '',
-    inspector: '',
-    todoFloat: ''
+    activity: null,
+    flow: null,
+    body: null,
+    pending: null,
+    rail: null,
+    inspector: null,
+    inspectorSlideOut: null,
+    todoFloat: null,
+    planModeInputActions: null
   };
 }
 
@@ -551,8 +553,27 @@ function updateChatRenderCache(key, markup) {
 
 function invalidateChatRenderSlot(key) {
   if (Object.prototype.hasOwnProperty.call(renderState.chatCache, key)) {
-    renderState.chatCache[key] = '';
+    renderState.chatCache[key] = null;
   }
+}
+
+function patchCachedMarkup(node, key, html, options = {}) {
+  if (!node) {
+    return false;
+  }
+  const markup = html || '';
+  if (options.hideWhenEmpty) {
+    node.hidden = markup === '';
+  }
+  if (renderState.chatCache[key] === markup) {
+    return false;
+  }
+  node.innerHTML = markup;
+  updateChatRenderCache(key, markup);
+  if (markup && options.renderIcons !== false && window.lucide?.createIcons) {
+    window.lucide.createIcons({ root: node });
+  }
+  return true;
 }
 
 const nodes = {
@@ -1674,10 +1695,6 @@ async function requestContinueSession(sessionID, message = '', options = {}) {
   }
 }
 
-function isCompactLayout() {
-  return window.innerWidth < 1100;
-}
-
 function toggleInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
   const backdrop = nodes.inspectorBackdrop;
@@ -1686,14 +1703,21 @@ function toggleInspectorSlideOut() {
   if (isOpen) {
     closeInspectorSlideOut();
   } else {
+    renderCurrentSession();
     slideOut.classList.add('is-open');
     backdrop.classList.add('is-open');
+    slideOut.setAttribute('aria-hidden', 'false');
+    backdrop.setAttribute('aria-hidden', 'false');
+    nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'true');
   }
 }
 
 function closeInspectorSlideOut() {
   nodes.inspectorSlideOut?.classList.remove('is-open');
   nodes.inspectorBackdrop?.classList.remove('is-open');
+  nodes.inspectorSlideOut?.setAttribute('aria-hidden', 'true');
+  nodes.inspectorBackdrop?.setAttribute('aria-hidden', 'true');
+  nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
 }
 
 function adoptSession(sessionID, backed) {
@@ -1910,15 +1934,7 @@ function renderPlanModeInputActions() {
       </div>
     `;
   }
-  nodes.planModeInputActions.hidden = html === '';
-  if (chatRenderCacheValue('planModeInputActions') === html) {
-    return;
-  }
-  nodes.planModeInputActions.innerHTML = html;
-  updateChatRenderCache('planModeInputActions', html);
-  if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: nodes.planModeInputActions });
-  }
+  patchCachedMarkup(nodes.planModeInputActions, 'planModeInputActions', html, { hideWhenEmpty: true });
 }
 
 function canShowGoalComposer() {
@@ -3803,7 +3819,7 @@ function renderSkills(skills) {
         <i data-lucide="package-open" class="empty-icon"></i>
         <strong>No local skills found.</strong>
         <span>Upload a .zip skill package to extend your agent's capabilities.</span>
-        <button class="skill-btn install" type="button" id="empty-upload-btn" style="margin-top:12px">Upload .zip Skill</button>
+        <button class="skill-btn install empty-upload-btn" type="button" id="empty-upload-btn">Upload .zip Skill</button>
       </div>
     `;
     if (window.lucide && lucide.createIcons) {

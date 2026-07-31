@@ -77,14 +77,14 @@ function renderCurrentSession() {
     mutated = patchAuxSlot(nodes.sessionRail, 'rail', renderSessionRail()) || mutated;
   }
   const fixedInspectorVisible = Boolean(nodes.inspectorPanel && window.getComputedStyle(nodes.inspectorPanel).display !== 'none');
-  const compactInspectorVisible = Boolean(isCompactLayout() && nodes.inspectorSlideOut);
-  if (fixedInspectorVisible || compactInspectorVisible) {
+  const slideOutInspectorAvailable = Boolean(nodes.inspectorSlideOut);
+  if (fixedInspectorVisible || slideOutInspectorAvailable) {
     const inspectorHTML = renderInspectorPanel();
     if (fixedInspectorVisible) {
       mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
     }
-    if (compactInspectorVisible) {
-      patchAuxSlot(nodes.inspectorSlideOut, 'inspector', inspectorHTML);
+    if (slideOutInspectorAvailable) {
+      patchAuxSlot(nodes.inspectorSlideOut, 'inspectorSlideOut', inspectorHTML);
     }
   }
   if (nodes.todoFloatPanel) {
@@ -111,16 +111,7 @@ function renderCurrentSession() {
 }
 
 function patchAuxSlot(node, key, html) {
-  const markup = html || '';
-  if (chatRenderCacheValue(key) === markup) {
-    return false;
-  }
-  node.innerHTML = markup;
-  updateChatRenderCache(key, markup);
-  if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: node });
-  }
-  return true;
+  return patchCachedMarkup(node, key, html);
 }
 
 function prefersReducedMotion() {
@@ -158,17 +149,7 @@ function ensureChatSlots() {
 }
 
 function patchChatSlot(node, key, html) {
-  const markup = html || '';
-  if (chatRenderCacheValue(key) === markup) {
-    return false;
-  }
-  node.innerHTML = markup;
-  node.hidden = markup === '';
-  updateChatRenderCache(key, markup);
-  if (window.lucide && lucide.createIcons) {
-    lucide.createIcons({ root: node });
-  }
-  return true;
+  return patchCachedMarkup(node, key, html, { hideWhenEmpty: true });
 }
 
 function summarizeCurrentSession() {
@@ -1066,14 +1047,14 @@ function renderSpecialToolResult(result, parsed) {
     const label = agentLabel(parsed.agent_name, parsed.agent_role) || shortId(parsed.session_id) || 'child agent';
     return `
       <div class="tool-special-card">
-        <div class="sa-tree-row parent" style="cursor:default; background:transparent; padding:0;">
+        <div class="sa-tree-row parent sa-tree-row-static">
           <span class="sa-tree-dot ${statusTone}"></span>
           <span class="sa-tree-label">${escapeHTML(label)}</span>
           <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(parsed.status || parsed.session_status || 'unknown'))}</span>
           <span class="sa-tree-meta">${escapeHTML(shortId(parsed.session_id || ''))}</span>
-          ${parsed.session_id ? `<button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(parsed.session_id)}" style="margin-left:4px;flex-shrink:0;">Open</button>` : ''}
+          ${parsed.session_id ? `<button class="mini-link-btn sa-tree-open" type="button" data-sub-agent-open="${escapeAttr(parsed.session_id)}">Open</button>` : ''}
         </div>
-        ${parsed.last_error ? `<div class="tl-preview" style="color:#dc2626;font-size:11px;margin-top:4px;">${escapeHTML(truncateText(parsed.last_error, 120))}</div>` : ''}
+        ${parsed.last_error ? `<div class="tl-preview tool-special-error">${escapeHTML(truncateText(parsed.last_error, 120))}</div>` : ''}
       </div>
     `;
   }
@@ -1091,12 +1072,12 @@ function renderSpecialToolResult(result, parsed) {
       const statusTone = toneForStatus(sess.status);
       const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
       rows.push(`
-        <div class="sa-tree-row parent" style="cursor:default; background:transparent; padding:0;">
+        <div class="sa-tree-row parent sa-tree-row-static">
           <span class="sa-tree-dot ${statusTone}"></span>
           <span class="sa-tree-label">${escapeHTML(label)}</span>
           <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(sess.status))}</span>
           <span class="sa-tree-meta">${escapeHTML(sess.model || sess.provider || 'n/a')} · ${escapeHTML(shortId(sess.id))}</span>
-          <button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(sess.id)}" style="margin-left:4px;flex-shrink:0;">Open</button>
+          <button class="mini-link-btn sa-tree-open" type="button" data-sub-agent-open="${escapeAttr(sess.id)}">Open</button>
         </div>
       `);
     });
@@ -1104,10 +1085,10 @@ function renderSpecialToolResult(result, parsed) {
       const statusTone = toneForStatus(job.status);
       const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
       const action = job.session_id
-        ? `<button class="mini-link-btn" type="button" data-sub-agent-open="${escapeAttr(job.session_id)}" style="margin-left:4px;flex-shrink:0;">Open</button>`
+        ? `<button class="mini-link-btn sa-tree-open" type="button" data-sub-agent-open="${escapeAttr(job.session_id)}">Open</button>`
         : '';
       rows.push(`
-        <div class="sa-tree-row orphan" style="cursor:default; background:transparent; padding:0;">
+        <div class="sa-tree-row orphan sa-tree-row-static">
           <span class="sa-tree-dot ${statusTone}"></span>
           <span class="sa-tree-label">${escapeHTML(label)}</span>
           <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(job.status))}</span>
@@ -1119,9 +1100,9 @@ function renderSpecialToolResult(result, parsed) {
 
     return `
       <div class="tool-special-card">
-        <div class="section-title-row" style="padding-bottom:6px;">
+        <div class="section-title-row tool-special-title-row">
           <h4>Background agents</h4>
-          <span class="tf-sum-chip sa-sum-sessions" style="margin-left:auto;">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
+          <span class="tf-sum-chip sa-sum-sessions tool-special-count">${sessions.length} session${sessions.length !== 1 ? 's' : ''}</span>
           ${orphanJobs.length ? `<span class="tf-sum-chip sa-sum-jobs">${orphanJobs.length} job${orphanJobs.length !== 1 ? 's' : ''}</span>` : ''}
         </div>
         ${rows.join('')}
@@ -1878,7 +1859,9 @@ function renderTodoFloat() {
       <div class="tf-header" data-todo-float-toggle>
         <div class="tf-header-left">
           <span class="tf-title">Todo / Tasks</span>
-          <div class="tf-progress-bar"><div class="tf-progress-fill" style="width:${progressPct}%"></div></div>
+          <div class="tf-progress-bar" role="progressbar" aria-label="Task completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progressPct}">
+            <div class="tf-progress-fill" style="--progress:${progressPct}%"></div>
+          </div>
           <span class="tf-progress-label">${progressPct}%</span>
         </div>
         <div class="tf-header-right">
@@ -2010,7 +1993,7 @@ function renderSubAgentJobRow(job) {
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
   const targetAttr = job.session_id
     ? `data-sub-agent-open="${escapeAttr(job.session_id)}" title="Click to open child session"`
-    : 'style="cursor:default;"';
+    : 'data-static-row';
   return `
     <div class="sa-tree-row orphan" ${targetAttr}>
       <span class="sa-tree-dot ${statusTone}"></span>

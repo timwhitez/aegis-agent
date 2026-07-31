@@ -639,7 +639,9 @@ test('chat render cache is isolated from durable app state', () => {
     'body',
     'flow',
     'inspector',
+    'inspectorSlideOut',
     'pending',
+    'planModeInputActions',
     'rail',
     'todoFloat'
   ]);
@@ -650,6 +652,111 @@ test('chat render cache is isolated from durable app state', () => {
     invalidateChatRenderSlot('todoFloat');
   `, appContext);
   assert.equal(vm.runInContext(`chatRenderCacheValue('todoFloat')`, appContext), '');
+});
+
+test('cached markup patches DOM and icons only when rendered output changes', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    const node = {
+      hidden: false,
+      innerHTML: '',
+      querySelectorAll() { return []; }
+    };
+    let iconPasses = 0;
+    window.lucide = {
+      createIcons() {
+        iconPasses += 1;
+      }
+    };
+    const first = patchCachedMarkup(node, 'planModeInputActions', '<button>Approve</button>', { hideWhenEmpty: true });
+    const second = patchCachedMarkup(node, 'planModeInputActions', '<button>Approve</button>', { hideWhenEmpty: true });
+    const cleared = patchCachedMarkup(node, 'planModeInputActions', '', { hideWhenEmpty: true });
+    return {
+      first,
+      second,
+      cleared,
+      hidden: node.hidden,
+      markup: node.innerHTML,
+      iconPasses,
+      cached: chatRenderCacheValue('planModeInputActions')
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    first: true,
+    second: false,
+    cleared: true,
+    hidden: true,
+    markup: '',
+    iconPasses: 1,
+    cached: ''
+  });
+});
+
+test('desktop and compact inspectors use independent render cache slots', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+  const result = vm.runInContext(`(() => {
+    const desktop = { innerHTML: '', querySelectorAll() { return []; } };
+    const compact = { innerHTML: '', querySelectorAll() { return []; } };
+    const html = '<section>Session inspector</section>';
+    const desktopFirst = patchAuxSlot(desktop, 'inspector', html);
+    const compactFirst = patchAuxSlot(compact, 'inspectorSlideOut', html);
+    return {
+      desktopFirst,
+      compactFirst,
+      desktopSecond: patchAuxSlot(desktop, 'inspector', html),
+      compactSecond: patchAuxSlot(compact, 'inspectorSlideOut', html),
+      desktopHTML: desktop.innerHTML,
+      compactHTML: compact.innerHTML
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    desktopFirst: true,
+    compactFirst: true,
+    desktopSecond: false,
+    compactSecond: false,
+    desktopHTML: '<section>Session inspector</section>',
+    compactHTML: '<section>Session inspector</section>'
+  });
+});
+
+test('Plan Mode input actions reuse cached markup and hide after the gate clears', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    let assignments = 0;
+    let markup = '';
+    const actionNode = {
+      hidden: true,
+      querySelectorAll() { return []; },
+      get innerHTML() { return markup; },
+      set innerHTML(value) {
+        assignments += 1;
+        markup = value;
+      }
+    };
+    nodes.planModeInputActions = actionNode;
+    state.sessionDetail = { plan_mode: { status: 'awaiting_approval' } };
+    renderPlanModeInputActions();
+    renderPlanModeInputActions();
+    const approvalVisible = !actionNode.hidden;
+    state.sessionDetail.plan_mode.status = 'executing';
+    renderPlanModeInputActions();
+    return {
+      assignments,
+      approvalVisible,
+      hiddenAfterClear: actionNode.hidden,
+      markupAfterClear: actionNode.innerHTML
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    assignments: 2,
+    approvalVisible: true,
+    hiddenAfterClear: true,
+    markupAfterClear: ''
+  });
 });
 
 test('runtime handles are isolated from durable app state', () => {
