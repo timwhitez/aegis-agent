@@ -45,17 +45,17 @@ async function renderSettings() {
     }
     const providers = configData.providers || {};
     const defaultProvider = configData.default_provider || '';
-	    const guardrailsMode = configData.guardrails_mode || 'yolo';
-	    const maxTurnsSoft = Number(configData.max_turns_soft || 24);
-	    const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
-	    const maxTurnsHard = Number(configData.max_turns_hard || 0);
-	    const childBudget = configData.child_budget || {};
-	    const childBudgetMaxActiveRuntimeSec = Number(childBudget.max_active_runtime_sec || childBudget.max_wall_clock_sec || 0);
-	    const childBudgetMaxElapsedSec = Number(childBudget.max_elapsed_sec || 0);
-	    const childBudgetMaxTurnsPerAttempt = Number(childBudget.max_turns_per_attempt || childBudget.max_turns || 0);
-	    const childBudgetDisabled = Object.prototype.hasOwnProperty.call(childBudget, 'disabled')
-	      ? Boolean(childBudget.disabled)
-	      : childBudgetMaxActiveRuntimeSec <= 0 && childBudgetMaxElapsedSec <= 0 && childBudgetMaxTurnsPerAttempt <= 0;
+    const guardrailsMode = configData.guardrails_mode || 'yolo';
+    const maxTurnsSoft = Number(configData.max_turns_soft || 24);
+    const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
+    const maxTurnsHard = Number(configData.max_turns_hard || 0);
+    const childBudget = configData.child_budget || {};
+    const childBudgetMaxActiveRuntimeSec = Number(childBudget.max_active_runtime_sec || childBudget.max_wall_clock_sec || 0);
+    const childBudgetMaxElapsedSec = Number(childBudget.max_elapsed_sec || 0);
+    const childBudgetMaxTurnsPerAttempt = Number(childBudget.max_turns_per_attempt || childBudget.max_turns || 0);
+    const childBudgetDisabled = Object.prototype.hasOwnProperty.call(childBudget, 'disabled')
+      ? Boolean(childBudget.disabled)
+      : childBudgetMaxActiveRuntimeSec <= 0 && childBudgetMaxElapsedSec <= 0 && childBudgetMaxTurnsPerAttempt <= 0;
     const roleProviders = configData.role_providers || {};
     const options = Object.keys(providers).map((providerName) => `
       <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>

@@ -1022,10 +1022,10 @@ function setupEventListeners() {
     updateDynamicLayoutMetrics();
   });
 
-  document.addEventListener('click', async (event) => {
-    const historyPageButton = event.target.closest('[data-history-page]');
-    if (historyPageButton) {
-      const direction = historyPageButton.getAttribute('data-history-page');
+  // Event delegation map: data-attribute selector -> handler(element, event)
+  const clickHandlers = [
+    { selector: '[data-history-page]', handler: async (el) => {
+      const direction = el.getAttribute('data-history-page');
       if (direction === 'prev') {
         await fetchHistory(Math.max(1, currentHistoryPage() - 1));
       } else if (direction === 'next') {
@@ -1034,53 +1034,27 @@ function setupEventListeners() {
           : currentHistoryPage() + 1;
         await fetchHistory(nextPage);
       }
-      return;
-    }
-
-    const clearHistoryButton = event.target.closest('[data-history-clear]');
-    if (clearHistoryButton) {
-      await clearHistory();
-      return;
-    }
-
-    const loadEarlierButton = event.target.closest('[data-load-earlier]');
-    if (loadEarlierButton) {
-      await loadEarlierMessages();
-      return;
-    }
-
-    const viewShortcut = event.target.closest('[data-view-shortcut]');
-    if (viewShortcut) {
-      switchView(viewShortcut.getAttribute('data-view-shortcut'));
-      return;
-    }
-
-    const deleteHistoryButton = event.target.closest('[data-delete-session]');
-    if (deleteHistoryButton) {
-      const sessionID = deleteHistoryButton.getAttribute('data-delete-session');
-      if (sessionID) {
-        await deleteHistorySession(sessionID);
-      }
-      return;
-    }
-
-    const stopInlineSessionButton = event.target.closest('[data-stop-session-id]');
-    if (stopInlineSessionButton) {
+    }},
+    { selector: '[data-history-clear]', handler: async () => { await clearHistory(); } },
+    { selector: '[data-load-earlier]', handler: async () => { await loadEarlierMessages(); } },
+    { selector: '[data-view-shortcut]', handler: (el) => { switchView(el.getAttribute('data-view-shortcut')); } },
+    { selector: '[data-delete-session]', handler: async (el) => {
+      const sessionID = el.getAttribute('data-delete-session');
+      if (sessionID) await deleteHistorySession(sessionID);
+    }},
+    { selector: '[data-stop-session-id]', handler: async (el, event) => {
       event.preventDefault();
       event.stopPropagation();
-      const sessionID = stopInlineSessionButton.getAttribute('data-stop-session-id');
+      const sessionID = el.getAttribute('data-stop-session-id');
       if (sessionID) {
         await requestStopSession(sessionID, {
-          button: stopInlineSessionButton,
+          button: el,
           historyRenderSeq: currentViewName() === 'history' ? currentHistoryRenderSeq() : 0
         });
       }
-      return;
-    }
-
-    const historyExpandToggle = event.target.closest('[data-history-toggle-children]');
-    if (historyExpandToggle) {
-      const parentID = historyExpandToggle.getAttribute('data-history-toggle-children');
+    }},
+    { selector: '[data-history-toggle-children]', handler: (el) => {
+      const parentID = el.getAttribute('data-history-toggle-children');
       if (parentID) {
         if (historyExpansionViewState.parentIds.has(parentID)) {
           historyExpansionViewState.parentIds.delete(parentID);
@@ -1089,32 +1063,19 @@ function setupEventListeners() {
         }
         renderHistory();
       }
-      return;
-    }
-
-    const openSessionButton = event.target.closest('[data-open-session]');
-    if (openSessionButton) {
-      const sessionID = openSessionButton.getAttribute('data-open-session');
+    }},
+    { selector: '[data-open-session]', handler: async (el) => {
+      const sessionID = el.getAttribute('data-open-session');
+      if (sessionID) await openSession(sessionID, { switchToChat: true });
+    }},
+    { selector: '[data-open-parent-session]', handler: async (el) => {
+      const parentSessionID = el.getAttribute('data-open-parent-session');
+      if (parentSessionID) await openSession(parentSessionID, { switchToChat: true });
+    }},
+    { selector: '[data-sub-agent-open]', handler: async (el) => {
+      const sessionID = el.getAttribute('data-sub-agent-open');
       if (sessionID) {
-        await openSession(sessionID, { switchToChat: true });
-      }
-      return;
-    }
-
-    const openParentButton = event.target.closest('[data-open-parent-session]');
-    if (openParentButton) {
-      const parentSessionID = openParentButton.getAttribute('data-open-parent-session');
-      if (parentSessionID) {
-        await openSession(parentSessionID, { switchToChat: true });
-      }
-      return;
-    }
-
-    const subAgentOpenButton = event.target.closest('[data-sub-agent-open]');
-    if (subAgentOpenButton) {
-      const sessionID = subAgentOpenButton.getAttribute('data-sub-agent-open');
-      if (sessionID) {
-        const label = (subAgentOpenButton.querySelector('.sa-tree-label')?.textContent || '').trim();
+        const label = (el.querySelector('.sa-tree-label')?.textContent || '').trim();
         const hint = label ? `Open child session "${label}"?` : 'Open child session?';
         if (await confirmLocalAction({
           title: 'Open child session',
@@ -1124,96 +1085,68 @@ function setupEventListeners() {
           await openSession(sessionID, { switchToChat: true });
         }
       }
-      return;
-    }
-
-    const inspectorTab = event.target.closest('[data-inspector-tab], [data-focus-inspector-tab]');
-    if (inspectorTab) {
-      const tab = inspectorTab.getAttribute('data-inspector-tab') || inspectorTab.getAttribute('data-focus-inspector-tab') || 'tasks';
+    }},
+    { selector: '[data-inspector-tab], [data-focus-inspector-tab]', handler: async (el) => {
+      const tab = el.getAttribute('data-inspector-tab') || el.getAttribute('data-focus-inspector-tab') || 'tasks';
       setInspectorTab(tab);
       renderCurrentSession();
       if (tab === 'context') {
         await loadSessionContextReport();
       }
-      return;
-    }
-
-    const contextRefresh = event.target.closest('[data-context-report-refresh]');
-    if (contextRefresh) {
-      contextRefresh.disabled = true;
+    }},
+    { selector: '[data-context-report-refresh]', handler: async (el) => {
+      el.disabled = true;
       await loadSessionContextReport({ force: true });
-      return;
-    }
-
-    const continueBtn = event.target.closest('[data-continue-session]');
-    if (continueBtn) {
-      const sessionID = continueBtn.getAttribute('data-continue-session');
+    }},
+    { selector: '[data-continue-session]', handler: async (el) => {
+      const sessionID = el.getAttribute('data-continue-session');
       if (sessionID) {
-        continueBtn.disabled = true;
+        el.disabled = true;
         try {
           await requestContinueSession(sessionID);
         } finally {
-          if (document.body.contains(continueBtn)) {
-            continueBtn.disabled = false;
+          if (document.body.contains(el)) {
+            el.disabled = false;
           }
         }
       }
-      return;
-    }
-
-    const skillActionBtn = event.target.closest('[data-skill-action]');
-    if (skillActionBtn) {
-      const id = skillActionBtn.getAttribute('data-skill-action');
-      const isInstalled = skillActionBtn.getAttribute('data-skill-installed') === '1';
-      handleSkillAction(id, isInstalled, skillActionBtn);
-      return;
-    }
-
-    const goalAction = event.target.closest('[data-goal-action]');
-    if (goalAction) {
-      await handleGoalAction(goalAction);
-      return;
-    }
-
-    const planAction = event.target.closest('[data-plan-action]');
-    if (planAction) {
-      await handlePlanModeAction(planAction);
-      return;
-    }
-
-    const planInputAction = event.target.closest('[data-plan-input-action]');
-    if (planInputAction) {
-      await handlePlanInputAction(planInputAction);
-      return;
-    }
-
-    const todoFloatToggle = event.target.closest('[data-todo-float-toggle]');
-    if (todoFloatToggle) {
+    }},
+    { selector: '[data-skill-action]', handler: (el) => {
+      const id = el.getAttribute('data-skill-action');
+      const isInstalled = el.getAttribute('data-skill-installed') === '1';
+      handleSkillAction(id, isInstalled, el);
+    }},
+    { selector: '[data-goal-action]', handler: async (el) => { await handleGoalAction(el); } },
+    { selector: '[data-plan-action]', handler: async (el) => { await handlePlanModeAction(el); } },
+    { selector: '[data-plan-input-action]', handler: async (el) => { await handlePlanInputAction(el); } },
+    { selector: '[data-todo-float-toggle]', handler: () => {
       setFloatingPanelExpanded('todo', !isFloatingPanelExpanded('todo'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
-      return;
-    }
-
-    const filesFloatToggle = event.target.closest('[data-files-float-toggle]');
-    if (filesFloatToggle) {
+    }},
+    { selector: '[data-files-float-toggle]', handler: () => {
       setFloatingPanelExpanded('files', !isFloatingPanelExpanded('files'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
-      return;
-    }
-
-    const subAgentToggle = event.target.closest('[data-sub-agent-toggle]');
-    if (subAgentToggle) {
+    }},
+    { selector: '[data-sub-agent-toggle]', handler: () => {
       setFloatingPanelExpanded('subAgents', !isFloatingPanelExpanded('subAgents'));
       persistUIState();
       invalidateChatRenderSlot('todoFloat');
       renderCurrentSession();
-      return;
-    }
+    }}
+  ];
 
+  document.addEventListener('click', async (event) => {
+    for (const { selector, handler } of clickHandlers) {
+      const el = event.target.closest(selector);
+      if (el) {
+        await handler(el, event);
+        return;
+      }
+    }
   });
 
   document.addEventListener('change', handleSkillUploadChange);
@@ -1978,7 +1911,11 @@ function renderPlanModeInputActions() {
     `;
   }
   nodes.planModeInputActions.hidden = html === '';
+  if (chatRenderCacheValue('planModeInputActions') === html) {
+    return;
+  }
   nodes.planModeInputActions.innerHTML = html;
+  updateChatRenderCache('planModeInputActions', html);
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons({ root: nodes.planModeInputActions });
   }

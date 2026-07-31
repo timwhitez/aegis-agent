@@ -86,7 +86,6 @@ input, textarea, select {
   padding: 24px 12px;
   flex-shrink: 0;
   color: var(--text-main);
-  box-shadow: none;
 }
 
 .logo {
@@ -109,7 +108,6 @@ input, textarea, select {
   align-items: center;
   justify-content: center;
   color: #fff;
-  box-shadow: none;
 }
 
 .nav-item {
@@ -128,8 +126,6 @@ input, textarea, select {
 .nav-item.active {
   color: var(--text-main);
   background: var(--surface-hover);
-  box-shadow: none;
-  transform: none;
 }
 
 .nav-item svg {
@@ -265,14 +261,11 @@ header {
   color: var(--text-main);
   background: var(--surface-hover);
   border: none;
-  box-shadow: none;
 }
 
 .icon-action-btn:disabled {
   cursor: not-allowed;
   opacity: 0.48;
-  box-shadow: none;
-  transform: none;
 }
 
 .icon-action-btn.is-busy {
@@ -282,8 +275,6 @@ header {
 
 .icon-action-btn:not(:disabled):hover {
   background: var(--border);
-  transform: none;
-  box-shadow: none;
 }
 
 .icon-action-btn::after {
@@ -302,7 +293,6 @@ header {
   transform: translateY(-4px);
   pointer-events: none;
   transition: opacity 0.18s ease, transform 0.18s ease;
-  box-shadow: none;
 }
 
 .icon-action-btn:hover::after,
@@ -436,14 +426,15 @@ header {
 .message.user { align-items: flex-end; }
 .message.assistant { align-items: flex-start; }
 .message.user .message-bubble {
-  background-color: rgba(13, 148, 136, 0.10);
+  background: rgba(13, 148, 136, 0.10);
   color: var(--text-main);
   border: 1px solid rgba(13, 148, 136, 0.16);
-  border-top-right-radius: var(--radius-xs);
+  border-top-right-radius: var(--radius-sm);
   width: auto;
   max-width: 100%;
   padding: 14px 20px;
   line-height: 1.6;
+  box-shadow: var(--shadow-soft);
 }
 
 .message.assistant .message-bubble {
@@ -452,14 +443,14 @@ header {
   width: auto;
   max-width: 100%;
   padding: 16px 20px;
-  border-top-left-radius: var(--radius-xs);
+  border-top-left-radius: var(--radius-sm);
 }
 
 .message.system .message-bubble {
-  background-color: var(--error-soft);
-  border: 1px solid var(--error);
+  background: #fef2f2;
+  border: 1px solid #fee2e2;
   color: var(--error);
-  border-top-left-radius: var(--radius-xs);
+  border-top-left-radius: var(--radius-sm);
   width: auto;
   max-width: 100%;
 }
@@ -1425,7 +1416,6 @@ textarea {
 .session-ribbon-card:hover {
   background: var(--surface-hover);
   box-shadow: var(--shadow-float);
-  transform: none;
 }
 
 .session-ribbon-card.active {
@@ -1559,15 +1549,6 @@ textarea {
   align-items: flex-end;
 }
 
-.message.user .message-bubble {
-  background: rgba(13, 148, 136, 0.10);
-  border: 1px solid rgba(13, 148, 136, 0.16);
-  color: var(--text-main);
-  width: auto;
-  max-width: 100%;
-  box-shadow: var(--shadow-soft);
-}
-
 .message.user .message-header,
 .message.user .message-body {
   align-self: flex-end;
@@ -1585,11 +1566,6 @@ textarea {
   word-break: break-word;
 }
 
-.message.assistant .message-bubble,
-.message.system .message-bubble {
-  box-shadow: none;
-}
-
 .message.assistant .message-bubble {
   width: fit-content;
   max-width: 100%;
@@ -1600,17 +1576,8 @@ textarea {
   border-radius: var(--radius-lg);
 }
 
-.message.user .message-bubble {
-  border-top-right-radius: var(--radius-sm);
-}
-
 .message.assistant .message-bubble {
   border-top-left-radius: var(--radius-sm);
-}
-
-.message.system .message-bubble {
-  background: #fef2f2;
-  border-color: #fee2e2;
 }
 
 .message.background-results .message-header,
@@ -2748,7 +2715,6 @@ textarea {
 .send-btn:disabled {
   opacity: 0.4;
   background: var(--text-soft);
-  box-shadow: none;
 }
 
 .prose ul,
@@ -3592,7 +3558,7 @@ textarea {
 }
 
 .settings-card { max-width: 760px; overflow: visible; flex-shrink: 0; min-height: 0; }
-.settings-card:hover { transform: none; box-shadow: var(--shadow-soft); }
+.settings-card:hover { box-shadow: var(--shadow-soft); }
 
 @media (max-width: 720px) {
   .role-provider-grid,
@@ -3738,7 +3704,6 @@ textarea {
   border-radius: var(--radius-xl);
   background: var(--surface);
   padding: 12px 14px;
-  box-shadow: none;
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.22s ease;
 }
 
@@ -3819,7 +3784,6 @@ textarea {
 #chat-view .tool-card {
   border-radius: var(--radius-xl);
   border-color: rgba(71, 85, 105, 0.14);
-  box-shadow: none;
 }
 
 #chat-view .tool-call-card {
@@ -3856,7 +3820,6 @@ textarea {
   border: none;
   border-radius: 0;
   background: transparent;
-  box-shadow: none;
 }
 
 #chat-view .flow-lane .timeline-card:first-child {
