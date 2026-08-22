@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -77,6 +79,16 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 			return err
 		}
 		delay := retryDelay(c.Retry.BaseDelay, attempt)
+		// An explicit upstream Retry-After outranks the local backoff: re-sending
+		// after the ~0.5s average full-jitter delay while the provider asked for
+		// 60s only burns quota and invites a longer hard limit. Treat the header
+		// as a floor (already bounded by maxRetryAfterDelay when parsed) and keep
+		// jitter on top of it, never replacing the delay with the header's
+		// deterministic value.
+		var delayErr *HTTPError
+		if errors.As(err, &delayErr) && delayErr.RetryAfter > 0 {
+			delay = retryAfterDelay(delayErr.RetryAfter, delay)
+		}
 		if emit != nil {
 			data := map[string]any{
 				"provider":     providerName,
@@ -146,10 +158,20 @@ func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out
 				TimeoutKind: "request_timeout",
 			}
 		}
-		return err
+		// Remaining body-read failures are transport faults that surfaced after
+		// the response headers arrived (mid-body connection reset, unexpected
+		// EOF, ...). They must be classified like client.Do failures so
+		// shouldRetry/RetryTransport can act on them and durable provider
+		// attempts record a non-empty error_class.
+		return classifyTransportError(ctx, providerName, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return classifyHTTPError(providerName, resp.StatusCode, string(data))
+		err := classifyHTTPError(providerName, resp.StatusCode, string(data))
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			httpErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		}
+		return err
 	}
 	if out == nil {
 		return nil
@@ -166,6 +188,80 @@ func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out
 }
 
 var errStreamIdleTimeout = errors.New("stream idle timeout")
+
+// maxRetryAfterDelay bounds how long an upstream Retry-After header can hold a
+// retry. A provider (or a misbehaving proxy) may answer with hours; honouring
+// that verbatim would hang the turn far past any useful timeout, so cap it at
+// the same 30s ceiling the local exponential backoff uses.
+const maxRetryAfterDelay = 30 * time.Second
+
+// maxRetryAfterJitter bounds the random spread layered on top of an upstream
+// Retry-After floor, so the worst-case wait stays within a documented
+// maxRetryAfterDelay + maxRetryAfterJitter window.
+const maxRetryAfterJitter = maxRetryAfterDelay / 4
+
+// retryAfterDelay combines an upstream Retry-After wait with the locally
+// jittered backoff. RFC 9110 only forbids retrying *before* the requested time,
+// so the header is a floor, not an exact instant. It carries no random
+// component: honouring it verbatim makes every concurrent agent (child / queue
+// profiles) re-send at the same absolute instant, which is precisely the
+// self-synchronised spike retryDelay's full jitter exists to prevent — and it
+// happens exactly when the upstream already signalled overload. Keep the floor,
+// add a bounded random spread on top of it, and never wait less than the local
+// backoff would have. The worst case stays inside maxRetryAfterDelay +
+// maxRetryAfterJitter.
+func retryAfterDelay(retryAfter, jittered time.Duration) time.Duration {
+	if retryAfter <= 0 {
+		return jittered
+	}
+	// Sample the spread instead of clamping the already-jittered local delay:
+	// min(jittered, maxRetryAfterJitter) collapses to exactly maxRetryAfterJitter
+	// as soon as the local backoff ceiling grows past it (attempt >= 4 at the
+	// default base), which degrades the "bounded random spread" into the constant
+	// retryAfter + maxRetryAfterJitter. Since retryAfter is the same clamped value
+	// for every concurrent agent, that constant recreates the self-synchronised
+	// spike this function exists to break up — precisely on the last attempts,
+	// when the upstream overload signal is strongest. Drawing from (0, bound]
+	// keeps a random component at every attempt while still scaling the spread
+	// with the local backoff.
+	spread := time.Duration(0)
+	if bound := min(jittered, maxRetryAfterJitter); bound > 0 {
+		spread = time.Duration(rand.Int63n(int64(bound) + 1))
+	}
+	return max(retryAfter+spread, jittered)
+}
+
+// parseRetryAfter reads the two RFC 9110 Retry-After forms — delta-seconds and
+// HTTP-date — and returns 0 when the header is absent, malformed or already in
+// the past. The result is clamped to maxRetryAfterDelay.
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds <= 0 {
+			return 0
+		}
+		// Clamp in the seconds domain, before the multiplication: delta-seconds
+		// arrives as an unbounded 64-bit value, and time.Duration(seconds) *
+		// time.Second wraps int64 nanoseconds past ~9.2e9s, yielding negative or
+		// tiny waits that a later min() would pass through unchanged.
+		if seconds > int64(maxRetryAfterDelay/time.Second) {
+			return maxRetryAfterDelay
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	deadline, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	wait := deadline.Sub(now)
+	if wait <= 0 {
+		return 0
+	}
+	return min(wait, maxRetryAfterDelay)
+}
 
 func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]byte, error) {
 	if idle <= 0 {

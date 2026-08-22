@@ -116,6 +116,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 返回码、timeout、workdir、sandbox、原始输出长度和截断状态必须写入 metadata，并以简短执行摘要进入 `llm_output`，避免模型只能在 UI/event metadata 中看到关键执行事实
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
 - 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
+- exec policy 的嵌套展开受深度与「嵌套展开工作量」预算约束（按嵌套派生出的命令串字节计费，不以输入长度为界，也不以视图条数为界）；顶层 segment 派生的视图始终完整检查，不计入该预算，因此合法长命令（数万行内联脚本、列举数千文件的命令行）不会因规模被判为不可判定；预算耗尽且未命中任何具体类别时，必须产出 `unverifiable` 类别而不是空结果，即 fail-closed——否则把 payload 嵌套到预算之外即可绕过 `deny`。预算耗尽时达到的那一层仍须完成同层归一化（segment 拆分、环境赋值前缀、`env` / `command` 内建、引号与反斜杠剥离），只停止继续下探，否则预算落点那一层本身会变成检出空洞；`unverifiable` 须区分「深度耗尽」与「工作量耗尽」两种原因
 - exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI
 - 当同一个远端响应需要多次统计或筛选时，应优先单次获取到临时快照后本地复用；只有外部状态已变化或新鲜度确实重要时才刷新，避免“先完整打印、再重新请求解析”的无效重复
 - 不要把 pipe 数据和 heredoc 脚本同时送入同一个解释器 stdin，例如 `curl ... | python3 - <<'PY'`；heredoc 会占用 stdin，脚本内再读 `sys.stdin` 会得到 EOF。应使用临时文件、`python3 -c`，或让脚本自己发请求
@@ -171,6 +172,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 自动创建父目录
 - 默认全量写入
 - 新文件写入应采用原子替换流程，并为 agent 产物设置 owner-only 默认权限
+- immutable artifact / no-replace rename 必须使用平台原子原语；平台不支持时，普通文件可用原子 hard-link + unlink 等价路径，目录必须 fail closed，不能退化为 check-then-rename 覆盖并发创建的目标
 - 必须拒绝写入 credential / private-key / secret 配置路径；该拒绝不仅基于用户输入路径，也要覆盖工作区内任意目录下已存在的敏感目录、敏感包配置路径和敏感文件名 symlink alias，避免通过普通目标路径间接改写敏感别名
 
 ### 4.4 `edit_file`
@@ -501,12 +503,13 @@ system prompt 仅暴露：
 
 ## 8. Project Docs 加载
 
-运行时应支持读取工作目录向上最近的 `AGENTS.md` 文件链，作为 project docs 注入 system prompt。
+运行时应支持读取工作目录到其最近 Git 仓库根之间的 `AGENTS.md` 文件链，作为 project docs 注入 system prompt。
 
 规则：
 
-- 从 `workdir` 向上搜索到文件系统边界
-- 近路径优先
+- 若 `workdir` 位于 Git 仓库内，从最近仓库根向下按 outer-to-inner 顺序注入到 `workdir`；更近的指令最后出现并覆盖上层指令
+- 若 `workdir` 不在可识别的 Git 仓库内，或本身就是仓库根，只读取当前目录；不得越过无可信边界的普通父目录或仓库根读取外部指令
+- 搜索深度必须有固定上限；`.git` 文件与目录都可作为仓库边界标记
 - 仅注入 `AGENTS.md`，不自动注入其他 README / docs
 - 这些内容是指令，不作为 skill 注册源
 - 若上层 `AGENTS.md` 引用了工作区外路径，这些引用只作为意图提示，不能驱动模型反复重试越界读取

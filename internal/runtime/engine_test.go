@@ -201,7 +201,14 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// The resolver goroutine writes into the session directory. Wait for it in a
+	// cleanup hook so it cannot still be writing while t.TempDir() removes the
+	// tree: a late write recreates the just-deleted directory and makes RemoveAll
+	// fail with "directory not empty".
+	resolverDone := make(chan struct{})
+	t.Cleanup(func() { <-resolverDone })
 	go func() {
+		defer close(resolverDone)
 		time.Sleep(40 * time.Millisecond)
 		if err := resolveParentQueueJob(engine.store, meta.ID, "job_unresolved", session.QueueStatusCompleted); err != nil {
 			return

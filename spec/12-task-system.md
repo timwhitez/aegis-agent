@@ -166,6 +166,8 @@ task 满足以下条件时视为 blocked：
 
 反之亦然。
 
+task graph 是一个多文件事实源：跨进程写入必须在同一 durable `taskboard.lock` 下完成 read-modify-write，批量写失败必须恢复到写入前的完整 graph；`task_list` / `task_get` 也要持有该锁读取，不能观察到批量更新中途的半图。
+
 ### 8.2 无环
 
 新增或更新依赖时必须执行 cycle check。

@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"go-cli-agent/internal/events"
 )
+
+const queueLeaseReclaimedErrorPrefix = "queue lease reclaimed:"
 
 // ReapResult summarizes a single reaper pass over the queue. It is returned for
 // observability/logging and is safe to ignore.
@@ -115,8 +118,18 @@ func (s *Store) ReapStaleQueueJobs(staleAfter time.Duration) (ReapResult, error)
 
 // queueJobIsOrphaned reports whether a running/blocked job has lost its owning
 // process or exceeded its heartbeat lease. A blocked job whose owner is dead is
-// orphaned regardless of heartbeat, because nothing will ever resume it.
+// orphaned regardless of heartbeat, because nothing will ever resume it. A
+// blocked job whose lease was already cleared has no owner to reclaim and is
+// not reported again, so a settled job is not re-reaped every pass.
 func queueJobIsOrphaned(job QueueJob, now time.Time, staleAfter time.Duration) bool {
+	if job.Status == QueueStatusBlocked && !queueJobHasLease(job) {
+		// The lease has already been cleared, so there is no owner left to
+		// reclaim and re-settling would rewrite the same durable fact plus
+		// re-scan the parent event log on every reaper pass. Parent
+		// coordination for such a job is (re)ensured by the path that cleared
+		// the lease and by queue job reconciliation on load.
+		return false
+	}
 	ownerAlive := queueJobOwnerAlive(job)
 	if !ownerAlive {
 		return true
@@ -135,8 +148,27 @@ func queueJobIsOrphaned(job QueueJob, now time.Time, staleAfter time.Duration) b
 }
 
 // reapOrphanedQueueJob applies the hybrid recovery policy to one orphan and
-// returns the queue status it transitioned to.
+// returns the queue status it transitioned to. An empty status means the job was
+// left untouched because it is no longer the job that was scanned.
 func (s *Store) reapOrphanedQueueJob(job QueueJob) (string, error) {
+	// Candidates are collected from a snapshot taken before the store lock was
+	// released, so the durable fact may have been advanced by its worker (or by
+	// another reaper) in the meantime. Re-read the canonical job under the same
+	// durable queue lock the writers use and only proceed while the scanned
+	// lease is still the current one; otherwise writing the stale snapshot back
+	// would roll a settled job (and its FinalText) backwards.
+	current, err := s.LoadJobCoordinationSnapshot(job.ID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	if !queueReapCandidateIsCurrent(job, current) {
+		return "", nil
+	}
+	job = current
+
 	childStatus, hasChild := s.orphanChildSessionStatus(job)
 	if hasChild {
 		cancelled, err := s.applyOrphanedQueueCancelRequest(job)
@@ -164,6 +196,79 @@ func (s *Store) reapOrphanedQueueJob(job QueueJob) (string, error) {
 	}
 }
 
+// queueReapCandidateIsCurrent reports whether the canonical queue fact still
+// matches the snapshot the reaper scanned. Any advance in status or lease
+// identity means another process owns the transition now, so this pass must not
+// overwrite it with the older snapshot.
+func queueReapCandidateIsCurrent(candidate, current QueueJob) bool {
+	if current.Status != candidate.Status {
+		return false
+	}
+	if strings.TrimSpace(current.ProcessStartID) != strings.TrimSpace(candidate.ProcessStartID) {
+		return false
+	}
+	if current.WorkerPID != candidate.WorkerPID {
+		return false
+	}
+	if strings.TrimSpace(current.ClaimedBy) != strings.TrimSpace(candidate.ClaimedBy) {
+		return false
+	}
+	if strings.TrimSpace(current.HeartbeatAt) != strings.TrimSpace(candidate.HeartbeatAt) {
+		return false
+	}
+	if strings.TrimSpace(current.UpdatedAt) != strings.TrimSpace(candidate.UpdatedAt) {
+		return false
+	}
+	if strings.TrimSpace(current.SessionID) != strings.TrimSpace(candidate.SessionID) {
+		return false
+	}
+	return true
+}
+
+// QueueJobLeaseWasReclaimed identifies the stable blocked outcome written by
+// the liveness reaper. A still-running worker uses this marker to distinguish
+// lease loss from its own normal blocked/terminal reconciliation.
+func QueueJobLeaseWasReclaimed(job QueueJob) bool {
+	return job.Status == QueueStatusBlocked &&
+		!queueJobHasLease(job) &&
+		queueLeaseReclaimedError(job.LastError)
+}
+
+func queueLeaseReclaimedError(lastError string) bool {
+	return strings.HasPrefix(strings.TrimSpace(lastError), queueLeaseReclaimedErrorPrefix)
+}
+
+// saveReapedQueueJobIfCurrent performs the final reaper transition as a CAS
+// under claim.lock. The earlier coordination snapshot is only advisory: a
+// worker may advance the job while the reaper inspects its linked child.
+func (s *Store) saveReapedQueueJobIfCurrent(candidate, updated QueueJob) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureQueueDirs(); err != nil {
+		return false, err
+	}
+	committed := false
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
+	err := s.withFileLock(lockPath, func() error {
+		current, err := s.loadQueueJobForCoordinationLocked(candidate.ID)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !queueReapCandidateIsCurrent(candidate, current) {
+			return nil
+		}
+		if err := s.saveJobLocked(updated); err != nil {
+			return err
+		}
+		committed = true
+		return nil
+	})
+	return committed, err
+}
+
 // orphanChildSessionStatus loads the linked child session status if any.
 func (s *Store) orphanChildSessionStatus(job QueueJob) (string, bool) {
 	sessionID := strings.TrimSpace(job.SessionID)
@@ -183,9 +288,14 @@ func (s *Store) orphanChildSessionStatus(job QueueJob) (string, bool) {
 func (s *Store) settleReapedJob(job QueueJob, status, lastError string) (string, error) {
 	updated := clearReapedQueueLease(job)
 	updated.Status = status
+	var runningChildState *State
 	if strings.TrimSpace(updated.SessionID) != "" {
 		if state, err := s.LoadState(updated.SessionID); err == nil {
 			updated.SessionStatus = state.Status
+			if status == QueueStatusBlocked && state.Status == StatusRunning {
+				snapshot := state
+				runningChildState = &snapshot
+			}
 		}
 		if meta, err := s.LoadMetadata(updated.SessionID); err == nil {
 			updated.EffectiveWorkdir = meta.Workdir
@@ -195,24 +305,105 @@ func (s *Store) settleReapedJob(job QueueJob, status, lastError string) (string,
 	if strings.TrimSpace(lastError) != "" {
 		updated.LastError = lastError
 	}
-	if status == QueueStatusBlocked && strings.TrimSpace(updated.LastError) == "" {
-		updated.LastError = "child session is resumable; owner process exited"
+	if status == QueueStatusBlocked {
+		reason := firstNonEmptyQueueValue(updated.LastError, "child session is resumable; owner process exited")
+		updated.LastError = queueLeaseReclaimedErrorPrefix + " " + reason
 	}
-	if err := s.SaveJob(updated); err != nil {
+	if s.beforeQueueReapCommit != nil {
+		s.beforeQueueReapCommit(job, updated)
+	}
+	committed, err := s.saveReapedQueueJobIfCurrent(job, updated)
+	if err != nil {
 		return "", err
+	}
+	if !committed {
+		return "", nil
+	}
+	var postCommitErr error
+	if runningChildState != nil {
+		paused, pauseErr := s.pauseReapedRunningChild(updated.SessionID, *runningChildState, updated.ID)
+		postCommitErr = pauseErr
+		if paused {
+			updated.SessionStatus = StatusPaused
+		} else if pauseErr == nil {
+			if currentState, err := s.LoadState(updated.SessionID); err == nil {
+				updated.SessionStatus = currentState.Status
+				switch currentState.Status {
+				case StatusCompleted, StatusCancelled, StatusFailed:
+					repaired, reconcileErr := s.LoadJob(updated.ID)
+					if reconcileErr != nil {
+						postCommitErr = errors.Join(postCommitErr, reconcileErr)
+					} else {
+						updated = repaired
+						status = repaired.Status
+					}
+				}
+			}
+		}
 	}
 	if updated.ParentSessionID != "" {
 		if isTerminalQueueStatus(updated.Status) {
 			if err := s.ensureTerminalQueueJobParentState(updated); err != nil {
-				return "", err
+				postCommitErr = errors.Join(postCommitErr, err)
 			}
 		} else if updated.Status == QueueStatusBlocked {
 			if err := s.ensureBlockedQueueJobParentState(updated); err != nil {
-				return "", err
+				postCommitErr = errors.Join(postCommitErr, err)
 			}
 		}
 	}
-	return status, nil
+	return status, postCommitErr
+}
+
+// pauseReapedRunningChild advances state.json only when it still matches the
+// running snapshot inspected before the queue CAS. This prevents a reaper from
+// overwriting a worker that completed or otherwise advanced the session during
+// the scan/commit window.
+func (s *Store) pauseReapedRunningChild(sessionID string, expected State, jobID string) (bool, error) {
+	path, err := s.sessionPath(sessionID, "state.json")
+	if err != nil {
+		return false, err
+	}
+	lockPath, err := s.sessionPath(sessionID, "state.lock")
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	s.mu.Lock()
+	err = s.withFileLock(lockPath, func() error {
+		var current State
+		if err := readJSONFile(path, &current); err != nil {
+			return err
+		}
+		if current.Status != StatusRunning || strings.TrimSpace(current.UpdatedAt) != strings.TrimSpace(expected.UpdatedAt) {
+			return nil
+		}
+		current.Status = StatusPaused
+		current.Phase = "interrupt"
+		current.PauseReason = "stale_owner_reconciled"
+		current.LastError = ""
+		current.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := validateState(current); err != nil {
+			return fmt.Errorf("validate reaped child state: %w", err)
+		}
+		if err := s.writeJSONFile(path, current); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	s.mu.Unlock()
+	if err != nil || !changed {
+		return changed, err
+	}
+	err = s.AppendEvent(sessionID, events.New(sessionID, "session.paused", "interrupt", map[string]any{
+		"reason":          "stale_owner_reconciled",
+		"source":          "queue_reaper",
+		"reconciled":      true,
+		"reconciled_from": "orphaned_queue_lease",
+		"queue_job_id":    jobID,
+	}))
+	return true, err
 }
 
 func (s *Store) applyOrphanedQueueCancelRequest(job QueueJob) (bool, error) {
@@ -295,8 +486,15 @@ func (s *Store) requeueReapedJob(job QueueJob) (string, error) {
 	updated.FinalText = ""
 	updated.LastError = ""
 	updated.StopReason = ""
-	if err := s.SaveJob(updated); err != nil {
+	if s.beforeQueueReapCommit != nil {
+		s.beforeQueueReapCommit(job, updated)
+	}
+	committed, err := s.saveReapedQueueJobIfCurrent(job, updated)
+	if err != nil {
 		return "", err
+	}
+	if !committed {
+		return "", nil
 	}
 	return QueueStatusQueued, nil
 }
@@ -310,6 +508,17 @@ func clearReapedQueueLease(job QueueJob) QueueJob {
 	job.WorkerPID = 0
 	job.ProcessStartID = ""
 	return job
+}
+
+// queueJobHasLease reports whether a job still carries any owner lease fact. A
+// job with no lease left was already settled by clearReapedQueueLease (or by a
+// worker finishing its write-back), so there is no vanished owner to reclaim.
+func queueJobHasLease(job QueueJob) bool {
+	return job.WorkerPID != 0 ||
+		strings.TrimSpace(job.ProcessStartID) != "" ||
+		strings.TrimSpace(job.ClaimedBy) != "" ||
+		strings.TrimSpace(job.ClaimedAt) != "" ||
+		strings.TrimSpace(job.HeartbeatAt) != ""
 }
 
 func firstNonEmptyQueueTimestamp(values ...string) string {

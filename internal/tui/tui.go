@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -213,7 +214,9 @@ func Run(ctx context.Context, store *session.Store, selectedID string, limit, re
 	defer io.WriteString(stdout, "\x1b[?1049l")
 
 	keyCh := make(chan []byte, 8)
-	go readKeys(stdin, keyCh)
+	done := make(chan struct{})
+	defer close(done)
+	go readKeys(stdin, keyCh, done)
 
 	currentID := selectedID
 	refresh := time.NewTicker(time.Duration(refreshMS) * time.Millisecond)
@@ -288,22 +291,67 @@ func handleKey(seq []byte, snapshot Snapshot) (string, bool) {
 	return "", false
 }
 
-func readKeys(stdin *os.File, out chan<- []byte) {
-	buf := make([]byte, 3)
+func readKeys(stdin *os.File, out chan<- []byte, done <-chan struct{}) {
+	defer close(out)
+	buf := make([]byte, 16)
+	decoder := keySequenceDecoder{}
 	for {
-		n, err := stdin.Read(buf[:1])
+		n, err := stdin.Read(buf)
+		for _, seq := range decoder.Push(buf[:n], err != nil || n == 0) {
+			select {
+			case out <- seq:
+			case <-done:
+				return
+			}
+		}
 		if err != nil || n == 0 {
-			close(out)
 			return
 		}
-		seq := []byte{buf[0]}
-		if buf[0] == 27 {
-			stdin.Read(buf[1:2])
-			stdin.Read(buf[2:3])
-			seq = []byte{buf[0], buf[1], buf[2]}
-		}
-		out <- seq
 	}
+}
+
+type keySequenceDecoder struct {
+	pending []byte
+}
+
+// Push preserves an incomplete CSI prefix across raw-mode reads. A lone ESC is
+// emitted before the next non-CSI key, so it cannot swallow a following `q`.
+func (d *keySequenceDecoder) Push(data []byte, final bool) [][]byte {
+	combined := make([]byte, 0, len(d.pending)+len(data))
+	combined = append(combined, d.pending...)
+	combined = append(combined, data...)
+	d.pending = d.pending[:0]
+	var out [][]byte
+	for i := 0; i < len(combined); {
+		if combined[i] != 27 {
+			out = append(out, []byte{combined[i]})
+			i++
+			continue
+		}
+		if i+1 == len(combined) && !final {
+			d.pending = append(d.pending, combined[i])
+			break
+		}
+		if i+1 < len(combined) && combined[i+1] == '[' {
+			if i+2 == len(combined) && !final {
+				d.pending = append(d.pending, combined[i:]...)
+				break
+			}
+			if i+2 < len(combined) {
+				out = append(out, []byte{combined[i], combined[i+1], combined[i+2]})
+				i += 3
+				continue
+			}
+		}
+		out = append(out, []byte{combined[i]})
+		i++
+	}
+	return out
+}
+
+func splitKeySequences(data []byte) [][]byte {
+	decoder := keySequenceDecoder{}
+	return decoder.Push(data, true)
 }
 
 func panel(title string, lines []string) string {
@@ -314,12 +362,12 @@ func panel(title string, lines []string) string {
 	border := "+" + strings.Repeat("-", 78) + "+"
 	b.WriteString(border)
 	b.WriteByte('\n')
-	b.WriteString(fmt.Sprintf("| %-76s |\n", title))
+	b.WriteString("| " + padToWidth(title, 76) + " |\n")
 	b.WriteString(border)
 	for _, line := range lines {
 		for _, wrapped := range wrapLine(line, 76) {
 			b.WriteByte('\n')
-			b.WriteString(fmt.Sprintf("| %-76s |", wrapped))
+			b.WriteString("| " + padToWidth(wrapped, 76) + " |")
 		}
 	}
 	b.WriteByte('\n')
@@ -328,18 +376,75 @@ func panel(title string, lines []string) string {
 }
 
 func wrapLine(line string, width int) []string {
-	if width <= 0 || len(line) <= width {
+	if width <= 0 || displayWidth(line) <= width {
 		return []string{line}
 	}
 	var out []string
-	for len(line) > width {
-		out = append(out, line[:width])
-		line = line[width:]
+	start := 0
+	current := 0
+	for i, r := range line {
+		w := runeDisplayWidth(r)
+		if current+w > width && i > start {
+			out = append(out, line[start:i])
+			start = i
+			current = 0
+		}
+		current += w
 	}
-	if line != "" {
-		out = append(out, line)
+	if start < len(line) {
+		out = append(out, line[start:])
 	}
 	return out
+}
+
+// padToWidth right-pads text with spaces up to width terminal columns. It is
+// used instead of fmt's %-Ns because fmt pads by rune count, which disagrees
+// with the display width used when wrapping.
+func padToWidth(text string, width int) string {
+	pad := width - displayWidth(text)
+	if pad <= 0 {
+		return text
+	}
+	return text + strings.Repeat(" ", pad)
+}
+
+func displayWidth(text string) int {
+	width := 0
+	for _, r := range text {
+		width += runeDisplayWidth(r)
+	}
+	return width
+}
+
+// runeDisplayWidth reports how many terminal columns r occupies. It covers the
+// common cases only: combining marks and format characters are zero width,
+// East Asian wide/fullwidth ranges and the main emoji blocks are two columns,
+// everything else is one column.
+func runeDisplayWidth(r rune) int {
+	switch {
+	case r == 0:
+		return 0
+	case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r), unicode.Is(unicode.Cf, r):
+		return 0
+	case r == 0x2329, r == 0x232A,
+		r >= 0x1100 && r <= 0x115F,
+		r >= 0x2E80 && r <= 0x303E,
+		r >= 0x3041 && r <= 0x33FF,
+		r >= 0x3400 && r <= 0x4DBF,
+		r >= 0x4E00 && r <= 0x9FFF,
+		r >= 0xA000 && r <= 0xA4CF,
+		r >= 0xAC00 && r <= 0xD7A3,
+		r >= 0xF900 && r <= 0xFAFF,
+		r >= 0xFE30 && r <= 0xFE6F,
+		r >= 0xFF00 && r <= 0xFF60,
+		r >= 0xFFE0 && r <= 0xFFE6,
+		r >= 0x1F300 && r <= 0x1F64F,
+		r >= 0x1F900 && r <= 0x1F9FF,
+		r >= 0x20000 && r <= 0x3FFFD:
+		return 2
+	default:
+		return 1
+	}
 }
 
 func summarizeMessage(msg session.Message) string {

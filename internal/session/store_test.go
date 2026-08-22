@@ -48,6 +48,123 @@ func TestStoreEnsureRootReappliesOwnerOnlyMode(t *testing.T) {
 	}
 }
 
+func TestStoreCreateRefusesExistingOrPartiallyReservedSession(t *testing.T) {
+	store := NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion: 1, ID: NewSessionID(), CreatedAt: now, Workdir: t.TempDir(),
+		Mode: ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: CompletionPolicyInteractive,
+	}
+	state := State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}
+	if err := store.Create(meta, state); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if err := store.AppendMessage(meta.ID, NewMessage("user", "durable history")); err != nil {
+		t.Fatalf("append message: %v", err)
+	}
+	messagePath := filepath.Join(store.SessionDir(meta.ID), "messages.jsonl")
+	before, err := os.ReadFile(messagePath)
+	if err != nil {
+		t.Fatalf("read history before duplicate create: %v", err)
+	}
+	if err := store.Create(meta, state); !errors.Is(err, ErrSessionExists) {
+		t.Fatalf("expected ErrSessionExists, got %v", err)
+	}
+	after, err := os.ReadFile(messagePath)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("duplicate create changed durable history: before=%q after=%q err=%v", before, after, err)
+	}
+
+	partial := meta
+	partial.ID = NewSessionID()
+	if err := os.Mkdir(store.SessionDir(partial.ID), 0o700); err != nil {
+		t.Fatalf("reserve partial session dir: %v", err)
+	}
+	if err := store.Create(partial, state); !errors.Is(err, ErrSessionExists) {
+		t.Fatalf("expected partial directory to stay reserved, got %v", err)
+	}
+
+	preSession := meta
+	preSession.ID = NewSessionID()
+	controlDir := filepath.Join(store.SessionDir(preSession.ID), "control")
+	if err := os.MkdirAll(controlDir, 0o700); err != nil {
+		t.Fatalf("create pre-session control dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(controlDir, ".cancel.json.race.tmp"), []byte("pending"), 0o600); err != nil {
+		t.Fatalf("create pre-session cancel temp: %v", err)
+	}
+	if err := store.Create(preSession, state); err != nil {
+		t.Fatalf("recognized pre-session cancel directory should be claimable: %v", err)
+	}
+}
+
+func TestListTasksWaitsForDurableTaskboardLock(t *testing.T) {
+	store := NewStore(t.TempDir())
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := SessionMetadata{
+		SchemaVersion: 1, ID: NewSessionID(), CreatedAt: now, Workdir: t.TempDir(),
+		Mode: ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, State{Status: StatusRunning, Phase: "prepare", UpdatedAt: now}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	task := Task{ID: "task_0001", Subject: "locked read", Status: "pending", Priority: "medium", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveTasks(meta.ID, []Task{task}); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+	lockPath, err := store.taskboardLockPath(meta.ID)
+	if err != nil {
+		t.Fatalf("taskboard lock path: %v", err)
+	}
+	lockFile, err := openNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open taskboard lock: %v", err)
+	}
+	defer lockFile.Close()
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX); err != nil {
+		t.Fatalf("lock taskboard: %v", err)
+	}
+
+	type listResult struct {
+		tasks []Task
+		err   error
+	}
+	resultCh := make(chan listResult, 1)
+	otherStore := NewStore(store.Root())
+	go func() {
+		tasks, err := otherStore.ListTasks(meta.ID)
+		resultCh <- listResult{tasks: tasks, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		t.Fatalf("task reader escaped durable lock: %#v", result)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock taskboard: %v", err)
+	}
+	select {
+	case result := <-resultCh:
+		if result.err != nil || len(result.tasks) != 1 || result.tasks[0].ID != task.ID {
+			t.Fatalf("unexpected tasks after unlock: %#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("task reader did not resume after unlock")
+	}
+}
+
+func TestListTasksForUnknownSessionDoesNotCreatePartialSession(t *testing.T) {
+	store := NewStore(t.TempDir())
+	sessionID := NewSessionID()
+	tasks, err := store.ListTasks(sessionID)
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("unknown session task list: tasks=%#v err=%v", tasks, err)
+	}
+	if _, statErr := os.Lstat(store.SessionDir(sessionID)); !os.IsNotExist(statErr) {
+		t.Fatalf("read-only task lookup created a partial session: %v", statErr)
+	}
+}
+
 func TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink(t *testing.T) {
 	temp := t.TempDir()
 	root := filepath.Join(temp, "sessions")

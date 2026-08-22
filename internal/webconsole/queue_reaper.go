@@ -74,18 +74,19 @@ func (s *Service) runReaperPass() {
 	_ = s.reconcileAllStaleRunningSessions()
 }
 
-// reconcileAllStaleRunningSessions sweeps every session, letting
-// reconcileStaleRunningSession self-filter to those whose owner is dead/stale.
+// reconcileAllStaleRunningSessions sweeps every session recorded as running,
+// letting reconcileStaleRunningSession self-filter to those whose owner is
+// dead/stale. It deliberately uses ListRunningSessionIDs instead of ListPage:
+// the reaper drops every non-running entry anyway, and ListPage additionally
+// expands each session's goal/planmode snapshot, so a full page costs roughly
+// four synchronous file reads per session for facts this sweep never uses.
 func (s *Service) reconcileAllStaleRunningSessions() error {
-	items, _, err := s.store.ListPage(1000000, 0)
+	ids, err := s.store.ListRunningSessionIDs()
 	if err != nil {
 		return err
 	}
-	for _, item := range items {
-		if item.Status != session.StatusRunning {
-			continue
-		}
-		if _, err := s.reconcileStaleRunningSession(item.ID, queueReaperPauseReason); err != nil {
+	for _, id := range ids {
+		if _, err := s.reconcileStaleRunningSession(id, queueReaperPauseReason); err != nil {
 			return err
 		}
 	}

@@ -127,6 +127,40 @@ func TestReapStaleQueueJobsRequeuesPreStartOrphan(t *testing.T) {
 	}
 }
 
+func TestReapStaleQueueJobsDoesNotOverwriteJobAdvancedBeforeCommit(t *testing.T) {
+	store := reaperTestStore(t)
+	parent := reaperParentMeta(t, store)
+	job := deadOwnerJob("job_raced_terminal", parent.ID, "", QueueStatusRunning, "")
+	seedParentJob(t, store, parent.ID, job)
+
+	otherStore := NewStore(store.Root())
+	var advanceErr error
+	store.beforeQueueReapCommit = func(candidate, _ QueueJob) {
+		advanced := clearReapedQueueLease(candidate)
+		advanced.Status = QueueStatusCompleted
+		advanced.FinalText = "worker result must survive"
+		advanceErr = otherStore.SaveJob(advanced)
+	}
+
+	result, err := store.ReapStaleQueueJobs(time.Minute)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if advanceErr != nil {
+		t.Fatalf("advance job before CAS: %v", advanceErr)
+	}
+	if result.Total() != 0 {
+		t.Fatalf("stale reaper snapshot must not report a transition: %#v", result)
+	}
+	reloaded, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("load advanced job: %v", err)
+	}
+	if reloaded.Status != QueueStatusCompleted || reloaded.FinalText != "worker result must survive" {
+		t.Fatalf("reaper overwrote advanced job: %#v", reloaded)
+	}
+}
+
 func TestReapStaleQueueJobsSettlesTerminalChild(t *testing.T) {
 	store := reaperTestStore(t)
 	parent := reaperParentMeta(t, store)
@@ -263,6 +297,77 @@ func TestReapStaleQueueJobsBlocksNonTerminalOrphanAndNotifiesParent(t *testing.T
 	}
 	if !found {
 		t.Fatalf("expected pending parent notification for blocked orphan, got %#v", notifications)
+	}
+}
+
+func TestReapStaleQueueJobsPausesStillRunningOrphan(t *testing.T) {
+	store := reaperTestStore(t)
+	parent := reaperParentMeta(t, store)
+	child := reaperChildSession(t, store, parent.ID, StatusRunning)
+	job := deadOwnerJob("job_running_orphan", parent.ID, child.ID, QueueStatusRunning, StatusRunning)
+	child.QueueJobID = job.ID
+	if err := store.SaveMetadata(child.ID, child); err != nil {
+		t.Fatalf("link child metadata to job: %v", err)
+	}
+	seedParentJob(t, store, parent.ID, job)
+
+	result, err := store.ReapStaleQueueJobs(time.Minute)
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if len(result.Blocked) != 1 || result.Blocked[0] != job.ID {
+		t.Fatalf("expected running orphan to become blocked, got %#v", result)
+	}
+	state, err := store.LoadState(child.ID)
+	if err != nil || state.Status != StatusPaused || state.PauseReason != "stale_owner_reconciled" {
+		t.Fatalf("running orphan session was not reconciled to paused: state=%#v err=%v", state, err)
+	}
+	reloaded, err := store.LoadJob(job.ID)
+	if err != nil || reloaded.Status != QueueStatusBlocked || reloaded.SessionStatus != StatusPaused {
+		t.Fatalf("running orphan queue fact did not converge: job=%#v err=%v", reloaded, err)
+	}
+	eventsList, err := store.LoadEvents(child.ID)
+	if err != nil {
+		t.Fatalf("load child events: %v", err)
+	}
+	pausedEvents := 0
+	for _, event := range eventsList {
+		if event.Type == "session.paused" {
+			pausedEvents++
+		}
+	}
+	if pausedEvents != 1 {
+		t.Fatalf("expected one durable reaper pause event, got %d events=%#v", pausedEvents, eventsList)
+	}
+}
+
+func TestLoadJobPreservesReclaimedBlockedFactWhileChildStillRunning(t *testing.T) {
+	store := reaperTestStore(t)
+	parent := reaperParentMeta(t, store)
+	child := reaperChildSession(t, store, parent.ID, StatusRunning)
+	job := clearReapedQueueLease(deadOwnerJob("job_reclaimed_running", parent.ID, child.ID, QueueStatusRunning, StatusRunning))
+	child.QueueJobID = job.ID
+	if err := store.SaveMetadata(child.ID, child); err != nil {
+		t.Fatalf("link child metadata to job: %v", err)
+	}
+	job.Status = QueueStatusBlocked
+	job.LastError = queueLeaseReclaimedErrorPrefix + " child owner stopped"
+	job.EffectiveWorkdir = child.Workdir
+	seedParentJob(t, store, parent.ID, job)
+
+	first, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	if first.Status != QueueStatusBlocked || first.SessionStatus != StatusRunning || !QueueJobLeaseWasReclaimed(first) {
+		t.Fatalf("reclaimed blocked fact was reversed: %#v", first)
+	}
+	second, err := store.LoadJob(job.ID)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if second.UpdatedAt != first.UpdatedAt {
+		t.Fatalf("stable reclaimed fact was rewritten on read: first=%s second=%s", first.UpdatedAt, second.UpdatedAt)
 	}
 }
 

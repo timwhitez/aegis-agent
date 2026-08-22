@@ -28,6 +28,36 @@ func TestTruncateKeepsUTF8Boundaries(t *testing.T) {
 	}
 }
 
+func TestKeySequenceDecoderPreservesFragmentedCSI(t *testing.T) {
+	for _, tc := range []struct {
+		fragments [][]byte
+		expected  []byte
+	}{
+		{fragments: [][]byte{{27}, {'[', 'A'}}, expected: []byte{27, '[', 'A'}},
+		{fragments: [][]byte{{27, '['}, {'B'}}, expected: []byte{27, '[', 'B'}},
+	} {
+		decoder := keySequenceDecoder{}
+		var sequences [][]byte
+		for _, fragment := range tc.fragments {
+			sequences = append(sequences, decoder.Push(fragment, false)...)
+		}
+		if len(sequences) != 1 || string(sequences[0]) != string(tc.expected) {
+			t.Fatalf("fragmented CSI was split: fragments=%v sequences=%v", tc.fragments, sequences)
+		}
+	}
+}
+
+func TestKeySequenceDecoderDoesNotSwallowKeyAfterLoneEscape(t *testing.T) {
+	decoder := keySequenceDecoder{}
+	if got := decoder.Push([]byte{27}, false); len(got) != 0 {
+		t.Fatalf("expected incomplete escape to stay pending, got %v", got)
+	}
+	got := decoder.Push([]byte{'q'}, false)
+	if len(got) != 2 || len(got[0]) != 1 || got[0][0] != 27 || string(got[1]) != "q" {
+		t.Fatalf("expected ESC and q as separate keys, got %v", got)
+	}
+}
+
 func TestRunRejectsNonTTY(t *testing.T) {
 	store := session.NewStore(t.TempDir())
 	stdout, err := os.CreateTemp(t.TempDir(), "tui-out-*.txt")

@@ -218,6 +218,7 @@ parent-linked queue job 只能由 root master session 创建。`depth > 0` 或�
 
 - parent/operator 在 worker claim 前取消 queued job
 - running child 接纳 durable cancel request 并以 `cancelled` 终止
+- cancel request 可在 worker 已绑定 child session id、但 canonical session 尚未创建时先写入该 session 的 `control/cancel.*`；后续 session create 只能认领这一种受限 pre-session control 目录（包括原子写临时文件），不得复用含未知文件、JSONL、task 或 artifact 的残缺 session 目录
 - parent 明确 settle 不再需要的 budget-paused blocked job；linked child 保留 paused budget evidence
 
 以下情况标记 job `blocked`：
@@ -241,9 +242,10 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 - 回收策略为混合（仅做 liveness 恢复，绝不替模型决定 workflow）：
   - 关联 child session 已 `completed` / `failed` → 结算为对应 queue 终态，释放 parent coordination gate。
   - 尚未创建 child session（claim 后崩溃）→ 清除 lease 重新入队 `queued/`，由后续 worker 重跑。
-  - 关联 child session 仍可恢复（`paused` / `awaiting_input` / 进行中但持有者已死）→ 标记 `blocked` 并确保 parent 存在 pending background notification，交模型决策。
+  - 关联 child session 仍可恢复（`paused` / `awaiting_input` / 进行中但持有者已死）→ 标记带稳定 lease-reclaimed 诊断的 `blocked` 并确保 parent 存在 pending background notification，交模型决策；若 child 仍为 `running`，按所观察的 `state.updated_at` 做 CAS 收敛到 `paused/stale_owner_reconciled`，不能覆盖已在扫描窗口内推进的 state。
 - 回收由 `web` 进程的后台循环驱动（`runtime.queue.reaper_interval_ms`，默认 `60s`，`<= 0` 关闭）。回收 job 后，`web` 还要对僵尸 `running` session（`status=running` 但无存活 owner）执行 stale-owner reconcile，转为 `paused` 可续。
 - 持有者存活判定必须保守：无法判定（无 `/proc`、stat 异常）时视为存活，避免误回收健康 job。
+- 扫描 snapshot、child 状态判定与最终写回之间可能有健康 worker 推进 job；reaper 的最终状态迁移必须在 durable `claim.lock` 内重新读取 canonical job，并以 status、lease identity、heartbeat/updated version 做 compare-and-set。比较失败时本轮不写 job、parent coordination 或 notification，绝不能用旧 snapshot 覆盖终态结果与 `final_text`。
 
 ### 5.7 父任务死锁检测与唤醒
 

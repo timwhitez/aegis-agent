@@ -1069,6 +1069,21 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					}, toolArgs)
 					e.control.clearCancel(cancel)
 					if isPendingPlanModeInputResult(toolResult) {
+						// The pending request_user_input call stays unresolved on purpose so a
+						// later continue can attach the real answer, but calls already executed
+						// earlier in this batch must still be recorded and later calls need
+						// replayable placeholders.
+						if callIndex+1 < len(result.ToolCalls) {
+							toolResults = append(toolResults, syntheticToolResults(result.ToolCalls[callIndex+1:], "Error: Plan Mode input is pending; this later tool call was not executed")...)
+						}
+						if len(toolResults) > 0 {
+							if appendErr := e.appendFinalizedToolResults(meta.ID, toolResults); appendErr != nil {
+								if errText := pendingPlanModeInputError(toolResult); errText != "" {
+									return RunResult{}, fmt.Errorf("record executed tool results before pending Plan Mode input (%s): %w", errText, appendErr)
+								}
+								return RunResult{}, appendErr
+							}
+						}
 						if errText := pendingPlanModeInputError(toolResult); errText != "" {
 							_ = writeSessionSummary(e.store, meta.ID)
 							_ = writeLongRunCheckpoint(e.store, meta.ID)

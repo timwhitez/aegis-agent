@@ -1522,7 +1522,7 @@ func TestServiceMissionPlanPatchRollsBackWhenTaskSyncFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	blockWebTaskboardLockPath(t, svc.store, meta.ID)
+	blockedLockPath := blockWebTaskboardLockPath(t, svc.store, meta.ID)
 
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
@@ -1548,6 +1548,9 @@ func TestServiceMissionPlanPatchRollsBackWhenTaskSyncFails(t *testing.T) {
 	}
 	if loaded.Mission != nil && (len(loaded.Mission.Features) != 0 || loaded.Mission.CreateTasksFromPlan) {
 		t.Fatalf("failed task sync should restore original mission plan, got %#v", loaded.Mission)
+	}
+	if err := os.Remove(blockedLockPath); err != nil {
+		t.Fatalf("restore taskboard lock path: %v", err)
 	}
 	tasks, taskErr := svc.store.ListTasks(meta.ID)
 	if taskErr != nil {
@@ -2023,7 +2026,7 @@ func TestServiceGoalPatchRollsBackWhenTaskSyncFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	blockWebTaskboardLockPath(t, svc.store, meta.ID)
+	blockedLockPath := blockWebTaskboardLockPath(t, svc.store, meta.ID)
 
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
@@ -2048,6 +2051,9 @@ func TestServiceGoalPatchRollsBackWhenTaskSyncFails(t *testing.T) {
 	}
 	if loaded.Mode != original.Mode || loaded.Mission != nil || loaded.GoalID != original.GoalID {
 		t.Fatalf("failed task sync should restore original goal, got %#v original=%#v", loaded, original)
+	}
+	if err := os.Remove(blockedLockPath); err != nil {
+		t.Fatalf("restore taskboard lock path: %v", err)
 	}
 	tasks, taskErr := svc.store.ListTasks(meta.ID)
 	if taskErr != nil {
@@ -14480,7 +14486,7 @@ func blockWebPlanModeHistoryPath(t *testing.T, store *session.Store, sessionID s
 	}
 }
 
-func blockWebTaskboardLockPath(t *testing.T, store *session.Store, sessionID string) {
+func blockWebTaskboardLockPath(t *testing.T, store *session.Store, sessionID string) string {
 	t.Helper()
 	lockPath := filepath.Join(store.SessionDir(sessionID), "tasks", "taskboard.lock")
 	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
@@ -14489,6 +14495,7 @@ func blockWebTaskboardLockPath(t *testing.T, store *session.Store, sessionID str
 	if err := os.Mkdir(lockPath, 0o700); err != nil {
 		t.Fatalf("block taskboard lock path: %v", err)
 	}
+	return lockPath
 }
 
 func postJSONError(t *testing.T, url string, payload any, wantStatus int) ErrorResponse {

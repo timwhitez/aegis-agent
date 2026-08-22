@@ -172,14 +172,21 @@ func TestBuildSystemPromptDoesNotTreatGenericReviewHarnessSynthesisAsAuditTask(t
 	}
 }
 
-func TestBuildSystemPromptOnlyInjectsCurrentWorkdirAgents(t *testing.T) {
+func TestBuildSystemPromptInjectsRepoBoundedAgentsChainOuterToInner(t *testing.T) {
 	root := t.TempDir()
-	workdir := filepath.Join(root, "workspace")
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatalf("mkdir git boundary: %v", err)
+	}
+	inner := filepath.Join(root, "pkg")
+	workdir := filepath.Join(inner, "workspace")
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatalf("mkdir workdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("parent-only instruction: read spec/00-product.md"), 0o600); err != nil {
-		t.Fatalf("write parent agents: %v", err)
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root instruction"), 0o600); err != nil {
+		t.Fatalf("write root agents: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(inner, "AGENTS.md"), []byte("inner instruction"), 0o600); err != nil {
+		t.Fatalf("write inner agents: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workdir, "AGENTS.md"), []byte("workspace-only instruction"), 0o600); err != nil {
 		t.Fatalf("write workspace agents: %v", err)
@@ -194,19 +201,25 @@ func TestBuildSystemPromptOnlyInjectsCurrentWorkdirAgents(t *testing.T) {
 		session.State{},
 		nil,
 	)
-	if !strings.Contains(prompt, "workspace-only instruction") {
-		t.Fatalf("expected current workdir AGENTS.md to be injected, got:\n%s", prompt)
+	rootIndex := strings.Index(prompt, "root instruction")
+	innerIndex := strings.Index(prompt, "inner instruction")
+	workspaceIndex := strings.Index(prompt, "workspace-only instruction")
+	if rootIndex < 0 || innerIndex < 0 || workspaceIndex < 0 {
+		t.Fatalf("expected complete repo-bounded AGENTS.md chain, got:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "parent-only instruction") || strings.Contains(prompt, "spec/00-product.md") {
-		t.Fatalf("expected parent AGENTS.md to be excluded, got:\n%s", prompt)
+	if !(rootIndex < innerIndex && innerIndex < workspaceIndex) {
+		t.Fatalf("expected outer-to-inner instruction order, got indexes root=%d inner=%d workspace=%d", rootIndex, innerIndex, workspaceIndex)
 	}
 }
 
-func TestBuildSystemPromptDoesNotClimbToParentAgentsWhenWorkdirHasNone(t *testing.T) {
+func TestBuildSystemPromptDoesNotClimbAboveRepoRoot(t *testing.T) {
 	root := t.TempDir()
 	workdir := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatalf("mkdir workdir: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(workdir, ".git"), 0o700); err != nil {
+		t.Fatalf("mkdir git boundary: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("parent instruction must not leak"), 0o600); err != nil {
 		t.Fatalf("write parent agents: %v", err)

@@ -16019,6 +16019,7 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
 - `go test -timeout 120s ./cmd/... ./internal/... ./pkg/... ./validation/cmd/... -count=1`: passed.
 
 ### FCA-20260529-419
@@ -31778,3 +31779,49 @@ Validation:
 - `go test -timeout 120s ./cmd/... ./internal/app ./internal/config ./internal/events ./internal/extensions ./internal/fileutil ./internal/hooks ./internal/isolation ./internal/output ./internal/procutil ./internal/provider ./internal/review -count=1`: passed.
 - `go test -timeout 120s ./internal/session ./internal/skills ./internal/tools -count=1`: passed.
 - `go test -timeout 120s ./internal/tui ./internal/webconsole ./pkg/... ./validation/cmd/... -count=1`: passed.
+
+### FCA-20260822-105
+
+Slice: `fix(runtime): re-audit archived history and close recovery races`
+
+Source assessment:
+
+- Reviewed `go-cli-agent-with-git-history.tar.gz` by SHA-256 `7a2e8c11e4e59c481344fe7d7aecc80f73fd6daa360f27e9f210e1e4102f56ef`; the archive contained a separate Git history from baseline `7f184e3b066fe14efc62c2a017bebc713d92aec0` through `a955a978054e7088db7744a3bf0a85f0f9986095` and had no merge base with the current repository.
+- The archive baseline's project source content matched current `00f101bf06464c602f434008f66927e3cc259b9e`; its mass `100755` file modes, Flux review workspace, and unrelated generated snapshots were archive artifacts and were not imported.
+- The first review file enumerated 37 findings although commit `32c2bd7` claimed 36; later review files enumerated 11, 9, and 7 headings. These reports and commits were treated as candidate evidence, not as accepted truth.
+- The archive tip's own `go test ./...` was not green on this host: two AGENTS-chain tests depended on there being no enclosing `/tmp/.git`. The implementation direction was retained only after making repository boundaries explicit and tests self-contained.
+
+Confirmed changes:
+
+- Ported and revalidated bounded provider errors, body-read transport classification, full-jitter/Retry-After handling, Anthropic thinking token invariants, event-drop observability, bounded hook output, minimal environment inheritance, process cancellation, Web idle/read limits, and Web reaper scan reduction.
+- Ported Plan Mode dangling-call recovery, pending-input batch result preservation, prompt-fence neutralization, irreversible completed tasks, task graph rollback, taskboard cross-process writes, command-template argument semantics, workspace symlink alias scan reduction, and budgeted fail-closed exec-policy expansion.
+- Made taskboard reads participate in the durable lock without creating partial session directories on unknown-session reads.
+- Kept session creation no-replace while allowing only the recognized pre-session `control/cancel.*` shape required by cancel-before-create recovery; arbitrary empty/unknown partial directories and existing canonical sessions remain rejected.
+
+Corrections beyond the archive tip:
+
+- Replaced the archive's still-racy directory no-replace fallback with fail-closed behavior, added Darwin `renameatx_np(RENAME_EXCL)`, and covered hard-link unlink-failure rollback states.
+- Replaced the archive reaper's pre-write reread with a final compare-and-set under `claim.lock`; status, lease identity, heartbeat, update version, and linked session must still match before commit.
+- Closed the unhandled orphan-with-running-child path with a stable lease-reclaimed blocked fact, `state.updated_at` CAS to `paused/stale_owner_reconciled`, durable pause event, parent notification compatibility, and heartbeat cancellation when a stale worker observes the reclaimed lease.
+- Preserved fragmented TUI CSI sequences across reads instead of treating split arrow bytes as independent keys, while keeping a lone ESC from swallowing the next key.
+- Added direct BusyBox applet inspection to exec policy (`busybox wget`, `busybox rm`) and corrected archive tests that relied on ambient parent Git state.
+
+Rejected archive behavior:
+
+- Did not cherry-pick unrelated-history commits, propagate executable modes, or import Flux/generated workspace files.
+- Did not retain check-then-rename for directories on platforms without an atomic no-replace primitive.
+- Did not accept the archive's reaper reread as a complete concurrency fix or its claimed green test status as current evidence.
+
+Validation:
+
+- Baseline `go test ./... -count=1`: passed before changes; baseline Darwin cross-build failed on Linux-only `unix.Renameat2` / `unix.RENAME_NOREPLACE` as reported.
+- `go test -timeout 600s ./... -count=1`: passed after the final changes.
+- `CGO_ENABLED=1 go test -race -timeout 600s ./internal/tools -count=1`: passed.
+- `CGO_ENABLED=1 go test -race -timeout 600s ./internal/events ./internal/fileutil ./internal/hooks ./internal/provider ./internal/runtime ./internal/session ./internal/tui ./internal/webconsole -count=1`: passed; after the final queue changes, `CGO_ENABLED=1 go test -race -timeout 600s ./internal/session ./internal/runtime ./internal/webconsole -count=1` also passed.
+- `go vet ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`: passed.
+- `GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/... ./internal/... ./pkg/...`: passed.
+- `GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/... ./internal/... ./pkg/...`: passed.
+- `node --check internal/webconsole/assets/*.js`: passed for every asset.
+- `node --test validation/scripts/webconsole_utils_test.mjs`: 145/145 passed.
+- `gofmt -l $(rg --files -g '*.go' cmd internal pkg validation/cmd)`: passed with no output.
+- `git diff --check`: passed.

@@ -70,6 +70,7 @@ const (
 	maxSkillZipTotalBytes           = 100 << 20
 	skillZipDirectoryMode           = 0o700
 	maxWebJSONBodyBytes             = 4 << 20
+	maxWebSocketMessageBytes        = 64 << 10
 	maxWorkspaceUploadBytes         = 50 << 20
 	maxWorkspaceUploadRequestBytes  = maxWorkspaceUploadBytes + (1 << 20)
 	workspaceFilePreviewDefaultSize = 256 << 10
@@ -3249,6 +3250,13 @@ func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	// gorilla's default read limit is 0 (unlimited) and ReadMessage buffers a whole
+	// message in memory, so cap inbound frames: this channel is relay-only and its
+	// control payloads are tiny. No read deadline here on purpose — the browser
+	// client never sends on this socket and the server runs no ping/pong keepalive,
+	// so a deadline would tear down healthy idle relays.
+	conn.SetReadLimit(maxWebSocketMessageBytes)
 
 	send := func(msg map[string]any) {
 		_ = conn.WriteJSON(msg)
@@ -7611,15 +7619,19 @@ func (s *Service) restoreGoalPatchAfterPlanModeError(sessionID string, previousG
 }
 
 func (s *Service) restoreGoalPatchAfterTaskSyncError(sessionID string, previousGoal session.SessionGoal, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
+	var restoreErr error
 	if hasTasksSnapshot {
 		if err := s.store.SaveTasks(sessionID, previousTasks); err != nil {
-			return fmt.Errorf("restore tasks after task sync error %v: %w", cause, err)
+			// Keep restoring the goal even when the taskboard snapshot cannot be
+			// written back (for example the durable taskboard lock is unusable),
+			// so a failed task sync never leaves the goal mutated.
+			restoreErr = fmt.Errorf("restore tasks after task sync error %v: %w", cause, err)
 		}
 	}
 	if err := s.store.SaveGoal(sessionID, previousGoal); err != nil {
-		return fmt.Errorf("restore goal after task sync error %v: %w", cause, err)
+		return errors.Join(restoreErr, fmt.Errorf("restore goal after task sync error %v: %w", cause, err))
 	}
-	return nil
+	return restoreErr
 }
 
 func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {

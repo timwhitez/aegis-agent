@@ -1061,7 +1061,7 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("load planmode.json: %w", err))
 		}
 	}
-	if _, err := r.appendDanglingToolCallRecoveryResults(meta.ID, "continue"); err != nil {
+	if _, err := r.appendDanglingToolCallRecoveryResults(meta.ID, "continue", len(req.PlanInputAnswers) > 0); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	if source != continueSourceBackground {
@@ -1833,7 +1833,7 @@ func (r *Runner) hasToolResult(sessionID, toolCallID, name string) (bool, error)
 	return false, nil
 }
 
-func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string) (int, error) {
+func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string, willAttachPlanInputAnswer bool) (int, error) {
 	messages, err := r.store.LoadMessages(sessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -1845,12 +1845,20 @@ func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string)
 	if len(pending) == 0 {
 		return 0, nil
 	}
-	pending, err = r.filterRecoverableDanglingToolCalls(sessionID, pending)
+	pending, recoveredPlanInput, err := r.filterRecoverableDanglingToolCalls(sessionID, pending, willAttachPlanInputAnswer)
 	if err != nil {
 		return 0, err
 	}
 	if len(pending) == 0 {
 		return 0, nil
+	}
+	// Drop the pending request before writing its interrupt result so a later
+	// answer cannot append a second tool_result for the same tool_call_id. If the
+	// append below fails the call stays dangling and the next continue recovers it.
+	if recoveredPlanInput != nil {
+		if err := r.discardPendingPlanInputRequest(sessionID, *recoveredPlanInput, reason); err != nil {
+			return 0, err
+		}
 	}
 	output := "Error: previous run stopped before this tool call completed; the tool was not executed during recovery. Continue from the durable workspace state."
 	results := make([]session.ToolResult, 0, len(pending))
@@ -1893,23 +1901,39 @@ func (r *Runner) appendDanglingToolCallRecoveryResults(sessionID, reason string)
 	return len(results), nil
 }
 
-func (r *Runner) filterRecoverableDanglingToolCalls(sessionID string, calls []session.ToolCall) ([]session.ToolCall, error) {
+// filterRecoverableDanglingToolCalls removes the pending Plan Mode
+// request_user_input call from dangling-tool-call recovery only while this
+// Continue will actually attach a result for it (answer or cancel path). A plain
+// message continue never writes that tool_result, so keeping the call excluded
+// would leave an unpaired tool_use in the durable log and every later provider
+// request would be rejected. In that case the call is returned for recovery and
+// the second result reports the pending request so the caller can retire it.
+func (r *Runner) filterRecoverableDanglingToolCalls(sessionID string, calls []session.ToolCall, willAttachPlanInputAnswer bool) ([]session.ToolCall, *session.PlanModeInputRequest, error) {
 	if len(calls) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	planMode, err := r.store.LoadPlanMode(sessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return calls, nil
+			return calls, nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if planMode.PendingRequest == nil {
-		return calls, nil
+		return calls, nil, nil
 	}
 	pendingInputToolCallID := strings.TrimSpace(planMode.PendingRequest.ToolCallID)
 	if pendingInputToolCallID == "" {
-		return calls, nil
+		return calls, nil, nil
+	}
+	if !willAttachPlanInputAnswer {
+		for _, call := range calls {
+			if strings.TrimSpace(call.ID) == pendingInputToolCallID && strings.TrimSpace(call.Name) == "request_user_input" {
+				request := *planMode.PendingRequest
+				return calls, &request, nil
+			}
+		}
+		return calls, nil, nil
 	}
 	out := make([]session.ToolCall, 0, len(calls))
 	for _, call := range calls {
@@ -1918,7 +1942,54 @@ func (r *Runner) filterRecoverableDanglingToolCalls(sessionID string, calls []se
 		}
 		out = append(out, call)
 	}
-	return out, nil
+	return out, nil, nil
+}
+
+// discardPendingPlanInputRequest retires a pending Plan Mode input request whose
+// tool call is being recovered as an interrupted call. Plan Mode returns to
+// planning so the model can re-ask; without this the stale pending request would
+// keep blocking submit_plan and revise.
+func (r *Runner) discardPendingPlanInputRequest(sessionID string, request session.PlanModeInputRequest, reason string) error {
+	discarded := false
+	planMode, mutated, err := r.store.MutatePlanMode(sessionID, func(state *session.PlanModeState) error {
+		if state.PendingRequest == nil || strings.TrimSpace(state.PendingRequest.RequestID) != strings.TrimSpace(request.RequestID) {
+			return nil
+		}
+		state.PendingRequest = nil
+		if state.Status == session.PlanModeStatusAwaitingUserInput {
+			state.Status = session.PlanModeStatusPlanning
+		}
+		discarded = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// MutatePlanMode reports mutated for any existing plan mode, so the explicit
+	// flag is what tells us this request was the one retired.
+	if !mutated || !discarded {
+		return nil
+	}
+	if err := r.store.AppendPlanModeHistory(sessionID, session.PlanModeHistoryEntry{
+		PlanModeID: planMode.PlanModeID,
+		Type:       "planmode.input_cancelled",
+		Source:     session.PlanModeSourceSystem,
+		Status:     planMode.Status,
+		Data: map[string]any{
+			"request_id":   request.RequestID,
+			"tool_call_id": request.ToolCallID,
+			"reason":       reason,
+			"interrupted":  true,
+		},
+	}); err != nil {
+		return err
+	}
+	return r.appendEvent(sessionID, "planmode.input_cancelled", "prepare", map[string]any{
+		"plan_mode_id": planMode.PlanModeID,
+		"request_id":   request.RequestID,
+		"reason":       reason,
+		"interrupted":  true,
+	})
 }
 
 func unresolvedToolCalls(messages []session.Message) []session.ToolCall {

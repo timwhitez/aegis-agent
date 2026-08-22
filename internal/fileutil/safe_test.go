@@ -801,7 +801,7 @@ func TestRenameDirNoSymlinkRenamesDirectory(t *testing.T) {
 	}
 }
 
-func TestRenameDirNoSymlinkFallsBackWhenNoReplaceUnsupported(t *testing.T) {
+func TestRenameDirNoSymlinkFailsClosedWhenNoReplaceUnsupported(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")
 	target := filepath.Join(root, "target")
@@ -820,14 +820,117 @@ func TestRenameDirNoSymlinkFallsBackWhenNoReplaceUnsupported(t *testing.T) {
 		renameat2NoReplace = restore
 	}()
 
-	if err := RenameDirNoSymlink(source, target); err != nil {
-		t.Fatalf("rename directory with fallback: %v", err)
+	err := RenameDirNoSymlink(source, target)
+	if err == nil || !strings.Contains(err.Error(), "without atomic no-replace guarantee") {
+		t.Fatalf("expected fail-closed directory rename, got %v", err)
 	}
-	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
-		t.Fatalf("source should be moved, stat err=%v", statErr)
+	if _, statErr := os.Stat(filepath.Join(source, "session.json")); statErr != nil {
+		t.Fatalf("source should remain intact: %v", statErr)
 	}
-	if _, err := os.Stat(filepath.Join(target, "session.json")); err != nil {
-		t.Fatalf("target should contain moved file: %v", err)
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("target should not be created, stat err=%v", statErr)
+	}
+}
+
+func linkedRenameFixture(t *testing.T) (int, int, string, string, unix.Stat_t) {
+	t.Helper()
+	root := t.TempDir()
+	oldDir := filepath.Join(root, "old")
+	newDir := filepath.Join(root, "new")
+	if err := os.Mkdir(oldDir, 0o700); err != nil {
+		t.Fatalf("mkdir old: %v", err)
+	}
+	if err := os.Mkdir(newDir, 0o700); err != nil {
+		t.Fatalf("mkdir new: %v", err)
+	}
+	oldPath := filepath.Join(oldDir, "source")
+	newPath := filepath.Join(newDir, "target")
+	if err := os.WriteFile(oldPath, []byte("original"), 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	oldFD, err := openDirNoSymlink(oldDir)
+	if err != nil {
+		t.Fatalf("open old dir: %v", err)
+	}
+	newFD, err := openDirNoSymlink(newDir)
+	if err != nil {
+		_ = unix.Close(oldFD)
+		t.Fatalf("open new dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Close(oldFD)
+		_ = unix.Close(newFD)
+	})
+	if err := unix.Linkat(oldFD, filepath.Base(oldPath), newFD, filepath.Base(newPath), 0); err != nil {
+		t.Fatalf("link fixture: %v", err)
+	}
+	var linked unix.Stat_t
+	if err := unix.Fstatat(oldFD, filepath.Base(oldPath), &linked, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		t.Fatalf("stat source: %v", err)
+	}
+	return oldFD, newFD, oldPath, newPath, linked
+}
+
+func TestResolveLinkedRenameUnlinkFailureRollsBackDuplicateLink(t *testing.T) {
+	oldFD, newFD, oldPath, newPath, linked := linkedRenameFixture(t)
+	err := resolveLinkedRenameUnlinkFailure(oldFD, filepath.Base(oldPath), oldPath, newFD, filepath.Base(newPath), newPath, linked, unix.EPERM)
+	if _, ok := err.(*os.LinkError); !ok {
+		t.Fatalf("expected LinkError, got %T %v", err, err)
+	}
+	if _, statErr := os.Stat(oldPath); statErr != nil {
+		t.Fatalf("source should remain: %v", statErr)
+	}
+	if _, statErr := os.Stat(newPath); !os.IsNotExist(statErr) {
+		t.Fatalf("duplicate target should be rolled back, stat err=%v", statErr)
+	}
+}
+
+func TestResolveLinkedRenameUnlinkFailureKeepsOnlyRemainingTarget(t *testing.T) {
+	oldFD, newFD, oldPath, newPath, linked := linkedRenameFixture(t)
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatalf("remove source: %v", err)
+	}
+	if err := resolveLinkedRenameUnlinkFailure(oldFD, filepath.Base(oldPath), oldPath, newFD, filepath.Base(newPath), newPath, linked, unix.EPERM); err != nil {
+		t.Fatalf("missing source means rename completed: %v", err)
+	}
+	data, err := os.ReadFile(newPath)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("target content lost: data=%q err=%v", data, err)
+	}
+}
+
+func TestResolveLinkedRenameUnlinkFailureKeepsTargetWhenSourceWasReplaced(t *testing.T) {
+	oldFD, newFD, oldPath, newPath, linked := linkedRenameFixture(t)
+	if err := os.Remove(oldPath); err != nil {
+		t.Fatalf("remove source: %v", err)
+	}
+	if err := os.WriteFile(oldPath, []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("replace source: %v", err)
+	}
+	if err := resolveLinkedRenameUnlinkFailure(oldFD, filepath.Base(oldPath), oldPath, newFD, filepath.Base(newPath), newPath, linked, unix.EPERM); err != nil {
+		t.Fatalf("replaced source means target owns original: %v", err)
+	}
+	data, err := os.ReadFile(newPath)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("original target content lost: data=%q err=%v", data, err)
+	}
+}
+
+func TestResolveLinkedRenameUnlinkFailureDoesNotRemoveReplacedTarget(t *testing.T) {
+	oldFD, newFD, oldPath, newPath, linked := linkedRenameFixture(t)
+	if err := os.Remove(newPath); err != nil {
+		t.Fatalf("remove linked target: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("unrelated"), 0o600); err != nil {
+		t.Fatalf("replace target: %v", err)
+	}
+	err := resolveLinkedRenameUnlinkFailure(oldFD, filepath.Base(oldPath), oldPath, newFD, filepath.Base(newPath), newPath, linked, unix.EPERM)
+	if _, ok := err.(*os.LinkError); !ok {
+		t.Fatalf("expected LinkError for unrolled duplicate, got %T %v", err, err)
+	}
+	data, readErr := os.ReadFile(newPath)
+	if readErr != nil || string(data) != "unrelated" {
+		t.Fatalf("unrelated target was removed: data=%q err=%v", data, readErr)
 	}
 }
 

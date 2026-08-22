@@ -2654,6 +2654,22 @@ func TestAnthropicAdapterSendsGenerationFields(t *testing.T) {
 	}
 }
 
+func TestAnthropicMaxTokensStaysStrictlyAboveThinkingBudget(t *testing.T) {
+	for _, tc := range []struct {
+		maxTokens int
+		budget    int
+		expected  int
+	}{
+		{maxTokens: 4096, budget: 2048, expected: 4096},
+		{maxTokens: 4096, budget: 4096, expected: 5120},
+		{maxTokens: 4096, budget: 8192, expected: 9216},
+	} {
+		if got := anthropicMaxTokensWithThinking(tc.maxTokens, tc.budget); got != tc.expected || got <= tc.budget {
+			t.Fatalf("max_tokens invariant failed for max=%d budget=%d: got %d want %d", tc.maxTokens, tc.budget, got, tc.expected)
+		}
+	}
+}
+
 func TestGoogleAdapterSendsGenerationFields(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

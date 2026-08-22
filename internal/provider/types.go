@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go-cli-agent/internal/session"
 )
@@ -180,10 +182,42 @@ type HTTPError struct {
 	Message     string
 	StatusCode  int
 	TimeoutKind string
+	// RetryAfter carries the wait requested by the upstream Retry-After
+	// response header (0 when absent or unparseable). It is optional: only
+	// status-bearing responses populate it, and the retry loop in http.go
+	// treats it as a floor for the local backoff.
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Provider, e.Message)
+}
+
+// maxHTTPErrorMessageBytes bounds the provider response body kept in
+// HTTPError.Message. The raw body may be up to maxProviderResponseBytes (16 MiB,
+// http.go), and the message flows verbatim into durable JSONL records
+// (events.jsonl, provider-attempts.jsonl) and state.json whose per-record read
+// limit is also 16 MiB (fileutil.MaxRegularFileReadBytes) — an oversized single
+// record makes those files unreadable and un-appendable. A few KiB is enough to
+// diagnose while staying far below that limit.
+const maxHTTPErrorMessageBytes = 8 << 10
+
+// truncateErrorMessage keeps at most maxHTTPErrorMessageBytes of message and
+// records the original size when it had to cut.
+func truncateErrorMessage(message string) string {
+	if len(message) <= maxHTTPErrorMessageBytes {
+		return message
+	}
+	// The byte cap can land mid-rune (CJK / emoji error bodies), so back off to
+	// the nearest rune boundary. Otherwise the retained prefix ends with a
+	// partial rune and encoding/json silently rewrites it to U+FFFD when the
+	// message is persisted to events.jsonl / provider-attempts.jsonl, leaving a
+	// record that no longer matches the upstream bytes.
+	cut := maxHTTPErrorMessageBytes
+	for cut > 0 && !utf8.RuneStart(message[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s...(truncated, total %d bytes)", message[:cut], len(message))
 }
 
 func classifyHTTPError(provider string, status int, message string) error {
@@ -201,7 +235,7 @@ func classifyHTTPError(provider string, status int, message string) error {
 	out := &HTTPError{
 		Provider:   provider,
 		Class:      class,
-		Message:    strings.TrimSpace(message),
+		Message:    truncateErrorMessage(strings.TrimSpace(message)),
 		StatusCode: status,
 	}
 	if class == "upstream_timeout" {
@@ -283,7 +317,9 @@ func shouldRetry(err error, cfg RetryConfig) bool {
 	}
 }
 
-func retryDelay(base time.Duration, attempt int) time.Duration {
+// retryDelayCeiling is the deterministic exponential backoff bound for a given
+// attempt: base * 2^(attempt-1), capped at 30s.
+func retryDelayCeiling(base time.Duration, attempt int) time.Duration {
 	if base <= 0 {
 		base = time.Second
 	}
@@ -301,4 +337,17 @@ func retryDelay(base time.Duration, attempt int) time.Duration {
 		return 30 * time.Second
 	}
 	return delay
+}
+
+func retryDelay(base time.Duration, attempt int) time.Duration {
+	ceiling := retryDelayCeiling(base, attempt)
+	if ceiling <= 0 {
+		return ceiling
+	}
+	// Full jitter: sample uniformly from (0, ceiling]. Without jitter concurrent
+	// agents (child / queue profiles) re-send at the identical 1s/2s/4s instants
+	// and turn an upstream 5xx or rate limit into a self-synchronised retry
+	// spike. math/rand is sufficient here: this only spreads load and is not a
+	// security primitive.
+	return time.Duration(rand.Int63n(int64(ceiling)) + 1)
 }

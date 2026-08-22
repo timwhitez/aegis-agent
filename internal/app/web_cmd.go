@@ -59,6 +59,12 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		Addr:              *listenAddr,
 		Handler:           service,
 		ReadHeaderTimeout: 10 * time.Second,
+		// IdleTimeout must be set explicitly: with IdleTimeout==0 net/http falls
+		// back to ReadTimeout (also 0), so idle keep-alive connections would never
+		// be reclaimed. No global ReadTimeout/WriteTimeout here on purpose: the
+		// same server carries /ws long-lived connections and large workspace
+		// downloads, which a whole-request deadline would cut off.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	shutdownDone := make(chan struct{})

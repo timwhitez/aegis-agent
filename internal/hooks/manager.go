@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -179,7 +180,20 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		if err != nil {
 			return execution, err
 		}
-		argv := substituteVars(hook.Command, next)
+		argv, missingVars := substituteVars(hook.Command, next)
+		for _, field := range missingVars {
+			execution.skipped = append(execution.skipped, fmt.Sprintf("variable substitution skipped: payload field %q missing", field))
+		}
+		if len(missingVars) > 0 {
+			if err := m.emit("hook.warning", map[string]any{
+				"name":            hook.Name,
+				"command":         argv,
+				"reason":          "missing_payload_variable",
+				"missing_payload": missingVars,
+			}); err != nil {
+				return execution, &emitError{Event: "hook.warning", Context: hook.Name, Err: err}
+			}
+		}
 		if preflight, ok := m.missingCommandPreflight(argv); ok {
 			execution.skipped = append(execution.skipped, preflight.Message)
 			data := map[string]any{
@@ -201,12 +215,18 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		cmd.Dir = m.workdir
 		cmd.Env = minimalEnv(next)
 		cmd.Stdin = bytes.NewReader(stdin)
-		output, err := cmd.CombinedOutput()
+		// stdout/stderr stream into one bounded collector so hookCommandOutputLimit
+		// constrains peak memory during execution instead of only trimming an
+		// already fully buffered string afterwards.
+		collector := newBoundedHookOutput(hookCommandOutputLimit)
+		cmd.Stdout = collector
+		cmd.Stderr = collector
+		err = cmd.Run()
 		exitCode := 0
 		if cmd.ProcessState != nil {
 			exitCode = cmd.ProcessState.ExitCode()
 		}
-		text, rawLength, truncated := truncateHookOutput(string(output), hookCommandOutputLimit)
+		text, rawLength, truncated := collector.result()
 		timedOut := callCtx.Err() == context.DeadlineExceeded
 		if emitErr := m.emit("hook.command", map[string]any{
 			"name":       hook.Name,
@@ -264,16 +284,69 @@ afterCommand:
 	return execution, nil
 }
 
-func truncateHookOutput(output string, limit int) (string, int, bool) {
-	rawLength := len(output)
-	if limit <= 0 || rawLength <= limit {
-		return output, rawLength, false
-	}
-	if limit < len("\n[... truncated ...]") {
-		return prefixAtRuneBoundary(output, limit), rawLength, true
-	}
+func truncatedHookOutputText(output string, limit int) string {
 	suffix := "\n[... truncated ...]"
-	return prefixAtRuneBoundary(output, limit-len(suffix)) + suffix, rawLength, true
+	if limit < len(suffix) {
+		return prefixAtRuneBoundary(output, limit)
+	}
+	return prefixAtRuneBoundary(output, limit-len(suffix)) + suffix
+}
+
+// boundedHookOutput collects a hook command's merged stdout/stderr with a hard
+// cap on retained bytes. Output beyond the limit is counted but discarded while
+// the command is still running, so a high-output hook cannot grow the harness
+// process without bound.
+type boundedHookOutput struct {
+	mu       sync.Mutex
+	limit    int
+	buf      []byte
+	rawBytes int
+}
+
+func newBoundedHookOutput(limit int) *boundedHookOutput {
+	if limit < 0 {
+		limit = 0
+	}
+	return &boundedHookOutput{limit: limit, buf: make([]byte, 0, limit)}
+}
+
+// Write appends each call as one indivisible segment and is safe for concurrent
+// callers, matching the ordering guarantee os/exec gives when stdout and stderr
+// share a single writer.
+func (b *boundedHookOutput) Write(payload []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rawBytes += len(payload)
+	if room := b.limit - len(b.buf); room > 0 {
+		if room > len(payload) {
+			room = len(payload)
+		}
+		b.buf = append(b.buf, payload[:room]...)
+	}
+	return len(payload), nil
+}
+
+func (b *boundedHookOutput) result() (string, int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.rawBytes <= b.limit {
+		return string(b.buf), b.rawBytes, false
+	}
+	// The byte-level cap can land mid-rune, so drop a trailing partial rune
+	// before rendering the truncated preview.
+	retained := trimIncompleteTrailingRune(string(b.buf))
+	return truncatedHookOutputText(retained, len(retained)), b.rawBytes, true
+}
+
+func trimIncompleteTrailingRune(text string) string {
+	for text != "" {
+		if r, size := utf8.DecodeLastRuneInString(text); r == utf8.RuneError && size <= 1 {
+			text = text[:len(text)-1]
+			continue
+		}
+		return text
+	}
+	return text
 }
 
 func prefixAtRuneBoundary(text string, limit int) string {
@@ -405,19 +478,50 @@ func cloneMap(input map[string]any) map[string]any {
 	return out
 }
 
-func substituteVars(command []string, payload map[string]any) []string {
-	replacer := strings.NewReplacer(
-		"$SESSION_ID", fmt.Sprint(payload["session_id"]),
-		"$WORKDIR", fmt.Sprint(payload["workdir"]),
-		"$TOOL_NAME", fmt.Sprint(payload["tool_name"]),
-		"$STATUS", fmt.Sprint(payload["status"]),
-		"$FILE", fmt.Sprint(payload["file"]),
-	)
+var hookCommandVars = []struct {
+	Variable string
+	Field    string
+}{
+	{Variable: "$SESSION_ID", Field: "session_id"},
+	{Variable: "$WORKDIR", Field: "workdir"},
+	{Variable: "$TOOL_NAME", Field: "tool_name"},
+	{Variable: "$STATUS", Field: "status"},
+	{Variable: "$FILE", Field: "file"},
+}
+
+// substituteVars renders hook command variables from the current payload. A
+// variable whose payload field is absent (or nil) renders as an empty string
+// instead of the fmt.Sprint zero rendering "<nil>", which would otherwise be
+// passed to the hook process as a bogus literal operand. The names of the
+// missing fields are returned so the caller can record the skipped
+// substitutions on the hook execution.
+func substituteVars(command []string, payload map[string]any) ([]string, []string) {
+	pairs := make([]string, 0, len(hookCommandVars)*2)
+	var missing []string
+	for _, variable := range hookCommandVars {
+		rendered := ""
+		if value, ok := payload[variable.Field]; ok && value != nil {
+			rendered = fmt.Sprint(value)
+		} else if hookCommandUsesVar(command, variable.Variable) {
+			missing = appendUniqueString(missing, variable.Field)
+		}
+		pairs = append(pairs, variable.Variable, rendered)
+	}
+	replacer := strings.NewReplacer(pairs...)
 	out := make([]string, 0, len(command))
 	for _, part := range command {
 		out = append(out, replacer.Replace(part))
 	}
-	return out
+	return out, missing
+}
+
+func hookCommandUsesVar(command []string, variable string) bool {
+	for _, part := range command {
+		if strings.Contains(part, variable) {
+			return true
+		}
+	}
+	return false
 }
 
 func minimalEnv(payload map[string]any) []string {

@@ -52,6 +52,11 @@ func buildAnthropicRequestBody(req TurnRequest) (map[string]any, error) {
 	}
 	if thinking := anthropicThinking(req.ThinkingBudget, req.IncludeThoughts); thinking != nil {
 		body["thinking"] = thinking
+		// The Messages API rejects max_tokens <= thinking.budget_tokens as
+		// invalid_request, and that failure is not retryable. Keep the
+		// invariant here so a default max_tokens combined with a large
+		// thinking budget cannot produce an illegal body.
+		body["max_tokens"] = anthropicMaxTokensWithThinking(anthropicMaxTokens(req.MaxOutputTokens), req.ThinkingBudget)
 	}
 	return body, nil
 }
@@ -260,6 +265,22 @@ func anthropicMaxTokens(value int) int {
 		return value
 	}
 	return 4096
+}
+
+// anthropicThinkingOutputHeadroom is the visible-output allowance reserved on
+// top of thinking.budget_tokens, matching the webconsole settings path
+// (internal/webconsole/service.go) which also lifts MaxOutputTokens to
+// budget + 1024 when enabling thinking.
+const anthropicThinkingOutputHeadroom = 1024
+
+// anthropicMaxTokensWithThinking keeps max_tokens strictly above
+// thinking.budget_tokens; the caller-provided limit wins whenever it already
+// satisfies the invariant.
+func anthropicMaxTokensWithThinking(maxTokens, budget int) int {
+	if budget <= 0 || maxTokens > budget {
+		return maxTokens
+	}
+	return budget + anthropicThinkingOutputHeadroom
 }
 
 func anthropicThinking(budget int, includeThoughts *bool) map[string]any {

@@ -43,6 +43,8 @@ type Store struct {
 	beforeQueueClaimRename func(from, to string, job QueueJob) error
 	// Set only by package tests to force deterministic queue claim lease write failures.
 	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
+	// Set only by package tests to advance a job immediately before reaper CAS.
+	beforeQueueReapCommit func(candidate, updated QueueJob)
 }
 
 type harnessReminderIndex struct {
@@ -68,6 +70,14 @@ const sessionSummaryStateReadRetryDelay = 20 * time.Millisecond
 
 var queueProcessStartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 var queueProcessStartID = fmt.Sprintf("%d:%s", os.Getpid(), queueProcessStartedAt)
+
+// ErrQueueJobLeaseLost reports that a running queue job is no longer owned by
+// this process, so its lease must not be refreshed or rewritten.
+var ErrQueueJobLeaseLost = errors.New("queue job lease lost")
+
+// ErrSessionExists reports that a session id is already in use, so creating it
+// again would truncate the existing durable message/event log.
+var ErrSessionExists = errors.New("session already exists")
 var beforeChmodBestEffort func(path string, mode os.FileMode) error
 var beforeOpenNoSymlink func(path string, flags int) error
 
@@ -113,6 +123,24 @@ func (s *Store) withFileLock(lockPath string, fn func() error) error {
 	if err := s.ensureDir(filepath.Dir(lockPath)); err != nil {
 		return err
 	}
+	file, err := openNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR, s.fileMode)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	}()
+	return fn()
+}
+
+// withExistingFileLock acquires a lock only when its parent fact directory
+// already exists. Read paths use it so querying an unknown session cannot
+// create a partial session tree as a side effect.
+func (s *Store) withExistingFileLock(lockPath string, fn func() error) error {
 	file, err := openNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR, s.fileMode)
 	if err != nil {
 		return err
@@ -175,6 +203,14 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 		return err
 	}
 	dir := s.SessionDir(meta.ID)
+	claimable, exists, err := inspectPreSessionDirectory(dir)
+	if err != nil {
+		return err
+	}
+	if exists && !claimable {
+		return fmt.Errorf("create session %s: %w", meta.ID, ErrSessionExists)
+	}
+	sessionMetaPath := filepath.Join(dir, "session.json")
 	for _, path := range []string{
 		dir,
 		filepath.Join(dir, "control"),
@@ -188,7 +224,11 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 			return err
 		}
 	}
-	if err := s.writeJSONFile(filepath.Join(dir, "session.json"), meta); err != nil {
+	// Keep metadata no-replace as a second invariant inside the reserved dir.
+	if err := s.writeJSONFileNoReplace(sessionMetaPath, meta); err != nil {
+		if _, statErr := os.Lstat(sessionMetaPath); statErr == nil {
+			return fmt.Errorf("create session %s: %w", meta.ID, ErrSessionExists)
+		}
 		return err
 	}
 	if err := s.writeJSONFile(filepath.Join(dir, "state.json"), state); err != nil {
@@ -201,6 +241,50 @@ func (s *Store) Create(meta SessionMetadata, state State) error {
 		}
 	}
 	return s.writeJSONFile(filepath.Join(dir, "todo.json"), []TodoItem{})
+}
+
+// inspectPreSessionDirectory permits only the control directory created by a
+// cancellation request that arrived after queue claim but before child session
+// creation. Every other pre-existing directory is ambiguous durable state and
+// must not be adopted by Create.
+func inspectPreSessionDirectory(dir string) (claimable, exists bool, err error) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false, true, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, true, err
+	}
+	if len(entries) != 1 || entries[0].Name() != "control" || !entries[0].IsDir() {
+		return false, true, nil
+	}
+	controlEntries, err := os.ReadDir(filepath.Join(dir, "control"))
+	if err != nil {
+		return false, true, err
+	}
+	for _, entry := range controlEntries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return false, true, nil
+		}
+		switch entry.Name() {
+		case "cancel.json", "cancel.lock":
+		default:
+			// Atomic cancel writes briefly expose a no-symlink temp file before
+			// the no-replace rename. A worker may begin session creation in that
+			// window, so accept only this exact pre-session temp shape.
+			if !strings.HasPrefix(entry.Name(), ".cancel.json.") || !strings.HasSuffix(entry.Name(), ".tmp") {
+				return false, true, nil
+			}
+		}
+	}
+	return true, true, nil
 }
 
 func (s *Store) LoadMetadata(sessionID string) (SessionMetadata, error) {
@@ -362,35 +446,45 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 	if err != nil {
 		return State{}, err
 	}
+	stateLockPath, err := s.sessionPath(sessionID, "state.lock")
+	if err != nil {
+		return State{}, err
+	}
 	var claimed State
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.withFileLock(lockPath, func() error {
-		if err := readJSONFile(path, &claimed); err != nil {
-			return err
-		}
-		if err := validateState(claimed); err != nil {
-			return fmt.Errorf("validate state.json: %w", err)
-		}
-		if _, ok := allowed[claimed.Status]; !ok {
-			return errors.New("session is not resumable")
-		}
 		pendingSteerCount := 0
 		if count, ok, err := s.pendingSteerCountLocked(sessionID); err != nil {
 			return err
 		} else if ok {
 			pendingSteerCount = count
 		}
-		claimed.Status = StatusRunning
-		claimed.Phase = "prepare"
-		claimed.PendingSteerCount = pendingSteerCount
-		claimed.PauseReason = ""
-		claimed.ProviderAutoResumeCount = 0
-		claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		if err := validateState(claimed); err != nil {
-			return fmt.Errorf("validate state.json: %w", err)
-		}
-		return s.writeJSONFile(path, claimed)
+		// state.json is also written through saveStateLocked under state.lock
+		// (reaper, pause reclaim, ...). run.lock alone only serializes claimers,
+		// so the read-check-write must additionally hold state.lock or a
+		// concurrent SaveState can clobber the fresh running claim.
+		return s.withFileLock(stateLockPath, func() error {
+			if err := readJSONFile(path, &claimed); err != nil {
+				return err
+			}
+			if err := validateState(claimed); err != nil {
+				return fmt.Errorf("validate state.json: %w", err)
+			}
+			if _, ok := allowed[claimed.Status]; !ok {
+				return errors.New("session is not resumable")
+			}
+			claimed.Status = StatusRunning
+			claimed.Phase = "prepare"
+			claimed.PendingSteerCount = pendingSteerCount
+			claimed.PauseReason = ""
+			claimed.ProviderAutoResumeCount = 0
+			claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			if err := validateState(claimed); err != nil {
+				return fmt.Errorf("validate state.json: %w", err)
+			}
+			return s.writeJSONFile(path, claimed)
+		})
 	})
 	if err != nil {
 		return State{}, err
@@ -1950,6 +2044,39 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 	return result, nil
 }
 
+// ListRunningSessionIDs returns the ids of every session whose durable state is
+// running. Callers that only need running candidates (the web queue reaper)
+// must not go through ListPage: that builds full summaries for the whole page
+// and expands each session's goal/planmode snapshot, which is pure overhead
+// here and grows with session history.
+func (s *Store) ListRunningSessionIDs() ([]string, error) {
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	result := []string{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !sessionMetadataFileExists(s.root, entry.Name()) {
+			continue
+		}
+		state, err := s.loadSessionSummaryState(entry.Name())
+		if err != nil {
+			return nil, fmt.Errorf("state.json: %w", err)
+		}
+		if state.Status != StatusRunning {
+			continue
+		}
+		result = append(result, entry.Name())
+	}
+	return result, nil
+}
+
 func (s *Store) populateSessionSummarySnapshots(items []SessionSummary) ([]SessionSummary, error) {
 	for i := range items {
 		if err := s.populateGoalSummary(&items[i]); err != nil {
@@ -2104,27 +2231,36 @@ func (s *Store) NextTaskID(sessionID string) (string, error) {
 }
 
 func (s *Store) SaveTask(sessionID string, task Task) error {
+	lockPath, err := s.taskboardLockPath(sessionID)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := validateTask(task); err != nil {
 		return err
 	}
-	tasks, err := s.readTasks(sessionID)
-	if err != nil {
-		return err
-	}
-	replaced := false
-	for i := range tasks {
-		if tasks[i].ID == task.ID {
-			tasks[i] = task
-			replaced = true
-			break
+	// The read-modify-write must complete inside the same durable taskboard lock
+	// MutateTasks uses, otherwise a concurrent process' edit is silently
+	// overwritten by whichever writer finishes last.
+	return s.withFileLock(lockPath, func() error {
+		tasks, err := s.readTasks(sessionID)
+		if err != nil {
+			return err
 		}
-	}
-	if !replaced {
-		tasks = append(tasks, task)
-	}
-	return s.saveTasksLocked(sessionID, normalizeTaskGraph(tasks))
+		replaced := false
+		for i := range tasks {
+			if tasks[i].ID == task.ID {
+				tasks[i] = task
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			tasks = append(tasks, task)
+		}
+		return s.saveTasksLocked(sessionID, normalizeTaskGraph(tasks))
+	})
 }
 
 func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
@@ -2132,37 +2268,95 @@ func (s *Store) GetTask(sessionID, taskID string) (Task, error) {
 	if err := validateStoreID("task", taskID); err != nil {
 		return task, err
 	}
-	path, err := s.sessionPath(sessionID, "tasks", taskID+".json")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lockPath, exists, err := s.taskboardReadLockPath(sessionID)
 	if err != nil {
 		return task, err
 	}
-	if err := readJSONFile(path, &task); err != nil {
-		return task, err
+	if !exists {
+		return task, os.ErrNotExist
 	}
-	if task.ID != taskID {
-		return task, fmt.Errorf("validate task: task id mismatch: requested %q, file contains %q", taskID, task.ID)
-	}
-	if err := validateTask(task); err != nil {
-		return task, fmt.Errorf("validate task: %w", err)
-	}
-	return task, nil
+	err = s.withExistingFileLock(lockPath, func() error {
+		path, err := s.sessionPath(sessionID, "tasks", taskID+".json")
+		if err != nil {
+			return err
+		}
+		if err := readJSONFile(path, &task); err != nil {
+			return err
+		}
+		if task.ID != taskID {
+			return fmt.Errorf("validate task: task id mismatch: requested %q, file contains %q", taskID, task.ID)
+		}
+		if err := validateTask(task); err != nil {
+			return fmt.Errorf("validate task: %w", err)
+		}
+		return nil
+	})
+	return task, err
 }
 
 func (s *Store) ListTasks(sessionID string) ([]Task, error) {
-	return s.readTasks(sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lockPath, exists, err := s.taskboardReadLockPath(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return []Task{}, nil
+	}
+	var tasks []Task
+	err = s.withExistingFileLock(lockPath, func() error {
+		var err error
+		tasks, err = s.readTasks(sessionID)
+		return err
+	})
+	return tasks, err
 }
 
 func (s *Store) SaveTasks(sessionID string, tasks []Task) error {
+	lockPath, err := s.taskboardLockPath(sessionID)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveTasksLocked(sessionID, tasks)
+	// Same durable lock as MutateTasks: tasks/ is a multi-process fact source, so
+	// a full-snapshot overwrite must not interleave with another process'
+	// read-modify-write.
+	return s.withFileLock(lockPath, func() error {
+		return s.saveTasksLocked(sessionID, tasks)
+	})
+}
+
+func (s *Store) taskboardLockPath(sessionID string) (string, error) {
+	return s.sessionPath(sessionID, "tasks", "taskboard.lock")
+}
+
+func (s *Store) taskboardReadLockPath(sessionID string) (string, bool, error) {
+	dir, err := s.sessionPath(sessionID, "tasks")
+	if err != nil {
+		return "", false, err
+	}
+	info, err := os.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", false, fmt.Errorf("tasks path is not a directory: %s", dir)
+	}
+	return filepath.Join(dir, "taskboard.lock"), true, nil
 }
 
 func (s *Store) MutateTasks(sessionID string, mutate func([]Task) ([]Task, error)) error {
 	if mutate == nil {
 		return nil
 	}
-	lockPath, err := s.sessionPath(sessionID, "tasks", "taskboard.lock")
+	lockPath, err := s.taskboardLockPath(sessionID)
 	if err != nil {
 		return err
 	}
@@ -2249,6 +2443,22 @@ func (s *Store) saveTasksLocked(sessionID string, tasks []Task) error {
 		}
 		entries = nil
 	}
+	// Each task file is written atomically, but the batch is not. A failure in
+	// the middle of the delete/write sequence would leave a half-applied graph
+	// (for example A.blocks -> B without B.blocked_by -> A) which makes every
+	// later readTasks fail on "task graph inconsistent". Snapshot the current
+	// files first so a partial batch can be rolled back to the previous
+	// consistent graph.
+	snapshot, err := snapshotTaskFiles(dir, entries)
+	if err != nil {
+		return err
+	}
+	restore := func(cause error) error {
+		if restoreErr := restoreTaskFiles(s, dir, snapshot); restoreErr != nil {
+			return fmt.Errorf("%w; restore task graph: %v", cause, restoreErr)
+		}
+		return cause
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -2258,12 +2468,61 @@ func (s *Store) saveTasksLocked(sessionID string, tasks []Task) error {
 			continue
 		}
 		if err := fileutil.RemoveFileNoSymlink(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
+			return restore(err)
 		}
 	}
 	for _, task := range tasks {
 		path := filepath.Join(dir, task.ID+".json")
 		if err := s.writeJSONFile(path, task); err != nil {
+			return restore(err)
+		}
+	}
+	return nil
+}
+
+// snapshotTaskFiles captures the current bytes of every task file so a failed
+// batch save can restore the previous graph.
+func snapshotTaskFiles(dir string, entries []os.DirEntry) (map[string][]byte, error) {
+	snapshot := make(map[string][]byte, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, _, err := fileutil.ReadRegularFileNoSymlink(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return nil, err
+		}
+		snapshot[entry.Name()] = data
+	}
+	return snapshot, nil
+}
+
+// restoreTaskFiles rewrites the snapshotted task files and removes task files
+// that did not exist when the snapshot was taken.
+func restoreTaskFiles(s *Store, dir string, snapshot map[string][]byte) error {
+	for name, data := range snapshot {
+		if err := s.writeBytesFile(filepath.Join(dir, name), data); err != nil {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		if _, ok := snapshot[entry.Name()]; ok {
+			continue
+		}
+		if err := fileutil.RemoveFileNoSymlink(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
@@ -2280,7 +2539,16 @@ func (s *Store) EnqueueJob(job QueueJob) error {
 func (s *Store) SaveJob(job QueueJob) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveJobLocked(job)
+	if err := s.ensureQueueDirs(); err != nil {
+		return err
+	}
+	// Queue directories are a multi-process fact source, so the write plus the
+	// stale-copy cleanup in saveJobLocked must be serialized against other
+	// processes claiming, settling or refreshing the same job.
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
+	return s.withFileLock(lockPath, func() error {
+		return s.saveJobLocked(job)
+	})
 }
 
 func (s *Store) DeleteJob(jobID string) error {
@@ -3398,20 +3666,30 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 		return QueueJob{}, err
 	}
 	path := s.queueJobPath(QueueStatusRunning, jobID)
+	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
 	var job QueueJob
-	if err := readJSONFile(path, &job); err != nil {
-		return QueueJob{}, err
-	}
-	if err := validateQueueJob(job); err != nil {
-		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
-	}
-	if err := validateQueueJobStatusDirectory(job, QueueStatusRunning); err != nil {
-		return QueueJob{}, fmt.Errorf("queue job %s: %w", jobID, err)
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	job.UpdatedAt = now
-	applyQueueLease(&job, now)
-	if err := s.writeJSONFile(path, job); err != nil {
+	// The read-modify-write runs under the durable queue lock so a concurrent
+	// process cannot settle (and delete) running/<job>.json between the read and
+	// the write; otherwise the write would recreate a ghost running copy.
+	err := s.withFileLock(lockPath, func() error {
+		if err := readJSONFile(path, &job); err != nil {
+			return err
+		}
+		if err := validateQueueJob(job); err != nil {
+			return fmt.Errorf("queue job %s: %w", jobID, err)
+		}
+		if err := validateQueueJobStatusDirectory(job, QueueStatusRunning); err != nil {
+			return fmt.Errorf("queue job %s: %w", jobID, err)
+		}
+		if owner := strings.TrimSpace(job.ProcessStartID); owner != "" && owner != queueProcessStartID {
+			return fmt.Errorf("queue job %s is claimed by process %s: %w", jobID, owner, ErrQueueJobLeaseLost)
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		job.UpdatedAt = now
+		applyQueueLease(&job, now)
+		return s.writeJSONFile(path, job)
+	})
+	if err != nil {
 		return QueueJob{}, err
 	}
 	return job, nil
@@ -3653,6 +3931,15 @@ func (s *Store) writeJSONFile(path string, payload any) error {
 	}
 	data = append(data, '\n')
 	return s.writeBytesFile(path, data)
+}
+
+func (s *Store) writeJSONFileNoReplace(path string, payload any) error {
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return s.writeBytesFileNoReplace(path, data)
 }
 
 func (s *Store) loadHarnessReminderIndexLocked(sessionID string) (harnessReminderIndex, string, bool, error) {
@@ -4146,6 +4433,23 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			}
 		}
 		return job, true, nil
+	}
+	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {
+		marker := job.LastError
+		stateForSync := state
+		stateForSync.LastError = marker
+		changed := syncRunningQueueJobSession(&job, meta, stateForSync)
+		job.Status = QueueStatusBlocked
+		job.LastError = marker
+		if changed {
+			if err := s.SaveJob(job); err != nil {
+				return job, false, fmt.Errorf("persist reaped queue job snapshot %s: %w", job.ID, err)
+			}
+		}
+		if err := s.ensureBlockedQueueJobParentState(job); err != nil {
+			return job, false, fmt.Errorf("persist parent coordination for reaped queue job %s: %w", job.ID, err)
+		}
+		return job, changed, nil
 	}
 	if job.Status == QueueStatusRunning && state.Status == StatusRunning && queueJobHasRecentLease(job, now) {
 		syncLeasedQueueJobSession(&job, meta, state)
@@ -4667,6 +4971,15 @@ func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *
 	}
 	state, err := s.LoadState(meta.ID)
 	if err != nil {
+		return job, nil
+	}
+	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {
+		marker := job.LastError
+		stateForSync := state
+		stateForSync.LastError = marker
+		syncRunningQueueJobSession(&job, meta, stateForSync)
+		job.Status = QueueStatusBlocked
+		job.LastError = marker
 		return job, nil
 	}
 	if job.Status == QueueStatusCancelled && job.StopReason == QueueStopReasonAgentStop && state.Status == StatusPaused && IsChildBudgetPauseReason(state.PauseReason) {
@@ -5802,6 +6115,11 @@ func validateBackgroundNotificationResultStatus(notification BackgroundNotificat
 	case QueueStatusBlocked:
 		switch sessionStatus {
 		case StatusAwaitingInput, StatusPaused:
+		case StatusRunning:
+			if queueLeaseReclaimedError(notification.LastError) {
+				return nil
+			}
+			fallthrough
 		default:
 			return fmt.Errorf("blocked background notification session_status must be awaiting_input or paused, got %q", notification.SessionStatus)
 		}
@@ -5954,6 +6272,11 @@ func validateQueueJobResultStatus(job QueueJob) error {
 	case QueueStatusBlocked:
 		switch sessionStatus {
 		case StatusAwaitingInput, StatusPaused:
+		case StatusRunning:
+			if QueueJobLeaseWasReclaimed(job) {
+				return nil
+			}
+			fallthrough
 		default:
 			return fmt.Errorf("blocked queue job session_status must be awaiting_input or paused, got %q", job.SessionStatus)
 		}

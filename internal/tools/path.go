@@ -237,9 +237,31 @@ func checkWorkspaceWriteResolvedAlias(base, resolvedPath, displayPath string) er
 func checkWorkspaceWriteResolvedPatternAliases(base, resolvedPath, displayPath string) error {
 	return filepath.WalkDir(base, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// An unreadable directory cannot be traversed to discover aliases and
+			// cannot itself become a writable alias target, so a single
+			// permission-denied subtree must not fail every workspace write.
+			// Other walk errors still propagate because they would leave the
+			// alias verdict unproven.
+			if errors.Is(walkErr, fs.ErrPermission) {
+				if entry != nil && entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
 			return walkErr
 		}
 		if entry == nil || sameCleanPath(path, base) {
+			return nil
+		}
+		// Only symlinks can make a workspace path resolve somewhere other than
+		// itself: base is already fully resolved and WalkDir never descends
+		// through symlinks, so every non-symlink entry resolves to its own
+		// literal path. Such an entry can only alias resolvedPath by being
+		// resolvedPath or one of its ancestors, which checkWorkspaceWriteDisplayPath
+		// already rejects with the same deny patterns. Skipping them keeps the
+		// alias verdict identical while avoiding an Lstat + EvalSymlinks per
+		// workspace entry on every write.
+		if entry.Type()&fs.ModeSymlink == 0 {
 			return nil
 		}
 		rel, err := filepath.Rel(base, path)

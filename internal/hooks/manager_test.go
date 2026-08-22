@@ -13,17 +13,61 @@ import (
 	"go-cli-agent/internal/config"
 )
 
-func TestTruncateHookOutputKeepsUTF8Boundaries(t *testing.T) {
+func TestBoundedHookOutputKeepsUTF8Boundaries(t *testing.T) {
 	input := strings.Repeat("钩子输出", 200)
-	output, _, truncated := truncateHookOutput(input, 257)
+	collector := newBoundedHookOutput(257)
+	for offset := 0; offset < len(input); offset += 64 {
+		end := offset + 64
+		if end > len(input) {
+			end = len(input)
+		}
+		if _, err := collector.Write([]byte(input[offset:end])); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	output, rawLength, truncated := collector.result()
 	if !truncated {
 		t.Fatal("expected output to be truncated")
+	}
+	if rawLength != len(input) {
+		t.Fatalf("expected raw length %d, got %d", len(input), rawLength)
 	}
 	if !utf8.ValidString(output) {
 		t.Fatalf("expected valid UTF-8 output, got %q", output)
 	}
 	if strings.ContainsRune(output, utf8.RuneError) {
 		t.Fatalf("expected no replacement rune from mid-rune truncation, got %q", output)
+	}
+	if !strings.HasSuffix(output, "\n[... truncated ...]") {
+		t.Fatalf("expected truncation marker suffix, got %q", output)
+	}
+	if !strings.HasPrefix(output, "钩子输出") {
+		t.Fatalf("expected retained prefix of the hook output, got %q", output)
+	}
+}
+
+func TestBoundedHookOutputTrimsPartialRuneBelowSuffixLength(t *testing.T) {
+	// A limit smaller than the truncation marker leaves the byte cap itself as
+	// the only boundary, so a partial trailing rune must still be dropped.
+	collector := newBoundedHookOutput(5)
+	if _, err := collector.Write([]byte(strings.Repeat("钩子输出", 4))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	output, rawLength, truncated := collector.result()
+	if !truncated {
+		t.Fatal("expected output to be truncated")
+	}
+	if rawLength != 48 {
+		t.Fatalf("expected raw length 48, got %d", rawLength)
+	}
+	if !utf8.ValidString(output) {
+		t.Fatalf("expected valid UTF-8 output, got %q", output)
+	}
+	if strings.ContainsRune(output, utf8.RuneError) {
+		t.Fatalf("expected no replacement rune from mid-rune truncation, got %q", output)
+	}
+	if output != "钩" {
+		t.Fatalf("expected only the first whole rune, got %q", output)
 	}
 }
 

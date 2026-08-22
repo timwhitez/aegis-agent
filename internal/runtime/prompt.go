@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -130,7 +131,13 @@ func buildSystemPrompt(workdir, mode, systemOverride string, skillSummaries []sk
 	agentsChain := loadAgentsChain(workdir)
 	if len(agentsChain) > 0 {
 		builder.WriteString("\n## Project Instructions\n")
+		if len(agentsChain) > 1 {
+			builder.WriteString("Listed from outermost to innermost `AGENTS.md`; when they conflict, the innermost one wins. Paths outside the current workspace are intent hints only, not read targets.\n")
+		}
 		for _, item := range agentsChain {
+			if len(agentsChain) > 1 {
+				builder.WriteString(fmt.Sprintf("\n### %s\n", item.Path))
+			}
 			builder.WriteString(fmt.Sprintf("%s\n", item.Content))
 		}
 	}
@@ -2673,17 +2680,80 @@ type agentsDoc struct {
 	Content string
 }
 
+// agentsChainMaxDepth bounds how many directory levels above the workdir are
+// inspected, so a deep or pathological path cannot turn prompt assembly into an
+// unbounded upward walk.
+const agentsChainMaxDepth = 16
+
+// loadAgentsChain collects the `AGENTS.md` instruction chain for workdir, from
+// the outermost enclosing directory down to workdir itself, so inner documents
+// are injected last and can override outer ones (spec/04-tools-and-skills.md
+// section 8).
+//
+// The upward walk stops at the enclosing repository root (the nearest ancestor
+// holding `.git`), at the filesystem root, or after agentsChainMaxDepth levels.
+// When workdir is not inside a repository, or is itself the repository root, no
+// ancestor is inspected at all: a bare workspace directory has no discoverable
+// project boundary and a repository root has no in-repo ancestor, so climbing
+// would pull instructions from unrelated directories above it. Every candidate
+// is still resolved with tools.ResolveWorkspacePath relative to its own
+// directory and read with fileutil.ReadRegularFileNoSymlink, so symlink-escaped
+// documents stay excluded.
 func loadAgentsChain(workdir string) []agentsDoc {
 	current, err := filepath.Abs(workdir)
 	if err != nil {
 		return nil
 	}
-	path, err := tools.ResolveWorkspacePath(current, "AGENTS.md")
-	if err != nil {
+	dirs := []string{current}
+	// When workdir is itself the repository root there is no in-repo ancestor to
+	// inspect, so the walk must not start at all: climbing from filepath.Dir would
+	// never match repoRoot again and would leak AGENTS.md from outside the repo.
+	if repoRoot, ok := enclosingRepoRoot(current); ok && repoRoot != current {
+		for dir := filepath.Dir(current); len(dirs) <= agentsChainMaxDepth; dir = filepath.Dir(dir) {
+			dirs = append(dirs, dir)
+			if dir == repoRoot || dir == filepath.Dir(dir) {
+				break
+			}
+		}
+	}
+	docs := make([]agentsDoc, 0, len(dirs))
+	// dirs is inner-to-outer; emit outer-to-inner so inner instructions win.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		path, err := tools.ResolveWorkspacePath(dirs[i], "AGENTS.md")
+		if err != nil {
+			continue
+		}
+		data, _, err := fileutil.ReadRegularFileNoSymlink(path)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		docs = append(docs, agentsDoc{Path: path, Content: content})
+	}
+	if len(docs) == 0 {
 		return nil
 	}
-	if data, _, err := fileutil.ReadRegularFileNoSymlink(path); err == nil {
-		return []agentsDoc{{Path: path, Content: strings.TrimSpace(string(data))}}
+	return docs
+}
+
+// enclosingRepoRoot returns the nearest ancestor of dir (including dir itself)
+// that contains a `.git` entry, which bounds the AGENTS.md chain to the current
+// project instead of letting it escape into unrelated parent directories.
+func enclosingRepoRoot(dir string) (string, bool) {
+	for depth := 0; depth <= agentsChainMaxDepth; depth++ {
+		if info, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
+			if info.IsDir() || info.Mode().IsRegular() {
+				return dir, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
 	}
-	return nil
+	return "", false
 }

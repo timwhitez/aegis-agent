@@ -82,7 +82,7 @@ func buildApprovedPlanContext(planMode session.PlanModeState) string {
 The user approved Plan Mode plan version %d. Follow this plan unless newer user input changes it. If it becomes stale, explain the conflict before deviating.
 
 %s
-</approved_plan>`, version, strings.TrimSpace(planMode.PlanMarkdown)))
+</approved_plan>`, version, neutralizeUntrustedPromptFence(strings.TrimSpace(planMode.PlanMarkdown))))
 }
 
 func providerToolsForPlanMode(registry *tools.Registry, planMode *session.PlanModeState) []provider.ToolSchema {

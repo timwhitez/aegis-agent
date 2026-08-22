@@ -25,9 +25,7 @@ var beforeRemoveFileNoSymlinkRemove func(path string) error
 var beforeRenamePathNoSymlinkRename func(oldPath, newPath string) error
 var beforeChmodAfterAtomicRenameOpen func(path string) error
 var beforeReadRegularFileOpen func(path string) error
-var renameat2NoReplace = func(oldParentFD int, oldBase string, newParentFD int, newBase string) error {
-	return unix.Renameat2(oldParentFD, oldBase, newParentFD, newBase, unix.RENAME_NOREPLACE)
-}
+var renameat2NoReplace = renameAtNoReplaceSyscall
 
 func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error {
 	path = strings.TrimSpace(path)
@@ -68,7 +66,6 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 		return err
 	}
 	tmpPath := tmp.Name()
-	closed := false
 	defer RemoveFileNoSymlink(tmpPath)
 
 	if _, err := tmp.Write(data); err != nil {
@@ -79,15 +76,15 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 		_ = tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	closed = true
 	if err := rejectSymlinkOrDirectory(path); err != nil {
 		return err
-	}
-	if !closed {
-		_ = tmp.Close()
 	}
 	if beforeAtomicWriteRename != nil {
 		if err := beforeAtomicWriteRename(tmpPath, path); err != nil {
@@ -97,7 +94,21 @@ func AtomicWriteFileNoSymlink(path string, data []byte, mode os.FileMode) error 
 	if err := renameRegularFileReplacingNoSymlink(tmpPath, path); err != nil {
 		return err
 	}
+	if err := syncDirNoSymlink(parent); err != nil {
+		return err
+	}
 	return chmodAfterAtomicRename(path, mode)
+}
+
+func syncDirNoSymlink(path string) error {
+	fd, err := openDirNoSymlink(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = unix.Close(fd)
+	}()
+	return unix.Fsync(fd)
 }
 
 func renameRegularFileReplacingNoSymlink(oldPath, newPath string) error {
@@ -261,16 +272,114 @@ func renameAtNoSymlinkNoReplaceFallback(oldParentFD int, oldBase, oldParent, old
 	if err := ensureDirFDStillAtPath(newParentFD, newParent); err != nil {
 		return err
 	}
-	if _, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts); err != nil {
+	sourceStat, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
+	if err != nil {
 		return err
 	}
 	if err := validateRenameTargetAtNoSymlink(newParentFD, newBase, newPath, opts); err != nil {
 		return err
 	}
-	if err := unix.Renameat(oldParentFD, oldBase, newParentFD, newBase); err != nil {
+	if sourceStat.Mode&unix.S_IFMT == unix.S_IFREG {
+		// linkat fails with EEXIST when the target name is taken, so it provides
+		// the atomic no-replace guarantee that plain renameat cannot: renameat
+		// would silently replace a target created between the checks above and
+		// the rename itself.
+		if err := unix.Linkat(oldParentFD, oldBase, newParentFD, newBase, 0); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				return fmt.Errorf(opts.targetExistingFormat, newPath)
+			}
+			return fmt.Errorf("refusing to rename without atomic no-replace guarantee: %s -> %s: %w", oldPath, newPath, err)
+		}
+		if err := unix.Unlinkat(oldParentFD, oldBase, 0); err != nil {
+			// Linkat and Unlinkat need write access to different parents, so the
+			// source unlink can fail after the target link succeeded. The target
+			// link may be the file's only remaining link, so what to do next
+			// depends on the source name's current state rather than on the unlink
+			// error alone.
+			return resolveLinkedRenameUnlinkFailure(oldParentFD, oldBase, oldPath, newParentFD, newBase, newPath, sourceStat, err)
+		}
+		return nil
+	}
+	// Directories cannot be hard-linked. Without a platform no-replace rename
+	// primitive, check-then-rename would overwrite a target created in the race
+	// window, so fail closed instead.
+	return fmt.Errorf("refusing to rename directory without atomic no-replace guarantee: %s -> %s", oldPath, newPath)
+}
+
+// resolveLinkedRenameUnlinkFailure decides what to do after the linkat fallback
+// created the target link but failed to remove the source name. The source
+// name's current state decides, not the unlink error on its own: while the
+// source still refers to the linked file the target link is a duplicate that
+// can be rolled back safely, but once the source name is gone the target link
+// may be the file's only remaining link and removing it would destroy the
+// content, so the rename has already reached its intended state.
+//
+// Failures are reported as *os.LinkError with the unlink errno kept as the
+// unwrapped cause, so both errors.Is(err, os.ErrNotExist) and the os.IsNotExist
+// / os.IsPermission helpers (which only unwrap the os error types one level and
+// only recognise a bare errno there, not %w chains) keep classifying these
+// errors. That bare-errno requirement is also why the leftover state is named
+// in Op rather than wrapped around Err: Op stays a short, colon-free operation
+// name in the style of the standard library so the errno after the final ": "
+// of LinkError.Error() remains the last colon-separated field, while still
+// telling the three outcomes apart (source unverified, both names linked, or
+// rolled back). The secondary failure that produced the state is deliberately
+// not spliced into Op, which would restore the unparseable nested sentence.
+func resolveLinkedRenameUnlinkFailure(oldParentFD int, oldBase, oldPath string, newParentFD int, newBase, newPath string, linkedStat unix.Stat_t, unlinkErr error) error {
+	var sourceStat unix.Stat_t
+	if err := unix.Fstatat(oldParentFD, oldBase, &sourceStat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			// A concurrent remover dropped the source name, so the file now only
+			// lives under the target name: the rename is complete.
+			return nil
+		}
+		// The source name could not be inspected, so the target link cannot be
+		// rolled back safely and both names may still refer to the same file.
+		return &os.LinkError{
+			Op:  "rename (source unverified, target linked)",
+			Old: oldPath,
+			New: newPath,
+			Err: unlinkErr,
+		}
+	}
+	if sourceStat.Dev != linkedStat.Dev || sourceStat.Ino != linkedStat.Ino {
+		// The source name refers to an unrelated file now, so the renamed file
+		// only lives under the target name and must not be removed either.
+		return nil
+	}
+	if rollbackErr := rollbackLinkedRenameTarget(newParentFD, newBase, linkedStat); rollbackErr != nil {
+		// The target link survives next to the still-present source name, so the
+		// same file is reachable under both names.
+		return &os.LinkError{
+			Op:  "rename (both names linked)",
+			Old: oldPath,
+			New: newPath,
+			Err: unlinkErr,
+		}
+	}
+	return &os.LinkError{
+		Op:  "rename (rolled back)",
+		Old: oldPath,
+		New: newPath,
+		Err: unlinkErr,
+	}
+}
+
+// rollbackLinkedRenameTarget removes the hard link created by the linkat
+// fallback. It unlinks the target only while that name still refers to the
+// linked file, so a concurrently created unrelated target is never deleted.
+func rollbackLinkedRenameTarget(newParentFD int, newBase string, linkedStat unix.Stat_t) error {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(newParentFD, newBase, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	if stat.Dev != linkedStat.Dev || stat.Ino != linkedStat.Ino {
+		return fmt.Errorf("target no longer refers to the linked file: %s", newBase)
+	}
+	return unix.Unlinkat(newParentFD, newBase, 0)
 }
 
 func validateRenameSourceAtNoSymlink(parentFD int, name, path string, opts renameAtNoSymlinkOptions) (unix.Stat_t, error) {

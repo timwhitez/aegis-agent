@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"text/template/parse"
 	"time"
 	"unicode/utf8"
 
@@ -4272,10 +4273,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			policyMode := effectiveExecPolicyMode(effectiveConfig)
 			policyViolations := DetectExecPolicyViolations(commandText)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
-			shellSandbox := ""
-			if effectiveConfig != nil {
-				shellSandbox = effectiveConfig.Runtime.Shell.Sandbox
-			}
+			shellSandbox := effectiveConfig.Runtime.Shell.Sandbox
 			stableDir, commandDir, err := openStableCommandWorkdir(skillDir)
 			if err != nil {
 				return errorResult(tool.Name, err), nil
@@ -4534,24 +4532,214 @@ func isCommandToolNumber(value any) bool {
 	}
 }
 
+// commandTemplateFields reports the top-level `.field` names referenced by an
+// argv template. Names consumed by range/with are reported separately because
+// substituting an empty string for them would turn a no-op into an error. The
+// third result reports whether the template contains a conditional node
+// (if/with/range), whose branches are expected to render to nothing when the
+// condition does not hold. The last result holds the names whose value always
+// contributes to the rendered argument, i.e. plain `{{.field}}` slots (or
+// variables carrying such a field) used outside every conditional node.
+// Assignment actions like `{{$v := .field}}` or `{{$v = .field}}` render to
+// nothing, so the fields they read only count when the declared variable is
+// later emitted outside every conditional node.
+func commandTemplateFields(tmpl *template.Template) ([]string, map[string]struct{}, bool, map[string]struct{}) {
+	iterated := map[string]struct{}{}
+	plain := map[string]struct{}{}
+	if tmpl == nil || tmpl.Tree == nil {
+		return nil, iterated, false, plain
+	}
+	var referenced []string
+	conditional := false
+	condDepth := 0
+	seen := map[string]struct{}{}
+	// declared maps a template variable to the field names feeding it, and
+	// declSink is non-nil while walking the pipeline of an assignment action.
+	declared := map[string]map[string]struct{}{}
+	var declSink map[string]struct{}
+	collect := func(field *parse.FieldNode, iterating bool) {
+		if len(field.Ident) == 0 {
+			return
+		}
+		name := field.Ident[0]
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			referenced = append(referenced, name)
+		}
+		if iterating {
+			iterated[name] = struct{}{}
+		}
+		if declSink != nil {
+			declSink[name] = struct{}{}
+			return
+		}
+		if condDepth == 0 {
+			plain[name] = struct{}{}
+		}
+	}
+	// useVariable records the fields behind a variable that is read outside
+	// every conditional node, because emitting the variable there contributes
+	// the field value to the argument just like a plain `{{.field}}` slot.
+	useVariable := func(node *parse.VariableNode) {
+		if len(node.Ident) == 0 {
+			return
+		}
+		sources := declared[node.Ident[0]]
+		if len(sources) == 0 {
+			return
+		}
+		if declSink != nil {
+			for name := range sources {
+				declSink[name] = struct{}{}
+			}
+			return
+		}
+		if condDepth == 0 {
+			for name := range sources {
+				plain[name] = struct{}{}
+			}
+		}
+	}
+	var walkNode func(parse.Node)
+	var walkPipe func(*parse.PipeNode, bool)
+	walkPipe = func(pipe *parse.PipeNode, iterating bool) {
+		if pipe == nil {
+			return
+		}
+		for _, command := range pipe.Cmds {
+			for _, arg := range command.Args {
+				switch current := arg.(type) {
+				case *parse.FieldNode:
+					collect(current, iterating)
+				case *parse.VariableNode:
+					useVariable(current)
+				case *parse.ChainNode:
+					walkNode(current.Node)
+				case *parse.PipeNode:
+					walkPipe(current, iterating)
+				}
+			}
+		}
+	}
+	walkNode = func(node parse.Node) {
+		switch current := node.(type) {
+		case *parse.ListNode:
+			if current == nil {
+				return
+			}
+			for _, item := range current.Nodes {
+				walkNode(item)
+			}
+		case *parse.ActionNode:
+			if current.Pipe != nil && len(current.Pipe.Decl) > 0 {
+				// `{{$v := ...}}` / `{{$v = ...}}` renders to nothing, so the
+				// fields it reads are attributed to the declared variables
+				// instead of being treated as plain output slots.
+				outer := declSink
+				sink := map[string]struct{}{}
+				declSink = sink
+				walkPipe(current.Pipe, false)
+				declSink = outer
+				for _, decl := range current.Pipe.Decl {
+					if len(decl.Ident) == 0 {
+						continue
+					}
+					existing := declared[decl.Ident[0]]
+					if existing == nil {
+						existing = map[string]struct{}{}
+						declared[decl.Ident[0]] = existing
+					}
+					for name := range sink {
+						existing[name] = struct{}{}
+					}
+				}
+				return
+			}
+			walkPipe(current.Pipe, false)
+		case *parse.IfNode:
+			conditional = true
+			condDepth++
+			walkPipe(current.Pipe, false)
+			walkNode(current.List)
+			walkNode(current.ElseList)
+			condDepth--
+		case *parse.RangeNode:
+			conditional = true
+			condDepth++
+			walkPipe(current.Pipe, true)
+			walkNode(current.List)
+			walkNode(current.ElseList)
+			condDepth--
+		case *parse.WithNode:
+			conditional = true
+			condDepth++
+			walkPipe(current.Pipe, true)
+			walkNode(current.List)
+			walkNode(current.ElseList)
+			condDepth--
+		case *parse.PipeNode:
+			walkPipe(current, false)
+		case *parse.FieldNode:
+			collect(current, false)
+		}
+	}
+	walkNode(tmpl.Tree.Root)
+	return referenced, iterated, conditional, plain
+}
+
 func renderCommand(command []string, args map[string]any) ([]string, error) {
 	if len(command) == 0 {
 		return nil, errors.New("command must not be empty")
 	}
-	var out []string
+	out := make([]string, 0, len(command))
 	for _, part := range command {
 		tmpl, err := template.New("arg").Option("missingkey=zero").Parse(part)
 		if err != nil {
 			return nil, err
 		}
+		// missingkey=zero does not apply to map[string]any inputs: absent keys
+		// render as the literal "<no value>". Substitute an empty string for
+		// absent keys so the placeholder never becomes an argument value, and
+		// remember whether every referenced field was absent.
+		referenced, iterated, conditional, plain := commandTemplateFields(tmpl)
+		data := args
+		allMissing := len(referenced) > 0
+		explicitPlain := false
+		for _, name := range referenced {
+			if _, provided := args[name]; provided {
+				allMissing = false
+				if _, outside := plain[name]; outside {
+					explicitPlain = true
+				}
+				continue
+			}
+			if _, skip := iterated[name]; skip {
+				continue
+			}
+			if data == nil || len(data) == len(args) {
+				copied := make(map[string]any, len(args)+len(referenced))
+				for key, value := range args {
+					copied[key] = value
+				}
+				data = copied
+			}
+			data[name] = ""
+		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, args); err != nil {
+		if err := tmpl.Execute(&buf, data); err != nil {
 			return nil, err
 		}
 		value := strings.TrimSpace(buf.String())
-		if value != "" {
-			out = append(out, value)
+		// Drop the argv element only when it is a placeholder for omitted
+		// optional arguments, or when a conditional block (if/with/range)
+		// legitimately rendered to nothing. An explicitly provided empty value
+		// in a plain `{{.field}}` slot keeps its slot so later positional
+		// arguments do not shift left, so the conditional exemption only applies
+		// while no such slot exists outside the conditional blocks.
+		if value == "" && !explicitPlain && (allMissing || conditional) {
+			continue
 		}
+		out = append(out, value)
 	}
 	if len(out) == 0 {
 		return nil, errors.New("command rendered to empty argv")
@@ -4588,7 +4776,10 @@ func filteredEnv(allowlist []string) []string {
 	for _, item := range allowlist {
 		allowed[item] = struct{}{}
 	}
-	var out []string
+	// Always non-nil: os/exec treats a nil Env as "inherit the full parent
+	// environment", which would turn an allowlist that matches nothing into a
+	// fail-open leak of every parent variable.
+	out := make([]string, 0, len(allowlist))
 	for _, entry := range os.Environ() {
 		key := strings.SplitN(entry, "=", 2)[0]
 		if _, ok := allowed[key]; ok {

@@ -153,6 +153,10 @@ func (a *Adapter) convert(evt events.Event) *StreamOutputMessage {
 		return logMessage(evt, "error", eventLogText(evt))
 	case "provider.retry", "provider.auto_resume":
 		return logMessage(evt, "warn", eventLogText(evt))
+	case events.EventEventsDropped:
+		// Surface bus back-pressure loss so consumers can tell an incomplete
+		// stream apart from a run that simply produced nothing.
+		return logMessage(evt, "warn", fmt.Sprintf("%s: %d event(s) dropped because the stream-json consumer fell behind", evt.Type, intValue(evt.Data["dropped"])))
 	default:
 		return nil
 	}

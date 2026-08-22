@@ -6917,3 +6917,108 @@ func TestTaskToolsReportRequiredEventErrorAndRestoreTaskGraph(t *testing.T) {
 		t.Fatalf("expected failed task_update to restore graph\nbefore=%#v\nafter=%#v", beforeUpdate, afterUpdate)
 	}
 }
+
+func TestRenderCommandOmitsPurelyConditionalArgvSlots(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+		args    map[string]any
+		want    []string
+	}{
+		{
+			name:    "assignment action before conditional does not pin the slot",
+			command: []string{"tool", "{{$v := .verbose}}{{if $v}}--verbose{{end}}", "target.txt"},
+			args:    map[string]any{"verbose": false},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "assignment action with explicit empty string omits the slot",
+			command: []string{"tool", "{{$limit := .limit}}{{if $limit}}--limit={{$limit}}{{end}}", "target.txt"},
+			args:    map[string]any{"limit": ""},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "assignment action feeding an empty range omits the slot",
+			command: []string{"tool", "{{$items := .items}}{{range $items}}{{.}}{{end}}", "target.txt"},
+			args:    map[string]any{"items": []any{}},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "reassignment action does not pin the slot",
+			command: []string{"tool", "{{$v := true}}{{$v = .verbose}}{{if $v}}--verbose{{end}}", "target.txt"},
+			args:    map[string]any{"verbose": false},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "variable emitted only inside a conditional does not pin the slot",
+			command: []string{"tool", "{{$name := .name}}{{if .verbose}}{{$name}}{{end}}", "target.txt"},
+			args:    map[string]any{"name": "", "verbose": false},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "variable emitted outside every conditional keeps the slot",
+			command: []string{"tool", "{{$name := .name}}{{$name}}", "target.txt"},
+			args:    map[string]any{"name": ""},
+			want:    []string{"tool", "", "target.txt"},
+		},
+		{
+			name:    "purely conditional fragment omits the slot",
+			command: []string{"tool", "{{if .verbose}}--verbose{{end}}", "target.txt"},
+			args:    map[string]any{"verbose": false},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "conditional mixed with a plain slot keeps the slot",
+			command: []string{"tool", "{{if .verbose}}--verbose{{end}}{{.name}}", "target.txt"},
+			args:    map[string]any{"verbose": false, "name": ""},
+			want:    []string{"tool", "", "target.txt"},
+		},
+		{
+			name:    "explicit empty plain slot keeps its position",
+			command: []string{"tool", "{{.name}}", "target.txt"},
+			args:    map[string]any{"name": ""},
+			want:    []string{"tool", "", "target.txt"},
+		},
+		{
+			name:    "omitted field drops the slot",
+			command: []string{"tool", "{{.name}}", "target.txt"},
+			args:    map[string]any{},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "explicit zero renders its value",
+			command: []string{"tool", "{{.count}}", "target.txt"},
+			args:    map[string]any{"count": 0},
+			want:    []string{"tool", "0", "target.txt"},
+		},
+		{
+			name:    "conditional that holds renders its branch",
+			command: []string{"tool", "{{if .verbose}}--verbose{{end}}", "target.txt"},
+			args:    map[string]any{"verbose": true},
+			want:    []string{"tool", "--verbose", "target.txt"},
+		},
+		{
+			name:    "empty range omits the slot",
+			command: []string{"tool", "{{range .items}}{{.}}{{end}}", "target.txt"},
+			args:    map[string]any{"items": []any{}},
+			want:    []string{"tool", "target.txt"},
+		},
+		{
+			name:    "nil with omits the slot",
+			command: []string{"tool", "{{with .opt}}--opt={{.}}{{end}}", "target.txt"},
+			args:    map[string]any{"opt": nil},
+			want:    []string{"tool", "target.txt"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := renderCommand(test.command, test.args)
+			if err != nil {
+				t.Fatalf("renderCommand: %v", err)
+			}
+			if fmt.Sprintf("%#v", got) != fmt.Sprintf("%#v", test.want) {
+				t.Fatalf("renderCommand argv=%#v, want %#v", got, test.want)
+			}
+		})
+	}
+}

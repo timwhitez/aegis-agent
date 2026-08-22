@@ -99,6 +99,14 @@ func UpdateTask(store *Store, sessionID string, input TaskUpdateInput) (Task, er
 		if input.Status != "" {
 			switch input.Status {
 			case "pending", "in_progress", "completed", "cancelled":
+				// completed/cancelled are terminal. Leaving a terminal status would
+				// resurrect a task whose dependency edges unlockDependents already
+				// removed from the durable graph, so its dependents would stay in
+				// ready even though the prerequisite is open again, and the removed
+				// edges cannot be rebuilt from any persisted fact.
+				if isTerminalTaskStatus(task.Status) && input.Status != task.Status {
+					return nil, fmt.Errorf("task %s is %s and cannot change status to %s: completed and cancelled are terminal", task.ID, task.Status, input.Status)
+				}
 				task.Status = input.Status
 			default:
 				return nil, fmt.Errorf("invalid status: %s", input.Status)
@@ -407,6 +415,15 @@ func unlockDependents(tasks []Task, completedID string) {
 			tasks[i].Blocks = next
 			tasks[i].UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		}
+	}
+}
+
+func isTerminalTaskStatus(status string) bool {
+	switch status {
+	case "completed", "cancelled":
+		return true
+	default:
+		return false
 	}
 }
 
