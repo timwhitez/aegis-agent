@@ -469,7 +469,7 @@ func TestBuildSystemPromptDoesNotWarnOnRetrievalHeavyTail(t *testing.T) {
 
 func TestToolGuardBlocksStaleTargetReportEvenInYolo(t *testing.T) {
 	workdir := t.TempDir()
-	steer := session.NewMessage("user", "你已经发散了，原始目标是https://it-infra-dev.bytedance.net/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim；进行中文报告产出")
+	steer := session.NewMessage("user", "你已经发散了，原始目标是https://example.test/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim；进行中文报告产出")
 	steer.Meta = map[string]any{"source": "steer", "interrupt": true}
 	messages := []session.Message{
 		session.NewMessage("user", "Audit the target and write reports/assessment-report.md."),
@@ -505,7 +505,7 @@ func TestToolGuardBlocksFinishWhenLatestTargetNotInFinalArtifact(t *testing.T) {
 	if err := os.WriteFile(reportPath, []byte("# Assessment\n\n目标: /ikvm-net/ikvm/list\n"), 0o600); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
-	steer := session.NewMessage("user", "原始目标是https://it-infra-dev.bytedance.net/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim")
+	steer := session.NewMessage("user", "原始目标是https://example.test/sys/ikvm-net?ikvm-net=%2Fikvm-net%2Fikvm%2Fsim")
 	steer.Meta = map[string]any{"source": "steer", "interrupt": true}
 	messages := []session.Message{
 		session.NewMessage("user", "Write reports/assessment-report.md and finish."),

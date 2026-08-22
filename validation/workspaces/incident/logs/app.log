@@ -1,9 +1,0 @@
-2026-03-18T09:00:01Z INFO boot service=lantern-api version=1.4.2 env=production
-2026-03-18T09:01:12Z INFO request.start request_id=req-1001 route=/api/report/daily
-2026-03-18T09:01:13Z ERROR request.fail request_id=req-1001 upstream=queue-metrics error="context deadline exceeded"
-2026-03-18T09:01:13Z WARN report.render fallback=true reason="metrics unavailable"
-2026-03-18T09:03:40Z INFO request.start request_id=req-1002 route=/api/report/daily
-2026-03-18T09:03:41Z ERROR request.fail request_id=req-1002 upstream=queue-metrics error="context deadline exceeded"
-2026-03-18T09:03:41Z ERROR page.render route=/reports/daily status=500 reason="report data incomplete"
-2026-03-18T09:05:05Z INFO request.start request_id=req-1003 route=/healthz
-2026-03-18T09:05:05Z INFO request.ok request_id=req-1003 status=200

@@ -1,3 +1,5 @@
+DO NOT send optional commentary
+
 # Go CLI Agent
 
 本文件作用域覆盖整个 `go-cli-agent/` 目录树。

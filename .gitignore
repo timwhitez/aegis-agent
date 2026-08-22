@@ -1,10 +1,32 @@
-.go-cli-agent/
-.artifacts/
-bin/
-tmp/
-.env
+# Local runtime state and credentials.
+/.go-cli-agent/
+/.artifacts/
+**/.go-cli-agent/
+**/.artifacts/
+/.env
+/.env.*
+!/.env.example
 
-# Keep top-level validation notes, but ignore historical run directories.
-validation/runs/*/
-validation/workspaces/**/.pytest_cache/
-validation/workspaces/**/__pycache__/
+# Build output and disposable local workspaces.
+/bin/
+/go-cli-agent
+/tmp/
+/workspace/
+/.tmp_*/
+
+# Local agent/editor material and imported references.
+/.claude/
+/.codex/
+/skills/
+/usable_skills/
+/refer_prompts/
+/agent-import-tmp/
+
+# Generated validation output and ad-hoc artifacts.
+/validation/runs/
+/validation/sessions/
+/validation/tmp/
+/validation/workspaces/
+/*.tar.gz
+/*.zip
+/*.png
