@@ -15,15 +15,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/hooks"
-	"go-cli-agent/internal/isolation"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/hooks"
+	"aegis-agent/internal/isolation"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/tools"
 )
 
 type Runner struct {

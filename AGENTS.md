@@ -1,14 +1,14 @@
 DO NOT send optional commentary
 
-# Go CLI Agent
+# Aegis Agent
 
-本文件作用域覆盖整个 `go-cli-agent/` 目录树。
+本文件作用域覆盖整个 `aegis-agent/` 目录树。
 
 ## 工作方式
 
 - 先看 spec，再改代码。开始实现前至少阅读 `spec/00-product.md`、`spec/01-runtime-architecture.md`、`spec/03-provider-contracts.md`、`spec/09-phase-plan.md`、`spec/11-spec-audit-and-traceability.md`、`spec/12-task-system.md`、`spec/13-live-input-and-steering.md`。
 - 严格按 phase 推进，不要跨 phase 偷渡功能。
-- 当前项目是 Web-first 本地 agent harness；默认用户入口是 `go-cli-agent web` 本地控制台，CLI 保留为脚本化、CI、故障恢复和高级调试 fallback。
+- 当前项目是 Web-first 本地 agent harness；默认用户入口是 `aegis-agent web` 本地控制台，CLI 保留为脚本化、CI、故障恢复和高级调试 fallback。
 - Web-first 不等于 hosted SaaS、复杂 IDE 或重型 TUI；不要引入复杂面板布局、鼠标驱动 workflow、浏览器端文件编辑器、远程终端或图形化状态权威源。
 - 保持“模型是 agent，harness 提供环境”的边界，不要把固定 DAG、硬编码 workflow engine、重型 orchestration 塞进 runtime。
 - 当前默认主路径是 `web` + CLI fallback：`init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`。
@@ -48,14 +48,14 @@ DO NOT send optional commentary
 ## Multica 兼容部署经验
 
 - `gocli-stream-json` 是 Multica 与本仓库的唯一耦合面；需要扩展时优先更新 `spec/multica-integration/`，再改 `internal/streamjson` 和 CLI flag。
-- Multica 远端部署推荐用 `GO_CLI_AGENT_CONFIG` 指向全局 go-cli-agent 配置，而不是只在 `MULTICA_GOCLI_ARGS` 里加 `--config`；这样 `models --json` 和 `exec` 会读同一份配置。
+- Multica 远端部署推荐用 `AEGIS_AGENT_CONFIG` 指向全局 aegis-agent 配置，而不是只在 `MULTICA_GOCLI_ARGS` 里加 `--config`；这样 `models --json` 和 `exec` 会读同一份配置。
 - 给 Multica gocli runtime 的全局配置应只让任务执行扫描 `./skills`：这是 Multica workspace shared skills 的动态注入目录，成员创建、从 URL 导入或从本地运行时复制后的 skills 都通过这里对 agent 生效。不要默认扫描 `~/.codex/skills`；本地运行时 skills 在复制到 Multica workspace 前是私有来源。
-- `gpt-5.5` 由 go-cli-agent 内置 context window 表默认按 `300000 * 4 * 0.85 = 1020000` 字符触发压缩；当远端 Codex `debug models` 显示 `gpt-5.5` 的 `context_window=272000` 且 `effective_context_window_percent=95` 时，若需要与 Codex 精确对齐，gocli 全局配置仍应给 `openai/gpt-5.5` 设置最高优先级覆盖 `runtime.compact.context_profiles.openai/gpt-5.5.input_char_threshold: 1033600`，即 `272000 * 0.95 * 4` 的 v1 字符近似；`hysteresis_delta_chars` 可设为 `258400`。
+- `gpt-5.5` 由 aegis-agent 内置 context window 表默认按 `300000 * 4 * 0.85 = 1020000` 字符触发压缩；当远端 Codex `debug models` 显示 `gpt-5.5` 的 `context_window=272000` 且 `effective_context_window_percent=95` 时，若需要与 Codex 精确对齐，gocli 全局配置仍应给 `openai/gpt-5.5` 设置最高优先级覆盖 `runtime.compact.context_profiles.openai/gpt-5.5.input_char_threshold: 1033600`，即 `272000 * 0.95 * 4` 的 v1 字符近似；`hysteresis_delta_chars` 可设为 `258400`。
 - 在远端主机按端口重启或替换服务时，必须先把 `ss` / `lsof` / `pgrep` 输出限定到目标端口或目标命令，再提取 PID；不要对整份监听列表做全局 `sed` / `awk` 取第一个 `pid=`，避免误杀同机其他服务，例如 `coco-sandbox-ui` 的 `:8000` 进程。
 
 ## Git 纪律
 
-- `go-cli-agent/` 现在是独立 Git 仓库根目录；写入型改动默认在这个仓库内完成，不要依赖外层 loose workspace 的无版本状态。
+- `aegis-agent/` 现在是独立 Git 仓库根目录；写入型改动默认在这个仓库内完成，不要依赖外层 loose workspace 的无版本状态。
 - 后续任何代码修复都必须在对应验证完成后产出真实 `git commit`；不要把“已修好”的代码留在未提交状态。
 - 如果一次修复同时涉及测试、`spec/`、`README.md` 或本 `AGENTS.md`，这些配套改动应和代码修复一起进入同一个 commit，保证提交能完整表达当轮变更。
 

@@ -17,17 +17,17 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
 )
 
 const (
-	budgetCrashHelperEnv   = "GO_CLI_AGENT_BUDGET_CRASH_HELPER"
-	budgetCrashRootEnv     = "GO_CLI_AGENT_BUDGET_CRASH_ROOT"
-	budgetCrashWorkdirEnv  = "GO_CLI_AGENT_BUDGET_CRASH_WORKDIR"
-	budgetCrashSessionEnv  = "GO_CLI_AGENT_BUDGET_CRASH_SESSION"
-	budgetCrashScenarioEnv = "GO_CLI_AGENT_BUDGET_CRASH_SCENARIO"
-	budgetCrashMarkerEnv   = "GO_CLI_AGENT_BUDGET_CRASH_MARKER"
+	budgetCrashHelperEnv   = "AEGIS_AGENT_BUDGET_CRASH_HELPER"
+	budgetCrashRootEnv     = "AEGIS_AGENT_BUDGET_CRASH_ROOT"
+	budgetCrashWorkdirEnv  = "AEGIS_AGENT_BUDGET_CRASH_WORKDIR"
+	budgetCrashSessionEnv  = "AEGIS_AGENT_BUDGET_CRASH_SESSION"
+	budgetCrashScenarioEnv = "AEGIS_AGENT_BUDGET_CRASH_SCENARIO"
+	budgetCrashMarkerEnv   = "AEGIS_AGENT_BUDGET_CRASH_MARKER"
 )
 
 func TestChildActiveRuntimeSurvivesProviderAndShellProcessKills(t *testing.T) {

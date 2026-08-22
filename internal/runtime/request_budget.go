@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 )
 
 const (

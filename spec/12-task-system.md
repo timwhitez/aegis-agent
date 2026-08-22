@@ -1,8 +1,8 @@
-# Go CLI Agent Task System Spec
+# Aegis Agent Task System Spec
 
 ## 1. 目标
 
-`go-cli-agent` 的任务系统采用双层结构：
+`aegis-agent` 的任务系统采用双层结构：
 
 - session todo
 - persistent task graph
@@ -61,7 +61,7 @@ task graph 是当前 session 的“持久化任务板”。
 ## 4. 存储布局
 
 ```text
-.go-cli-agent/sessions/<session-id>/
+.aegis-agent/sessions/<session-id>/
   todo.json
   tasks/
     task_0001.json
@@ -299,7 +299,7 @@ task graph 是一个多文件事实源：跨进程写入必须在同一 durable 
 
 ## 12. CLI Read 模式
 
-`go-cli-agent tasks <session-id>` 至少提供两种输出：
+`aegis-agent tasks <session-id>` 至少提供两种输出：
 
 ### 12.1 text
 

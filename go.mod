@@ -1,4 +1,4 @@
-module go-cli-agent
+module aegis-agent
 
 go 1.24.5
 

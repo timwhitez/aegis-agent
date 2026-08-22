@@ -1,4 +1,4 @@
-# Go CLI Agent Hooks Spec
+# Aegis Agent Hooks Spec
 
 ## 1. 设计目标
 
@@ -76,7 +76,7 @@ v1 只开放 9 个 hook 点：
 hooks:
   session_complete:
     - name: notify
-      command: ["notify-send", "go-cli-agent", "session completed"]
+      command: ["notify-send", "aegis-agent", "session completed"]
   user_message:
     - name: interactive-prefix
       match:

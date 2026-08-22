@@ -1,4 +1,4 @@
-# Go CLI Agent Runtime Architecture
+# Aegis Agent Runtime Architecture
 
 ## 1. 总体分层
 
@@ -207,7 +207,7 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 
 - Store：`ContextReport(sessionID)`，使用 streaming `VisitEvents` / `VisitMessages`，不要求把超长 JSONL 整体载入内存
 - SDK/Core：`Context(sessionID)`
-- CLI：`go-cli-agent sessions context <session-id> --json`
+- CLI：`aegis-agent sessions context <session-id> --json`
 - Web：`GET /api/sessions/<id>/context`；只在用户打开现有 inspector 的 Context tab 时懒加载，并对 session/request detail 设 64 项总预算和显式 truncation metadata，aggregate 不截断
 
 `ContextReport` 是 operator/read-only advanced surface。默认 Web 首页不增加 telemetry dashboard，也不按报告结果自动改 prompt、threshold 或委派策略。
@@ -246,7 +246,7 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 
 职责：
 
-- 生成 `.go-cli-agent/sessions/<id>/session.md`
+- 生成 `.aegis-agent/sessions/<id>/session.md`
 - 聚合 state、contract、artifact tracker、todo/task、provider attempts、children、queue、background notifications 和 checkpoint 位置
 - 只作为 operator-readable 派生视图，不能替代 `messages.jsonl` / `events.jsonl` / `state.json`
 
@@ -489,7 +489,7 @@ while true:
 
 ## 6. Completion Policy
 
-`go-cli-agent` 区分两种 completion policy：
+`aegis-agent` 区分两种 completion policy：
 
 ### 6.1 interactive
 

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 type ExecPolicyViolation struct {

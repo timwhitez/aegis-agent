@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
 )
 
 func toolBudgetMetadataInt(t *testing.T, metadata map[string]any, key string) int {

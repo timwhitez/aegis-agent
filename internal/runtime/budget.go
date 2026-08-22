@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
 )
 
 type childBudgetDeadlineCause struct {

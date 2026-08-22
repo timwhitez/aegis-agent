@@ -1,4 +1,4 @@
-# Go CLI Agent Terminal TUI Spec
+# Aegis Agent Terminal TUI Spec
 
 > 当前定位：扩展 phase 规格。terminal TUI 只作为观测面预留，不属于 Web-first v1 默认验收标准。
 
@@ -17,7 +17,7 @@
 
 新增命令：
 
-- `go-cli-agent experimental tui`
+- `aegis-agent experimental tui`
 
 高频参数：
 

@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
 )
 
 type sessionHistoryTestEnvelope struct {

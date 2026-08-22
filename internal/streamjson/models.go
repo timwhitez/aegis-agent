@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 type Model struct {

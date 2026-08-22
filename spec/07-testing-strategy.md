@@ -1,4 +1,4 @@
-# Go CLI Agent Testing Strategy
+# Aegis Agent Testing Strategy
 
 ## 1. 测试目标
 

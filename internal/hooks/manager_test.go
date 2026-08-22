@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 func TestBoundedHookOutputKeepsUTF8Boundaries(t *testing.T) {
@@ -413,7 +413,7 @@ func TestManagerPreflightsMissingRelativeShellScript(t *testing.T) {
 		SessionComplete: []config.HookDefinition{
 			{
 				Name:    "missing-script",
-				Command: []string{"/bin/sh", ".go-cli-agent/hooks/session-complete.sh"},
+				Command: []string{"/bin/sh", ".aegis-agent/hooks/session-complete.sh"},
 			},
 		},
 	}, workdir)
@@ -429,7 +429,7 @@ func TestManagerPreflightsMissingRelativeShellScript(t *testing.T) {
 	if _, err := manager.Trigger(context.Background(), "session.complete", map[string]any{"status": "completed"}); err != nil {
 		t.Fatalf("trigger: %v", err)
 	}
-	want := filepath.Join(workdir, ".go-cli-agent", "hooks", "session-complete.sh")
+	want := filepath.Join(workdir, ".aegis-agent", "hooks", "session-complete.sh")
 	if warning == nil || warning["reason"] != "missing_shell_script" || warning["missing_path"] != want {
 		t.Fatalf("expected relative shell script warning for %s, got %#v", want, warning)
 	}
@@ -437,7 +437,7 @@ func TestManagerPreflightsMissingRelativeShellScript(t *testing.T) {
 
 func TestManagerRunsExistingRelativeShellScript(t *testing.T) {
 	workdir := t.TempDir()
-	script := filepath.Join(workdir, ".go-cli-agent", "hooks", "session-complete.sh")
+	script := filepath.Join(workdir, ".aegis-agent", "hooks", "session-complete.sh")
 	if err := os.MkdirAll(filepath.Dir(script), 0o700); err != nil {
 		t.Fatalf("mkdir hook dir: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestManagerRunsExistingRelativeShellScript(t *testing.T) {
 		SessionComplete: []config.HookDefinition{
 			{
 				Name:    "existing-script",
-				Command: []string{"/bin/sh", ".go-cli-agent/hooks/session-complete.sh"},
+				Command: []string{"/bin/sh", ".aegis-agent/hooks/session-complete.sh"},
 			},
 		},
 	}, workdir)

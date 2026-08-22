@@ -3,9 +3,9 @@ package runtime
 import (
 	"context"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/session"
 )
 
 // CoreRunner exposes the stable runtime surface used by the web, CLI, and SDK adapters.

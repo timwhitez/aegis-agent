@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 )
 
 func DefaultEnvFilePath(cwd string) string {
-	if envPath := strings.TrimSpace(os.Getenv("GO_CLI_AGENT_ENV_FILE")); envPath != "" {
+	if envPath := strings.TrimSpace(os.Getenv("AEGIS_AGENT_ENV_FILE")); envPath != "" {
 		return resolveMaybeRelative(cwd, envPath)
 	}
 	return filepath.Join(cwd, ".env")
@@ -120,7 +120,7 @@ func allowedEnvFileKey(key string) bool {
 	if key == "" {
 		return false
 	}
-	if strings.HasPrefix(key, "GO_CLI_AGENT_") {
+	if strings.HasPrefix(key, "AEGIS_AGENT_") {
 		return false
 	}
 	switch key {

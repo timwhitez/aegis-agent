@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/hooks"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/hooks"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
 )
 
 func TestCancelledSessionEventIsTerminalForRenderer(t *testing.T) {
@@ -255,7 +255,7 @@ func TestVersionCommand(t *testing.T) {
 	if err := Run(context.Background(), []string{"--version"}, &stdout, &stderr); err != nil {
 		t.Fatalf("version: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "go-cli-agent v0.1.0-dev") {
+	if !strings.Contains(stdout.String(), "aegis-agent v0.1.0-dev") {
 		t.Fatalf("unexpected version output: %s", stdout.String())
 	}
 	stdout.Reset()
@@ -263,7 +263,7 @@ func TestVersionCommand(t *testing.T) {
 	if err := Run(context.Background(), []string{"version"}, &stdout, &stderr); err != nil {
 		t.Fatalf("version alias: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "go-cli-agent v") {
+	if !strings.Contains(stdout.String(), "aegis-agent v") {
 		t.Fatalf("unexpected version alias output: %s", stdout.String())
 	}
 }
@@ -280,7 +280,7 @@ providers:
     model: model-a
     wire_api: responses
 session:
-  dir: .go-cli-agent/sessions
+  dir: .aegis-agent/sessions
 `), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2259,7 +2259,7 @@ func TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate(t *testing
 
 func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.T) {
 	cwd := t.TempDir()
-	configDir := filepath.Join(cwd, ".go-cli-agent")
+	configDir := filepath.Join(cwd, ".aegis-agent")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
@@ -2564,7 +2564,7 @@ func TestTrustedExtensionStatusAppearsInDoctor(t *testing.T) {
 	restore := runnerLoader
 	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
 		cfg := config.Default()
-		cfg.Session.Dir = filepath.Join(workdir, ".go-cli-agent", "sessions")
+		cfg.Session.Dir = filepath.Join(workdir, ".aegis-agent", "sessions")
 		cfg.DefaultProvider = "openai-compatible"
 		cfg.Providers["openai-compatible"] = config.Provider{
 			APIKeyEnv: "TEST_MISSING_KEY",
@@ -3287,16 +3287,16 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	if err := Run(context.Background(), []string{"init", "--force", "--provider", "openai-compatible"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run init: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "next: ./bin/go-cli-agent doctor") {
+	if !strings.Contains(stdout.String(), "next: ./bin/aegis-agent doctor") {
 		t.Fatalf("expected init guidance in stdout, got %s", stdout.String())
 	}
 	for _, relative := range []string{
-		".go-cli-agent/config.yaml",
+		".aegis-agent/config.yaml",
 		".env.example",
 		"workspace",
 		"skills/example/SKILL.md",
 		"skills/example/tools/echo.yaml",
-		".go-cli-agent/hooks/session-complete.sh",
+		".aegis-agent/hooks/session-complete.sh",
 	} {
 		if _, err := os.Stat(filepath.Join(tmp, relative)); err != nil {
 			t.Fatalf("expected generated file %s: %v", relative, err)
@@ -3337,16 +3337,16 @@ func TestDefaultInitSessionDirUsesHomeFallbackForMountedWorkspace(t *testing.T) 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got := defaultInitSessionDir("/mnt/c/project", ".go-cli-agent/sessions")
-	want := filepath.Join(home, ".go-cli-agent", "sessions")
+	got := defaultInitSessionDir("/mnt/c/project", ".aegis-agent/sessions")
+	want := filepath.Join(home, ".aegis-agent", "sessions")
 	if got != want {
 		t.Fatalf("expected mounted workspace default session dir %q, got %q", want, got)
 	}
 }
 
 func TestDefaultInitSessionDirKeepsNonMountedWorkspaceDefault(t *testing.T) {
-	got := defaultInitSessionDir("/home/user/project", ".go-cli-agent/sessions")
-	if got != ".go-cli-agent/sessions" {
+	got := defaultInitSessionDir("/home/user/project", ".aegis-agent/sessions")
+	if got != ".aegis-agent/sessions" {
 		t.Fatalf("expected non-mounted workspace to keep relative default, got %q", got)
 	}
 }
@@ -3354,7 +3354,7 @@ func TestDefaultInitSessionDirKeepsNonMountedWorkspaceDefault(t *testing.T) {
 func TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	configured := filepath.Join("/mnt/c/project", ".go-cli-agent", "sessions")
+	configured := filepath.Join("/mnt/c/project", ".aegis-agent", "sessions")
 	restore := sessionRootCandidateProbe
 	sessionRootCandidateProbe = func(path string, expected fs.FileMode) sessionRootProbeResult {
 		switch path {
@@ -3367,7 +3367,7 @@ func TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback(t *testing.T) {
 				SupportsOwnerOnly: false,
 				Reason:            "filesystem_does_not_honor_posix_permissions",
 			}
-		case filepath.Join(home, ".go-cli-agent", "sessions"):
+		case filepath.Join(home, ".aegis-agent", "sessions"):
 			return sessionRootProbeResult{
 				Path:              filepath.Clean(path),
 				Writable:          true,
@@ -3395,7 +3395,7 @@ func TestCheckSessionRootStrategyWarnsAndRecommendsPOSIXFallback(t *testing.T) {
 	if check.Status != "warn" {
 		t.Fatalf("expected warn, got %#v", check)
 	}
-	if got := check.Details["recommended_dir"]; got != filepath.Join(home, ".go-cli-agent", "sessions") {
+	if got := check.Details["recommended_dir"]; got != filepath.Join(home, ".aegis-agent", "sessions") {
 		t.Fatalf("expected home fallback recommendation, got %#v", got)
 	}
 }
@@ -3427,7 +3427,7 @@ func TestLoadConfigAutoLoadsEnvFile(t *testing.T) {
 		t.Fatalf("write env file: %v", err)
 	}
 	t.Setenv("OPENAI_API_KEY", "")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 
 	cfg, err := loadConfig("", cwd)
 	if err != nil {
@@ -3664,7 +3664,7 @@ func TestUsageShowsWebFirstSurfaceByDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	if !strings.Contains(stderr.String(), "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]") {
+	if !strings.Contains(stderr.String(), "usage: aegis-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]") {
 		t.Fatalf("expected default usage to show web-first surface, got %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "experimental") {
@@ -3678,14 +3678,14 @@ func TestExperimentalCommandShowsUsageWhenExplicitlyInvoked(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected experimental usage error")
 	}
-	if !strings.Contains(stderr.String(), "usage: go-cli-agent experimental <delegate|children|queue|tui|web> [...]") {
+	if !strings.Contains(stderr.String(), "usage: aegis-agent experimental <delegate|children|queue|tui|web> [...]") {
 		t.Fatalf("expected explicit experimental usage, got %q", stderr.String())
 	}
 }
 
 func TestLegacyExperimentalAliasReturnsMigrationError(t *testing.T) {
 	err := Run(context.Background(), []string{"delegate"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "go-cli-agent experimental delegate") {
+	if err == nil || !strings.Contains(err.Error(), "aegis-agent experimental delegate") {
 		t.Fatalf("expected migration error, got %v", err)
 	}
 }
@@ -3696,7 +3696,7 @@ func TestTopLevelWebCommandDispatches(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected web flag parse error")
 	}
-	if strings.Contains(err.Error(), "go-cli-agent experimental web") {
+	if strings.Contains(err.Error(), "aegis-agent experimental web") {
 		t.Fatalf("top-level web should not be treated as experimental migration, got %v", err)
 	}
 }
@@ -3717,7 +3717,7 @@ func TestWebCommandReportsMissingCurrentDirectoryBeforeServing(t *testing.T) {
 	}
 	missingWD := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "missing-config.yaml")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
+	t.Setenv("AEGIS_AGENT_ENV_FILE", filepath.Join(t.TempDir(), "missing.env"))
 	if err := os.Chdir(missingWD); err != nil {
 		t.Fatalf("chdir missing cwd seed: %v", err)
 	}

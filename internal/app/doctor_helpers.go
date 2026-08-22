@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/extensions"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/extensions"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/session"
 )
 
 var hookCommandLookPath = exec.LookPath
@@ -871,9 +871,9 @@ func sessionRootCandidates(configured string) []sessionRootCandidate {
 	}
 	add("configured", configured)
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		add("home_fallback", filepath.Join(home, ".go-cli-agent", "sessions"))
+		add("home_fallback", filepath.Join(home, ".aegis-agent", "sessions"))
 	}
-	add("temp_fallback", filepath.Join(os.TempDir(), "go-cli-agent", "sessions"))
+	add("temp_fallback", filepath.Join(os.TempDir(), "aegis-agent", "sessions"))
 	return candidates
 }
 
@@ -958,7 +958,7 @@ func sessionRootCandidateAdvice(path string, supportsOwnerOnly bool) []string {
 		"Keep the repository where it is if needed, but move session.dir to a filesystem that honors owner-only permissions.",
 	}
 	if strings.HasPrefix(filepath.Clean(path), "/mnt/") {
-		advice = append(advice, "This path looks like a mounted filesystem. On WSL, prefer ~/.go-cli-agent/sessions or /tmp/go-cli-agent/sessions.")
+		advice = append(advice, "This path looks like a mounted filesystem. On WSL, prefer ~/.aegis-agent/sessions or /tmp/aegis-agent/sessions.")
 	}
 	return advice
 }

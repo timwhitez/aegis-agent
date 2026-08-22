@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 const agentCancelRequestedReason = "agent_cancel_requested"

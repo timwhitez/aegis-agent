@@ -1,4 +1,4 @@
-# Go CLI Agent Context Compaction Spec
+# Aegis Agent Context Compaction Spec
 
 ## 1. 目标
 

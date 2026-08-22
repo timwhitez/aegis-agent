@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"go-cli-agent/internal/events"
+	"aegis-agent/internal/events"
 )
 
 type Renderer struct {
@@ -28,7 +28,7 @@ func (r *Renderer) Handle(evt events.Event) {
 	}
 	switch evt.Type {
 	case "session.started":
-		fmt.Fprintf(r.out, "== session:start ==\nsession: %s\nsteer: go-cli-agent steer %s --message \"...\"\n", evt.SessionID, evt.SessionID)
+		fmt.Fprintf(r.out, "== session:start ==\nsession: %s\nsteer: aegis-agent steer %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "provider.call":
 		fmt.Fprintf(r.out, "== provider:%v ==\n", evt.Data["provider"])
 	case "assistant.message":
@@ -42,7 +42,7 @@ func (r *Renderer) Handle(evt events.Event) {
 			fmt.Fprintln(r.out, text)
 		}
 	case "session.awaiting_input":
-		fmt.Fprintf(r.out, "== awaiting_input ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
+		fmt.Fprintf(r.out, "== awaiting_input ==\nsession: %s\nnext: aegis-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "session.completed":
 		fmt.Fprintf(r.out, "== completed ==\nsession: %s\n", evt.SessionID)
 	case "session.child.queued":
@@ -58,11 +58,11 @@ func (r *Renderer) Handle(evt events.Event) {
 	case "session.background.accepted":
 		fmt.Fprintf(r.out, "== background:accepted ==\ncount: %v\n", evt.Data["count"])
 	case "session.paused":
-		fmt.Fprintf(r.out, "== paused ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
+		fmt.Fprintf(r.out, "== paused ==\nsession: %s\nnext: aegis-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "session.cancelled":
 		fmt.Fprintf(r.out, "== cancelled ==\nsession: %s\n", evt.SessionID)
 	case "session.failed":
-		fmt.Fprintf(r.out, "== failed ==\nsession: %s\nnext: go-cli-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
+		fmt.Fprintf(r.out, "== failed ==\nsession: %s\nnext: aegis-agent continue %s --message \"...\"\n", evt.SessionID, evt.SessionID)
 	case "session.steer.accepted":
 		fmt.Fprintf(r.out, "== steer:accepted ==\n")
 	case "goal.created":

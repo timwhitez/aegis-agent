@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	agenttui "go-cli-agent/internal/tui"
+	agenttui "aegis-agent/internal/tui"
 )
 
 func tuiCommand(args []string, stdout, stderr io.Writer) error {

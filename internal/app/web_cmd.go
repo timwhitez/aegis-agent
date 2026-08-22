@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/webconsole"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/webconsole"
 )
 
 const maxWebWorkerCount = 8

@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 )
 
 type Request struct {

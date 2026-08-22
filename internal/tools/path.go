@@ -70,7 +70,7 @@ func isWithin(base, target string) bool {
 
 var deniedWorkspaceWriteDirs = []string{
 	".git",
-	".go-cli-agent",
+	".aegis-agent",
 	".ssh",
 	".aws",
 	".azure",

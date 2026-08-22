@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/term"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/session"
 )
 
 type Snapshot struct {

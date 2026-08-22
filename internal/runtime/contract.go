@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/session"
 )
 
 const (

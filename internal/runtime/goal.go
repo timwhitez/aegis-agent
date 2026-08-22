@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
 )
 
 func goalPromptContext(goal session.SessionGoal) string {

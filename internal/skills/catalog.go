@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 	"gopkg.in/yaml.v3"
 )
 

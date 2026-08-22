@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
 )
 
 type contextTelemetryAdapter struct {

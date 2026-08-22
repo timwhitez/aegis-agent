@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 func TestRuntimeFacadesUseDistinctConcreteTypes(t *testing.T) {

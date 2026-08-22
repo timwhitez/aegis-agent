@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"go-cli-agent/internal/events"
+	"aegis-agent/internal/events"
 )
 
 type Adapter struct {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 type OpenAIAdapter struct {

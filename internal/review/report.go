@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/tools"
 )
 
 var (

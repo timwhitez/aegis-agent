@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
 )
 
 func recordProviderRetry(store *session.Store, meta session.SessionMetadata, turn int, data map[string]any) error {

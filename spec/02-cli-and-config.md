@@ -1,4 +1,4 @@
-# Go CLI Agent CLI And Config Spec
+# Aegis Agent CLI And Config Spec
 
 ## 1. 命令面原则
 
@@ -14,21 +14,21 @@
 
 Web-first v1 仍保留以下稳定 CLI 命令：
 
-- `go-cli-agent init`
-- `go-cli-agent web`
-- `go-cli-agent run [prompt]`
-- `go-cli-agent exec [prompt]`
-- `go-cli-agent steer <session-id>`
-- `go-cli-agent continue <session-id>`
-- `go-cli-agent sessions`
-- `go-cli-agent goal <show|pause|resume|clear|complete> <session-id>`
-- `go-cli-agent tasks <session-id>`
-- `go-cli-agent probe-provider`
-- `go-cli-agent doctor`
+- `aegis-agent init`
+- `aegis-agent web`
+- `aegis-agent run [prompt]`
+- `aegis-agent exec [prompt]`
+- `aegis-agent steer <session-id>`
+- `aegis-agent continue <session-id>`
+- `aegis-agent sessions`
+- `aegis-agent goal <show|pause|resume|clear|complete> <session-id>`
+- `aegis-agent tasks <session-id>`
+- `aegis-agent probe-provider`
+- `aegis-agent doctor`
 
 说明：
 
-- 默认用户工作流从 `go-cli-agent web` 进入
+- 默认用户工作流从 `aegis-agent web` 进入
 - `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` 作为 CLI fallback、脚本化和恢复路径继续稳定支持
 - README、帮助文本、live smoke、测试说明以 Web-first 路径为主，同时给出等价 CLI fallback
 - `delegate` / `children` / `queue` / `tui` 仍可保留高级入口；Web 可为 queue / children 提供轻量操作和观测，但不把 worker pool/raw payload/isolation tuning 做成默认页面
@@ -37,16 +37,16 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 
 以下命令属于扩展兼容面：
 
-- `go-cli-agent experimental delegate <parent-session-id> [prompt]`
-- `go-cli-agent experimental children <session-id>`
-- `go-cli-agent experimental queue <submit|list|show|worker>`
-- `go-cli-agent experimental tui`
-- `go-cli-agent experimental web` 作为旧入口兼容别名，语义等同 `go-cli-agent web`
+- `aegis-agent experimental delegate <parent-session-id> [prompt]`
+- `aegis-agent experimental children <session-id>`
+- `aegis-agent experimental queue <submit|list|show|worker>`
+- `aegis-agent experimental tui`
+- `aegis-agent experimental web` 作为旧入口兼容别名，语义等同 `aegis-agent web`
 
 要求：
 
 - 默认帮助文本展示 `web` 和核心 CLI fallback 命令
-- `experimental` 入口只在显式调用 `go-cli-agent experimental` 时展示
+- `experimental` 入口只在显式调用 `aegis-agent experimental` 时展示
 - 扩展命令本身不应继续作为默认顶层 operator surface；Web 页面只暴露面向用户的简洁子集
 
 ## 4. 参数解析
@@ -108,7 +108,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 默认行为：
 
 - 未显式传入 `--session-dir` 时，`init` 生成的配置应优先满足 session root owner-only 约束。
-- 如果当前工作目录位于 WSL `/mnt/...` 这类通常无法可靠执行 POSIX owner-only 权限的挂载路径，`init` 应默认把 `session.dir` 写到用户 home 下的 `.go-cli-agent/sessions`。
+- 如果当前工作目录位于 WSL `/mnt/...` 这类通常无法可靠执行 POSIX owner-only 权限的挂载路径，`init` 应默认把 `session.dir` 写到用户 home 下的 `.aegis-agent/sessions`。
 - 显式 `--session-dir` 必须按用户输入写入；后续由 `doctor` 报告该目录是否真正支持 owner-only 权限。
 
 ### 5.2 `run`
@@ -305,13 +305,13 @@ Plan Mode 行为：
 ```text
 == session:start ==
 session: 20260319-101530-ab12cd
-steer: go-cli-agent steer 20260319-101530-ab12cd --message "..."
+steer: aegis-agent steer 20260319-101530-ab12cd --message "..."
 == provider:openai ==
 == assistant ==
 ...assistant output...
 == awaiting_input ==
 session: 20260319-101530-ab12cd
-next: go-cli-agent continue 20260319-101530-ab12cd --message "..."
+next: aegis-agent continue 20260319-101530-ab12cd --message "..."
 ```
 
 ### 6.2 JSON 输出
@@ -324,17 +324,17 @@ next: go-cli-agent continue 20260319-101530-ab12cd --message "..."
 
 默认位置：
 
-- `~/.go-cli-agent/config.yaml`
-- 或显式 `GO_CLI_AGENT_CONFIG` / `--config`
-- 当前工作目录 `.go-cli-agent/config.yaml` 只在设置 `GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG=1|true`，或存在普通文件 `.go-cli-agent/trusted` 时加载；未受信 workspace config 不得改写 provider endpoint、API-provider、hooks、session-dir、skills-dir 等 active runtime 配置
+- `~/.aegis-agent/config.yaml`
+- 或显式 `AEGIS_AGENT_CONFIG` / `--config`
+- 当前工作目录 `.aegis-agent/config.yaml` 只在设置 `AEGIS_AGENT_TRUST_WORKSPACE_CONFIG=1|true`，或存在普通文件 `.aegis-agent/trusted` 时加载；未受信 workspace config 不得改写 provider endpoint、API-provider、hooks、session-dir、skills-dir 等 active runtime 配置
 
 环境变量文件：
 
 - 默认读取当前工作目录 `.env`
-- 若设置 `GO_CLI_AGENT_ENV_FILE`，则读取该文件
+- 若设置 `AEGIS_AGENT_ENV_FILE`，则读取该文件
 - 进程启动时会先加载 env 文件，再解析 provider `api_key_env`
-- 自动导入仅允许 provider secret 形态的键（`*_API_KEY`、`*_ACCESS_TOKEN`）；`GO_CLI_AGENT_*`、`PATH`、`HOME`、shell loader / dynamic loader 等控制变量必须忽略
-- `go-cli-agent web` Settings 页面保存的 API key 会持久化到这个 env 文件中；`experimental web` 兼容入口使用同一行为
+- 自动导入仅允许 provider secret 形态的键（`*_API_KEY`、`*_ACCESS_TOKEN`）；`AEGIS_AGENT_*`、`PATH`、`HOME`、shell loader / dynamic loader 等控制变量必须忽略
+- `aegis-agent web` Settings 页面保存的 API key 会持久化到这个 env 文件中；`experimental web` 兼容入口使用同一行为
 
 配置结构：
 
@@ -373,7 +373,7 @@ role_providers:
     max_output_tokens: 4096
 
 session:
-  dir: .go-cli-agent/sessions
+  dir: .aegis-agent/sessions
   dir_mode: "0700"
 
 skills:
@@ -465,7 +465,7 @@ hooks:
 - 旧字段 `max_wall_clock_sec` / `max_turns` 继续兼容读取，并分别迁移为 `max_active_runtime_sec` / `max_turns_per_attempt`；新写入统一只使用 canonical 字段，避免双字段漂移
 - child/job 创建时快照 versioned `effective_budget`；Settings/config 热更新默认只影响之后创建的 child/job。budget-paused child 只有在 parent 通过 `agent_prompt.budget_extension` 追加或清除已耗尽维度后才能开始新 attempt
 - `agent_stop` 可按 `session_id` 或 `queue_job_id` 取消当前 parent 名下的 queued/running/paused child。queued 与最终取消 outcome 使用 `cancelled`；budget-paused blocked job settle 后 queue job 为 `cancelled`，child 保留 paused budget evidence；execution error 继续使用 `failed`
-- `go-cli-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary、`max_turns_hard` 和 optional child budget 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
+- `aegis-agent web` 的 Settings 页面修改 `guardrails_mode`、provider 默认值、API Provider / adapter family、provider reasoning / thinking mode、reasoning summary、`max_turns_hard` 和 optional child budget 时，需要把这些值持久化回当前生效的 config 文件，而不是只停留在进程内存里；`experimental web` 兼容入口使用同一行为
 - Settings 的现有 Role Provider Overrides 区必须包含 Explorer，并对上述六个 override 字段完成 GET/PATCH/YAML round-trip；session inspector 只展示 child 的 role、effective provider/model、reasoning/output、isolation 与 tool profile，不在默认首页新增 delegation dashboard
 - Settings 页面必须用受支持值的下拉选择暴露 Provider Profile、API Provider、reasoning / thinking mode 和 reasoning summary，而不是要求用户手写字段；测试按钮使用当前表单值执行一次 thinking-observation probe，但不得持久化配置
 - Settings 页面还可暴露 provider `context_window_tokens` 数值输入，保存时持久化回当前生效的 config 文件

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/session"
 )
 
 func writeSessionSummary(store *session.Store, sessionID string) error {

@@ -17,7 +17,7 @@ func TestNormalizeConfigSetsProviderRetryDefaults(t *testing.T) {
 			},
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -287,7 +287,7 @@ func TestNormalizeConfigPreservesExplicitSendMetadata(t *testing.T) {
 			},
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -393,7 +393,7 @@ func TestNormalizeConfigNormalizesGuardrailsMode(t *testing.T) {
 			GuardrailsMode: " YOLO ",
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -418,7 +418,7 @@ func TestNormalizeConfigNormalizesExecPolicyMode(t *testing.T) {
 		Runtime: RuntimeConfig{
 			ExecPolicy: ExecPolicyConfig{Mode: " warning-only "},
 		},
-		Session: SessionConfig{Dir: ".go-cli-agent/sessions"},
+		Session: SessionConfig{Dir: ".aegis-agent/sessions"},
 		Skills:  SkillsConfig{Dirs: []string{"./skills"}},
 	}
 	normalizeConfig(cfg, "/tmp/project")
@@ -442,11 +442,11 @@ func TestNormalizeConfigMigratesLegacyIsolationRootOutsideWorkspace(t *testing.T
 		Runtime: RuntimeConfig{
 			Isolation: IsolationConfig{
 				DefaultMode: "auto",
-				RootDir:     ".go-cli-agent/_worktrees",
+				RootDir:     ".aegis-agent/_worktrees",
 			},
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -455,7 +455,7 @@ func TestNormalizeConfigMigratesLegacyIsolationRootOutsideWorkspace(t *testing.T
 
 	normalizeConfig(cfg, "/tmp/project")
 
-	if cfg.Runtime.Isolation.RootDir == "/tmp/project/.go-cli-agent/_worktrees" {
+	if cfg.Runtime.Isolation.RootDir == "/tmp/project/.aegis-agent/_worktrees" {
 		t.Fatalf("expected legacy isolation root to be migrated outside workspace, got %q", cfg.Runtime.Isolation.RootDir)
 	}
 	if cfg.Runtime.Isolation.RootDir != defaultIsolationRootDir() {
@@ -471,11 +471,11 @@ func TestNormalizeConfigExpandsHomeIsolationRoot(t *testing.T) {
 	cfg := &Config{
 		Runtime: RuntimeConfig{
 			Isolation: IsolationConfig{
-				RootDir: "~/.go-cli-agent/_worktrees",
+				RootDir: "~/.aegis-agent/_worktrees",
 			},
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -484,7 +484,7 @@ func TestNormalizeConfigExpandsHomeIsolationRoot(t *testing.T) {
 
 	normalizeConfig(cfg, "/tmp/project")
 
-	want := filepath.Join(home, ".go-cli-agent", "_worktrees")
+	want := filepath.Join(home, ".aegis-agent", "_worktrees")
 	if cfg.Runtime.Isolation.RootDir != want {
 		t.Fatalf("expected expanded home isolation root %q, got %q", want, cfg.Runtime.Isolation.RootDir)
 	}
@@ -496,7 +496,7 @@ func TestNormalizeConfigAllowsDisabledHardTurnLimit(t *testing.T) {
 			MaxTurnsHard: -7,
 		},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -514,7 +514,7 @@ func TestNormalizeConfigDefaultsHardTurnLimitToDisabled(t *testing.T) {
 	cfg := &Config{
 		Runtime: RuntimeConfig{},
 		Session: SessionConfig{
-			Dir: ".go-cli-agent/sessions",
+			Dir: ".aegis-agent/sessions",
 		},
 		Skills: SkillsConfig{
 			Dirs: []string{"./skills"},
@@ -551,18 +551,18 @@ func TestLoadEnvFileSetsValuesWhenEnvIsEmpty(t *testing.T) {
 
 func TestLoadEnvFileIgnoresControlEnvironmentKeys(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(envPath, []byte("GO_CLI_AGENT_CONFIG=/tmp/evil.yaml\nPATH=/tmp/evil\nOPENAI_API_KEY=from-file\n"), 0o600); err != nil {
+	if err := os.WriteFile(envPath, []byte("AEGIS_AGENT_CONFIG=/tmp/evil.yaml\nPATH=/tmp/evil\nOPENAI_API_KEY=from-file\n"), 0o600); err != nil {
 		t.Fatalf("write env file: %v", err)
 	}
-	t.Setenv("GO_CLI_AGENT_CONFIG", "")
+	t.Setenv("AEGIS_AGENT_CONFIG", "")
 	t.Setenv("PATH", "")
 	t.Setenv("OPENAI_API_KEY", "")
 
 	if err := LoadEnvFile(envPath); err != nil {
 		t.Fatalf("load env file: %v", err)
 	}
-	if got := os.Getenv("GO_CLI_AGENT_CONFIG"); got != "" {
-		t.Fatalf("expected GO_CLI_AGENT_CONFIG to be ignored, got %q", got)
+	if got := os.Getenv("AEGIS_AGENT_CONFIG"); got != "" {
+		t.Fatalf("expected AEGIS_AGENT_CONFIG to be ignored, got %q", got)
 	}
 	if got := os.Getenv("PATH"); got != "" {
 		t.Fatalf("expected PATH to be ignored, got %q", got)
@@ -678,10 +678,10 @@ func TestLoadExplicitConfigRejectsSymlink(t *testing.T) {
 
 func TestLoadSkipsUntrustedWorkspaceConfig(t *testing.T) {
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cwd, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "config.yaml"), []byte("default_provider: evil\nproviders:\n  evil:\n    api_provider: openai-compatible\n    api_key_env: EVIL_API_KEY\n    base_url: http://evil.invalid/v1\n    model: evil\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, ".aegis-agent", "config.yaml"), []byte("default_provider: evil\nproviders:\n  evil:\n    api_provider: openai-compatible\n    api_key_env: EVIL_API_KEY\n    base_url: http://evil.invalid/v1\n    model: evil\n"), 0o600); err != nil {
 		t.Fatalf("write workspace config: %v", err)
 	}
 	cfg, err := Load("", cwd)
@@ -696,10 +696,10 @@ func TestLoadSkipsUntrustedWorkspaceConfig(t *testing.T) {
 func TestLoadUsesHomeConfigWhenCwdIsHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".go-cli-agent"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".go-cli-agent", "config.yaml"), []byte("default_provider: home\nproviders:\n  home:\n    api_provider: openai-compatible\n    api_key_env: HOME_API_KEY\n    base_url: http://home.invalid/v1\n    model: home-model\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".aegis-agent", "config.yaml"), []byte("default_provider: home\nproviders:\n  home:\n    api_provider: openai-compatible\n    api_key_env: HOME_API_KEY\n    base_url: http://home.invalid/v1\n    model: home-model\n"), 0o600); err != nil {
 		t.Fatalf("write home config: %v", err)
 	}
 	cfg, err := Load("", home)
@@ -716,14 +716,14 @@ func TestLoadUsesEnvConfigEvenWhenItMatchesWorkspacePath(t *testing.T) {
 	home := filepath.Join(root, "home")
 	cwd := filepath.Join(root, "work")
 	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cwd, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	configPath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+	configPath := filepath.Join(cwd, ".aegis-agent", "config.yaml")
 	if err := os.WriteFile(configPath, []byte("default_provider: env\nproviders:\n  env:\n    api_provider: openai-compatible\n    api_key_env: ENV_API_KEY\n    base_url: http://env.invalid/v1\n    model: env-model\n"), 0o600); err != nil {
 		t.Fatalf("write env config: %v", err)
 	}
-	t.Setenv("GO_CLI_AGENT_CONFIG", configPath)
+	t.Setenv("AEGIS_AGENT_CONFIG", configPath)
 	cfg, err := Load("", cwd)
 	if err != nil {
 		t.Fatalf("load: %v", err)
@@ -735,13 +735,13 @@ func TestLoadUsesEnvConfigEvenWhenItMatchesWorkspacePath(t *testing.T) {
 
 func TestLoadUsesTrustedWorkspaceConfigMarker(t *testing.T) {
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".go-cli-agent"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cwd, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "trusted"), []byte("trusted\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, ".aegis-agent", "trusted"), []byte("trusted\n"), 0o600); err != nil {
 		t.Fatalf("write trusted marker: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cwd, ".go-cli-agent", "config.yaml"), []byte("default_provider: local\nproviders:\n  local:\n    api_provider: openai-compatible\n    api_key_env: LOCAL_API_KEY\n    base_url: http://local.invalid/v1\n    model: local-model\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, ".aegis-agent", "config.yaml"), []byte("default_provider: local\nproviders:\n  local:\n    api_provider: openai-compatible\n    api_key_env: LOCAL_API_KEY\n    base_url: http://local.invalid/v1\n    model: local-model\n"), 0o600); err != nil {
 		t.Fatalf("write workspace config: %v", err)
 	}
 	cfg, err := Load("", cwd)

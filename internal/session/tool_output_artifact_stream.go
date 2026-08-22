@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 	"golang.org/x/sys/unix"
 )
 

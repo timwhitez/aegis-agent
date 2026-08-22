@@ -20,8 +20,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/fileutil"
 	"golang.org/x/sys/unix"
 )
 

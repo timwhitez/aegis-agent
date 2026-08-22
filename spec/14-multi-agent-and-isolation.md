@@ -1,4 +1,4 @@
-# Go CLI Agent Multi-Agent And Isolation Spec
+# Aegis Agent Multi-Agent And Isolation Spec
 
 > 当前定位：large-project profile 规格。该文档描述的能力不是默认 Web 页面里的必选工作流，但需要有真实运行和隔离证据，不能只停留在兼容壳。Web 控制台可以提供轻量入口与观测链接，细粒度 orchestration / isolation 调参仍可由 CLI 或 API 承担。
 
@@ -71,8 +71,8 @@ child session 使用独立工作目录执行。当前支持：
   "mode": "git",
   "requested_mode": "auto",
   "parent_workdir": "/repo",
-  "workdir": "/root/.go-cli-agent/_worktrees/20260319-120000-ab12cd",
-  "root_dir": "/root/.go-cli-agent/_worktrees",
+  "workdir": "/root/.aegis-agent/_worktrees/20260319-120000-ab12cd",
+  "root_dir": "/root/.aegis-agent/_worktrees",
   "git_repo_root": "/repo"
 }
 ```
@@ -89,8 +89,8 @@ child session 使用独立工作目录执行。当前支持：
 
 新增命令：
 
-- `go-cli-agent experimental delegate <parent-session-id> [prompt]`
-- `go-cli-agent experimental children <session-id>`
+- `aegis-agent experimental delegate <parent-session-id> [prompt]`
+- `aegis-agent experimental children <session-id>`
 
 `delegate` 高频参数：
 
@@ -306,7 +306,7 @@ runtime 真正执行时使用的目录。
 默认放在 user-scoped root 下，并且必须位于 source workdir 外部：
 
 ```text
-~/.go-cli-agent/_worktrees/<session-id>/
+~/.aegis-agent/_worktrees/<session-id>/
 ```
 
 也允许通过 CLI / tool 显式覆盖。
@@ -314,7 +314,7 @@ runtime 真正执行时使用的目录。
 约束：
 
 - 若显式配置的 `isolation_root` 位于 source workdir 内部，应直接返回错误
-- legacy 的 workspace-local 形状（例如 `.go-cli-agent/_worktrees`）不再作为默认推荐值，因为 parent workdir 指向仓库根目录时会与“不得在源目录内部创建隔离目录”的约束冲突
+- legacy 的 workspace-local 形状（例如 `.aegis-agent/_worktrees`）不再作为默认推荐值，因为 parent workdir 指向仓库根目录时会与“不得在源目录内部创建隔离目录”的约束冲突
 
 ## 6. git worktree 契约
 

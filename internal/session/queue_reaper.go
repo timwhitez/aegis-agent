@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/events"
+	"aegis-agent/internal/events"
 )
 
 const queueLeaseReclaimedErrorPrefix = "queue lease reclaimed:"

@@ -26,15 +26,15 @@ import (
 	"sync"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/extensions"
-	"go-cli-agent/internal/filechanges"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/extensions"
+	"aegis-agent/internal/filechanges"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/tools"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
@@ -63,7 +63,7 @@ const (
 	settingsThinkingMaxOutputTokens = 32768
 	settingsProbeTimeout            = 90 * time.Second
 	maxWorkerCount                  = 8
-	webMutationHeader               = "X-Go-Cli-Agent-Web"
+	webMutationHeader               = "X-Aegis-Agent-Web"
 	maxSkillUploadBytes             = 50 << 20
 	maxSkillZipFiles                = 2048
 	maxSkillZipEntryBytes           = 10 << 20
@@ -391,7 +391,7 @@ func (s *Service) requireBasicAuth(w http.ResponseWriter, r *http.Request) bool 
 	if s.basicAuth == nil || s.basicAuth.authorizes(r) {
 		return true
 	}
-	w.Header().Set("WWW-Authenticate", `Basic realm="go-cli-agent", charset="UTF-8"`)
+	w.Header().Set("WWW-Authenticate", `Basic realm="aegis-agent", charset="UTF-8"`)
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, "authentication required", http.StatusUnauthorized)
 	return false
@@ -5129,7 +5129,7 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
 	if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
-		apiKeyEnv := fmt.Sprintf("GO_CLI_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
+		apiKeyEnv := fmt.Sprintf("AEGIS_AGENT_SETTINGS_TEST_API_KEY_%d", time.Now().UnixNano())
 		if err := preflightWebAPIKeyProbeValue(apiKeyEnv, *req.APIKey); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -6553,7 +6553,7 @@ func webFileBrowserNameDenied(name string) bool {
 		return false
 	}
 	switch name {
-	case ".git", ".go-cli-agent", ".ssh", ".aws", ".azure", ".oci", ".gnupg", ".kube", ".docker",
+	case ".git", ".aegis-agent", ".ssh", ".aws", ".azure", ".oci", ".gnupg", ".kube", ".docker",
 		"credentials":
 		return true
 	case ".envrc", ".npmrc", ".netrc", "_netrc", ".pypirc", ".git-credentials", ".dockercfg":
@@ -8578,7 +8578,7 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 			return errors.New("cross-origin API mutation rejected")
 		}
 	} else if strings.TrimSpace(r.Header.Get(webMutationHeader)) != "1" {
-		return errors.New("API mutation requires same-origin Origin or X-Go-Cli-Agent-Web header")
+		return errors.New("API mutation requires same-origin Origin or X-Aegis-Agent-Web header")
 	}
 	return nil
 }

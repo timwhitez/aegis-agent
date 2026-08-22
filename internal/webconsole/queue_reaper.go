@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 const (

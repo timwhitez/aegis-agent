@@ -9,10 +9,10 @@ if [[ $# -gt 0 ]]; then
 	shift
 fi
 
-BASE_ENV_FILE="${GO_CLI_AGENT_ENV_FILE:-${ROOT_DIR}/.env}"
+BASE_ENV_FILE="${AEGIS_AGENT_ENV_FILE:-${ROOT_DIR}/.env}"
 BASE_DEFAULT_CONFIG_PATH=""
-if [[ -f "${ROOT_DIR}/.go-cli-agent/config.yaml" ]]; then
-	BASE_DEFAULT_CONFIG_PATH="${ROOT_DIR}/.go-cli-agent/config.yaml"
+if [[ -f "${ROOT_DIR}/.aegis-agent/config.yaml" ]]; then
+	BASE_DEFAULT_CONFIG_PATH="${ROOT_DIR}/.aegis-agent/config.yaml"
 fi
 
 ENV_FILE="$BASE_ENV_FILE"
@@ -20,19 +20,19 @@ CONFIG_PATH=""
 LISTEN_ADDR=""
 WORKER_COUNT=""
 BINARY_PATH=""
-RUNTIME_DIR="${ROOT_DIR}/.go-cli-agent/runtime"
+RUNTIME_DIR="${ROOT_DIR}/.aegis-agent/runtime"
 PID_FILE="${RUNTIME_DIR}/webconsole.pid"
 LOG_FILE=""
 
 mkdir -p "$RUNTIME_DIR"
 
 refresh_runtime_settings() {
-	ENV_FILE="${GO_CLI_AGENT_ENV_FILE:-$BASE_ENV_FILE}"
-	CONFIG_PATH="${GO_CLI_AGENT_WEB_CONFIG:-$BASE_DEFAULT_CONFIG_PATH}"
-	LISTEN_ADDR="${GO_CLI_AGENT_LISTEN:-0.0.0.0:3940}"
-	WORKER_COUNT="${GO_CLI_AGENT_WEB_WORKERS:-2}"
-	BINARY_PATH="${GO_CLI_AGENT_BIN:-${ROOT_DIR}/bin/go-cli-agent}"
-	LOG_FILE="${GO_CLI_AGENT_WEB_LOG:-${RUNTIME_DIR}/webconsole.log}"
+	ENV_FILE="${AEGIS_AGENT_ENV_FILE:-$BASE_ENV_FILE}"
+	CONFIG_PATH="${AEGIS_AGENT_WEB_CONFIG:-$BASE_DEFAULT_CONFIG_PATH}"
+	LISTEN_ADDR="${AEGIS_AGENT_LISTEN:-0.0.0.0:3940}"
+	WORKER_COUNT="${AEGIS_AGENT_WEB_WORKERS:-2}"
+	BINARY_PATH="${AEGIS_AGENT_BIN:-${ROOT_DIR}/bin/aegis-agent}"
+	LOG_FILE="${AEGIS_AGENT_WEB_LOG:-${RUNTIME_DIR}/webconsole.log}"
 }
 
 refresh_runtime_settings
@@ -50,17 +50,17 @@ Defaults:
   logs        Tail the background log file.
 
 Environment overrides:
-  GO_CLI_AGENT_WEB_CONFIG   Explicit config file passed to `go-cli-agent web`.
-  GO_CLI_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
+  AEGIS_AGENT_WEB_CONFIG   Explicit config file passed to `aegis-agent web`.
+  AEGIS_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
                            Non-loopback listen exposes config writes, .env API keys,
                            session deletion, skill management, workspace reads/downloads,
                            and workspace file creation/deletion to network-reachable clients;
                            use trusted local networks.
-  GO_CLI_AGENT_WEB_WORKERS  Worker count, default `2`.
-  GO_CLI_AGENT_BIN          Binary path, default `bin/go-cli-agent`.
-  GO_CLI_AGENT_ENV_FILE     Optional .env file to source before start.
-  GO_CLI_AGENT_WEB_LOG      Log file path, default `.go-cli-agent/runtime/webconsole.log`.
-  GO_CLI_AGENT_SKIP_BUILD   Set to `1` to skip automatic `./build.sh`.
+  AEGIS_AGENT_WEB_WORKERS  Worker count, default `2`.
+  AEGIS_AGENT_BIN          Binary path, default `bin/aegis-agent`.
+  AEGIS_AGENT_ENV_FILE     Optional .env file to source before start.
+  AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.
+  AEGIS_AGENT_SKIP_BUILD   Set to `1` to skip automatic `./build.sh`.
 EOF
 }
 
@@ -128,7 +128,7 @@ print_lan_warning() {
 }
 
 ensure_binary() {
-	if [[ "${GO_CLI_AGENT_SKIP_BUILD:-0}" != "1" ]]; then
+	if [[ "${AEGIS_AGENT_SKIP_BUILD:-0}" != "1" ]]; then
 		"${ROOT_DIR}/build.sh"
 	fi
 	if [[ ! -x "$BINARY_PATH" ]]; then

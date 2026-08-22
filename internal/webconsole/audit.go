@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 
 	"golang.org/x/sys/unix"
 )

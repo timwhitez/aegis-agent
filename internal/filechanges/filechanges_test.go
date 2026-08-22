@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func assistant(calls ...session.ToolCall) session.Message {

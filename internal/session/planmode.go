@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 )
 
 const (

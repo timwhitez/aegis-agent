@@ -20,7 +20,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 // FileChange re-exports the durable session type so callers can depend on this

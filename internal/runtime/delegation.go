@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 )
 
 type DelegateRequest struct {

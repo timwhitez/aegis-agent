@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
 )
 
 func TestExplorerToolProfileUsesOneExactSchemaAndExecutionAllowlist(t *testing.T) {

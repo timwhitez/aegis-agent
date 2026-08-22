@@ -14,9 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
 )
 
 type failingPlanInputResponder struct {
@@ -2434,10 +2434,10 @@ func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
 	workdir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workdir, ".go-cli-agent"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(workdir, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workdir, ".go-cli-agent", "config.yaml"), []byte("old"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(workdir, ".aegis-agent", "config.yaml"), []byte("old"), 0o600); err != nil {
 		t.Fatalf("write state file: %v", err)
 	}
 	meta := session.SessionMetadata{
@@ -2476,14 +2476,14 @@ func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	}
 
 	editResult, err := registry.Execute(context.Background(), "edit_file", execCtx, json.RawMessage(`{
-		"path":".go-cli-agent/config.yaml",
+		"path":".aegis-agent/config.yaml",
 		"old_text":"old",
 		"new_text":"new"
 	}`))
 	if err != nil {
 		t.Fatalf("edit_file: %v", err)
 	}
-	if !editResult.IsError || !strings.Contains(editResult.LLMOutput, "write denied: path '.go-cli-agent/config.yaml' matches deny pattern '.go-cli-agent/'") {
+	if !editResult.IsError || !strings.Contains(editResult.LLMOutput, "write denied: path '.aegis-agent/config.yaml' matches deny pattern '.aegis-agent/'") {
 		t.Fatalf("expected edit deny result, got %#v", editResult)
 	}
 
@@ -6018,7 +6018,7 @@ func TestSkillCommandToolUsesRegistryConfigWhenExecContextConfigMissing(t *testi
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nbody\n"), 0o644); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: skill_echo\ndescription: Echo skill name\ncommand: [\"bash\", \"-lc\", \"printf $GO_CLI_AGENT_SKILL_NAME\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "tools", "echo.yaml"), []byte("name: skill_echo\ndescription: Echo skill name\ncommand: [\"bash\", \"-lc\", \"printf $AEGIS_AGENT_SKILL_NAME\"]\ninput_schema:\n  type: object\n  properties: {}\n"), 0o644); err != nil {
 		t.Fatalf("write tool: %v", err)
 	}
 	catalog, err := skills.Scan([]string{filepath.Join(root, "skills")})

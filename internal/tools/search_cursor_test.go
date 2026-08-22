@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/skills"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/skills"
 )
 
 func metadataInteger(t *testing.T, metadata map[string]any, key string) int64 {

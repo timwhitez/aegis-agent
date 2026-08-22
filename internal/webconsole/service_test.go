@@ -22,12 +22,12 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/fileutil"
-	agentruntime "go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
-	skillcatalog "go-cli-agent/internal/skills"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/fileutil"
+	agentruntime "aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
+	skillcatalog "aegis-agent/internal/skills"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/crypto/bcrypt"
@@ -5570,7 +5570,7 @@ func TestAPIKeyWriteWaitsForConfigWriteSuccess(t *testing.T) {
 	t.Chdir(cwd)
 	t.Setenv("OPENAI_API_KEY", "")
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]
@@ -5619,7 +5619,7 @@ func TestAPIKeyWritePreflightsEnvTargetBeforeConfigWrite(t *testing.T) {
 	t.Chdir(cwd)
 	t.Setenv("CUSTOM_API_KEY", "")
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 
 	cfg := testConfig(t, "")
 	cfg.Providers["custom"] = config.Provider{
@@ -5669,7 +5669,7 @@ func TestAPIKeyWriteRollsBackConfigWhenEnvWriteFails(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	configPath := filepath.Join(cwd, "config-as-env-parent")
 	envPath := filepath.Join(configPath, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]
@@ -5707,7 +5707,7 @@ func TestAPIKeyWriteRollsBackWhenProcessEnvSetFails(t *testing.T) {
 	t.Chdir(cwd)
 	t.Setenv("OPENAI_API_KEY", "sk-original-process")
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-original-file\n"), 0o600); err != nil {
 		t.Fatalf("write original env file: %v", err)
 	}
@@ -5787,7 +5787,7 @@ func TestAPIKeyWriteRejectsInvalidEnvKeyBeforePersistence(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 
 	cfg := testConfig(t, "")
 	cfg.Providers["badkey"] = config.Provider{
@@ -5837,7 +5837,7 @@ func TestAPIKeyWriteRejectsInvalidEnvValueBeforePersistence(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	t.Setenv("OPENAI_API_KEY", "")
 
 	cfg := testConfig(t, "")
@@ -5880,7 +5880,7 @@ func TestAPIKeyWriteRejectsBlankEnvValueBeforePersistence(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	t.Setenv("OPENAI_API_KEY", "")
 
 	cfg := testConfig(t, "")
@@ -5922,7 +5922,7 @@ func TestAPIKeyWriteRejectsConfigPathAsEnvFile(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	configPath := filepath.Join(cwd, "config.yaml")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", configPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", configPath)
 	t.Setenv("OPENAI_API_KEY", "")
 
 	cfg := testConfig(t, "")
@@ -6019,7 +6019,7 @@ func TestAPIKeyWriteRollsBackWhenAPIKeyAuditAppendFails(t *testing.T) {
 	t.Chdir(cwd)
 	t.Setenv("OPENAI_API_KEY", "sk-original-process")
 	envPath := filepath.Join(cwd, ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=sk-original-file\n"), 0o600); err != nil {
 		t.Fatalf("write original env file: %v", err)
 	}
@@ -6263,7 +6263,7 @@ func TestAPIKeyWriteRejectsEnvFileAsAuditLog(t *testing.T) {
 
 	cfg := testConfig(t, "")
 	auditPath := webAuditLogPath(cfg.Session.Dir)
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", auditPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", auditPath)
 	t.Setenv("OPENAI_API_KEY", "")
 	provider := cfg.Providers["openai"]
 	provider.APIKeyEnv = "OPENAI_API_KEY"
@@ -9832,7 +9832,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	provider.APIKeyEnv = "OPENAI_API_KEY"
 	cfg.Providers["openai"] = provider
 	envPath := filepath.Join(t.TempDir(), ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {
@@ -10206,7 +10206,7 @@ func TestServiceConfigDefaultsProviderScopedFieldsToCurrentDefault(t *testing.T)
 	provider.Model = "gpt-old"
 	cfg.Providers["openai"] = provider
 	envPath := filepath.Join(t.TempDir(), ".env")
-	t.Setenv("GO_CLI_AGENT_ENV_FILE", envPath)
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
 	if err != nil {

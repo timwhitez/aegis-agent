@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func TestDoomLoopReminderUsesToolSignaturePatternWithoutWorkflowGuard(t *testing.T) {

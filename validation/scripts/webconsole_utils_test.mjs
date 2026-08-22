@@ -6544,11 +6544,11 @@ test('Workspace path preference survives browser UI state restore', () => {
     setCurrentWorkspacePath('session-home/restored');
     persistUIState();
   `, firstContext);
-  const persisted = firstContext.storage.get('go-cli-agent.webconsole.ui-state.v1');
+  const persisted = firstContext.storage.get('aegis-agent.webconsole.ui-state.v1');
   assert.ok(persisted);
 
   const secondContext = createAppHarnessContext({
-    'go-cli-agent.webconsole.ui-state.v1': persisted
+    'aegis-agent.webconsole.ui-state.v1': persisted
   });
   const restoredPath = vm.runInContext(`(() => {
     restoreUIState();

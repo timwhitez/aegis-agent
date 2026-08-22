@@ -1,8 +1,8 @@
-# Go CLI Agent Product Spec
+# Aegis Agent Product Spec
 
 ## 1. 产品定义
 
-`go-cli-agent` 是一个用 Go 编写的 Web-first 本地 agent harness。
+`aegis-agent` 是一个用 Go 编写的 Web-first 本地 agent harness。
 
 它不是 hosted SaaS，也不是另一个重型 TUI 编程助手，更不是把固定 workflow、plan engine、verification engine 硬塞进 runtime 的 orchestration 框架。它的目标是把一个可持续演进的 agent 基座做扎实，并把默认操作体验放在本地 Web 控制台中：
 

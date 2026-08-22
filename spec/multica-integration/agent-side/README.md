@@ -1,6 +1,6 @@
-# go-cli-agent 侧开发指南
+# aegis-agent 侧开发指南
 
-目标：让 Multica daemon 可以把 `go-cli-agent` 当作本地子进程 backend，通过 `gocli-stream-json` 协议启动、观测和恢复任务。
+目标：让 Multica daemon 可以把 `aegis-agent` 当作本地子进程 backend，通过 `gocli-stream-json` 协议启动、观测和恢复任务。
 
 ## 当前代码事实
 
@@ -8,8 +8,8 @@
 
 - CLI 入口是 `internal/app/app.go`，使用标准库 `flag.NewFlagSet` 和手写 `switch`。
 - `runCommand()` 当前只支持 `run` / `exec` 启动新 session，不支持 `--resume`。
-- `go-cli-agent` 当前没有顶层 `--version`，Multica runtime 注册会失败。
-- `go-cli-agent` 当前没有 `models` 子命令。
+- `aegis-agent` 当前没有顶层 `--version`，Multica runtime 注册会失败。
+- `aegis-agent` 当前没有 `models` 子命令。
 - 当前 `--json` 输出是内部 `events.Event` JSON，不是 Multica stream-json transcript 协议。
 - `engine.go` 已在 `turn.stopped.data.usage` 暴露 usage，不能再设计一个重复的 `turn.usage` 事实源。
 - `tool.before` / `tool.after` event data 当前没有 `call_id`，需要补齐。
@@ -26,7 +26,7 @@
 | `internal/streamjson/input.go` | 新增 | stdin user envelope parser |
 | `internal/streamjson/adapter.go` | 新增 | `events.Event` -> stream-json NDJSON |
 | `internal/streamjson/models.go` | 新增 | `models --json` output types and config-derived catalog |
-| `internal/app/models_cmd.go` | 新增 | `go-cli-agent models --json` |
+| `internal/app/models_cmd.go` | 新增 | `aegis-agent models --json` |
 | `internal/app/version.go` | 新增 | `Version` variable and version output helper |
 | `internal/app/app.go` | 修改 | `--version` / `version` / `models` dispatch；`exec` stream-json flags；resume branch |
 | `internal/app/app_test.go` | 修改 | CLI flag, output, version, models tests |
@@ -72,11 +72,11 @@
 - exit code/status
 - thinking level vocabulary
 
-go-cli-agent 侧不导入 Multica 代码，不复制 Multica `agent.Message` / `agent.Result` 类型。
+aegis-agent 侧不导入 Multica 代码，不复制 Multica `agent.Message` / `agent.Result` 类型。
 
 ## Mission-compatible profile 边界
 
-`go-cli-agent` 侧只提供 [mission profile](../mission-profile.md) 所需的 runtime primitive，不实现 Multica Missions 编排器：
+`aegis-agent` 侧只提供 [mission profile](../mission-profile.md) 所需的 runtime primitive，不实现 Multica Missions 编排器：
 
 - session / messages / events / goal / plan / artifacts 仍是本地文件事实源。
 - `exec` 只执行一次明确 prompt 或 resume prompt，不根据 mission metadata 自动创建 worker / validator / follow-up feature。

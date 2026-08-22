@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func TestOpenAIAdapterSerializesAndParses(t *testing.T) {

@@ -14,8 +14,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/procutil"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/procutil"
 )
 
 type EmitFunc func(eventType string, data map[string]any) error

@@ -1,6 +1,6 @@
 # Wire Protocol 定义
 
-本文是 `go-cli-agent` 和 Multica `gocli` backend 的唯一耦合点。两端可以独立开发，但必须遵守本协议。
+本文是 `aegis-agent` 和 Multica `gocli` backend 的唯一耦合点。两端可以独立开发，但必须遵守本协议。
 
 ## 1. 版本与边界
 
@@ -88,7 +88,7 @@ MVP 不定义长连接 control/cancel stdin 消息。Multica 的取消、超时�
         },
         "id": {
           "type": "string",
-          "description": "tool_use id. Must be go-cli-agent provider.ToolCall.ID."
+          "description": "tool_use id. Must be aegis-agent provider.ToolCall.ID."
         },
         "name": {
           "type": "string",
@@ -303,11 +303,11 @@ MVP 不定义长连接 control/cancel stdin 消息。Multica 的取消、超时�
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"Fix the failing test."}]}}
 ```
 
-Multica 写入该行后关闭 stdin。`go-cli-agent` 将所有 text blocks 用 `\n` 拼接为 runtime prompt。
+Multica 写入该行后关闭 stdin。`aegis-agent` 将所有 text blocks 用 `\n` 拼接为 runtime prompt。
 
 ## 4. `models --json`
 
-`go-cli-agent models --json` 必须输出可被 Multica `[]agent.Model` 等价结构解析的数组。
+`aegis-agent models --json` 必须输出可被 Multica `[]agent.Model` 等价结构解析的数组。
 
 ```jsonschema
 {
@@ -350,27 +350,27 @@ Multica 写入该行后关闭 stdin。`go-cli-agent` 将所有 text blocks 用 `
 
 MVP 允许只返回当前 config 中可执行 provider 的配置模型；不要求实时调用上游 provider list API。
 
-`id` 是执行路由键，不只是展示名。为避免 go-cli-agent 多 provider config 与 Multica 单一 `opts.Model` 字段冲突，go-cli-agent 发现到的模型必须使用：
+`id` 是执行路由键，不只是展示名。为避免 aegis-agent 多 provider config 与 Multica 单一 `opts.Model` 字段冲突，aegis-agent 发现到的模型必须使用：
 
 ```text
-<go-cli-agent-provider-name>/<provider-model-id>
+<aegis-agent-provider-name>/<provider-model-id>
 ```
 
-例如 `anthropic/claude-sonnet-4-6`。Multica `gocli` backend 收到该 ID 后按第一个 `/` 拆成 `--provider anthropic --model claude-sonnet-4-6`；后续 `/` 保留在 model id 中。`/` 对 gocli discovered models 是保留分隔符。如果用户手工输入的 model 不含 `/`，backend 只传 `--model <id>`，让 go-cli-agent 使用默认 provider。
+例如 `anthropic/claude-sonnet-4-6`。Multica `gocli` backend 收到该 ID 后按第一个 `/` 拆成 `--provider anthropic --model claude-sonnet-4-6`；后续 `/` 保留在 model id 中。`/` 对 gocli discovered models 是保留分隔符。如果用户手工输入的 model 不含 `/`，backend 只传 `--model <id>`，让 aegis-agent 使用默认 provider。
 
 ## 5. CLI 契约
 
 | 命令/参数 | 必需 | 语义 |
 | --- | --- | --- |
-| `go-cli-agent --version` | 是 | 输出包含 semver 的单行版本，例如 `go-cli-agent v0.1.0-dev` |
-| `go-cli-agent models --json [--config <path>]` | 是 | 输出模型数组 |
+| `aegis-agent --version` | 是 | 输出包含 semver 的单行版本，例如 `aegis-agent v0.1.0-dev` |
+| `aegis-agent models --json [--config <path>]` | 是 | 输出模型数组 |
 | `exec --output-format stream-json` | 是 | stdout 使用本协议 |
 | `exec --input-format stream-json` | 是 | stdin 读取本协议 user prompt |
 | `exec --resume <session-id>` | 是 | 恢复旧 session，内部调用 runtime `Continue` |
-| `exec --model <id>` | 可选 | 透传 runtime model；为空时省略，让 go-cli-agent 使用自身默认 provider/model |
-| `exec --provider <name>` | 可选 | 当 model ID 是 `<provider>/<model>` 时由 Multica 生成，选择 go-cli-agent config provider |
+| `exec --model <id>` | 可选 | 透传 runtime model；为空时省略，让 aegis-agent 使用自身默认 provider/model |
+| `exec --provider <name>` | 可选 | 当 model ID 是 `<provider>/<model>` 时由 Multica 生成，选择 aegis-agent config provider |
 | `exec --workdir <path>` | 是 | 设置工作目录；Multica 同时设置 `cmd.Dir` |
-| `exec --timeout <seconds>` | 可选 | go-cli-agent 自身 run timeout；仅在 Multica `Timeout > 0` 时传递，long-horizon profile 可省略 |
+| `exec --timeout <seconds>` | 可选 | aegis-agent 自身 run timeout；仅在 Multica `Timeout > 0` 时传递，long-horizon profile 可省略 |
 | `exec --system <text>` | 可选 | system prompt override |
 | `exec --thinking-level <value>` | 可选 | gocli runtime-native thinking level。MVP 为 `low|medium|high|xhigh` |
 
@@ -378,7 +378,7 @@ MVP 允许只返回当前 config 中可执行 provider 的配置模型；不要�
 
 ## 6. Exit Code
 
-| exit code | go-cli-agent 状态 | Multica Result.Status |
+| exit code | aegis-agent 状态 | Multica Result.Status |
 | --- | --- | --- |
 | `0` | `completed` 或 `awaiting_input` | `completed` |
 | `130` | `paused` / 用户中断 | `cancelled` |
@@ -397,7 +397,7 @@ Multica 应优先使用 result envelope 的 `status` / `is_error`，并用进程
 | `cache_creation_input_tokens` | `CacheWriteTokens` |
 | `cache_read_input_tokens` | `CacheReadTokens` |
 
-`go-cli-agent` 侧 usage 来源是当前 `turn.stopped.data.usage`，adapter 需要累计每个 turn 的 usage 后写入最终 result。
+`aegis-agent` 侧 usage 来源是当前 `turn.stopped.data.usage`，adapter 需要累计每个 turn 的 usage 后写入最终 result。
 
 ## 8. 向后兼容
 

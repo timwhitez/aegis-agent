@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"go-cli-agent/internal/streamjson"
+	"aegis-agent/internal/streamjson"
 )
 
 func modelsCommand(_ context.Context, args []string, stdout, stderr io.Writer) error {

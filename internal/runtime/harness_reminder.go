@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 const harnessReminderSignatureKey = "signature"

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"go-cli-agent/internal/events"
+	"aegis-agent/internal/events"
 )
 
 const (

@@ -44,11 +44,11 @@ func TestPrepareGitModeRequiresRepository(t *testing.T) {
 
 func TestPrepareRejectsSymlinkedRootInsideParent(t *testing.T) {
 	parent := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(parent, ".go-cli-agent", "_worktrees"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(parent, ".aegis-agent", "_worktrees"), 0o700); err != nil {
 		t.Fatalf("mkdir internal root: %v", err)
 	}
 	rootLink := filepath.Join(t.TempDir(), "root-link")
-	if err := os.Symlink(filepath.Join(parent, ".go-cli-agent", "_worktrees"), rootLink); err != nil {
+	if err := os.Symlink(filepath.Join(parent, ".aegis-agent", "_worktrees"), rootLink); err != nil {
 		t.Fatalf("symlink root: %v", err)
 	}
 	_, err := Prepare(Request{

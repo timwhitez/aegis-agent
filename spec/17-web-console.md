@@ -1,6 +1,6 @@
-# Go CLI Agent Web-First Console Spec
+# Aegis Agent Web-First Console Spec
 
-> 当前定位：Web-first 默认入口。目标是给 `go-cli-agent` 提供一个完整但本地优先的 Web 控制台，用更低的学习成本承载 session 观测、任务进度、后台队列和并行执行控制，同时不破坏 runtime / session / provider 的文件事实源边界。CLI 保留为稳定 fallback、脚本化和故障恢复入口。
+> 当前定位：Web-first 默认入口。目标是给 `aegis-agent` 提供一个完整但本地优先的 Web 控制台，用更低的学习成本承载 session 观测、任务进度、后台队列和并行执行控制，同时不破坏 runtime / session / provider 的文件事实源边界。CLI 保留为稳定 fallback、脚本化和故障恢复入口。
 
 ## 1. 目标
 
@@ -24,7 +24,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 
 ## 2. 产品边界
 
-根 `README.md` 应把 `go-cli-agent web` 作为默认启动入口，并保留 CLI fallback 与 LAN 安全提示；页面结构、UX 细节、API 契约与浏览器验收口径以本文档为准。`go-cli-agent experimental web` 只作为旧入口兼容别名保留。
+根 `README.md` 应把 `aegis-agent web` 作为默认启动入口，并保留 CLI fallback 与 LAN 安全提示；页面结构、UX 细节、API 契约与浏览器验收口径以本文档为准。`aegis-agent experimental web` 只作为旧入口兼容别名保留。
 
 ### 2.1 明确要做
 
@@ -43,7 +43,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 不要求 provider 流式 API、SSE 或 WebSocket 才能工作
 - 不在 v1 里引入浏览器端代码编辑器、文件树 IDE 或远程终端
 - 当前 workspace 面板只作为“服务进程当前 cwd”的受限本地文件管理器存在，不承诺独立的 workspace-root 切换能力；它可以浏览、预览、下载和上传文件，在同一目录内重命名普通文件，并在默认 `workspace/` 根内创建文件夹、选择多个可见文件或文件夹并批量删除
-- 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `go-cli-agent web --workers`、兼容的 `experimental web --workers` 或后端 API 调整
+- 不把 worker pool 并发配置作为默认可见前端功能；需要时通过 `aegis-agent web --workers`、兼容的 `experimental web --workers` 或后端 API 调整
 - 不把普通 start / steer / continue / Plan approve 设计成多步确认向导；用户明确提交后应直接执行，风险动作才确认
 
 ## 3. 设计参考与交互取舍
@@ -346,7 +346,7 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 
 控制面约束：
 
-- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Go-Cli-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill/workspace upload 保持表单入口但仍受 header、请求体上限与 path/root 校验约束。
+- 所有 unsafe `/api/` mutation 必须有轻量 local-console guard：foreign `Origin` 拒绝；缺少 `Origin` 时要求本地控制台自定义 header `X-Aegis-Agent-Web: 1`；JSON mutation endpoint 必须要求 `Content-Type: application/json` 且有请求体大小上限；optional JSON mutation endpoint 可接受真正空 body（包括未知长度的空 body），但一旦 body 含有非空内容仍必须按 JSON Content-Type 和单 JSON 值校验；multipart skill/workspace upload 保持表单入口但仍受 header、请求体上限与 path/root 校验约束。
 - `POST /api/sessions/start`、`POST /api/sessions/{id}/continue`、`POST /api/sessions/{id}/steer`、`POST /api/sessions/{id}/interrupt`、`POST /api/sessions/{id}/stop` 是 session 控制的唯一入口。
 - goal 控制只通过 REST endpoint 写入 session store，不通过 WebSocket 控制消息。
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session；浏览器 WebSocket upgrade 必须拒绝 foreign `Origin`，无 `Origin` 的本地非浏览器 client 可继续用于测试/诊断。
@@ -777,7 +777,7 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 ## 12. 验收标准
 
-- `go-cli-agent web` 能稳定启动本地控制台；`experimental web` 作为兼容别名保持可用
+- `aegis-agent web` 能稳定启动本地控制台；`experimental web` 作为兼容别名保持可用
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
 - 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
 - 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队

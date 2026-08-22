@@ -1,4 +1,4 @@
-# Go CLI Agent Session Interrupt Resume Spec
+# Aegis Agent Session Interrupt Resume Spec
 
 ## 1. 目标
 
@@ -14,7 +14,7 @@ session 系统保证下面四件事同时成立：
 默认 session 根目录：
 
 ```text
-.go-cli-agent/sessions/
+.aegis-agent/sessions/
   <session-id>/
     session.json
     state.json

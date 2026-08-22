@@ -8,7 +8,7 @@ providers:
     api_key_env: OPENAI_API_KEY
     base_url: https://api.openai.com/v1
     model: gpt-5.4
-    # Optional. If omitted, go-cli-agent uses a known-model table or the
+    # Optional. If omitted, aegis-agent uses a known-model table or the
     # 200000-token default to derive compaction thresholds.
     # context_window_tokens: 200000
     request_timeout_sec: 300
@@ -118,7 +118,7 @@ role_providers:
 #     password_hash: "$2a$..."
 
 session:
-  dir: .go-cli-agent/sessions
+  dir: .aegis-agent/sessions
   dir_mode: "0700"
 
 skills:
@@ -191,7 +191,7 @@ runtime:
   isolation:
     default_mode: off
     # Must live outside the source workspace to avoid recursive copy/worktree targets.
-    root_dir: ~/.go-cli-agent/_worktrees
+    root_dir: ~/.aegis-agent/_worktrees
   queue:
     poll_interval_ms: 1000
     auto_worker: true

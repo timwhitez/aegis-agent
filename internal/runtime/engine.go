@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/filechanges"
-	"go-cli-agent/internal/hooks"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/filechanges"
+	"aegis-agent/internal/hooks"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/tools"
 )
 
 // timeNow is overridable in tests to exercise wall-clock budgets deterministically.

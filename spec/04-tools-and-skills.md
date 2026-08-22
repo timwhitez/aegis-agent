@@ -1,8 +1,8 @@
-# Go CLI Agent Tools And Skills Spec
+# Aegis Agent Tools And Skills Spec
 
 ## 1. 目标
 
-工具和 skills 是 `go-cli-agent` 从“空循环”变成“可执行 harness”的关键能力层。
+工具和 skills 是 `aegis-agent` 从“空循环”变成“可执行 harness”的关键能力层。
 
 原则：
 

@@ -42,7 +42,7 @@ func TestWriteDeniedDotGit(t *testing.T) {
 }
 
 func TestWriteDeniedGoCliAgentState(t *testing.T) {
-	assertWriteDenied(t, ".go-cli-agent/config.yaml", ".go-cli-agent/")
+	assertWriteDenied(t, ".aegis-agent/config.yaml", ".aegis-agent/")
 }
 
 func TestWriteDeniedDotEnv(t *testing.T) {

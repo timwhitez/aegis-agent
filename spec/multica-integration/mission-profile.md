@@ -1,12 +1,12 @@
 # Mission-Compatible Profile
 
-本文定义 Multica + `go-cli-agent` 集成在大型项目、长时间任务、multi-agent 监督场景下的可选 profile。它吸收 Missions 类系统的有效机制，但不把 `go-cli-agent` 改造成固定 workflow engine。
+本文定义 Multica + `aegis-agent` 集成在大型项目、长时间任务、multi-agent 监督场景下的可选 profile。它吸收 Missions 类系统的有效机制，但不把 `aegis-agent` 改造成固定 workflow engine。
 
 本 profile 位于 MVP 之上：
 
 - MVP 仍然只是 `gocli-stream-json` subprocess backend。
 - 默认入口仍然是 Web-first 本地控制台与 CLI fallback。
-- mission / large-project 能力必须通过 Multica 的显式任务形态、go-cli-agent 的 Goal / Plan Mode / delegate / queue 高级面，或后续 API 字段启用。
+- mission / large-project 能力必须通过 Multica 的显式任务形态、aegis-agent 的 Goal / Plan Mode / delegate / queue 高级面，或后续 API 字段启用。
 - 没有启用本 profile 时，`gocli` backend 不需要 plan approval、validation contract、handoff parser 或多角色调度才能完成普通任务。
 
 ## 1. 设计目标
@@ -27,9 +27,9 @@
 
 Missions 文章里的 Orchestrator / Worker / Validator 在本集成中映射为职责，而不是 runtime 必须自动创建的三段流程。
 
-| Mission 职责 | go-cli-agent 本地语义 | Multica 侧语义 | 事实源 |
+| Mission 职责 | aegis-agent 本地语义 | Multica 侧语义 | 事实源 |
 | --- | --- | --- | --- |
-| Orchestrator | `planner` role hint、Goal 内部计划、Plan Mode approval gate | mission plan、里程碑、预算、validation contract owner | Multica mission store 或 go-cli-agent `goal.json` / `planmode.json` |
+| Orchestrator | `planner` role hint、Goal 内部计划、Plan Mode approval gate | mission plan、里程碑、预算、validation contract owner | Multica mission store 或 aegis-agent `goal.json` / `planmode.json` |
 | Worker | `generator` role hint、普通 `exec` / child session | feature 实现 run，通常一个可提交变更单元 | session events、messages、artifact refs、git diff/commit |
 | Validator | `evaluator` role hint、review / validation session | scrutiny validator、user-testing validator、follow-up feature creator | validation report、test command evidence、UI/E2E evidence |
 
@@ -38,7 +38,7 @@ Missions 文章里的 Orchestrator / Worker / Validator 在本集成中映射为
 - role 是 hint 和 traceability 字段，不是强制编排状态机。
 - 角色选择应持久化到 session metadata、queue job、mission record 或 protocol metadata 中，不能只停留在一次 prompt 文本。
 - provider/model override 必须基于显式 role，例如 `planner` / `generator` / `evaluator`。不要从 `agent_name`、标签或自然语言简介中做模糊匹配。
-- Multica 可以把 `orchestrator` / `worker` / `validator` 映射到 go-cli-agent 的 `planner` / `generator` / `evaluator`，但该映射属于 Multica mission profile，不属于 `go-cli-agent` core runtime。
+- Multica 可以把 `orchestrator` / `worker` / `validator` 映射到 aegis-agent 的 `planner` / `generator` / `evaluator`，但该映射属于 Multica mission profile，不属于 `aegis-agent` core runtime。
 
 ## 3. 验证契约
 
@@ -60,7 +60,7 @@ Missions 文章里的 Orchestrator / Worker / Validator 在本集成中映射为
 边界：
 
 - Multica mission workflow 可以持有 validation contract 的主模型。
-- `go-cli-agent` standalone 场景可以把它收敛到 Goal 的内部 validation plan。
+- `aegis-agent` standalone 场景可以把它收敛到 Goal 的内部 validation plan。
 - `gocli-stream-json` v1 只传递可选 metadata、artifact ref 或 result handoff，不要求在协议里承载完整契约。
 
 ## 4. 结构化交接
@@ -93,7 +93,7 @@ reports/handoff.json
 
 - 交接必须依赖可见文件事实、协议 result 或 session events；不能依赖父子 agent 之间未落盘的聊天上下文。
 - 如果完成后还存在失败验证或未处理 blocker，系统应把它转成 follow-up feature 或明确标为 blocked，而不是继续向后推进。
-- 对于 `go-cli-agent`，`record_goal_progress(kind="handoff")`、`session.md`、checkpoint、visible output 列表和最终 `result.handoff` 都可以成为交接事实源。
+- 对于 `aegis-agent`，`record_goal_progress(kind="handoff")`、`session.md`、checkpoint、visible output 列表和最终 `result.handoff` 都可以成为交接事实源。
 
 ## 5. 执行策略
 
@@ -126,12 +126,12 @@ Multica 可以提供 Mission Control 式监督界面，但它只能聚合事实�
 
 - Multica mission store：mission plan、validation contract、milestone、follow-up feature。
 - `gocli-stream-json` stdout：assistant/tool/result/status/usage/handoff。
-- `go-cli-agent` session id：恢复入口和本地事实索引。
+- `aegis-agent` session id：恢复入口和本地事实索引。
 - execenv 写入的 `AGENTS.md` / `skills/`：当前 run 的上下文来源。
 
 禁止：
 
-- Multica 解析 `go-cli-agent` 未公开的 session 内部 schema 来维持 mission 状态。
+- Multica 解析 `aegis-agent` 未公开的 session 内部 schema 来维持 mission 状态。
 - 浏览器端状态成为 plan、validation、handoff 或 session status 的唯一事实源。
 - 默认 Web 首页因为 mission profile 暴露 worker internals、raw queue payload 或 isolation tuning。
 
@@ -145,8 +145,8 @@ Multica 可以提供 Mission Control 式监督界面，但它只能聚合事实�
 
 集成规则：
 
-- Multica 负责选择 role-specific model，并把最终 provider/model/thinking 通过 `gocli` backend 参数传给 `go-cli-agent`。
-- `go-cli-agent` 负责把 provider options 写入 session metadata，并由 provider adapter 处理 replay / reasoning / thinking 差异。
+- Multica 负责选择 role-specific model，并把最终 provider/model/thinking 通过 `gocli` backend 参数传给 `aegis-agent`。
+- `aegis-agent` 负责把 provider options 写入 session metadata，并由 provider adapter 处理 replay / reasoning / thinking 差异。
 - Multica 不应承载 provider-specific replay 逻辑。
 - `models --json` 的 `<provider>/<model>` route id 仍是模型发现和执行路由的唯一 MVP 机制；role-specific 选择是在该列表之上做策略选择。
 
@@ -164,13 +164,13 @@ Mission profile 只使用 additive wire fields。MVP consumer 必须能忽略它
 约束：
 
 - 不把完整 mission graph 塞进 stdout transcript。
-- 不要求 `go-cli-agent exec` 在 MVP 解析这些字段才能运行。
+- 不要求 `aegis-agent exec` 在 MVP 解析这些字段才能运行。
 - unknown fields 和 unknown content block 必须保持 ignored。
 - 如果后续协议需要强语义字段，必须 bump protocol version 或保持 v1 additive 兼容。
 
 ## 9. 所属职责
 
-| 能力 | Multica owns | go-cli-agent owns |
+| 能力 | Multica owns | aegis-agent owns |
 | --- | --- | --- |
 | mission plan / milestone | 是 | 可通过 Goal/Plan Mode 接收摘要 |
 | validation contract 主事实 | 是，mission 场景 | standalone 时可在 Goal 内部保存 |
@@ -183,8 +183,8 @@ Mission profile 只使用 additive wire fields。MVP consumer 必须能忽略它
 
 ## 10. 非目标
 
-- 不在 `go-cli-agent` core runtime 中实现固定 Missions DAG。
-- 不要求 Multica 改成 go-cli-agent provider adapter。
+- 不在 `aegis-agent` core runtime 中实现固定 Missions DAG。
+- 不要求 Multica 改成 aegis-agent provider adapter。
 - 不在 `gocli-stream-json` MVP 中实现 ACP / JSON-RPC。
 - 不让 validator 通过读取 worker 的完整聊天上下文来自证；validator 应基于 validation contract、代码、artifact 和可运行行为检查。
 - 不把报告、prompt、session、compaction 或 provider view 的脱敏作为默认协议规范。
@@ -199,4 +199,4 @@ Mission profile 只使用 additive wire fields。MVP consumer 必须能忽略它
 - validator 未依赖 worker 聊天上下文，也能从 contract/artifact/workdir 复现检查。
 - failed validation 会生成 follow-up feature、blocker 或明确的 mission 状态，而不是静默继续。
 - feature 级写入默认串行；并行写入必须有 isolation 与 merge 证据。
-- role-specific provider/model 选择能在 Multica mission record 与 go-cli-agent session metadata 中追溯。
+- role-specific provider/model 选择能在 Multica mission record 与 aegis-agent session metadata 中追溯。

@@ -1,4 +1,4 @@
-# go-cli-agent 代码修改指引
+# aegis-agent 代码修改指引
 
 本文件给出精确实现方案。所有 wire 字段以 `../wire-protocol.md` 为准。
 
@@ -206,7 +206,7 @@ func MarshalLine(msg *StreamOutputMessage) ([]byte, error) {
 }
 ```
 
-`RunRole`、`Metadata` 和 `Handoff` 是 mission-compatible profile 的 additive 字段。MVP 可保持零值；adapter 不应为了填充它们而解析 Multica mission graph 或 `go-cli-agent` 未公开的 session internals。
+`RunRole`、`Metadata` 和 `Handoff` 是 mission-compatible profile 的 additive 字段。MVP 可保持零值；adapter 不应为了填充它们而解析 Multica mission graph 或 `aegis-agent` 未公开的 session internals。
 
 ## 3. 新增 `internal/streamjson/adapter.go`
 
@@ -325,7 +325,7 @@ func ReadInitialPrompt(r io.Reader, maxBytes int64) (string, error)
 MVP 不做上游 provider 实时模型发现；从当前 config 生成稳定列表：
 
 - 遍历 `cfg.Providers`，按 provider name 排序。
-- 对每个 provider，取 `<providerName>/<Provider.Model>` 作为 `id`。这里的 `providerName` 是 go-cli-agent config provider key，例如 `openai` / `anthropic`；Multica 会按第一个 `/` 把该 route key 拆回 `--provider <providerName> --model <Provider.Model>`，所以 `Provider.Model` 内部仍可包含 `/`。
+- 对每个 provider，取 `<providerName>/<Provider.Model>` 作为 `id`。这里的 `providerName` 是 aegis-agent config provider key，例如 `openai` / `anthropic`；Multica 会按第一个 `/` 把该 route key 拆回 `--provider <providerName> --model <Provider.Model>`，所以 `Provider.Model` 内部仍可包含 `/`。
 - `label` 使用可读形态，例如 `<providerName>: <Provider.Model>`，避免不同 provider 下相同 model 字符串在 UI 中不可区分。
 - `provider` 字段来自 `config.EffectiveAPIProvider(name, provider)` 映射：
   - `openai-compatible` -> `openai`
@@ -333,7 +333,7 @@ MVP 不做上游 provider 实时模型发现；从当前 config 生成稳定列�
   - `google` -> `google`
 - `default=true` 标记 `cfg.DefaultProvider` 对应 provider 的 model。
 - 对无 model 的 provider 跳过。
-- 如果用户手工在 Multica 输入不含 `/` 的 model ID，Multica backend 只传 `--model`，由 go-cli-agent 默认 provider 接收；这只用于 manual entry，不是 `models --json` 的标准输出形态。
+- 如果用户手工在 Multica 输入不含 `/` 的 model ID，Multica backend 只传 `--model`，由 aegis-agent 默认 provider 接收；这只用于 manual entry，不是 `models --json` 的标准输出形态。
 
 thinking catalog：
 
@@ -363,19 +363,19 @@ import (
 var Version = "0.1.0-dev"
 
 func printVersion(w io.Writer) error {
-    _, err := fmt.Fprintf(w, "go-cli-agent v%s\n", Version)
+    _, err := fmt.Fprintf(w, "aegis-agent v%s\n", Version)
     return err
 }
 ```
 
-后续 release 可用 `-ldflags "-X go-cli-agent/internal/app.Version=0.1.0"` 注入真实版本。
+后续 release 可用 `-ldflags "-X aegis-agent/internal/app.Version=0.1.0"` 注入真实版本。
 
 ## 7. 新增 `internal/app/models_cmd.go`
 
 命令形态：
 
 ```bash
-go-cli-agent models --json --config /path/to/config.yaml
+aegis-agent models --json --config /path/to/config.yaml
 ```
 
 实现要点：
@@ -593,7 +593,7 @@ return nil
 
 ## 11. Mission profile guardrails
 
-后续若在 go-cli-agent 侧补充 mission-compatible profile，只允许增加 runtime primitive 和事实记录，不允许把 Multica mission workflow 搬进 core runtime。
+后续若在 aegis-agent 侧补充 mission-compatible profile，只允许增加 runtime primitive 和事实记录，不允许把 Multica mission workflow 搬进 core runtime。
 
 允许：
 

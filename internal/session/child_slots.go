@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/events"
+	"aegis-agent/internal/events"
 )
 
 const directChildReservationReclaimPauseReason = "stale_owner_reconciled"

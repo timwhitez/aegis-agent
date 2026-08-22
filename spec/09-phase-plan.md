@@ -1,4 +1,4 @@
-# Go CLI Agent Phase Plan
+# Aegis Agent Phase Plan
 
 ## 1. 总原则
 
@@ -271,7 +271,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - 默认首页不增加 explorer/children dashboard，细粒度 orchestration 继续属于 advanced inspector、CLI 或 API
 - session inspector 增加懒加载、bounded 的 Context tab 与独立只读 endpoint；默认 overview/home polling 不递归扫描 lineage，也不增加 telemetry dashboard
 
-- `go-cli-agent web`
+- `aegis-agent web`
 - `experimental web` 作为旧入口兼容别名
 - 本地 HTTP API
 - 内嵌静态单页前端

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 type GateDecisionStatus string

@@ -9,13 +9,13 @@ import (
 	"strconv"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
+	"aegis-agent/internal/fileutil"
 
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	legacyIsolationRootDir                      = ".go-cli-agent/_worktrees"
+	legacyIsolationRootDir                      = ".aegis-agent/_worktrees"
 	defaultProviderRequestTimeoutSec            = 300
 	defaultProviderStreamIdleTimeoutMS          = 300000
 	defaultRetryMaxAttempts                     = 5
@@ -383,7 +383,7 @@ func Default() *Config {
 			},
 		},
 		Session: SessionConfig{
-			Dir:     ".go-cli-agent/sessions",
+			Dir:     ".aegis-agent/sessions",
 			DirMode: "0700",
 		},
 		Skills: SkillsConfig{
@@ -487,13 +487,13 @@ func Load(explicitPath, cwd string) (*Config, error) {
 	if explicitPath == "" {
 		home, _ := os.UserHomeDir()
 		if home != "" {
-			loadOrder = append(loadOrder, loadCandidate{path: filepath.Join(home, ".go-cli-agent", "config.yaml")})
+			loadOrder = append(loadOrder, loadCandidate{path: filepath.Join(home, ".aegis-agent", "config.yaml")})
 		}
 		loadOrder = append(loadOrder, loadCandidate{
-			path:                   filepath.Join(cwd, ".go-cli-agent", "config.yaml"),
+			path:                   filepath.Join(cwd, ".aegis-agent", "config.yaml"),
 			requiresWorkspaceTrust: true,
 		})
-		if envPath := os.Getenv("GO_CLI_AGENT_CONFIG"); envPath != "" {
+		if envPath := os.Getenv("AEGIS_AGENT_CONFIG"); envPath != "" {
 			loadOrder = append(loadOrder, loadCandidate{path: envPath})
 		}
 	} else {
@@ -528,10 +528,10 @@ func PersistPath(explicitPath, cwd string) string {
 	if strings.TrimSpace(explicitPath) != "" {
 		return resolveMaybeRelative(cwd, explicitPath)
 	}
-	if envPath := strings.TrimSpace(os.Getenv("GO_CLI_AGENT_CONFIG")); envPath != "" {
+	if envPath := strings.TrimSpace(os.Getenv("AEGIS_AGENT_CONFIG")); envPath != "" {
 		return resolveMaybeRelative(cwd, envPath)
 	}
-	return filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+	return filepath.Join(cwd, ".aegis-agent", "config.yaml")
 }
 
 func WorkspaceConfigTrusted(cwd string) bool {
@@ -801,9 +801,9 @@ func expandHomeDir(value string) string {
 func defaultIsolationRootDir() string {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".go-cli-agent", "_worktrees")
+		return filepath.Join(home, ".aegis-agent", "_worktrees")
 	}
-	return filepath.Join(os.TempDir(), "go-cli-agent", "_worktrees")
+	return filepath.Join(os.TempDir(), "aegis-agent", "_worktrees")
 }
 
 func (c *Config) ProviderConfig(name string) (Provider, error) {
@@ -901,11 +901,11 @@ func sameCleanPath(a, b string) bool {
 }
 
 func workspaceConfigTrusted(cwd string) bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG")), "1") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("GO_CLI_AGENT_TRUST_WORKSPACE_CONFIG")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG")), "1") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG")), "true") {
 		return true
 	}
-	marker := filepath.Join(cwd, ".go-cli-agent", "trusted")
+	marker := filepath.Join(cwd, ".aegis-agent", "trusted")
 	info, err := os.Lstat(marker)
 	if err != nil {
 		return false

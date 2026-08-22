@@ -1,7 +1,7 @@
 # Local runtime state and credentials.
-/.go-cli-agent/
+/.aegis-agent/
 /.artifacts/
-**/.go-cli-agent/
+**/.aegis-agent/
 **/.artifacts/
 /.env
 /.env.*
@@ -9,7 +9,7 @@
 
 # Build output and disposable local workspaces.
 /bin/
-/go-cli-agent
+/aegis-agent
 /tmp/
 /workspace/
 /.tmp_*/

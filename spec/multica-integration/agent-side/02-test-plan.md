@@ -1,4 +1,4 @@
-# go-cli-agent 侧测试计划
+# aegis-agent 侧测试计划
 
 本测试计划不依赖 Multica。
 
@@ -62,8 +62,8 @@ if usage["input_tokens"] == nil || usage["output_tokens"] == nil {
 
 覆盖：
 
-- `go-cli-agent --version` 输出含 semver。
-- `go-cli-agent version` 同样可用。
+- `aegis-agent --version` 输出含 semver。
+- `aegis-agent version` 同样可用。
 - `models --json` 输出 JSON array。
 - `exec --output-format stream-json --json` 互斥报错。
 - `exec --input-format stream-json` 从 stdin envelope 读取 prompt。
@@ -78,26 +78,26 @@ if usage["input_tokens"] == nil || usage["output_tokens"] == nil {
 构建：
 
 ```bash
-go build -o /tmp/go-cli-agent ./cmd/go-cli-agent
+go build -o /tmp/aegis-agent ./cmd/aegis-agent
 ```
 
 ### 2.1 版本
 
 ```bash
-/tmp/go-cli-agent --version | grep -E 'v?[0-9]+\.[0-9]+\.[0-9]+'
+/tmp/aegis-agent --version | grep -E 'v?[0-9]+\.[0-9]+\.[0-9]+'
 ```
 
 ### 2.2 模型发现
 
 ```bash
-/tmp/go-cli-agent models --json | jq -e 'type == "array" and length > 0 and (.[0].id | contains("/"))'
+/tmp/aegis-agent models --json | jq -e 'type == "array" and length > 0 and (.[0].id | contains("/"))'
 ```
 
 ### 2.3 stream-json 输入输出
 
 ```bash
 printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"say exactly: smoke ok"}]}}' \
-  | /tmp/go-cli-agent exec --output-format stream-json --input-format stream-json --timeout 120 \
+  | /tmp/aegis-agent exec --output-format stream-json --input-format stream-json --timeout 120 \
   | tee /tmp/gocli-stream.jsonl \
   | while IFS= read -r line; do
       [ -z "$line" ] && continue
@@ -120,7 +120,7 @@ grep '"type":"result"' /tmp/gocli-stream.jsonl \
 ```bash
 WORKDIR="$(mktemp -d)"
 printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"list files in the current directory, then finish"}]}}' \
-  | /tmp/go-cli-agent exec --output-format stream-json --input-format stream-json --workdir "$WORKDIR" --timeout 120 \
+  | /tmp/aegis-agent exec --output-format stream-json --input-format stream-json --workdir "$WORKDIR" --timeout 120 \
   > /tmp/gocli-tools.jsonl
 ```
 

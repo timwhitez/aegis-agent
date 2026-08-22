@@ -3,7 +3,7 @@ package streamjson
 import (
 	"testing"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 func TestModelsFromConfigUsesProviderRouteIDs(t *testing.T) {

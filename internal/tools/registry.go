@@ -22,11 +22,11 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/procutil"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
 )
 
 type Definition struct {
@@ -1677,17 +1677,17 @@ func defGrepFiles() Definition {
 }
 
 var grepSkippedDirNames = map[string]struct{}{
-	".artifacts":    {},
-	".git":          {},
-	".go-cli-agent": {},
-	".next":         {},
-	".turbo":        {},
-	"bin":           {},
-	"build":         {},
-	"coverage":      {},
-	"dist":          {},
-	"node_modules":  {},
-	"out":           {},
+	".artifacts":   {},
+	".git":         {},
+	".aegis-agent": {},
+	".next":        {},
+	".turbo":       {},
+	"bin":          {},
+	"build":        {},
+	"coverage":     {},
+	"dist":         {},
+	"node_modules": {},
+	"out":          {},
 }
 
 var grepSkippedPathFragments = []string{
@@ -4312,9 +4312,9 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			}
 			cmd.Env = append(
 				filteredEnv(effectiveConfig.Runtime.ShellEnvAllowlist),
-				"GO_CLI_AGENT_ARGS_JSON="+string(raw),
-				"GO_CLI_AGENT_SKILL_DIR="+skillDir,
-				"GO_CLI_AGENT_SKILL_NAME="+tool.SkillName,
+				"AEGIS_AGENT_ARGS_JSON="+string(raw),
+				"AEGIS_AGENT_SKILL_DIR="+skillDir,
+				"AEGIS_AGENT_SKILL_NAME="+tool.SkillName,
 			)
 			cmd.Stdin = bytes.NewReader(raw)
 			if beforeShellCommandStart != nil {

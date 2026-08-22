@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/tools"
 )
 
 func readFileNotFoundResultForPromptTest(path string) session.ToolResult {
@@ -1623,7 +1623,7 @@ func TestToolGuardAllowsDirectReadWithinExplicitInspectionScope(t *testing.T) {
 func TestToolGuardKeepsExplicitInspectionScopeInYolo(t *testing.T) {
 	workdir := t.TempDir()
 	messages := []session.Message{
-		session.NewMessage("user", "Inspect only README.md and AGENTS.md in the current go-cli-agent repository. Use targeted retrieval only."),
+		session.NewMessage("user", "Inspect only README.md and AGENTS.md in the current aegis-agent repository. Use targeted retrieval only."),
 	}
 	kind, text := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/README.md"}`), true)
 	if kind != "explicit_scope" {
@@ -1731,7 +1731,7 @@ func TestNextHarnessReminderRefreshesSpecAndPlanAfterSteerScopeChange(t *testing
 func TestToolGuardBlocksFinalArtifactWriteThatViolatesExactTemplate(t *testing.T) {
 	workdir := t.TempDir()
 	messages := []session.Message{
-		session.NewMessage("user", "Write reports/rt20.md with sections: comparator setup and findings.\nThe file must begin exactly with these lines before any findings section:\n\n# rt20 same-task comparator\n\n## comparator setup\nThis is not a live competitor benchmark.\nThis is a same-task comparator built from go-cli-agent live run evidence plus local codex/opencode reference implementations.\n\nDo not paraphrase either sentence."),
+		session.NewMessage("user", "Write reports/rt20.md with sections: comparator setup and findings.\nThe file must begin exactly with these lines before any findings section:\n\n# rt20 same-task comparator\n\n## comparator setup\nThis is not a live competitor benchmark.\nThis is a same-task comparator built from aegis-agent live run evidence plus local codex/opencode reference implementations.\n\nDo not paraphrase either sentence."),
 	}
 	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{"path":"reports/rt20.md","content":"# rt20 same-task comparator\n\n## findings\nNo validated findings.\n"}`))
 	if kind != "artifact_template" {
@@ -1746,7 +1746,7 @@ func TestToolGuardAllowsFinishAfterExactTemplateArtifactWasWritten(t *testing.T)
 	workdir := t.TempDir()
 	targetPath := filepath.Join(workdir, "reports", "rt20.md")
 	messages := []session.Message{
-		session.NewMessage("user", "Write reports/rt20.md with sections: comparator setup and findings.\nThe file must begin exactly with these lines before any findings section:\n\n# rt20 same-task comparator\n\n## comparator setup\nThis is not a live competitor benchmark.\nThis is a same-task comparator built from go-cli-agent live run evidence plus local codex/opencode reference implementations.\n\nDo not paraphrase either sentence."),
+		session.NewMessage("user", "Write reports/rt20.md with sections: comparator setup and findings.\nThe file must begin exactly with these lines before any findings section:\n\n# rt20 same-task comparator\n\n## comparator setup\nThis is not a live competitor benchmark.\nThis is a same-task comparator built from aegis-agent live run evidence plus local codex/opencode reference implementations.\n\nDo not paraphrase either sentence."),
 		session.NewToolMessage([]session.ToolResult{
 			{
 				Name: "write_file",

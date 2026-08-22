@@ -5,12 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 DEFAULT_OUT_DIR="${ROOT_DIR}/bin"
-DEFAULT_BINARY_NAME="go-cli-agent"
+DEFAULT_BINARY_NAME="aegis-agent"
 
-TARGET_GOOS="${GO_CLI_AGENT_GOOS:-${GOOS:-}}"
-TARGET_GOARCH="${GO_CLI_AGENT_GOARCH:-${GOARCH:-}}"
-OUT_DIR="${GO_CLI_AGENT_BUILD_DIR:-$DEFAULT_OUT_DIR}"
-OUT_PATH="${GO_CLI_AGENT_BUILD_OUT:-}"
+TARGET_GOOS="${AEGIS_AGENT_GOOS:-${GOOS:-}}"
+TARGET_GOARCH="${AEGIS_AGENT_GOARCH:-${GOARCH:-}}"
+OUT_DIR="${AEGIS_AGENT_BUILD_DIR:-$DEFAULT_OUT_DIR}"
+OUT_PATH="${AEGIS_AGENT_BUILD_OUT:-}"
 
 if [[ -z "$OUT_PATH" ]]; then
 	BINARY_NAME="$DEFAULT_BINARY_NAME"
@@ -31,9 +31,9 @@ if [[ -n "$TARGET_GOARCH" ]]; then
 fi
 
 if [[ ${#ENV_ARGS[@]} -gt 0 ]]; then
-	env "${ENV_ARGS[@]}" go build -trimpath -o "$OUT_PATH" ./cmd/go-cli-agent
+	env "${ENV_ARGS[@]}" go build -trimpath -o "$OUT_PATH" ./cmd/aegis-agent
 else
-	go build -trimpath -o "$OUT_PATH" ./cmd/go-cli-agent
+	go build -trimpath -o "$OUT_PATH" ./cmd/aegis-agent
 fi
 
 printf 'built %s' "$OUT_PATH"

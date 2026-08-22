@@ -69,7 +69,7 @@ Assertions：
 ```bash
 #!/usr/bin/env bash
 if [[ "$1" == "--version" ]]; then
-  echo "go-cli-agent v0.1.0"
+  echo "aegis-agent v0.1.0"
   exit 0
 fi
 if [[ "$1" == "models" ]]; then
@@ -103,19 +103,19 @@ Modify existing tests:
 - `TestListModels...` with a failing fake executable returns an empty model list rather than failing the model-list request
 - `TestCheckMinVersion` includes `gocli`
 - `TestIsKnownThinkingValue` includes `gocli low|medium|high|xhigh`
-- `ValidateThinkingLevel` with fake `go-cli-agent models --json`
+- `ValidateThinkingLevel` with fake `aegis-agent models --json`
 
 ## 3. daemon config tests
 
 `server/internal/daemon/config_test.go`：
 
-- PATH contains fake `go-cli-agent` -> `cfg.Agents["gocli"]` exists.
+- PATH contains fake `aegis-agent` -> `cfg.Agents["gocli"]` exists.
 - `MULTICA_GOCLI_PATH=/tmp/fake` overrides default.
 - `MULTICA_GOCLI_MODEL=openai/model-x` sets `AgentEntry.Model`.
 - `MULTICA_GOCLI_ARGS='--isolation none'` sets `cfg.GocliArgs`.
-- no-agent error string includes `go-cli-agent`.
-- `defaultAgentCommandNames` shell fallback includes `go-cli-agent`.
-- config-path alignment is documented: `GO_CLI_AGENT_CONFIG` is the supported way to make both `models --json` and `exec` use the same non-default go-cli-agent config; `MULTICA_GOCLI_ARGS --config ...` is execution-only.
+- no-agent error string includes `aegis-agent`.
+- `defaultAgentCommandNames` shell fallback includes `aegis-agent`.
+- config-path alignment is documented: `AEGIS_AGENT_CONFIG` is the supported way to make both `models --json` and `exec` use the same non-default aegis-agent config; `MULTICA_GOCLI_ARGS --config ...` is execution-only.
 
 `server/internal/daemon/daemon_test.go`：
 
@@ -128,7 +128,7 @@ Update known provider cases:
 - `runtimeConfigPath(workDir, "gocli") == filepath.Join(workDir, "AGENTS.md")`
 - `CleanupRuntimeConfig` removes `AGENTS.md` marker block for gocli.
 - `resolveSkillsDir(workDir, "gocli", ...) == filepath.Join(workDir, "skills")`
-- `listRuntimeLocalSkills("gocli")` reads private go-cli-agent local skills from `~/.go-cli-agent/skills`, not `~/.codex/skills`; those skills become shared only after Multica copies/imports them into workspace skills.
+- `listRuntimeLocalSkills("gocli")` reads private aegis-agent local skills from `~/.aegis-agent/skills`, not `~/.codex/skills`; those skills become shared only after Multica copies/imports them into workspace skills.
 - sidecar manifest includes gocli in all file-based provider matrix.
 - generated runtime brief lists skills as auto-discovered for gocli.
 
@@ -137,13 +137,13 @@ Update known provider cases:
 From Multica repo root:
 
 ```bash
-FAKE="$(mktemp -d)/go-cli-agent"
+FAKE="$(mktemp -d)/aegis-agent"
 cat > "$FAKE" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
   --version)
-    echo "go-cli-agent v0.1.0"
+    echo "aegis-agent v0.1.0"
     exit 0
     ;;
   models)
@@ -172,14 +172,14 @@ MULTICA_GOCLI_PATH="$FAKE" go test ./server/pkg/agent -run 'TestGocli|TestNewRet
 
 前置：
 
-- go-cli-agent 已完成 agent-side spec。
-- `go-cli-agent` 在 PATH 中，或设置 `MULTICA_GOCLI_PATH`。
+- aegis-agent 已完成 agent-side spec。
+- `aegis-agent` 在 PATH 中，或设置 `MULTICA_GOCLI_PATH`。
 
 验证：
 
 ```bash
-go-cli-agent --version
-go-cli-agent models --json | jq '.[0].id'
+aegis-agent --version
+aegis-agent models --json | jq '.[0].id'
 go test ./server/pkg/agent -run TestGocli -count=1 -v
 go test ./server/internal/daemon -run 'TestDefaultArgsForProvider|TestLoadConfig' -count=1 -v
 go test ./server/internal/daemon/execenv -run 'Gocli|RuntimeConfig|Sidecar|Skills' -count=1 -v
@@ -188,7 +188,7 @@ go test ./server/internal/daemon/execenv -run 'Gocli|RuntimeConfig|Sidecar|Skill
 手工 daemon smoke：
 
 ```bash
-MULTICA_GOCLI_PATH="$(command -v go-cli-agent)" \
+MULTICA_GOCLI_PATH="$(command -v aegis-agent)" \
 MULTICA_GOCLI_MODEL="<provider>/<model-id>" \
 multica daemon
 ```
@@ -219,7 +219,7 @@ go test ./server/internal/handler -run 'AgentThinking|CreateAgent|UpdateAgent|Ru
 开发后执行：
 
 ```bash
-rg -n '"gocli"|go-cli-agent|MULTICA_GOCLI' server/pkg/agent server/internal/daemon
+rg -n '"gocli"|aegis-agent|MULTICA_GOCLI' server/pkg/agent server/internal/daemon
 rg -n 'newStderrTail\\(|withAgentStderr\\(' server/pkg/agent/gocli.go
 ```
 
@@ -235,6 +235,6 @@ rg -n 'newStderrTail\\(|withAgentStderr\\(' server/pkg/agent/gocli.go
 
 - parser 对未知顶层字段、未知 content block、`run_role`、`metadata`、`handoff` 都保持 tolerant。
 - `run_role` 不覆盖 transcript `message.role`，也不改变 `MessageText` / `MessageThinking` / `MessageToolUse` 的发送逻辑。
-- 如果 Multica 后续增加 mission store，保存 `handoff` 的测试应断言它来自 `result` envelope 或 artifact ref，而不是读取 go-cli-agent 私有 session 目录。
+- 如果 Multica 后续增加 mission store，保存 `handoff` 的测试应断言它来自 `result` envelope 或 artifact ref，而不是读取 aegis-agent 私有 session 目录。
 - Mission Control 聚合测试应使用 Multica mission store + stream-json fixture + Result.SessionID，不依赖浏览器端状态作为唯一事实。
 - role-specific model policy 测试应覆盖：`validator` 可选择不同 `opts.Model`，但 `gocliBackend.buildArgs` 仍只负责 `<provider>/<model>` 拆分。

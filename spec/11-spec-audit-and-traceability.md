@@ -1,4 +1,4 @@
-# Go CLI Agent Spec Audit And Traceability
+# Aegis Agent Spec Audit And Traceability
 
 ## 1. 目的
 

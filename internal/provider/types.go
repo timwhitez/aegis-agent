@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 type ToolSchema struct {

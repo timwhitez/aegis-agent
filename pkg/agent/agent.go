@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
 )
 
 type StartRequest = runtime.StartRequest

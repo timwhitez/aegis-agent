@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/session"
 )
 
 const harnessFixtureSchemaVersion = 1
@@ -66,7 +66,7 @@ func main() {
 }
 
 func buildHarnessFixture() (harnessFixtureOutput, error) {
-	tempRoot, err := os.MkdirTemp("", "go-cli-agent-context-harness-")
+	tempRoot, err := os.MkdirTemp("", "aegis-agent-context-harness-")
 	if err != nil {
 		return harnessFixtureOutput{}, err
 	}

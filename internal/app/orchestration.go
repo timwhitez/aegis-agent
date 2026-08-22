@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
 )
 
 func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {

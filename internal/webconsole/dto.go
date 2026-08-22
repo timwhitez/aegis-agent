@@ -1,6 +1,6 @@
 package webconsole
 
-import "go-cli-agent/internal/session"
+import "aegis-agent/internal/session"
 
 const (
 	errorCodeUnknownProvider            = "UNKNOWN_PROVIDER"

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 func TestCanonicalArgsReadFileNormalizesEffectiveDefaultsAndCaps(t *testing.T) {

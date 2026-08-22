@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func TestTruncateKeepsUTF8Boundaries(t *testing.T) {

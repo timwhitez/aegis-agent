@@ -17,16 +17,16 @@ import (
 
 	"golang.org/x/term"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/events"
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/hooks"
-	"go-cli-agent/internal/output"
-	"go-cli-agent/internal/provider"
-	"go-cli-agent/internal/runtime"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/streamjson"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/hooks"
+	"aegis-agent/internal/output"
+	"aegis-agent/internal/provider"
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/streamjson"
 )
 
 type coreRunner interface {
@@ -91,7 +91,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		err = experimentalCommand(ctx, args[1:], stdout, stderr)
 	default:
 		if isExperimentalSubcommand(args[0]) {
-			err = fmt.Errorf("experimental command %q moved under `go-cli-agent experimental %s`", args[0], args[0])
+			err = fmt.Errorf("experimental command %q moved under `aegis-agent experimental %s`", args[0], args[0])
 		} else {
 			err = usage(stderr)
 		}
@@ -100,12 +100,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func usage(w io.Writer) error {
-	_, _ = fmt.Fprintln(w, "usage: go-cli-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]")
+	_, _ = fmt.Fprintln(w, "usage: aegis-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]")
 	return flag.ErrHelp
 }
 
 func experimentalUsage(w io.Writer) error {
-	_, _ = fmt.Fprintln(w, "usage: go-cli-agent experimental <delegate|children|queue|tui|web> [...]")
+	_, _ = fmt.Fprintln(w, "usage: aegis-agent experimental <delegate|children|queue|tui|web> [...]")
 	return flag.ErrHelp
 }
 
@@ -717,7 +717,7 @@ func sessionsContextCommand(args []string, stdout io.Writer) error {
 
 func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal <show|pause|resume|clear|complete|plan|validation> <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal <show|pause|resume|clear|complete|plan|validation> <session-id> [--json] [--config path]")
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
@@ -824,7 +824,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 
 func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal plan <show|check|approve> <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal plan <show|check|approve> <session-id> [--json] [--config path]")
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
@@ -1053,7 +1053,7 @@ func appendCLIPlanModeLinkEvent(store *session.Store, sessionID string, previous
 
 func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: go-cli-agent goal validation show <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal validation show <session-id> [--json] [--config path]")
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
@@ -1604,7 +1604,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	report := doctorReport{
-		ConfigPath:      defaultString(*configPath, filepath.Join(cwd, ".go-cli-agent", "config.yaml")),
+		ConfigPath:      defaultString(*configPath, filepath.Join(cwd, ".aegis-agent", "config.yaml")),
 		DefaultProvider: cfg.DefaultProvider,
 	}
 
@@ -1767,12 +1767,12 @@ func doctorConfigFileCheck(explicitPath, cwd, reportPath string) doctorCheck {
 		"loaded": true,
 	}
 	if strings.TrimSpace(explicitPath) == "" {
-		workspacePath := filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+		workspacePath := filepath.Join(cwd, ".aegis-agent", "config.yaml")
 		if filepath.Clean(reportPath) == filepath.Clean(workspacePath) && !config.WorkspaceConfigTrusted(cwd) {
 			configStatus = "warn"
 			configDetails["loaded"] = false
 			configDetails["reason"] = "workspace_config_not_trusted"
-			configDetails["advice"] = "Pass --config explicitly or create .go-cli-agent/trusted if this workspace config should be used."
+			configDetails["advice"] = "Pass --config explicitly or create .aegis-agent/trusted if this workspace config should be used."
 		}
 	}
 	if info, err := os.Stat(reportPath); err != nil {
@@ -2173,14 +2173,14 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		cfg.Hooks.SessionComplete = []config.HookDefinition{
 			{
 				Name:    "log-session-complete",
-				Command: []string{"/bin/sh", ".go-cli-agent/hooks/session-complete.sh"},
+				Command: []string{"/bin/sh", ".aegis-agent/hooks/session-complete.sh"},
 			},
 		}
 	}
 
 	target := *configPath
 	if target == "" {
-		target = filepath.Join(cwd, ".go-cli-agent", "config.yaml")
+		target = filepath.Join(cwd, ".aegis-agent", "config.yaml")
 	}
 	if !*force {
 		if _, err := os.Lstat(target); err == nil {
@@ -2216,19 +2216,19 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if *exampleHook {
-		hookDir := filepath.Join(cwd, ".go-cli-agent", "hooks")
+		hookDir := filepath.Join(cwd, ".aegis-agent", "hooks")
 		if err := fileutil.MkdirAllNoSymlink(hookDir, 0o700); err != nil {
 			return err
 		}
-		hookScript := "#!/usr/bin/env sh\nset -eu\nmkdir -p .go-cli-agent/hooks/logs\ncat >> .go-cli-agent/hooks/logs/session-complete.jsonl\n"
+		hookScript := "#!/usr/bin/env sh\nset -eu\nmkdir -p .aegis-agent/hooks/logs\ncat >> .aegis-agent/hooks/logs/session-complete.jsonl\n"
 		if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(hookDir, "session-complete.sh"), []byte(hookScript), 0o700); err != nil {
 			return err
 		}
 	}
 	_, _ = fmt.Fprintf(stdout, "wrote config to %s\n", target)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/go-cli-agent doctor --config %s --skip-probe\n", target)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/go-cli-agent probe-provider --config %s\n", target)
-	_, _ = fmt.Fprintln(stdout, "next: ./bin/go-cli-agent run \"Describe the current repository.\"")
+	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent doctor --config %s --skip-probe\n", target)
+	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent probe-provider --config %s\n", target)
+	_, _ = fmt.Fprintln(stdout, "next: ./bin/aegis-agent run \"Describe the current repository.\"")
 	return nil
 }
 
@@ -2248,7 +2248,7 @@ func defaultInitSessionDir(cwd, configured string) string {
 	if err != nil || strings.TrimSpace(home) == "" {
 		return configured
 	}
-	return filepath.Join(home, ".go-cli-agent", "sessions")
+	return filepath.Join(home, ".aegis-agent", "sessions")
 }
 
 func resolvePrompt(args []string, stdin io.Reader) (string, error) {

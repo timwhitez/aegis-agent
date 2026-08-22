@@ -91,7 +91,7 @@ func TestValidateMarkdownArtifactAllowsNoLiveValidatedBlockerSummary(t *testing.
 	content := `# audit
 
 ## findings
-No new live-validated go-cli-agent product blocker was proven in the allowlisted evidence.
+No new live-validated aegis-agent product blocker was proven in the allowlisted evidence.
 
 ## unresolved questions
 - None`

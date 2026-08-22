@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 
-	"go-cli-agent/internal/app"
+	"aegis-agent/internal/app"
 )
 
 func main() {

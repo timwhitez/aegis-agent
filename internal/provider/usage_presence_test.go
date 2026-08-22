@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func TestProviderUsagePresenceDistinguishesMissingFromReportedZero(t *testing.T) {

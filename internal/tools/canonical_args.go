@@ -8,7 +8,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"go-cli-agent/internal/config"
+	"aegis-agent/internal/config"
 )
 
 const canonicalReadOnlyToolArgumentsVersion = 1

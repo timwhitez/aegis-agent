@@ -9,10 +9,10 @@ import (
 	"regexp"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/skills"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/skills"
+	"aegis-agent/internal/tools"
 )
 
 var artifactPathPattern = regexp.MustCompile(`(?i)(?:[a-z]:)?(?:/|\.?/)?[a-z0-9._/-]+\.md`)

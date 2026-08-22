@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go-cli-agent/internal/fileutil"
-	"go-cli-agent/internal/review"
-	"go-cli-agent/internal/session"
-	"go-cli-agent/internal/tools"
+	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/review"
+	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 )
 
 type reviewArtifactRequirement struct {

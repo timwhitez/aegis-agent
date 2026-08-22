@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
 )
 
 func TestShellTimeoutKillsChildProcessGroup(t *testing.T) {

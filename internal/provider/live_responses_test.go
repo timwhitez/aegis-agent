@@ -6,15 +6,15 @@ import (
 	"os"
 	"testing"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 func TestLiveOpenAICompatibleResponses(t *testing.T) {
-	baseURL := os.Getenv("GO_CLI_AGENT_LIVE_RESPONSES_URL")
+	baseURL := os.Getenv("AEGIS_AGENT_LIVE_RESPONSES_URL")
 	apiKey := os.Getenv("OPENAI_API_KEY")
-	model := os.Getenv("GO_CLI_AGENT_LIVE_MODEL")
+	model := os.Getenv("AEGIS_AGENT_LIVE_MODEL")
 	if baseURL == "" || apiKey == "" {
-		t.Skip("set GO_CLI_AGENT_LIVE_RESPONSES_URL and OPENAI_API_KEY to run live responses test")
+		t.Skip("set AEGIS_AGENT_LIVE_RESPONSES_URL and OPENAI_API_KEY to run live responses test")
 	}
 	if model == "" {
 		model = "gpt-5.4"

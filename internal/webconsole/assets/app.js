@@ -1,5 +1,5 @@
 /**
- * Go CLI Agent Webconsole
+ * Aegis Agent Webconsole
  */
 
 const POLL_INTERVAL_MS = 5000;
@@ -8,7 +8,7 @@ const WS_RECONNECT_BASE_MS = 1000;
 const WS_RECONNECT_MAX_MS = 30000;
 const MAX_LIVE_EVENTS = 80;
 const STOP_REQUEST_HOLD_MS = 15000;
-const UI_STATE_STORAGE_KEY = 'go-cli-agent.webconsole.ui-state.v1';
+const UI_STATE_STORAGE_KEY = 'aegis-agent.webconsole.ui-state.v1';
 const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
 const DEFAULT_LIVE_ACTIVITY = {
   title: 'Ready for a new session',

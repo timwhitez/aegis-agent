@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"go-cli-agent/internal/config"
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/session"
 )
 
 func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerName string) (session.ProviderOptions, error) {

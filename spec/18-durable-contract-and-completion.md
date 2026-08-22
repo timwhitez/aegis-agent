@@ -21,8 +21,8 @@ These mechanisms do not create a workflow engine. The model remains the agent; t
 Each session may write:
 
 ```text
-.go-cli-agent/sessions/<id>/goal.json
-.go-cli-agent/sessions/<id>/artifacts/goal-history.jsonl
+.aegis-agent/sessions/<id>/goal.json
+.aegis-agent/sessions/<id>/artifacts/goal-history.jsonl
 ```
 
 The goal snapshot records:
@@ -58,9 +58,9 @@ Mission validation contracts are checked as a read-only coverage report. The rep
 Each session may write:
 
 ```text
-.go-cli-agent/sessions/<id>/planmode.json
-.go-cli-agent/sessions/<id>/artifacts/planmode-history.jsonl
-.go-cli-agent/sessions/<id>/artifacts/planmode-plan.md
+.aegis-agent/sessions/<id>/planmode.json
+.aegis-agent/sessions/<id>/artifacts/planmode-history.jsonl
+.aegis-agent/sessions/<id>/artifacts/planmode-plan.md
 ```
 
 The Plan Mode snapshot records:
@@ -86,7 +86,7 @@ The same terminal-state pruning boundary applies before Web stop / interrupt con
 Each session may write:
 
 ```text
-.go-cli-agent/sessions/<id>/contract.json
+.aegis-agent/sessions/<id>/contract.json
 ```
 
 The contract is a snapshot of externally visible constraints:
@@ -110,7 +110,7 @@ Contract updates produce `contract.created` or `contract.updated` events and app
 Explicit required artifacts are tracked in:
 
 ```text
-.go-cli-agent/sessions/<id>/artifact-tracker.json
+.aegis-agent/sessions/<id>/artifact-tracker.json
 ```
 
 For each required path, the runtime records:
@@ -162,7 +162,7 @@ Events:
 Provider attempts are recorded in:
 
 ```text
-.go-cli-agent/sessions/<id>/provider-attempts.jsonl
+.aegis-agent/sessions/<id>/provider-attempts.jsonl
 ```
 
 The ledger records retry, auto-resume, final failure, and success facts:
@@ -184,7 +184,7 @@ The ledger is diagnostic only. Provider retry policy remains adapter-owned and i
 The runtime writes a derived operator view:
 
 ```text
-.go-cli-agent/sessions/<id>/session.md
+.aegis-agent/sessions/<id>/session.md
 ```
 
 It summarizes:
@@ -208,7 +208,7 @@ It summarizes:
 Large-project, delegated, child/queue, isolation, explicit-contract, multi-artifact, task-heavy, or compacted sessions may write:
 
 ```text
-.go-cli-agent/sessions/<id>/checkpoints/longrun-latest.json
+.aegis-agent/sessions/<id>/checkpoints/longrun-latest.json
 ```
 
 The checkpoint is a resume index, not a replacement for messages/events/state. It records contract snapshot, goal snapshot, plan mode snapshot, todo/task summary, artifact status, latest compaction artifact, provider/model/options, workdir/isolation, unresolved child/queue state, and resume hints.
@@ -220,7 +220,7 @@ Normal `continue` still works without a checkpoint. When a checkpoint exists, `c
 Parent sessions with explicit child or queue work may write:
 
 ```text
-.go-cli-agent/sessions/<parent>/parent-coordination.json
+.aegis-agent/sessions/<parent>/parent-coordination.json
 ```
 
 The coordination file records:

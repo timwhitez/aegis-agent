@@ -1,8 +1,8 @@
-# Go CLI Agent Live Input And Steering Spec
+# Aegis Agent Live Input And Steering Spec
 
 ## 1. 目标
 
-`go-cli-agent` 需要尽量支持“运行中插入 prompt”。
+`aegis-agent` 需要尽量支持“运行中插入 prompt”。
 
 但因为 v1 是 CLI harness，不是常驻 app-server，也不绑定某一家 provider 的 native steer API，所以设计目标是：
 
@@ -26,7 +26,7 @@
 
 ## 3. 命令面
 
-### 3.1 `go-cli-agent steer <session-id> --message "..."`
+### 3.1 `aegis-agent steer <session-id> --message "..."`
 
 默认行为：
 
@@ -34,7 +34,7 @@
 - 由 active runner 在最近安全边界接纳
 - 空消息或超过长度上限的 steer 输入必须在入队前直接拒绝
 
-### 3.2 `go-cli-agent steer <session-id> --message "..." --interrupt`
+### 3.2 `aegis-agent steer <session-id> --message "..." --interrupt`
 
 增强行为：
 
@@ -46,7 +46,7 @@
 ## 4. 存储布局
 
 ```text
-.go-cli-agent/sessions/<session-id>/
+.aegis-agent/sessions/<session-id>/
   control/
     steer.jsonl
 ```
@@ -179,7 +179,7 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
 
 ## 10. v1 范围边界
 
-v1 只把外部 `go-cli-agent steer` 作为标准入口：
+v1 只把外部 `aegis-agent steer` 作为标准入口：
 
 - 语义稳定
 - 易测试

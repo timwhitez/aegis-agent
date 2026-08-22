@@ -1,6 +1,6 @@
-# Go CLI Agent
+# Aegis Agent
 
-`go-cli-agent` is a Web-first local agent harness written in Go. The default
+`aegis-agent` is a Web-first local agent harness written in Go. The default
 operator surface is a local Web console; the CLI remains available for
 automation, CI, recovery, and advanced operations.
 
@@ -31,8 +31,8 @@ Requirements: Go 1.24+ and Node.js (for the embedded Web console checks).
 ./build.sh
 ./test.sh
 
-./bin/go-cli-agent init --force
-./bin/go-cli-agent web --listen 127.0.0.1:3940
+./bin/aegis-agent init --force
+./bin/aegis-agent web --listen 127.0.0.1:3940
 ```
 
 Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
@@ -41,11 +41,11 @@ Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
 For a CLI-only workflow:
 
 ```sh
-./bin/go-cli-agent run --provider openai --model gpt-5.4 \
+./bin/aegis-agent run --provider openai --model gpt-5.4 \
   "Inspect this repository and suggest the smallest safe fix."
 
-./bin/go-cli-agent steer <session-id> --message "Focus on failing tests first."
-./bin/go-cli-agent continue <session-id> --message "Proceed with the next step."
+./bin/aegis-agent steer <session-id> --message "Focus on failing tests first."
+./bin/aegis-agent continue <session-id> --message "Proceed with the next step."
 ```
 
 `run` is interactive and supports `Esc` to pause. `exec` is suitable for
@@ -62,7 +62,7 @@ local `.env` file.
 
 ```sh
 export OPENAI_API_KEY=...
-./bin/go-cli-agent doctor --provider openai --skip-probe
+./bin/aegis-agent doctor --provider openai --skip-probe
 ```
 
 The default configuration keeps provider-side storage disabled where supported
@@ -86,7 +86,7 @@ repository.
 
 ## Repository layout
 
-- [`cmd/go-cli-agent`](./cmd/go-cli-agent): CLI entrypoint.
+- [`cmd/aegis-agent`](./cmd/aegis-agent): CLI entrypoint.
 - [`internal/runtime`](./internal/runtime): agent loop, lifecycle, compaction,
   delegation, and completion controls.
 - [`internal/provider`](./internal/provider): provider adapters and replay.

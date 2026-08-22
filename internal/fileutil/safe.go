@@ -1152,7 +1152,7 @@ func readDirNamesFromFD(fd int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	file := os.NewFile(uintptr(dupFD), "go-cli-agent-remove-dir")
+	file := os.NewFile(uintptr(dupFD), "aegis-agent-remove-dir")
 	if file == nil {
 		_ = unix.Close(dupFD)
 		return nil, errors.New("duplicate directory fd is invalid")

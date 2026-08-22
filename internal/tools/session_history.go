@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 const (

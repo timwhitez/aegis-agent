@@ -22,7 +22,7 @@ import (
 )
 ```
 
-不要导入 go-cli-agent 的 Go package。两端只通过 JSON 协议耦合。
+不要导入 aegis-agent 的 Go package。两端只通过 JSON 协议耦合。
 
 ### 1.2 Wire types
 
@@ -124,7 +124,7 @@ type gocliInputBlock struct {
 
 ### 1.3 Blocked args
 
-`go-cli-agent` 使用标准库 `flag`，重复 flag 可能被后面的值覆盖。Multica 的 `CustomArgs` 追加在固定 args 后面，因此要阻止用户覆盖协议和 ExecOptions 管理的 flags。
+`aegis-agent` 使用标准库 `flag`，重复 flag 可能被后面的值覆盖。Multica 的 `CustomArgs` 追加在固定 args 后面，因此要阻止用户覆盖协议和 ExecOptions 管理的 flags。
 
 ```go
 var gocliBlockedArgs = map[string]blockedArgMode{
@@ -153,11 +153,11 @@ type gocliBackend struct {
 func (b *gocliBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
     execPath := b.cfg.ExecutablePath
     if execPath == "" {
-        execPath = "go-cli-agent"
+        execPath = "aegis-agent"
     }
     resolved, err := exec.LookPath(execPath)
     if err != nil {
-        return nil, fmt.Errorf("go-cli-agent executable not found at %q: %w", execPath, err)
+        return nil, fmt.Errorf("aegis-agent executable not found at %q: %w", execPath, err)
     }
     execPath = resolved
 
@@ -229,14 +229,14 @@ func (b *gocliBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 
         if runCtx.Err() == context.DeadlineExceeded {
             scanResult.status = "timeout"
-            scanResult.errMsg = fmt.Sprintf("go-cli-agent timed out after %s", timeout)
+            scanResult.errMsg = fmt.Sprintf("aegis-agent timed out after %s", timeout)
         } else if runCtx.Err() == context.Canceled {
             scanResult.status = "aborted"
             scanResult.errMsg = "execution cancelled"
         } else if exitErr != nil && scanResult.status == "" {
             code := exitCodeFromError(exitErr)
             scanResult.status = gocliStatusFromExitCode(code)
-            scanResult.errMsg = fmt.Sprintf("go-cli-agent exited with code %d", code)
+            scanResult.errMsg = fmt.Sprintf("aegis-agent exited with code %d", code)
         }
         if scanResult.status == "" {
             scanResult.status = "completed"
@@ -270,9 +270,9 @@ func gocliRunContext(ctx context.Context, timeout time.Duration) (context.Contex
 ```
 
 `opts.Timeout <= 0` 表示 long-horizon profile 不安装固定墙钟 deadline；此时不向
-`go-cli-agent exec` 传 `--timeout`，生命周期由上游取消、daemon 停止和显式 idle
+`aegis-agent exec` 传 `--timeout`，生命周期由上游取消、daemon 停止和显式 idle
 watchdog 控制。正数 timeout 才安装 backend context deadline，并传递给
-go-cli-agent 自身 run timeout。
+aegis-agent 自身 run timeout。
 
 ### 1.5 Args builder
 
@@ -461,7 +461,7 @@ func gocliUsageMap(u TokenUsage, model string) map[string]TokenUsage {
     return map[string]TokenUsage{model: u}
 }
 
-// Model IDs returned by go-cli-agent models --json use
+// Model IDs returned by aegis-agent models --json use
 // <provider>/<model>. Split only the first slash so provider-native
 // model IDs may still contain slashes.
 func appendGocliModelArgs(args []string, model string) []string {
@@ -487,7 +487,7 @@ Session id reporting reuses the existing package helper `resolveSessionID(reques
 - `handoff` 不影响 `Result.Output`。如果 Multica 当前没有 mission store 或 Result 扩展字段，应忽略它。
 - unknown content blocks 继续忽略；不要因为收到 `handoff` 或未来字段而失败。
 
-后续启用 mission-compatible profile 时，Multica 可以在 `processOutput` 的 `result` 分支把 `msg.Handoff` 与 `msg.Metadata` 保存到 mission store 或 run artifact。保存逻辑必须在 Multica domain 层完成，不应让 `gocliBackend` 解析 go-cli-agent session 目录。
+后续启用 mission-compatible profile 时，Multica 可以在 `processOutput` 的 `result` 分支把 `msg.Handoff` 与 `msg.Metadata` 保存到 mission store 或 run artifact。保存逻辑必须在 Multica domain 层完成，不应让 `gocliBackend` 解析 aegis-agent session 目录。
 
 Mission Control 展示建议来自：
 
@@ -501,7 +501,7 @@ Mission Control 展示建议来自：
 
 ### 2.1 注释
 
-将 package 注释和 `Config.ExecutablePath` 注释中的 provider list 加入 `go-cli-agent` / `gocli`。
+将 package 注释和 `Config.ExecutablePath` 注释中的 provider list 加入 `aegis-agent` / `gocli`。
 
 ### 2.2 Factory
 
@@ -515,7 +515,7 @@ case "gocli":
 ### 2.3 Launch header
 
 ```go
-"gocli": "go-cli-agent exec (stream-json)",
+"gocli": "aegis-agent exec (stream-json)",
 ```
 
 ### 2.4 Tests
@@ -546,7 +546,7 @@ case "gocli":
 ```go
 func discoverGocliModels(ctx context.Context, executablePath string) ([]Model, error) {
     if executablePath == "" {
-        executablePath = "go-cli-agent"
+        executablePath = "aegis-agent"
     }
     if _, err := exec.LookPath(executablePath); err != nil {
         return []Model{}, nil
@@ -573,7 +573,7 @@ func discoverGocliModels(ctx context.Context, executablePath string) ([]Model, e
 配置对齐注意事项：
 
 - `ListModels(ctx, provider, executablePath)` 当前只接收 executable path，不接收 daemon `ExtraArgs` / `CustomArgs`。
-- 如果 go-cli-agent 需要非默认 config path，推荐在 daemon 进程环境设置 `GO_CLI_AGENT_CONFIG=/path/to/config.yaml`，这样 `go-cli-agent models --json` 和 `go-cli-agent exec ...` 都走同一配置。
+- 如果 aegis-agent 需要非默认 config path，推荐在 daemon 进程环境设置 `AEGIS_AGENT_CONFIG=/path/to/config.yaml`，这样 `aegis-agent models --json` 和 `aegis-agent exec ...` 都走同一配置。
 - 不要把 `--config /path/to/config.yaml` 仅放进 `MULTICA_GOCLI_ARGS` 后就假设模型发现也会使用它；`MULTICA_GOCLI_ARGS` 只进入 task execution 的 `ExtraArgs`。
 
 ## 4. 修改 `server/pkg/agent/version.go`
@@ -587,7 +587,7 @@ var MinVersions = map[string]string{
 }
 ```
 
-前提：go-cli-agent 侧必须实现 `go-cli-agent --version`，输出中含 `0.1.0` 形态 semver。
+前提：aegis-agent 侧必须实现 `aegis-agent --version`，输出中含 `0.1.0` 形态 semver。
 
 ## 5. 修改 `server/pkg/agent/thinking.go`
 
@@ -619,12 +619,12 @@ GocliArgs []string
 在 agent probe 列表中加入：
 
 ```go
-if e, ok := probe("MULTICA_GOCLI_PATH", "go-cli-agent", "MULTICA_GOCLI_MODEL"); ok {
+if e, ok := probe("MULTICA_GOCLI_PATH", "aegis-agent", "MULTICA_GOCLI_MODEL"); ok {
     agents["gocli"] = e
 }
 ```
 
-错误提示加入 `go-cli-agent`。
+错误提示加入 `aegis-agent`。
 
 ### 6.3 Args env
 
@@ -639,9 +639,9 @@ if err != nil {
 
 ### 6.4 default command names
 
-`defaultAgentCommandNames` 加入 `"go-cli-agent"`。
+`defaultAgentCommandNames` 加入 `"aegis-agent"`。
 
-`MULTICA_GOCLI_ARGS` 只用于 execution custom args。若需要影响 `models --json`，使用 daemon 环境里的 `GO_CLI_AGENT_CONFIG`，或在 Multica 另行扩展 model discovery 参数通道；不要让 execution 和 model discovery 读取不同 go-cli-agent config。
+`MULTICA_GOCLI_ARGS` 只用于 execution custom args。若需要影响 `models --json`，使用 daemon 环境里的 `AEGIS_AGENT_CONFIG`，或在 Multica 另行扩展 model discovery 参数通道；不要让 execution 和 model discovery 读取不同 aegis-agent config。
 
 ## 7. 修改 `server/internal/daemon/daemon.go`
 
@@ -678,11 +678,11 @@ case "codex", "copilot", "opencode", "openclaw", "pi", "cursor", "kimi", "kiro",
 
 ```go
 case "gocli":
-    // go-cli-agent default config scans ./skills relative to task workdir.
+    // aegis-agent default config scans ./skills relative to task workdir.
     skillsDir = filepath.Join(workDir, "skills")
 ```
 
-如果接入 local-skill list/copy UI，`gocli` 的本地运行时 skill root 应为 `~/.go-cli-agent/skills`，只作为“复制进 Multica workspace”前的私有来源。任务执行时不要让 gocli 默认扫描 `~/.codex/skills` 或其他全局 skill root；Multica 对 agent 的动态 skill 调节必须通过当前任务工作区的 `./skills` 落地。
+如果接入 local-skill list/copy UI，`gocli` 的本地运行时 skill root 应为 `~/.aegis-agent/skills`，只作为“复制进 Multica workspace”前的私有来源。任务执行时不要让 gocli 默认扫描 `~/.codex/skills` 或其他全局 skill root；Multica 对 agent 的动态 skill 调节必须通过当前任务工作区的 `./skills` 落地。
 
 ### 8.3 tests
 
@@ -706,11 +706,11 @@ case "gocli":
 ## 10. PR 摘要建议
 
 ```text
-feat(agent): add go-cli-agent backend
+feat(agent): add aegis-agent backend
 
-- Add gocli stream-json backend for go-cli-agent exec
+- Add gocli stream-json backend for aegis-agent exec
 - Register gocli in factory, launch headers, versions, models and thinking gates
-- Discover go-cli-agent via MULTICA_GOCLI_PATH / PATH
+- Discover aegis-agent via MULTICA_GOCLI_PATH / PATH
 - Wire gocli execenv to AGENTS.md and ./skills
 - Add mock-backed unit tests for stream parsing, args, model discovery and runtime registration
 ```

@@ -1,4 +1,4 @@
-# Go CLI Agent SDK And API Evolution Spec
+# Aegis Agent SDK And API Evolution Spec
 
 ## 1. 目标
 

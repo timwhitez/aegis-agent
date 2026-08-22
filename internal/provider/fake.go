@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"go-cli-agent/internal/session"
+	"aegis-agent/internal/session"
 )
 
 type FakeAdapter struct {
