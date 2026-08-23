@@ -1,7 +1,9 @@
-// Package filechanges computes a durable, workspace-relative accounting of the
-// files a session mutated. It is the single source of truth shared by the
-// runtime (which records changes incrementally as tools succeed) and the Web
-// console (which serves and, when needed, backfills the durable record).
+// Package filechanges computes a durable, workspace-relative best-effort view
+// of files changed by successful tool calls. Dedicated write_file and edit_file
+// calls are accounted from their structured arguments/results. Shell coverage
+// is intentionally limited to recognized output-redirection syntax; arbitrary
+// successful shell mutators, scripts, compilers, and generators may be absent.
+// The record is therefore a review aid, not a complete filesystem audit log.
 //
 // Two correctness rules drive this package:
 //
@@ -9,7 +11,7 @@
 //     example "old_text not found") or a shell command that exits non-zero must
 //     not appear as a file change.
 //  2. Paths are normalized against the operation's working directory and the
-//     session workspace root so they precisely match the files on disk. Shell
+//     session workspace root so recognized paths match the files on disk. Shell
 //     redirects like "../reports/out.txt" run from a child workdir resolve to
 //     the same workspace-relative path the file actually lives at.
 package filechanges
@@ -32,10 +34,10 @@ type accumulator struct {
 	firstSeen int
 }
 
-// Collector aggregates per-file mutation counts from a session message stream.
-// It pairs assistant tool calls with their tool results so only operations that
-// actually succeeded are counted, and normalizes every path relative to the
-// session workspace root.
+// Collector aggregates the recognized per-file mutation hints from a session
+// message stream. It pairs assistant tool calls with their tool results so only
+// successful operations count and normalizes recognized paths relative to the
+// workspace root. It does not observe arbitrary shell filesystem effects.
 type Collector struct {
 	workdir string
 	changes map[string]*accumulator
@@ -191,7 +193,8 @@ func (c *Collector) resolvePath(metaPath, argPath, opCwd string) string {
 	return filepath.ToSlash(filepath.Clean(abs))
 }
 
-// Summaries returns the accumulated changes ordered by first appearance.
+// Summaries returns the accumulated recognized changes ordered by first
+// appearance.
 func (c *Collector) Summaries() []FileChange {
 	if len(c.changes) == 0 {
 		return nil
@@ -211,7 +214,8 @@ func (c *Collector) Summaries() []FileChange {
 	return out
 }
 
-// FromMessages computes the full file-change summary for a message slice.
+// FromMessages computes the best-effort file-change summary for a message
+// slice.
 func FromMessages(workdir string, messages []session.Message) []FileChange {
 	collector := NewCollector(workdir)
 	for _, msg := range messages {
@@ -220,8 +224,8 @@ func FromMessages(workdir string, messages []session.Message) []FileChange {
 	return collector.Summaries()
 }
 
-// FromCall computes the file-change deltas a single successful tool call
-// produced. It returns nil for failed results or non-mutating tools.
+// FromCall computes the recognized file-change deltas a single successful tool
+// call produced. It returns nil for failed results or non-mutating tools.
 func FromCall(workdir string, call session.ToolCall, result session.ToolResult) []FileChange {
 	if result.IsError || !isFileMutatingTool(call.Name) {
 		return nil
