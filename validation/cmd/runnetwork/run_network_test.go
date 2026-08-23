@@ -49,6 +49,42 @@ func TestNonLoopbackRequiresExplicitProcessOptIn(t *testing.T) {
 	}
 }
 
+func TestHostnamesBeginningWith127AreNotLoopback(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
+	for _, address := range []string{
+		"127.attacker.example:3940",
+		"127.0.0.1.attacker.example:3940",
+		"127.999.0.1:3940",
+	} {
+		output, err := runForeground(t, repoRoot, "AEGIS_AGENT_LISTEN="+address)
+		if err == nil {
+			t.Fatalf("hostile/non-IP address %q unexpectedly bypassed opt-in: %s", address, output)
+		}
+		if !strings.Contains(output, "refusing non-loopback listen address") {
+			t.Fatalf("address %q missing fail-closed diagnostic: %s", address, output)
+		}
+	}
+}
+
+func TestCanonicalLoopbackAddressesRemainAllowed(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
+	for _, address := range []string{
+		"127.0.0.1:3940",
+		"127.255.255.254:3940",
+		"localhost:3940",
+		"LOCALHOST.:3940",
+		"[::1]:3940",
+	} {
+		output, err := runForeground(t, repoRoot, "AEGIS_AGENT_LISTEN="+address)
+		if err != nil {
+			t.Fatalf("loopback address %q was rejected: %v\n%s", address, err, output)
+		}
+		if strings.Contains(output, "WARNING: web console is reachable") {
+			t.Fatalf("loopback address %q emitted a LAN warning: %s", address, output)
+		}
+	}
+}
+
 func TestExplicitNetworkOptInAllowsConfiguredAddress(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	output, err := runForeground(t, repoRoot,
