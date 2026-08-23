@@ -59,3 +59,23 @@ func TestUnknownFieldStillReportsFullPath(t *testing.T) {
 		t.Fatalf("unknown field path was lost: %v", err)
 	}
 }
+
+func TestMergeAliasToSequenceValidatesUnknownFields(t *testing.T) {
+	bad := configYAMLMappingNode(configYAMLScalarNode("sanbox"), configYAMLScalarNode("bwrap"))
+	sequence := &yaml.Node{Kind: yaml.SequenceNode, Content: []*yaml.Node{configYAMLAliasNode(bad)}}
+	root := configYAMLMappingNode(configYAMLScalarNode("<<"), configYAMLAliasNode(sequence))
+	err := validateConfigYAMLNode(root, reflect.TypeOf(ShellConfig{}), []string{"runtime", "shell"})
+	if err == nil || !strings.Contains(err.Error(), "runtime.shell.sanbox") {
+		t.Fatalf("unknown field behind merge-sequence alias was not rejected: %v", err)
+	}
+}
+
+func TestMergeAliasSequenceCycleFailsClosed(t *testing.T) {
+	sequence := &yaml.Node{Kind: yaml.SequenceNode}
+	sequence.Content = []*yaml.Node{configYAMLAliasNode(sequence)}
+	root := configYAMLMappingNode(configYAMLScalarNode("<<"), configYAMLAliasNode(sequence))
+	err := validateConfigYAMLNode(root, reflect.TypeOf(ShellConfig{}), []string{"runtime", "shell"})
+	if err == nil || !strings.Contains(err.Error(), "alias cycle") {
+		t.Fatalf("merge alias sequence cycle did not fail closed: %v", err)
+	}
+}
