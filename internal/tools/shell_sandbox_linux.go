@@ -61,23 +61,21 @@ func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string,
 	return bwrapPath, args, "bwrap", nil
 }
 
-// bwrapInspectionSource translates the child-only /proc/self/fd/3 bind source
-// back to a parent-visible descriptor for the exact directory that will be
-// inherited through cmd.ExtraFiles. Inspecting the literal child path in the
-// parent can examine an unrelated fd 3; inspecting the pathname can race with a
-// workspace replacement. Enumerating open descriptors and matching inode
-// identity preserves the stable-directory guarantee used by the shell runner.
+// bwrapInspectionSource handles the child-only /proc/self/fd/3 bind source.
+// The parent cannot safely infer which numeric parent descriptor os/exec will
+// expose as child fd 3 when other goroutines may open descriptors concurrently.
+// Instead, conservatively inspect Git metadata reachable through every open
+// directory descriptor in this process. That set includes the stable workdir
+// descriptor placed in cmd.ExtraFiles. An unrelated unsafe directory can cause
+// a fail-closed false positive, but a replaced workdir cannot hide an external
+// .git pointer from the preflight.
 func bwrapInspectionSource(workdir, bindSource string) (string, error) {
 	if filepath.Clean(bindSource) != childBwrapWorkdirFD {
 		return bindSource, nil
 	}
-	targetInfo, err := os.Stat(workdir)
-	if err != nil {
-		return "", fmt.Errorf("inspect bwrap workdir %s: %w", workdir, err)
-	}
 	entries, err := os.ReadDir("/proc/self/fd")
 	if err != nil {
-		return "", fmt.Errorf("locate stable bwrap workdir descriptor: %w", err)
+		return "", fmt.Errorf("inspect stable bwrap workdir descriptors: %w", err)
 	}
 	for _, entry := range entries {
 		fd, err := strconv.Atoi(entry.Name())
@@ -89,11 +87,16 @@ func bwrapInspectionSource(workdir, bindSource string) (string, error) {
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		if os.SameFile(targetInfo, info) {
-			return candidate, nil
+		if err := rejectBwrapExternalGitMetadata(candidate); err != nil {
+			return "", fmt.Errorf("stable bwrap directory fd %d: %w", fd, err)
 		}
 	}
-	return "", fmt.Errorf("runtime.shell.sandbox=bwrap cannot locate the stable descriptor for workdir %s; refusing to inspect a different path", workdir)
+	// Inspect the pathname as well. This catches an unsafe replacement even
+	// when no process has opened the replacement directory yet.
+	if err := rejectBwrapExternalGitMetadata(workdir); err != nil {
+		return "", err
+	}
+	return workdir, nil
 }
 
 func rejectBwrapExternalGitMetadata(bindSource string) error {
