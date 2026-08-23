@@ -23,6 +23,7 @@ func TestSecurityHeadersContainRemoteImagesAndReferrers(t *testing.T) {
 		"frame-ancestors 'none'",
 		"object-src 'none'",
 		"script-src 'self'",
+		"style-src 'self' 'unsafe-inline'",
 	} {
 		if !strings.Contains(policy, directive) {
 			t.Fatalf("Content-Security-Policy missing %q: %q", directive, policy)
@@ -30,6 +31,9 @@ func TestSecurityHeadersContainRemoteImagesAndReferrers(t *testing.T) {
 	}
 	if strings.Contains(policy, "img-src *") || strings.Contains(policy, "img-src http:") || strings.Contains(policy, "img-src https:") {
 		t.Fatalf("Content-Security-Policy permits remote image loads: %q", policy)
+	}
+	if strings.Contains(policy, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("Content-Security-Policy enables inline scripts: %q", policy)
 	}
 	if got := recorder.Header().Get("Referrer-Policy"); got != "no-referrer" {
 		t.Fatalf("Referrer-Policy=%q want no-referrer", got)
