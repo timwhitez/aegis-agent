@@ -216,7 +216,7 @@ Plan Mode 行为：
 - `--json`
 - `--config`
 
-`sessions context` 只接受一个 session id；`--json` 返回与 SDK `Context`、Web `GET /api/sessions/{id}/context` 相同的 `ContextReport` schema。文本模式只输出 root/session/request、root/child peak、total input、unknown usage 与 wall time 摘要，不展开 prompt、tool schema、metadata value、tool output 或 provider raw payload。
+`sessions context` 只接受一个 session id；`--json` 返回与 SDK `Context`、Web `GET /api/sessions/{id}/context` 相同的 `ContextReport` schema。文本模式只输出 root/session/request、root/child peak、total input、unknown usage 与 wall time摘要，不展开 prompt、tool schema、metadata value、tool output 或 provider raw payload。
 
 ### 5.7 `goal`
 
@@ -326,7 +326,7 @@ next: aegis-agent continue 20260319-101530-ab12cd --message "..."
 
 - `~/.aegis-agent/config.yaml`
 - 或显式 `AEGIS_AGENT_CONFIG` / `--config`
-- 当前工作目录 `.aegis-agent/config.yaml` 只在设置 `AEGIS_AGENT_TRUST_WORKSPACE_CONFIG=1|true`，或存在普通文件 `.aegis-agent/trusted` 时加载；未受信 workspace config 不得改写 provider endpoint、API-provider、hooks、session-dir、skills-dir 等 active runtime 配置
+- 当前工作目录 `.aegis-agent/config.yaml` 只在进程显式设置 `AEGIS_AGENT_TRUST_WORKSPACE_CONFIG=1|true` 时作为隐式配置层加载；仓库内 `.aegis-agent/trusted` 只能视为普通工作区内容，不能授权同一工作区的配置。显式 `AEGIS_AGENT_CONFIG` / `--config` 仍代表 operator 对该路径的直接选择；未受信 workspace config 不得改写 provider endpoint、API-provider、hooks、session-dir、skills-dir 等 active runtime 配置
 
 环境变量文件：
 
