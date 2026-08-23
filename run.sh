@@ -104,13 +104,13 @@ listen_port() {
 
 is_loopback_host() {
 	local host="${1,,}" first second third fourth
-	host="${host%.}"
+	local ipv4_re='^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$'
 	case "$host" in
 		localhost|::1|\[::1\])
 			return 0
 			;;
 	esac
-	if [[ ! "$host" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+	if [[ ! "$host" =~ $ipv4_re ]]; then
 		return 1
 	fi
 	first=$((10#${BASH_REMATCH[1]}))
