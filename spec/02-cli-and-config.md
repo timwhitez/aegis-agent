@@ -216,7 +216,7 @@ Plan Mode 行为：
 - `--json`
 - `--config`
 
-`sessions context` 只接受一个 session id；`--json` 返回与 SDK `Context`、Web `GET /api/sessions/{id}/context` 相同的 `ContextReport` schema。文本模式只输出 root/session/request、root/child peak、total input、unknown usage 与 wall time摘要，不展开 prompt、tool schema、metadata value、tool output 或 provider raw payload。
+`sessions context` 只接受一个 session id；`--json` 返回与 SDK `Context`、Web `GET /api/sessions/{id}/context` 相同的 `ContextReport` schema。文本模式只输出 root/session/request、root/child peak、total input、unknown usage 与 wall time 摘要，不展开 prompt、tool schema、metadata value、tool output 或 provider raw payload。
 
 ### 5.7 `goal`
 
