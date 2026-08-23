@@ -8,11 +8,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const maxConfigYAMLValidationDepth = 64
+const (
+	maxConfigYAMLValidationDepth = 64
+	maxConfigYAMLValidationNodes = 100000
+)
 
 // configYAMLAlias avoids recursively calling Config.UnmarshalYAML when the
 // validated node is decoded into the existing layered configuration.
 type configYAMLAlias Config
+
+type configYAMLValidationKey struct {
+	node   *yaml.Node
+	target reflect.Type
+}
+
+type configYAMLValidationState struct {
+	visited   int
+	active    map[configYAMLValidationKey]struct{}
+	validated map[configYAMLValidationKey]struct{}
+}
 
 // UnmarshalYAML rejects unknown keys before applying a user-authored layer.
 // yaml.v3's ordinary Unmarshal path silently ignores unknown struct fields,
@@ -28,32 +42,58 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func validateConfigYAMLNode(node *yaml.Node, target reflect.Type, path []string) error {
-	return validateConfigYAMLNodeDepth(node, target, path, 0)
+	state := &configYAMLValidationState{
+		active:    make(map[configYAMLValidationKey]struct{}),
+		validated: make(map[configYAMLValidationKey]struct{}),
+	}
+	return validateConfigYAMLNodeState(node, target, path, 0, state)
 }
 
-func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []string, depth int) error {
+func validateConfigYAMLNodeState(node *yaml.Node, target reflect.Type, path []string, depth int, state *configYAMLValidationState) (retErr error) {
 	if node == nil {
 		return nil
 	}
 	if depth > maxConfigYAMLValidationDepth {
-		displayPath := strings.Join(path, ".")
-		if displayPath == "" {
-			displayPath = "<root>"
-		}
-		return fmt.Errorf("configuration YAML nesting exceeds %d levels at %s", maxConfigYAMLValidationDepth, displayPath)
+		return configYAMLDepthError(path)
 	}
-	if node.Kind == yaml.DocumentNode {
-		if len(node.Content) == 0 {
-			return nil
-		}
-		return validateConfigYAMLNodeDepth(node.Content[0], target, path, depth+1)
+	if state == nil {
+		return fmt.Errorf("configuration YAML validation state is nil")
 	}
-	if node.Kind == yaml.AliasNode {
-		return validateConfigYAMLNodeDepth(node.Alias, target, path, depth+1)
+	state.visited++
+	if state.visited > maxConfigYAMLValidationNodes {
+		displayPath := configYAMLDisplayPath(path)
+		return fmt.Errorf("configuration YAML validation exceeds %d node visits at %s", maxConfigYAMLValidationNodes, displayPath)
 	}
 
 	for target.Kind() == reflect.Pointer {
 		target = target.Elem()
+	}
+	key := configYAMLValidationKey{node: node, target: target}
+	if _, ok := state.validated[key]; ok {
+		return nil
+	}
+	if _, ok := state.active[key]; ok {
+		return fmt.Errorf("configuration YAML alias cycle detected at %s", configYAMLDisplayPath(path))
+	}
+	state.active[key] = struct{}{}
+	defer func() {
+		delete(state.active, key)
+		if retErr == nil {
+			state.validated[key] = struct{}{}
+		}
+	}()
+
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		return validateConfigYAMLNodeState(node.Content[0], target, path, depth+1, state)
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return fmt.Errorf("configuration YAML alias is missing its target at %s", configYAMLDisplayPath(path))
+		}
+		return validateConfigYAMLNodeState(node.Alias, target, path, depth+1, state)
 	}
 	if node.Tag == "!!null" {
 		return nil
@@ -68,15 +108,15 @@ func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []st
 		for i := 0; i+1 < len(node.Content); i += 2 {
 			keyNode := node.Content[i]
 			valueNode := node.Content[i+1]
-			key := strings.TrimSpace(keyNode.Value)
-			if key == "<<" {
-				if err := validateConfigYAMLMergeDepth(valueNode, target, path, depth+1); err != nil {
+			keyName := strings.TrimSpace(keyNode.Value)
+			if keyName == "<<" {
+				if err := validateConfigYAMLMergeState(valueNode, target, path, depth+1, state); err != nil {
 					return err
 				}
 				continue
 			}
-			fieldType, ok := fields[key]
-			fieldPath := appendConfigYAMLPath(path, key)
+			fieldType, ok := fields[keyName]
+			fieldPath := appendConfigYAMLPath(path, keyName)
 			if !ok {
 				location := ""
 				if keyNode.Line > 0 {
@@ -84,7 +124,7 @@ func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []st
 				}
 				return fmt.Errorf("unknown configuration field %q%s", strings.Join(fieldPath, "."), location)
 			}
-			if err := validateConfigYAMLNodeDepth(valueNode, fieldType, fieldPath, depth+1); err != nil {
+			if err := validateConfigYAMLNodeState(valueNode, fieldType, fieldPath, depth+1, state); err != nil {
 				return err
 			}
 		}
@@ -93,14 +133,14 @@ func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []st
 			return nil
 		}
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			key := strings.TrimSpace(node.Content[i].Value)
-			if key == "<<" {
-				if err := validateConfigYAMLMergeDepth(node.Content[i+1], target, path, depth+1); err != nil {
+			keyName := strings.TrimSpace(node.Content[i].Value)
+			if keyName == "<<" {
+				if err := validateConfigYAMLMergeState(node.Content[i+1], target, path, depth+1, state); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := validateConfigYAMLNodeDepth(node.Content[i+1], target.Elem(), appendConfigYAMLPath(path, key), depth+1); err != nil {
+			if err := validateConfigYAMLNodeState(node.Content[i+1], target.Elem(), appendConfigYAMLPath(path, keyName), depth+1, state); err != nil {
 				return err
 			}
 		}
@@ -110,7 +150,7 @@ func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []st
 		}
 		for i, child := range node.Content {
 			itemPath := appendConfigYAMLPath(path, fmt.Sprintf("[%d]", i))
-			if err := validateConfigYAMLNodeDepth(child, target.Elem(), itemPath, depth+1); err != nil {
+			if err := validateConfigYAMLNodeState(child, target.Elem(), itemPath, depth+1, state); err != nil {
 				return err
 			}
 		}
@@ -118,25 +158,38 @@ func validateConfigYAMLNodeDepth(node *yaml.Node, target reflect.Type, path []st
 	return nil
 }
 
-func validateConfigYAMLMergeDepth(node *yaml.Node, target reflect.Type, path []string, depth int) error {
+func validateConfigYAMLMergeState(node *yaml.Node, target reflect.Type, path []string, depth int, state *configYAMLValidationState) error {
 	if node == nil {
 		return nil
 	}
 	if depth > maxConfigYAMLValidationDepth {
-		return validateConfigYAMLNodeDepth(node, target, path, depth)
-	}
-	if node.Kind == yaml.AliasNode {
-		return validateConfigYAMLNodeDepth(node.Alias, target, path, depth+1)
+		return configYAMLDepthError(path)
 	}
 	if node.Kind == yaml.SequenceNode {
+		state.visited++
+		if state.visited > maxConfigYAMLValidationNodes {
+			return fmt.Errorf("configuration YAML validation exceeds %d node visits at %s", maxConfigYAMLValidationNodes, configYAMLDisplayPath(path))
+		}
 		for _, child := range node.Content {
-			if err := validateConfigYAMLMergeDepth(child, target, path, depth+1); err != nil {
+			if err := validateConfigYAMLMergeState(child, target, path, depth+1, state); err != nil {
 				return err
 			}
 		}
 		return nil
 	}
-	return validateConfigYAMLNodeDepth(node, target, path, depth+1)
+	return validateConfigYAMLNodeState(node, target, path, depth+1, state)
+}
+
+func configYAMLDepthError(path []string) error {
+	return fmt.Errorf("configuration YAML nesting exceeds %d levels at %s", maxConfigYAMLValidationDepth, configYAMLDisplayPath(path))
+}
+
+func configYAMLDisplayPath(path []string) string {
+	displayPath := strings.Join(path, ".")
+	if displayPath == "" {
+		return "<root>"
+	}
+	return displayPath
 }
 
 func configYAMLFields(target reflect.Type) map[string]reflect.Type {
