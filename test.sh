@@ -19,7 +19,7 @@ for js_file in internal/webconsole/assets/*.js; do
   node --check "$js_file"
 done
 
-node --test validation/scripts/webconsole_utils_test.mjs
+node --test validation/scripts/*.mjs
 
 PKG_PATTERNS=(
   ./cmd/...
