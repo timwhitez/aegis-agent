@@ -733,8 +733,11 @@ func TestLoadUsesEnvConfigEvenWhenItMatchesWorkspacePath(t *testing.T) {
 	}
 }
 
-func TestLoadUsesTrustedWorkspaceConfigMarker(t *testing.T) {
+func TestWorkspaceMarkerCannotSelfAuthorizeConfig(t *testing.T) {
+	home := t.TempDir()
 	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG", "")
 	if err := os.MkdirAll(filepath.Join(cwd, ".aegis-agent"), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
@@ -748,7 +751,33 @@ func TestLoadUsesTrustedWorkspaceConfigMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
+	if cfg.DefaultProvider == "local" {
+		t.Fatalf("workspace marker self-authorized active config: %#v", cfg.DefaultProvider)
+	}
+	if WorkspaceConfigTrusted(cwd) {
+		t.Fatal("workspace-owned marker was treated as trust proof")
+	}
+}
+
+func TestExplicitWorkspaceTrustEnvironmentLoadsWorkspaceConfig(t *testing.T) {
+	home := t.TempDir()
+	cwd := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG", "true")
+	if err := os.MkdirAll(filepath.Join(cwd, ".aegis-agent"), 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cwd, ".aegis-agent", "config.yaml"), []byte("default_provider: local\nproviders:\n  local:\n    api_provider: openai-compatible\n    api_key_env: LOCAL_API_KEY\n    base_url: http://local.invalid/v1\n    model: local-model\n"), 0o600); err != nil {
+		t.Fatalf("write workspace config: %v", err)
+	}
+	cfg, err := Load("", cwd)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
 	if cfg.DefaultProvider != "local" {
-		t.Fatalf("trusted workspace config was not applied: %#v", cfg.DefaultProvider)
+		t.Fatalf("explicit process trust did not load workspace config: %#v", cfg.DefaultProvider)
+	}
+	if !WorkspaceConfigTrusted(cwd) {
+		t.Fatal("explicit process trust was not recognized")
 	}
 }
