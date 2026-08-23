@@ -34,13 +34,30 @@ test('remote Markdown images render as explicit links rather than live image ele
   assert.match(html, /target="_blank" rel="noopener noreferrer"/);
 });
 
-test('same-origin Markdown images remain inline', () => {
+test('backslash-normalized network paths never remain live images', () => {
   const context = markdownContext();
-  const html = context.safeMarkdown('![relative](./image.png) ![root](/assets/image.png)');
+  const html = context.safeMarkdown('![escape](/\\attacker.example/pixel)');
+
+  assert.doesNotMatch(html, /<img\b/i);
+  assert.doesNotMatch(html, /href=/i);
+  assert.match(html, /class="md-img-blocked"/);
+  assert.match(html, /Blocked image: escape/);
+});
+
+test('only explicit same-origin Markdown images remain inline', () => {
+  const context = markdownContext();
+  const html = context.safeMarkdown([
+    '![relative](./image.png)',
+    '![parent](../image.png)',
+    '![root](/assets/image.png)',
+    '![fragment](#image)'
+  ].join(' '));
 
   assert.match(html, /<img class="md-img" src="\.\/image\.png" alt="relative" loading="lazy" \/>/);
+  assert.match(html, /<img class="md-img" src="\.\.\/image\.png" alt="parent" loading="lazy" \/>/);
   assert.match(html, /<img class="md-img" src="\/assets\/image\.png" alt="root" loading="lazy" \/>/);
-  assert.doesNotMatch(html, /class="md-img-link"/);
+  assert.doesNotMatch(html, /<img[^>]+src="#image"/);
+  assert.match(html, /Blocked image: fragment/);
 });
 
 test('unsafe image schemes remain inert text', () => {
