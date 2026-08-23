@@ -42,7 +42,7 @@ refresh_runtime_settings() {
 refresh_runtime_settings
 
 usage() {
-	cat <<'EOF'
+	cat <<'EOF_USAGE'
 Usage: ./run.sh [start|foreground|stop|restart|status|logs]
 
 Defaults:
@@ -64,7 +64,7 @@ Environment overrides:
   AEGIS_AGENT_ENV_FILE     Optional .env file to source before start.
   AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.
   AEGIS_AGENT_SKIP_BUILD   Set to `1` to skip automatic `./build.sh`.
-EOF
+EOF_USAGE
 }
 
 load_env_file() {
@@ -102,6 +102,24 @@ listen_port() {
 	printf '%s\n' "${LISTEN_ADDR##*:}"
 }
 
+is_loopback_host() {
+	local host="${1,,}" first second third fourth
+	host="${host%.}"
+	case "$host" in
+		localhost|::1|\[::1\])
+			return 0
+			;;
+	esac
+	if [[ ! "$host" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
+		return 1
+	fi
+	first=$((10#${BASH_REMATCH[1]}))
+	second=$((10#${BASH_REMATCH[2]}))
+	third=$((10#${BASH_REMATCH[3]}))
+	fourth=$((10#${BASH_REMATCH[4]}))
+	(( first == 127 && second <= 255 && third <= 255 && fourth <= 255 ))
+}
+
 print_urls() {
 	local host port
 	host="$(listen_host)"
@@ -121,11 +139,9 @@ print_urls() {
 validate_listen_policy() {
 	local host allow
 	host="$(listen_host)"
-	case "$host" in
-		127.*|localhost|::1|\[::1\])
-			return 0
-			;;
-	esac
+	if is_loopback_host "$host"; then
+		return 0
+	fi
 	allow="${ALLOW_NETWORK,,}"
 	if [[ "$allow" != "1" && "$allow" != "true" ]]; then
 		printf 'refusing non-loopback listen address %s without AEGIS_AGENT_ALLOW_NETWORK=1\n' "$LISTEN_ADDR" >&2
@@ -136,11 +152,9 @@ validate_listen_policy() {
 print_lan_warning() {
 	local host
 	host="$(listen_host)"
-	case "$host" in
-		127.*|localhost|::1|\[::1\])
-			return 0
-			;;
-	esac
+	if is_loopback_host "$host"; then
+		return 0
+	fi
 	echo "WARNING: web console is reachable from non-loopback clients."
 	echo "It can write config and .env API keys, delete sessions, manage skills, read/download/upload/rename workspace files, and create workspace folders or delete one or more workspace files or folders. Use only on trusted local networks."
 }
