@@ -8,10 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
-const maxBwrapGitPointerBytes = 4096
+const (
+	maxBwrapGitPointerBytes = 4096
+	childBwrapWorkdirFD     = "/proc/self/fd/3"
+)
 
 func shellSandboxCommand(sandbox, workdir, bindSource, shellPath, shellArg, command string) (string, []string, string, error) {
 	return sandboxCommand(sandbox, workdir, bindSource, []string{shellPath, shellArg, command})
@@ -28,7 +32,11 @@ func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string,
 	if strings.TrimSpace(bindSource) == "" {
 		bindSource = workdir
 	}
-	if err := rejectBwrapExternalGitMetadata(bindSource); err != nil {
+	inspectionSource, err := bwrapInspectionSource(workdir, bindSource)
+	if err != nil {
+		return "", nil, "bwrap_external_git_metadata", err
+	}
+	if err := rejectBwrapExternalGitMetadata(inspectionSource); err != nil {
 		return "", nil, "bwrap_external_git_metadata", err
 	}
 	bwrapPath, err := exec.LookPath("bwrap")
@@ -51,6 +59,41 @@ func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string,
 	}
 	args = append(args, argv...)
 	return bwrapPath, args, "bwrap", nil
+}
+
+// bwrapInspectionSource translates the child-only /proc/self/fd/3 bind source
+// back to a parent-visible descriptor for the exact directory that will be
+// inherited through cmd.ExtraFiles. Inspecting the literal child path in the
+// parent can examine an unrelated fd 3; inspecting the pathname can race with a
+// workspace replacement. Enumerating open descriptors and matching inode
+// identity preserves the stable-directory guarantee used by the shell runner.
+func bwrapInspectionSource(workdir, bindSource string) (string, error) {
+	if filepath.Clean(bindSource) != childBwrapWorkdirFD {
+		return bindSource, nil
+	}
+	targetInfo, err := os.Stat(workdir)
+	if err != nil {
+		return "", fmt.Errorf("inspect bwrap workdir %s: %w", workdir, err)
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return "", fmt.Errorf("locate stable bwrap workdir descriptor: %w", err)
+	}
+	for _, entry := range entries {
+		fd, err := strconv.Atoi(entry.Name())
+		if err != nil || fd <= 2 {
+			continue
+		}
+		candidate := filepath.Join("/proc/self/fd", entry.Name())
+		info, err := os.Stat(candidate)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if os.SameFile(targetInfo, info) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("runtime.shell.sandbox=bwrap cannot locate the stable descriptor for workdir %s; refusing to inspect a different path", workdir)
 }
 
 func rejectBwrapExternalGitMetadata(bindSource string) error {
