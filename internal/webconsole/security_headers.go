@@ -2,12 +2,14 @@ package webconsole
 
 import "net/http"
 
-const webContentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self'; connect-src 'self' ws: wss:; font-src 'self'; media-src 'self'; worker-src 'self' blob:"
+const webContentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; font-src 'self'; media-src 'self'; worker-src 'self' blob:"
 
 // SecurityHeaders wraps the complete Web console surface with browser-side
 // containment. In particular, img-src prevents untrusted model output from
 // causing automatic requests to external or private-network HTTP endpoints,
 // even if a future renderer regression emits a remote image element again.
+// Inline styles remain enabled because the current console uses trusted style
+// attributes and CSS custom properties for layout and progress rendering.
 func SecurityHeaders(next http.Handler) http.Handler {
 	if next == nil {
 		next = http.NotFoundHandler()
