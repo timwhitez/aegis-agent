@@ -81,3 +81,17 @@ func TestBwrapRejectsOversizedGitPointer(t *testing.T) {
 		t.Fatalf("oversized metadata accepted: status=%q err=%v", status, err)
 	}
 }
+
+func TestBwrapRejectsUnsupportedRegularGitMetadata(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, ".git"), []byte("not-a-gitdir-pointer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, status, err := sandboxCommand("bwrap", workdir, workdir, []string{"true"})
+	if err == nil || status != "bwrap_external_git_metadata" {
+		t.Fatalf("unsupported regular metadata accepted: status=%q err=%v", status, err)
+	}
+	if !strings.Contains(err.Error(), "unsupported regular Git metadata") {
+		t.Fatalf("missing unsupported-representation diagnostic: %v", err)
+	}
+}

@@ -88,5 +88,5 @@ func rejectBwrapExternalGitMetadata(bindSource string) error {
 	if strings.HasPrefix(strings.ToLower(line), "gitdir:") {
 		return fmt.Errorf("runtime.shell.sandbox=bwrap cannot safely expose linked-worktree or submodule Git metadata from %s; use copy isolation or disable bwrap", gitPath)
 	}
-	return nil
+	return fmt.Errorf("runtime.shell.sandbox=bwrap refuses unsupported regular Git metadata at %s", gitPath)
 }
