@@ -55,6 +55,9 @@ func TestHostnamesBeginningWith127AreNotLoopback(t *testing.T) {
 		"127.attacker.example:3940",
 		"127.0.0.1.attacker.example:3940",
 		"127.999.0.1:3940",
+		"127.0.0.01:3940",
+		"127.000.000.001:3940",
+		"localhost.:3940",
 	} {
 		output, err := runForeground(t, repoRoot, "AEGIS_AGENT_LISTEN="+address)
 		if err == nil {
@@ -72,7 +75,7 @@ func TestCanonicalLoopbackAddressesRemainAllowed(t *testing.T) {
 		"127.0.0.1:3940",
 		"127.255.255.254:3940",
 		"localhost:3940",
-		"LOCALHOST.:3940",
+		"LOCALHOST:3940",
 		"[::1]:3940",
 	} {
 		output, err := runForeground(t, repoRoot, "AEGIS_AGENT_LISTEN="+address)
