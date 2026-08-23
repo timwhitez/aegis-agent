@@ -62,6 +62,9 @@ func TestBwrapProductionFDMappingFailsClosedAfterPathReplacement(t *testing.T) {
 	if err := os.Mkdir(workdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(workdir, ".git"), []byte("gitdir: /outside/repo/.git/worktrees/child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	stableDir, err := os.Open(workdir)
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +76,15 @@ func TestBwrapProductionFDMappingFailsClosedAfterPathReplacement(t *testing.T) {
 	if err := os.Mkdir(workdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(workdir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	_, _, status, err := sandboxCommand("bwrap", workdir, childBwrapWorkdirFD, []string{"true"})
 	if err == nil || status != "bwrap_external_git_metadata" {
 		t.Fatalf("replaced path did not fail closed: status=%q err=%v", status, err)
 	}
-	if !strings.Contains(err.Error(), "cannot locate the stable descriptor") {
+	if !strings.Contains(err.Error(), "use copy isolation or disable bwrap") {
 		t.Fatalf("unexpected replacement diagnostic: %v", err)
 	}
 }
