@@ -20,6 +20,7 @@ type configYAMLAlias Config
 type configYAMLValidationKey struct {
 	node   *yaml.Node
 	target reflect.Type
+	merge  bool
 }
 
 type configYAMLValidationState struct {
@@ -158,26 +159,54 @@ func validateConfigYAMLNodeState(node *yaml.Node, target reflect.Type, path []st
 	return nil
 }
 
-func validateConfigYAMLMergeState(node *yaml.Node, target reflect.Type, path []string, depth int, state *configYAMLValidationState) error {
+func validateConfigYAMLMergeState(node *yaml.Node, target reflect.Type, path []string, depth int, state *configYAMLValidationState) (retErr error) {
 	if node == nil {
 		return nil
 	}
 	if depth > maxConfigYAMLValidationDepth {
 		return configYAMLDepthError(path)
 	}
-	if node.Kind == yaml.SequenceNode {
-		state.visited++
-		if state.visited > maxConfigYAMLValidationNodes {
-			return fmt.Errorf("configuration YAML validation exceeds %d node visits at %s", maxConfigYAMLValidationNodes, configYAMLDisplayPath(path))
+	if state == nil {
+		return fmt.Errorf("configuration YAML validation state is nil")
+	}
+	state.visited++
+	if state.visited > maxConfigYAMLValidationNodes {
+		return fmt.Errorf("configuration YAML validation exceeds %d node visits at %s", maxConfigYAMLValidationNodes, configYAMLDisplayPath(path))
+	}
+	for target.Kind() == reflect.Pointer {
+		target = target.Elem()
+	}
+	key := configYAMLValidationKey{node: node, target: target, merge: true}
+	if _, ok := state.validated[key]; ok {
+		return nil
+	}
+	if _, ok := state.active[key]; ok {
+		return fmt.Errorf("configuration YAML alias cycle detected at %s", configYAMLDisplayPath(path))
+	}
+	state.active[key] = struct{}{}
+	defer func() {
+		delete(state.active, key)
+		if retErr == nil {
+			state.validated[key] = struct{}{}
 		}
+	}()
+
+	switch node.Kind {
+	case yaml.AliasNode:
+		if node.Alias == nil {
+			return fmt.Errorf("configuration YAML alias is missing its target at %s", configYAMLDisplayPath(path))
+		}
+		return validateConfigYAMLMergeState(node.Alias, target, path, depth+1, state)
+	case yaml.SequenceNode:
 		for _, child := range node.Content {
 			if err := validateConfigYAMLMergeState(child, target, path, depth+1, state); err != nil {
 				return err
 			}
 		}
 		return nil
+	default:
+		return validateConfigYAMLNodeState(node, target, path, depth+1, state)
 	}
-	return validateConfigYAMLNodeState(node, target, path, depth+1, state)
 }
 
 func configYAMLDepthError(path []string) error {
