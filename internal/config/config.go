@@ -900,17 +900,9 @@ func sameCleanPath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-func workspaceConfigTrusted(cwd string) bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG")), "1") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG")), "true") {
-		return true
-	}
-	marker := filepath.Join(cwd, ".aegis-agent", "trusted")
-	info, err := os.Lstat(marker)
-	if err != nil {
-		return false
-	}
-	return info.Mode().IsRegular()
+func workspaceConfigTrusted(_ string) bool {
+	value := strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG"))
+	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true")
 }
 
 func Clone(cfg *Config) (*Config, error) {

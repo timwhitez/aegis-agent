@@ -57,7 +57,7 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 
 	server := &http.Server{
 		Addr:              *listenAddr,
-		Handler:           service,
+		Handler:           webconsole.SecurityHeaders(service),
 		ReadHeaderTimeout: 10 * time.Second,
 		// IdleTimeout must be set explicitly: with IdleTimeout==0 net/http falls
 		// back to ReadTimeout (also 0), so idle keep-alive connections would never
