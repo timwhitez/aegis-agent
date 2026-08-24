@@ -12,11 +12,17 @@ TARGET_GOARCH="${AEGIS_AGENT_GOARCH:-${GOARCH:-}}"
 OUT_DIR="${AEGIS_AGENT_BUILD_DIR:-$DEFAULT_OUT_DIR}"
 OUT_PATH="${AEGIS_AGENT_BUILD_OUT:-}"
 
+EFFECTIVE_GOOS="$TARGET_GOOS"
+if [[ -z "$EFFECTIVE_GOOS" ]]; then
+	EFFECTIVE_GOOS="$(go env GOOS)"
+fi
+if [[ "$EFFECTIVE_GOOS" == "windows" ]]; then
+	printf 'unsupported target GOOS=windows: this repository currently requires Unix filesystem APIs\n' >&2
+	exit 2
+fi
+
 if [[ -z "$OUT_PATH" ]]; then
 	BINARY_NAME="$DEFAULT_BINARY_NAME"
-	if [[ "$TARGET_GOOS" == "windows" ]]; then
-		BINARY_NAME="${BINARY_NAME}.exe"
-	fi
 	OUT_PATH="${OUT_DIR}/${BINARY_NAME}"
 fi
 
