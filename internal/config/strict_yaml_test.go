@@ -103,7 +103,9 @@ runtime:
 	if err != nil {
 		t.Fatalf("documented deprecated aliases were rejected: %v", err)
 	}
-	if cfg.Runtime.ChildBudget.MaxElapsedSec != 19 || cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 7 {
+	if cfg.Runtime.ChildBudget.MaxActiveRuntimeSec != 19 ||
+		cfg.Runtime.ChildBudget.MaxElapsedSec != 0 ||
+		cfg.Runtime.ChildBudget.MaxTurnsPerAttempt != 7 {
 		t.Fatalf("deprecated aliases were not migrated: %#v", cfg.Runtime.ChildBudget)
 	}
 }
