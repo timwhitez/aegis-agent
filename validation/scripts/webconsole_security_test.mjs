@@ -40,8 +40,7 @@ test('backslash-normalized network paths never remain live images', () => {
 
   assert.doesNotMatch(html, /<img\b/i);
   assert.doesNotMatch(html, /href=/i);
-  assert.match(html, /class="md-img-blocked"/);
-  assert.match(html, /Blocked image: escape/);
+  assert.match(html, /!\[escape\]\(\/\\attacker\.example\/pixel\)/);
 });
 
 test('only explicit same-origin Markdown images remain inline', () => {
