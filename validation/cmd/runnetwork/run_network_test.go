@@ -105,7 +105,12 @@ func TestExplicitNetworkOptInAllowsConfiguredAddress(t *testing.T) {
 func TestDotEnvCannotGrantNetworkOptIn(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	envFile := filepath.Join(t.TempDir(), ".env")
-	if err := os.WriteFile(envFile, []byte("AEGIS_AGENT_LISTEN=0.0.0.0:3940\nAEGIS_AGENT_ALLOW_NETWORK=1\n"), 0o600); err != nil {
+	if err := os.WriteFile(envFile, []byte(
+		"AEGIS_AGENT_LISTEN=0.0.0.0:3940\n"+
+			"AEGIS_AGENT_ALLOW_NETWORK=1\n"+
+			"BASE_LISTEN_ADDR=0.0.0.0:3940\n"+
+			"BASE_ALLOW_NETWORK=1\n",
+	), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	output, err := runForeground(t, repoRoot, "AEGIS_AGENT_ENV_FILE="+envFile)
