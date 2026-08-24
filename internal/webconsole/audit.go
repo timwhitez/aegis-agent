@@ -72,10 +72,7 @@ func (s *Service) appendAuditEvents(pending ...pendingWebAuditEvent) error {
 		return err
 	}
 	defer file.Close()
-	if err := validateExistingAuditLog(file); err != nil {
-		return err
-	}
-	if err := validateAuditBatchUnique(file, events); err != nil {
+	if err := validateAuditLogAndBatch(file, events); err != nil {
 		return err
 	}
 	offset, err := file.Seek(0, io.SeekEnd)
@@ -145,9 +142,28 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 	return fileutil.OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND, 0o600)
 }
 
-func validateExistingAuditLog(file *os.File) error {
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+// validateAuditLogAndBatch validates the complete historical audit log and
+// checks the candidate batch against the IDs discovered during that same scan.
+// Keeping both checks in one call prevents appendAuditEvents from decoding the
+// entire history twice while preserving fail-closed validation semantics.
+func validateAuditLogAndBatch(file *os.File, events []webAuditEvent) error {
+	seenIDs, err := scanExistingAuditLog(file)
+	if err != nil {
 		return err
+	}
+	if err := validateAuditBatchIDs(seenIDs, events); err != nil {
+		return err
+	}
+	_, err = file.Seek(0, io.SeekEnd)
+	return err
+}
+
+func scanExistingAuditLog(file *os.File) (map[string]struct{}, error) {
+	if file == nil {
+		return nil, fmt.Errorf("audit log file is required")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
 	}
 	seenIDs := map[string]struct{}{}
 	scanner := bufio.NewScanner(file)
@@ -160,51 +176,26 @@ func validateExistingAuditLog(file *os.File) error {
 		}
 		var event webAuditEvent
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			return fmt.Errorf("invalid audit log record %d: %w", line, err)
+			return nil, fmt.Errorf("invalid audit log record %d: %w", line, err)
 		}
 		if err := validateAuditEvent(event); err != nil {
-			return fmt.Errorf("invalid audit log record %d: %w", line, err)
+			return nil, fmt.Errorf("invalid audit log record %d: %w", line, err)
 		}
 		id := strings.TrimSpace(event.ID)
 		if _, ok := seenIDs[id]; ok {
-			return fmt.Errorf("invalid audit log record %d: duplicate audit event id %q", line, id)
+			return nil, fmt.Errorf("invalid audit log record %d: duplicate audit event id %q", line, id)
 		}
 		seenIDs[id] = struct{}{}
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := file.Seek(0, io.SeekEnd)
-	return err
+	return seenIDs, nil
 }
 
-func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	seenIDs := map[string]struct{}{}
-	scanner := bufio.NewScanner(file)
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := strings.TrimSpace(scanner.Text())
-		if raw == "" {
-			continue
-		}
-		var event webAuditEvent
-		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			return fmt.Errorf("invalid audit log record %d: %w", line, err)
-		}
-		id := strings.TrimSpace(event.ID)
-		if id != "" {
-			seenIDs[id] = struct{}{}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return err
+func validateAuditBatchIDs(seenIDs map[string]struct{}, events []webAuditEvent) error {
+	if seenIDs == nil {
+		seenIDs = map[string]struct{}{}
 	}
 	for _, event := range events {
 		id := strings.TrimSpace(event.ID)
@@ -213,8 +204,18 @@ func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
 		}
 		seenIDs[id] = struct{}{}
 	}
-	_, err := file.Seek(0, io.SeekEnd)
-	return err
+	return nil
+}
+
+func validateExistingAuditLog(file *os.File) error {
+	return validateAuditLogAndBatch(file, nil)
+}
+
+func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	return validateAuditLogAndBatch(file, events)
 }
 
 func validateAuditEvent(event webAuditEvent) error {
