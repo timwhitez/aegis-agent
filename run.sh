@@ -58,20 +58,18 @@ Environment overrides:
                            use trusted local networks.
   AEGIS_AGENT_WEB_WORKERS  Worker count, default `2`.
   AEGIS_AGENT_BIN          Binary path, default `bin/aegis-agent`.
-  AEGIS_AGENT_ENV_FILE     Optional .env file to source before start.
+  AEGIS_AGENT_ENV_FILE     Optional credential dotenv file parsed by the Go binary.
   AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.
   AEGIS_AGENT_SKIP_BUILD   Set to `1` to skip automatic `./build.sh`.
 EOF
 }
 
-load_env_file() {
-	if [[ -f "$ENV_FILE" ]]; then
-		set -a
-		# shellcheck disable=SC1090
-		source "$ENV_FILE"
-		set +a
+prepare_env_file() {
+	# A dotenv file is data, not shell code. The Go binary applies the strict
+	# provider-credential allowlist in config.LoadEnvFile.
+	if [[ -n "$ENV_FILE" ]]; then
+		export AEGIS_AGENT_ENV_FILE="$ENV_FILE"
 	fi
-	refresh_runtime_settings
 }
 
 current_pid() {
@@ -144,7 +142,7 @@ start_background() {
 		return 0
 	fi
 
-	load_env_file
+	prepare_env_file
 	ensure_binary
 
 	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
@@ -198,7 +196,7 @@ start_background() {
 }
 
 start_foreground() {
-	load_env_file
+	prepare_env_file
 	ensure_binary
 	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
 	if [[ -n "$CONFIG_PATH" ]]; then
