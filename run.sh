@@ -10,6 +10,8 @@ if [[ $# -gt 0 ]]; then
 fi
 
 BASE_ENV_FILE="${AEGIS_AGENT_ENV_FILE:-${ROOT_DIR}/.env}"
+BASE_LISTEN_ADDR="${AEGIS_AGENT_LISTEN:-127.0.0.1:3940}"
+BASE_ALLOW_NETWORK="${AEGIS_AGENT_ALLOW_NETWORK:-0}"
 BASE_DEFAULT_CONFIG_PATH=""
 if [[ -f "${ROOT_DIR}/.aegis-agent/config.yaml" ]]; then
 	BASE_DEFAULT_CONFIG_PATH="${ROOT_DIR}/.aegis-agent/config.yaml"
@@ -18,6 +20,7 @@ fi
 ENV_FILE="$BASE_ENV_FILE"
 CONFIG_PATH=""
 LISTEN_ADDR=""
+ALLOW_NETWORK="$BASE_ALLOW_NETWORK"
 WORKER_COUNT=""
 BINARY_PATH=""
 RUNTIME_DIR="${ROOT_DIR}/.aegis-agent/runtime"
@@ -29,7 +32,8 @@ mkdir -p "$RUNTIME_DIR"
 refresh_runtime_settings() {
 	ENV_FILE="${AEGIS_AGENT_ENV_FILE:-$BASE_ENV_FILE}"
 	CONFIG_PATH="${AEGIS_AGENT_WEB_CONFIG:-$BASE_DEFAULT_CONFIG_PATH}"
-	LISTEN_ADDR="${AEGIS_AGENT_LISTEN:-0.0.0.0:3940}"
+	LISTEN_ADDR="$BASE_LISTEN_ADDR"
+	ALLOW_NETWORK="$BASE_ALLOW_NETWORK"
 	WORKER_COUNT="${AEGIS_AGENT_WEB_WORKERS:-2}"
 	BINARY_PATH="${AEGIS_AGENT_BIN:-${ROOT_DIR}/bin/aegis-agent}"
 	LOG_FILE="${AEGIS_AGENT_WEB_LOG:-${RUNTIME_DIR}/webconsole.log}"
@@ -51,27 +55,24 @@ Defaults:
 
 Environment overrides:
   AEGIS_AGENT_WEB_CONFIG   Explicit config file passed to `aegis-agent web`.
-  AEGIS_AGENT_LISTEN       Listen address, default `0.0.0.0:3940`.
-                           Non-loopback listen exposes config writes, .env API keys,
-                           session deletion, skill management, workspace reads/downloads,
-                           and workspace file creation/deletion to network-reachable clients;
-                           use trusted local networks.
+  AEGIS_AGENT_LISTEN       Listen address, default `127.0.0.1:3940`.
+  AEGIS_AGENT_ALLOW_NETWORK
+                           Set to `1` or `true` in the process environment to allow
+                           an explicitly configured non-loopback listen address.
   AEGIS_AGENT_WEB_WORKERS  Worker count, default `2`.
   AEGIS_AGENT_BIN          Binary path, default `bin/aegis-agent`.
-  AEGIS_AGENT_ENV_FILE     Optional .env file to source before start.
+  AEGIS_AGENT_ENV_FILE     Optional credential dotenv file parsed by the Go binary.
   AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.
   AEGIS_AGENT_SKIP_BUILD   Set to `1` to skip automatic `./build.sh`.
 EOF
 }
 
-load_env_file() {
-	if [[ -f "$ENV_FILE" ]]; then
-		set -a
-		# shellcheck disable=SC1090
-		source "$ENV_FILE"
-		set +a
+prepare_env_file() {
+	# A dotenv file is data, not shell code. The Go binary applies the strict
+	# provider-credential allowlist in config.LoadEnvFile.
+	if [[ -n "$ENV_FILE" ]]; then
+		export AEGIS_AGENT_ENV_FILE="$ENV_FILE"
 	fi
-	refresh_runtime_settings
 }
 
 current_pid() {
@@ -99,6 +100,24 @@ listen_port() {
 	printf '%s\n' "${LISTEN_ADDR##*:}"
 }
 
+is_loopback_host() {
+	local host="${1,,}" first second third fourth
+	local ipv4_re='^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$'
+	case "$host" in
+		localhost|::1|\[::1\])
+			return 0
+			;;
+	esac
+	if [[ ! "$host" =~ $ipv4_re ]]; then
+		return 1
+	fi
+	first=$((10#${BASH_REMATCH[1]}))
+	second=$((10#${BASH_REMATCH[2]}))
+	third=$((10#${BASH_REMATCH[3]}))
+	fourth=$((10#${BASH_REMATCH[4]}))
+	((first == 127 && second <= 255 && third <= 255 && fourth <= 255))
+}
+
 print_urls() {
 	local host port
 	host="$(listen_host)"
@@ -115,14 +134,25 @@ print_urls() {
 	fi
 }
 
+validate_listen_policy() {
+	local host allow
+	host="$(listen_host)"
+	if is_loopback_host "$host"; then
+		return 0
+	fi
+	allow="${ALLOW_NETWORK,,}"
+	if [[ "$allow" != "1" && "$allow" != "true" ]]; then
+		printf 'refusing non-loopback listen address %s without AEGIS_AGENT_ALLOW_NETWORK=1\n' "$LISTEN_ADDR" >&2
+		return 1
+	fi
+}
+
 print_lan_warning() {
 	local host
 	host="$(listen_host)"
-	case "$host" in
-		127.*|localhost|::1|\[::1\])
-			return 0
-			;;
-	esac
+	if is_loopback_host "$host"; then
+		return 0
+	fi
 	echo "WARNING: web console is reachable from non-loopback clients."
 	echo "It can write config and .env API keys, delete sessions, manage skills, read/download/upload/rename workspace files, and create workspace folders or delete one or more workspace files or folders. Use only on trusted local networks."
 }
@@ -144,7 +174,9 @@ start_background() {
 		return 0
 	fi
 
-	load_env_file
+	prepare_env_file
+	validate_listen_policy
+	print_lan_warning
 	ensure_binary
 
 	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
@@ -193,12 +225,13 @@ start_background() {
 	fi
 	printf 'Workers: %s\n' "$WORKER_COUNT"
 	printf 'Log: %s\n' "$LOG_FILE"
-	print_lan_warning
 	print_urls
 }
 
 start_foreground() {
-	load_env_file
+	prepare_env_file
+	validate_listen_policy
+	print_lan_warning
 	ensure_binary
 	local cmd=("$BINARY_PATH" web -listen "$LISTEN_ADDR" -workers "$WORKER_COUNT")
 	if [[ -n "$CONFIG_PATH" ]]; then
@@ -211,7 +244,6 @@ start_foreground() {
 		echo "Config: default search order"
 	fi
 	printf 'Workers: %s\n' "$WORKER_COUNT"
-	print_lan_warning
 	print_urls
 	exec "${cmd[@]}"
 }
