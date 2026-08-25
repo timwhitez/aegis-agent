@@ -52,6 +52,9 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	defer service.Close()
+	if err := service.InitializeAuditLog(); err != nil {
+		return fmt.Errorf("initialize web audit log: %w", err)
+	}
 	serveCtx, stop := context.WithCancel(ctx)
 	defer stop()
 
