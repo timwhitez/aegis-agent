@@ -44,9 +44,17 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
+	persistedConfigPath := config.PersistPath(*configPath, cwd)
+	// Establish or recover the audit checkpoint before New starts queue workers
+	// and the stale-session reaper. Those background loops may mutate durable
+	// state immediately, so audit validation must precede their construction,
+	// not merely precede the HTTP listener.
+	if err := webconsole.PrepareAuditLog(cfg, persistedConfigPath); err != nil {
+		return fmt.Errorf("initialize web audit log: %w", err)
+	}
 	service, err := webconsole.New(cfg, webconsole.Options{
 		WorkerCount: *workers,
-		ConfigPath:  config.PersistPath(*configPath, cwd),
+		ConfigPath:  persistedConfigPath,
 	})
 	if err != nil {
 		return err

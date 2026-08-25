@@ -1,22 +1,29 @@
 package webconsole
 
 import (
-	"bufio"
-	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"aegis-agent/internal/fileutil"
-
-	"golang.org/x/sys/unix"
+	"aegis-agent/internal/config"
+	"aegis-agent/internal/runtime"
 )
 
-const webAuditLogName = "webconsole-audit.jsonl"
+const (
+	webAuditLogName                       = "webconsole-audit.jsonl"
+	webAuditCheckpointSuffix              = ".checkpoint.json"
+	webAuditLockSuffix                    = ".lock"
+	webAuditCheckpointSchemaVersion       = 1
+	webAuditStructuredIDPrefix            = "audit_v2_"
+	maxWebAuditLogBytes             int64 = 64 << 20
+	maxWebAuditRecordBytes                = 4 << 20
+	maxWebAuditCheckpointBytes            = 64 << 10
+	webAuditProbeBytes              int64 = 64 << 10
+)
 
 type webAuditEvent struct {
 	SchemaVersion int            `json:"schema_version"`
@@ -31,68 +38,197 @@ type pendingWebAuditEvent struct {
 	data      map[string]any
 }
 
+type webAuditCheckpoint struct {
+	SchemaVersion   int    `json:"schema_version"`
+	Epoch           string `json:"epoch"`
+	FileIdentity    string `json:"file_identity,omitempty"`
+	Size            int64  `json:"size"`
+	RecordCount     uint64 `json:"record_count"`
+	ChainSHA256     string `json:"chain_sha256"`
+	HeadSHA256      string `json:"head_sha256"`
+	TailOffset      int64  `json:"tail_offset"`
+	TailSHA256      string `json:"tail_sha256"`
+	ModTimeUnixNano int64  `json:"mod_time_unix_nano"`
+	ChangeStamp     string `json:"change_stamp,omitempty"`
+}
+
+type webAuditScanResult struct {
+	checkpoint webAuditCheckpoint
+	seenIDs    map[string]struct{}
+}
+
 var beforeOpenAuditLog func(path string) error
+var beforeWriteAuditCheckpoint func(path string, data []byte) error
+var auditRecordDecodeObserver func()
+
+// PrepareAuditLog establishes or recovers the audit checkpoint without
+// constructing queue workers or the stale-session reaper. The CLI calls this
+// before New so no background durable mutation can start ahead of audit
+// validation.
+func PrepareAuditLog(cfg *config.Config, configPath string) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	serviceCfg, err := config.Clone(cfg)
+	if err != nil {
+		return err
+	}
+	store := runtime.NewStoreView(serviceCfg).Store()
+	service := &Service{
+		cfg:        serviceCfg,
+		configPath: configPath,
+		store:      store,
+	}
+	return service.InitializeAuditLog()
+}
 
 func (s *Service) appendAuditEvent(eventType string, data map[string]any) error {
 	return s.appendAuditEvents(pendingWebAuditEvent{eventType: eventType, data: data})
 }
 
 func (s *Service) appendAuditEvents(pending ...pendingWebAuditEvent) error {
-	if s == nil || s.store == nil {
-		return nil
-	}
-	if len(pending) == 0 {
+	if s == nil || s.store == nil || len(pending) == 0 {
 		return nil
 	}
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
+
 	now := time.Now().UTC()
 	events := make([]webAuditEvent, 0, len(pending))
-	for i, item := range pending {
+	for _, item := range pending {
 		if s.beforeAppendAuditEvent != nil {
 			if err := s.beforeAppendAuditEvent(item.eventType, item.data); err != nil {
 				return err
 			}
 		}
-		event := webAuditEvent{
+		events = append(events, webAuditEvent{
 			SchemaVersion: 1,
-			ID:            fmt.Sprintf("audit_%d_%d", now.UnixNano(), i),
 			Type:          item.eventType,
 			Time:          now.Format(time.RFC3339Nano),
 			Data:          item.data,
-		}
-		if err := validateAuditEvent(event); err != nil {
-			return err
-		}
-		events = append(events, event)
+		})
 	}
 	path := webAuditLogPath(s.store.Root())
-	file, err := openAuditLogNoSymlink(path)
-	if err != nil {
+	if err := s.ensureWebAuditManagedPathsDistinct(path); err != nil {
 		return err
 	}
-	defer file.Close()
-	if err := validateAuditLogAndBatch(file, events); err != nil {
-		return err
+	return appendWebAuditEventsAtPath(path, events)
+}
+
+func appendWebAuditEventsAtPath(path string, events []webAuditEvent) error {
+	if len(events) == 0 {
+		return nil
 	}
-	offset, err := file.Seek(0, io.SeekEnd)
-	if err != nil {
-		return err
-	}
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	for _, event := range events {
-		if err := enc.Encode(event); err != nil {
+	return withWebAuditFileLock(path, func() error {
+		file, err := openAuditLogNoSymlink(path)
+		if err != nil {
 			return err
 		}
-	}
-	if _, err := io.WriteString(file, buf.String()); err != nil {
-		if truncateErr := file.Truncate(offset); truncateErr != nil {
-			return errors.Join(err, fmt.Errorf("restore audit log after failed batch append: %w", truncateErr))
+		defer file.Close()
+
+		state, err := loadWebAuditState(path, file, false)
+		if err != nil {
+			return err
 		}
+		encoded, nextChain, err := encodeWebAuditBatch(events, state)
+		if err != nil {
+			return err
+		}
+		if state.Size > maxWebAuditLogBytes-int64(len(encoded)) {
+			return fmt.Errorf("web audit log reached the %d-byte retention limit; stop every web console process and archive %s together with %s before retrying", maxWebAuditLogBytes, path, webAuditCheckpointPath(path))
+		}
+		offset := state.Size
+		actualOffset, err := file.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if actualOffset != offset {
+			return fmt.Errorf("audit log changed before append: size %d became %d", offset, actualOffset)
+		}
+		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+			return err
+		}
+		written, writeErr := io.WriteString(file, encoded)
+		if writeErr == nil && written != len(encoded) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			rollbackErr := file.Truncate(offset)
+			if rollbackErr == nil {
+				rollbackErr = file.Sync()
+			}
+			if rollbackErr != nil {
+				return errors.Join(writeErr, fmt.Errorf("restore and sync audit log after failed batch append: %w", rollbackErr))
+			}
+			return writeErr
+		}
+		if err := file.Sync(); err != nil {
+			return fmt.Errorf("sync appended audit records: %w", err)
+		}
+
+		// A complete write followed by a successful file sync is the audit
+		// commit point. From here onward the business mutation must not be told
+		// to roll back merely because acceleration metadata could not be
+		// refreshed: that would leave a durable audit event describing an action
+		// that the caller subsequently undid. Any post-commit verification or
+		// checkpoint failure therefore leaves the previous checkpoint as the
+		// recovery anchor and degrades the next append/startup to a full
+		// validation of the structural tail.
+		info, err := file.Stat()
+		if err != nil {
+			return nil
+		}
+		expectedSize := offset + int64(len(encoded))
+		if info.Size() != expectedSize {
+			return nil
+		}
+		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+			return nil
+		}
+		headDigest, tailOffset, tailDigest, err := auditProbeDigests(file, info.Size())
+		if err != nil {
+			return nil
+		}
+		afterProbeInfo, err := file.Stat()
+		if err != nil || !webAuditFileInfoStable(info, afterProbeInfo) {
+			return nil
+		}
+		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+			return nil
+		}
+
+		next := state
+		next.FileIdentity, _ = auditFileIdentity(afterProbeInfo)
+		next.Size = afterProbeInfo.Size()
+		next.RecordCount += uint64(len(events))
+		next.ChainSHA256 = hex.EncodeToString(nextChain[:])
+		next.HeadSHA256 = hex.EncodeToString(headDigest[:])
+		next.TailOffset = tailOffset
+		next.TailSHA256 = hex.EncodeToString(tailDigest[:])
+		next.ModTimeUnixNano = afterProbeInfo.ModTime().UnixNano()
+		next.ChangeStamp, _ = auditFileChangeStamp(afterProbeInfo)
+		_ = writeWebAuditCheckpoint(path, next)
+		return nil
+	})
+}
+
+// InitializeAuditLog performs startup/recovery full validation before any
+// background Web service component or listener is allowed to mutate state.
+func (s *Service) InitializeAuditLog() error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	s.auditMu.Lock()
+	defer s.auditMu.Unlock()
+	path := webAuditLogPath(s.store.Root())
+	if err := s.ensureWebAuditManagedPathsDistinct(path); err != nil {
 		return err
 	}
-	return nil
+	return initializeWebAuditLogAtPath(path)
+}
+
+func initializeWebAuditLogAtPath(path string) error {
+	return ensureWebAuditLogAtPath(path, true)
 }
 
 func (s *Service) ensureAuditLogWritable() error {
@@ -101,184 +237,34 @@ func (s *Service) ensureAuditLogWritable() error {
 	}
 	s.auditMu.Lock()
 	defer s.auditMu.Unlock()
-	file, err := openAuditLogNoSymlink(webAuditLogPath(s.store.Root()))
+	path := webAuditLogPath(s.store.Root())
+	if err := s.ensureWebAuditManagedPathsDistinct(path); err != nil {
+		return err
+	}
+	return ensureWebAuditLogAtPath(path, false)
+}
+
+func (s *Service) ensureWebAuditManagedPathsDistinct(logPath string) error {
+	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	return validateExistingAuditLog(file)
-}
-
-func openAuditLogNoSymlink(path string) (*os.File, error) {
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path == "" {
-		return nil, fmt.Errorf("audit log path is required")
+	configPath := strings.TrimSpace(s.configPath)
+	if configPath == "" {
+		configPath = config.PersistPath("", cwd)
 	}
-	parent := filepath.Dir(path)
-	if err := rejectAuditSymlinkAncestors(parent); err != nil {
-		return nil, err
-	}
-	if err := fileutil.MkdirAllNoSymlink(parent, 0o700); err != nil {
-		return nil, err
-	}
-	if err := rejectAuditSymlinkAncestors(parent); err != nil {
-		return nil, err
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to append to symlinked audit log: %s", path)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("refusing to append to audit log directory: %s", path)
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	if beforeOpenAuditLog != nil {
-		if err := beforeOpenAuditLog(path); err != nil {
-			return nil, err
-		}
-	}
-	return fileutil.OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND, 0o600)
-}
-
-// validateAuditLogAndBatch validates the complete historical audit log and
-// checks the candidate batch against the IDs discovered during that same scan.
-// Keeping both checks in one call prevents appendAuditEvents from decoding the
-// entire history twice while preserving fail-closed validation semantics.
-func validateAuditLogAndBatch(file *os.File, events []webAuditEvent) error {
-	seenIDs, err := scanExistingAuditLog(file)
-	if err != nil {
-		return err
-	}
-	if err := validateAuditBatchIDs(seenIDs, events); err != nil {
-		return err
-	}
-	_, err = file.Seek(0, io.SeekEnd)
-	return err
-}
-
-func scanExistingAuditLog(file *os.File) (map[string]struct{}, error) {
-	if file == nil {
-		return nil, fmt.Errorf("audit log file is required")
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	seenIDs := map[string]struct{}{}
-	scanner := bufio.NewScanner(file)
-	line := 0
-	for scanner.Scan() {
-		line++
-		raw := strings.TrimSpace(scanner.Text())
-		if raw == "" {
-			continue
-		}
-		var event webAuditEvent
-		if err := json.Unmarshal([]byte(raw), &event); err != nil {
-			return nil, fmt.Errorf("invalid audit log record %d: %w", line, err)
-		}
-		if err := validateAuditEvent(event); err != nil {
-			return nil, fmt.Errorf("invalid audit log record %d: %w", line, err)
-		}
-		id := strings.TrimSpace(event.ID)
-		if _, ok := seenIDs[id]; ok {
-			return nil, fmt.Errorf("invalid audit log record %d: duplicate audit event id %q", line, id)
-		}
-		seenIDs[id] = struct{}{}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return seenIDs, nil
-}
-
-func validateAuditBatchIDs(seenIDs map[string]struct{}, events []webAuditEvent) error {
-	if seenIDs == nil {
-		seenIDs = map[string]struct{}{}
-	}
-	for _, event := range events {
-		id := strings.TrimSpace(event.ID)
-		if _, ok := seenIDs[id]; ok {
-			return fmt.Errorf("duplicate audit event id %q", id)
-		}
-		seenIDs[id] = struct{}{}
-	}
-	return nil
-}
-
-func validateExistingAuditLog(file *os.File) error {
-	return validateAuditLogAndBatch(file, nil)
-}
-
-func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
-	return validateAuditLogAndBatch(file, events)
-}
-
-func validateAuditEvent(event webAuditEvent) error {
-	if event.SchemaVersion != 1 {
-		return fmt.Errorf("unsupported audit event schema_version %d", event.SchemaVersion)
-	}
-	if strings.TrimSpace(event.ID) == "" {
-		return fmt.Errorf("audit event id is required")
-	}
-	if strings.TrimSpace(event.Type) == "" {
-		return fmt.Errorf("audit event type is required")
-	}
-	if strings.TrimSpace(event.Time) == "" {
-		return fmt.Errorf("audit event time is required")
-	}
-	if _, err := time.Parse(time.RFC3339Nano, event.Time); err != nil {
-		return fmt.Errorf("invalid audit event time %q: %w", event.Time, err)
-	}
-	return nil
-}
-
-func rejectAuditSymlinkAncestors(path string) error {
-	abs, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return err
-	}
-	volume := filepath.VolumeName(abs)
-	rest := strings.TrimPrefix(abs, volume)
-	separator := string(os.PathSeparator)
-	current := volume
-	if strings.HasPrefix(rest, separator) {
-		current += separator
-		rest = strings.TrimPrefix(rest, separator)
-	}
-	if current == "" {
-		current = "."
-	}
-	for _, part := range strings.Split(rest, separator) {
-		if part == "" {
-			continue
-		}
-		if current == separator || strings.HasSuffix(current, separator) {
-			current += part
-		} else {
-			current = filepath.Join(current, part)
-		}
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
+	envPath := config.DefaultEnvFilePath(cwd)
+	for _, managedPath := range webAuditManagedPaths(logPath) {
+		if same, err := sameWebPath(configPath, managedPath); err != nil {
 			return err
+		} else if same {
+			return newWebSettingsValidationError("config file and audit log must be separate (including checkpoint and lock sidecars): %s", configPath)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to append through symlinked audit path: %s", current)
+		if same, err := sameWebPath(envPath, managedPath); err != nil {
+			return err
+		} else if same {
+			return newWebSettingsValidationError("API key env file and audit log must be separate (including checkpoint and lock sidecars): %s", envPath)
 		}
 	}
 	return nil
-}
-
-func webAuditLogPath(sessionRoot string) string {
-	if sessionRoot == "" {
-		return webAuditLogName
-	}
-	return filepath.Join(filepath.Dir(sessionRoot), webAuditLogName)
 }
