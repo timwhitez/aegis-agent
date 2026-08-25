@@ -92,6 +92,92 @@ func auditReflectInteger(value reflect.Value) (int64, bool) {
 	}
 }
 
+func hardenWebAuditRegularFile(path string, file *os.File) (os.FileInfo, error) {
+	if file == nil {
+		return nil, errors.New("audit managed file is required")
+	}
+	verify := func() (os.FileInfo, error) {
+		fileInfo, err := file.Stat()
+		if err != nil {
+			return nil, err
+		}
+		if !fileInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("audit managed path is not a regular file: %s", path)
+		}
+		pathInfo, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
+			return nil, fmt.Errorf("audit managed path is not the opened regular file: %s", path)
+		}
+		if !os.SameFile(fileInfo, pathInfo) {
+			return nil, fmt.Errorf("audit managed path was replaced while open: %s", path)
+		}
+		return fileInfo, nil
+	}
+	info, err := verify()
+	if err != nil {
+		return nil, err
+	}
+	if webAuditModeNeedsHardening(info.Mode()) {
+		if err := file.Chmod(0o600); err != nil {
+			return nil, fmt.Errorf("harden audit managed file permissions for %s: %w", path, err)
+		}
+		info, err = verify()
+		if err != nil {
+			return nil, err
+		}
+		if webAuditModeNeedsHardening(info.Mode()) {
+			return nil, fmt.Errorf("audit managed file permissions remain unsafe for %s: %s", path, info.Mode())
+		}
+	}
+	return info, nil
+}
+
+func webAuditModeNeedsHardening(mode os.FileMode) bool {
+	return mode.Perm() != 0o600 || mode&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0
+}
+
+func ensureWebAuditFileStillAtPath(path string, file *os.File) error {
+	_, err := hardenWebAuditRegularFile(path, file)
+	return err
+}
+
+func webAuditFileInfoStable(before, after os.FileInfo) bool {
+	if before == nil || after == nil || !before.Mode().IsRegular() || !after.Mode().IsRegular() {
+		return false
+	}
+	if !os.SameFile(before, after) ||
+		before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) ||
+		before.Mode() != after.Mode() {
+		return false
+	}
+	beforeIdentity, beforeIdentityOK := auditFileIdentity(before)
+	afterIdentity, afterIdentityOK := auditFileIdentity(after)
+	if beforeIdentityOK != afterIdentityOK || (beforeIdentityOK && beforeIdentity != afterIdentity) {
+		return false
+	}
+	beforeStamp, beforeStampOK := auditFileChangeStamp(before)
+	afterStamp, afterStampOK := auditFileChangeStamp(after)
+	if beforeStampOK != afterStampOK || (beforeStampOK && beforeStamp != afterStamp) {
+		return false
+	}
+	return true
+}
+
+// auditOptionalMetadataMatches treats missing host metadata as a real capability
+// state. A checkpoint written on a filesystem without an identity/ctime field
+// can use the fast path only while the current filesystem exposes the same
+// absence. Capability gain or loss forces a full scan and checkpoint refresh.
+func auditOptionalMetadataMatches(stored, actual string, actualOK bool) bool {
+	if stored == "" {
+		return !actualOK
+	}
+	return actualOK && stored == actual
+}
+
 func rejectAuditSymlinkAncestors(path string) error {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
@@ -127,27 +213,6 @@ func rejectAuditSymlinkAncestors(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to append through symlinked audit path: %s", current)
 		}
-	}
-	return nil
-}
-
-func ensureWebAuditFileStillAtPath(path string, file *os.File) error {
-	if file == nil {
-		return errors.New("audit log file is required")
-	}
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
-		return fmt.Errorf("audit log path is no longer the opened regular file: %s", path)
-	}
-	if !os.SameFile(fileInfo, pathInfo) {
-		return fmt.Errorf("audit log path was replaced while open: %s", path)
 	}
 	return nil
 }

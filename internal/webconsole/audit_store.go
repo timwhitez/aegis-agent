@@ -36,15 +36,22 @@ func withWebAuditFileLock(logPath string, fn func() error) error {
 	if err := fileutil.MkdirAllNoSymlink(parent, 0o700); err != nil {
 		return err
 	}
-	lock, err := fileutil.OpenFileNoSymlink(webAuditLockPath(logPath), unix.O_CREAT|unix.O_RDWR, 0o600)
+	lockPath := webAuditLockPath(logPath)
+	lock, err := fileutil.OpenFileNoSymlink(lockPath, unix.O_CREAT|unix.O_RDWR|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	if _, err := hardenWebAuditRegularFile(lockPath, lock); err != nil {
+		return err
+	}
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
 		return fmt.Errorf("lock web audit log: %w", err)
 	}
 	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }()
+	if _, err := hardenWebAuditRegularFile(lockPath, lock); err != nil {
+		return err
+	}
 	return fn()
 }
 
@@ -64,11 +71,11 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 		return nil, err
 	}
 	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
 			return nil, fmt.Errorf("refusing to append to symlinked audit log: %s", path)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("refusing to append to audit log directory: %s", path)
+		case !info.Mode().IsRegular():
+			return nil, fmt.Errorf("refusing to append to non-regular audit log: %s", path)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -78,7 +85,15 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 			return nil, err
 		}
 	}
-	return fileutil.OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND, 0o600)
+	file, err := fileutil.OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := hardenWebAuditRegularFile(path, file); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 
 func loadWebAuditState(path string, file *os.File, forceFull bool) (webAuditCheckpoint, error) {
@@ -129,10 +144,7 @@ func webAuditCheckpointMatches(path string, file *os.File, checkpoint webAuditCh
 	if err := validateWebAuditCheckpoint(checkpoint); err != nil {
 		return false, err
 	}
-	if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
-		return false, err
-	}
-	info, err := file.Stat()
+	info, err := hardenWebAuditRegularFile(path, file)
 	if err != nil {
 		return false, err
 	}
@@ -140,18 +152,30 @@ func webAuditCheckpointMatches(path string, file *os.File, checkpoint webAuditCh
 		return false, nil
 	}
 	identity, identityOK := auditFileIdentity(info)
-	if checkpoint.FileIdentity == "" || !identityOK || identity != checkpoint.FileIdentity {
+	if !auditOptionalMetadataMatches(checkpoint.FileIdentity, identity, identityOK) {
 		return false, nil
 	}
 	stamp, stampOK := auditFileChangeStamp(info)
-	if checkpoint.ChangeStamp != "" && (!stampOK || stamp != checkpoint.ChangeStamp) {
+	if !auditOptionalMetadataMatches(checkpoint.ChangeStamp, stamp, stampOK) {
 		return false, nil
 	}
 	headDigest, tailOffset, tailDigest, err := auditProbeDigests(file, info.Size())
 	if err != nil {
 		return false, err
 	}
-	if checkpoint.HeadSHA256 != hex.EncodeToString(headDigest[:]) || checkpoint.TailOffset != tailOffset || checkpoint.TailSHA256 != hex.EncodeToString(tailDigest[:]) {
+	afterProbeInfo, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !webAuditFileInfoStable(info, afterProbeInfo) {
+		return false, nil
+	}
+	if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+		return false, err
+	}
+	if checkpoint.HeadSHA256 != hex.EncodeToString(headDigest[:]) ||
+		checkpoint.TailOffset != tailOffset ||
+		checkpoint.TailSHA256 != hex.EncodeToString(tailDigest[:]) {
 		return false, nil
 	}
 	return true, nil

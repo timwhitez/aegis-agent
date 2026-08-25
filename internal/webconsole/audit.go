@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/runtime"
 )
 
 const (
@@ -59,6 +60,27 @@ type webAuditScanResult struct {
 var beforeOpenAuditLog func(path string) error
 var beforeWriteAuditCheckpoint func(path string, data []byte) error
 var auditRecordDecodeObserver func()
+
+// PrepareAuditLog establishes or recovers the audit checkpoint without
+// constructing queue workers or the stale-session reaper. The CLI calls this
+// before New so no background durable mutation can start ahead of audit
+// validation.
+func PrepareAuditLog(cfg *config.Config, configPath string) error {
+	if cfg == nil {
+		return errors.New("config is required")
+	}
+	serviceCfg, err := config.Clone(cfg)
+	if err != nil {
+		return err
+	}
+	store := runtime.NewStoreView(serviceCfg).Store()
+	service := &Service{
+		cfg:        serviceCfg,
+		configPath: configPath,
+		store:      store,
+	}
+	return service.InitializeAuditLog()
+}
 
 func (s *Service) appendAuditEvent(eventType string, data map[string]any) error {
 	return s.appendAuditEvents(pendingWebAuditEvent{eventType: eventType, data: data})
@@ -123,54 +145,75 @@ func appendWebAuditEventsAtPath(path string, events []webAuditEvent) error {
 		if actualOffset != offset {
 			return fmt.Errorf("audit log changed before append: size %d became %d", offset, actualOffset)
 		}
-		if _, err := io.WriteString(file, encoded); err != nil {
-			if truncateErr := file.Truncate(offset); truncateErr != nil {
-				return errors.Join(err, fmt.Errorf("restore audit log after failed batch append: %w", truncateErr))
-			}
+		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
 			return err
+		}
+		written, writeErr := io.WriteString(file, encoded)
+		if writeErr == nil && written != len(encoded) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			rollbackErr := file.Truncate(offset)
+			if rollbackErr == nil {
+				rollbackErr = file.Sync()
+			}
+			if rollbackErr != nil {
+				return errors.Join(writeErr, fmt.Errorf("restore and sync audit log after failed batch append: %w", rollbackErr))
+			}
+			return writeErr
 		}
 		if err := file.Sync(); err != nil {
 			return fmt.Errorf("sync appended audit records: %w", err)
 		}
+
+		// A complete write followed by a successful file sync is the audit
+		// commit point. From here onward the business mutation must not be told
+		// to roll back merely because acceleration metadata could not be
+		// refreshed: that would leave a durable audit event describing an action
+		// that the caller subsequently undid. Any post-commit verification or
+		// checkpoint failure therefore leaves the previous checkpoint as the
+		// recovery anchor and degrades the next append/startup to a full
+		// validation of the structural tail.
 		info, err := file.Stat()
 		if err != nil {
-			return err
+			return nil
 		}
 		expectedSize := offset + int64(len(encoded))
 		if info.Size() != expectedSize {
-			return fmt.Errorf("audit log size after append is %d, expected %d", info.Size(), expectedSize)
+			return nil
 		}
 		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
-			return err
+			return nil
 		}
 		headDigest, tailOffset, tailDigest, err := auditProbeDigests(file, info.Size())
 		if err != nil {
-			return err
+			return nil
 		}
+		afterProbeInfo, err := file.Stat()
+		if err != nil || !webAuditFileInfoStable(info, afterProbeInfo) {
+			return nil
+		}
+		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+			return nil
+		}
+
 		next := state
-		next.FileIdentity, _ = auditFileIdentity(info)
-		next.Size = info.Size()
+		next.FileIdentity, _ = auditFileIdentity(afterProbeInfo)
+		next.Size = afterProbeInfo.Size()
 		next.RecordCount += uint64(len(events))
 		next.ChainSHA256 = hex.EncodeToString(nextChain[:])
 		next.HeadSHA256 = hex.EncodeToString(headDigest[:])
 		next.TailOffset = tailOffset
 		next.TailSHA256 = hex.EncodeToString(tailDigest[:])
-		next.ModTimeUnixNano = info.ModTime().UnixNano()
-		next.ChangeStamp, _ = auditFileChangeStamp(info)
-		if err := writeWebAuditCheckpoint(path, next); err != nil {
-			// The JSONL append is already durable and therefore satisfies the
-			// audit requirement for the mutation. The checkpoint is recovery and
-			// acceleration metadata: keep the previous atomic checkpoint and let
-			// the next startup/append validate and adopt this durable tail. Returning
-			// an error here would make callers roll back an action after its audit
-			// event had already become durable, producing a misleading record.
-			return nil
-		}
+		next.ModTimeUnixNano = afterProbeInfo.ModTime().UnixNano()
+		next.ChangeStamp, _ = auditFileChangeStamp(afterProbeInfo)
+		_ = writeWebAuditCheckpoint(path, next)
 		return nil
 	})
 }
 
-// InitializeAuditLog performs the startup/recovery full validation before the Web server accepts mutations.
+// InitializeAuditLog performs startup/recovery full validation before any
+// background Web service component or listener is allowed to mutate state.
 func (s *Service) InitializeAuditLog() error {
 	if s == nil || s.store == nil {
 		return nil

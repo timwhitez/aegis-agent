@@ -30,18 +30,22 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 	if err != nil {
 		return webAuditScanResult{}, err
 	}
+	if !beforeInfo.Mode().IsRegular() {
+		return webAuditScanResult{}, errors.New("audit log is not a regular file")
+	}
 	if beforeInfo.Size() > maxWebAuditLogBytes {
 		return webAuditScanResult{}, fmt.Errorf("web audit log exceeds the %d-byte retention limit; stop every web console process and archive the log with its checkpoint before restarting", maxWebAuditLogBytes)
 	}
 	if expected != nil {
 		identity, identityOK := auditFileIdentity(beforeInfo)
-		if expected.FileIdentity != "" && identityOK && identity != expected.FileIdentity {
+		if expected.FileIdentity != "" && (!identityOK || identity != expected.FileIdentity) {
 			return webAuditScanResult{}, fmt.Errorf("audit log file identity changed since checkpoint")
 		}
 		if beforeInfo.Size() < expected.Size {
 			return webAuditScanResult{}, fmt.Errorf("audit log was truncated from checkpoint size %d to %d", expected.Size, beforeInfo.Size())
 		}
 	}
+
 	reader := bufio.NewReaderSize(file, 64<<10)
 	seenIDs := map[string]struct{}{}
 	var chain [sha256.Size]byte
@@ -64,6 +68,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 			}
 		}
 	}
+
 	var offset int64
 	var recordCount uint64
 	lastStructuredEpoch := ""
@@ -86,6 +91,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 					return webAuditScanResult{}, fmt.Errorf("audit checkpoint size %d is not an audit record boundary", expected.Size)
 				}
 			}
+
 			trimmed := bytes.TrimSpace(raw)
 			if expected != nil && lineOffset >= expected.Size && len(trimmed) == 0 {
 				return webAuditScanResult{}, fmt.Errorf("recovered audit tail contains an uncheckpointed blank record at byte %d", lineOffset)
@@ -142,6 +148,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 			return webAuditScanResult{}, fmt.Errorf("read audit log record %d: %w", line+1, readErr)
 		}
 	}
+
 	if expected != nil {
 		if offset < expected.Size {
 			return webAuditScanResult{}, fmt.Errorf("audit log was truncated from checkpoint size %d to %d", expected.Size, offset)
@@ -156,6 +163,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 			return webAuditScanResult{}, fmt.Errorf("audit log content changed since checkpoint")
 		}
 	}
+
 	info, err := file.Stat()
 	if err != nil {
 		return webAuditScanResult{}, err
@@ -163,16 +171,27 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 	if info.Size() != offset {
 		return webAuditScanResult{}, fmt.Errorf("audit log changed during validation: scanned %d bytes, stat reports %d", offset, info.Size())
 	}
+	if !webAuditFileInfoStable(beforeInfo, info) {
+		return webAuditScanResult{}, errors.New("audit log identity or metadata changed during validation")
+	}
 	identity, identityOK := auditFileIdentity(info)
-	if expected != nil && expected.FileIdentity != "" && identityOK && identity != expected.FileIdentity {
+	if expected != nil && expected.FileIdentity != "" && (!identityOK || identity != expected.FileIdentity) {
 		return webAuditScanResult{}, fmt.Errorf("audit log file identity changed since checkpoint")
 	}
 	if expected != nil && lastStructuredEpoch != "" && lastStructuredEpoch != expected.Epoch {
 		return webAuditScanResult{}, fmt.Errorf("audit checkpoint epoch %q does not match structural history epoch %q", expected.Epoch, lastStructuredEpoch)
 	}
+
 	headDigest, tailOffset, tailDigest, err := auditProbeDigests(file, info.Size())
 	if err != nil {
 		return webAuditScanResult{}, err
+	}
+	afterProbeInfo, err := file.Stat()
+	if err != nil {
+		return webAuditScanResult{}, err
+	}
+	if !webAuditFileInfoStable(info, afterProbeInfo) {
+		return webAuditScanResult{}, errors.New("audit log identity or metadata changed while capturing validation probes")
 	}
 	epoch := lastStructuredEpoch
 	if expected != nil {
@@ -182,15 +201,15 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 		SchemaVersion:   webAuditCheckpointSchemaVersion,
 		Epoch:           epoch,
 		FileIdentity:    identity,
-		Size:            info.Size(),
+		Size:            afterProbeInfo.Size(),
 		RecordCount:     recordCount,
 		ChainSHA256:     hex.EncodeToString(chain[:]),
 		HeadSHA256:      hex.EncodeToString(headDigest[:]),
 		TailOffset:      tailOffset,
 		TailSHA256:      hex.EncodeToString(tailDigest[:]),
-		ModTimeUnixNano: info.ModTime().UnixNano(),
+		ModTimeUnixNano: afterProbeInfo.ModTime().UnixNano(),
 	}
-	checkpoint.ChangeStamp, _ = auditFileChangeStamp(info)
+	checkpoint.ChangeStamp, _ = auditFileChangeStamp(afterProbeInfo)
 	if !collectIDs {
 		seenIDs = nil
 	}

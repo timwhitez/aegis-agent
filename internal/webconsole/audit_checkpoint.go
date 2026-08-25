@@ -20,7 +20,7 @@ import (
 
 func readWebAuditCheckpoint(logPath string) (webAuditCheckpoint, bool, error) {
 	path := webAuditCheckpointPath(logPath)
-	file, err := fileutil.OpenFileNoSymlink(path, unix.O_RDONLY, 0)
+	file, err := fileutil.OpenFileNoSymlink(path, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return webAuditCheckpoint{}, false, nil
@@ -28,12 +28,18 @@ func readWebAuditCheckpoint(logPath string) (webAuditCheckpoint, bool, error) {
 		return webAuditCheckpoint{}, false, err
 	}
 	defer file.Close()
+	if _, err := hardenWebAuditRegularFile(path, file); err != nil {
+		return webAuditCheckpoint{}, false, err
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxWebAuditCheckpointBytes+1))
 	if err != nil {
 		return webAuditCheckpoint{}, false, err
 	}
 	if len(data) > maxWebAuditCheckpointBytes {
 		return webAuditCheckpoint{}, false, fmt.Errorf("audit checkpoint exceeds %d bytes", maxWebAuditCheckpointBytes)
+	}
+	if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
+		return webAuditCheckpoint{}, false, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -78,17 +84,34 @@ func validateWebAuditCheckpoint(checkpoint webAuditCheckpoint) error {
 	if checkpoint.Size < 0 || checkpoint.Size > maxWebAuditLogBytes {
 		return fmt.Errorf("invalid audit checkpoint size %d", checkpoint.Size)
 	}
-	if _, err := decodeAuditDigest(checkpoint.ChainSHA256); err != nil {
+	if checkpoint.RecordCount > uint64(checkpoint.Size) {
+		return fmt.Errorf("invalid audit checkpoint record_count %d for size %d", checkpoint.RecordCount, checkpoint.Size)
+	}
+	chain, err := decodeAuditDigest(checkpoint.ChainSHA256)
+	if err != nil {
 		return fmt.Errorf("invalid audit checkpoint chain_sha256: %w", err)
 	}
-	if _, err := decodeAuditDigest(checkpoint.HeadSHA256); err != nil {
+	head, err := decodeAuditDigest(checkpoint.HeadSHA256)
+	if err != nil {
 		return fmt.Errorf("invalid audit checkpoint head_sha256: %w", err)
 	}
-	if _, err := decodeAuditDigest(checkpoint.TailSHA256); err != nil {
+	tail, err := decodeAuditDigest(checkpoint.TailSHA256)
+	if err != nil {
 		return fmt.Errorf("invalid audit checkpoint tail_sha256: %w", err)
 	}
-	if checkpoint.TailOffset < 0 || checkpoint.TailOffset > checkpoint.Size {
-		return fmt.Errorf("invalid audit checkpoint tail_offset %d for size %d", checkpoint.TailOffset, checkpoint.Size)
+	expectedTailOffset := checkpoint.Size - webAuditProbeBytes
+	if expectedTailOffset < 0 {
+		expectedTailOffset = 0
+	}
+	if checkpoint.TailOffset != expectedTailOffset {
+		return fmt.Errorf("invalid audit checkpoint tail_offset %d for size %d; expected %d", checkpoint.TailOffset, checkpoint.Size, expectedTailOffset)
+	}
+	if checkpoint.Size == 0 {
+		var zeroChain [sha256.Size]byte
+		emptyDigest := sha256.Sum256(nil)
+		if checkpoint.RecordCount != 0 || chain != zeroChain || head != emptyDigest || tail != emptyDigest {
+			return errors.New("empty audit checkpoint has non-empty record count or digest state")
+		}
 	}
 	return nil
 }
