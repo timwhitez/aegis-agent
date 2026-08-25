@@ -38,7 +38,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 	}
 	if expected != nil {
 		identity, identityOK := auditFileIdentity(beforeInfo)
-		if expected.FileIdentity != "" && (!identityOK || identity != expected.FileIdentity) {
+		if expected.FileIdentity != "" && identityOK && identity != expected.FileIdentity {
 			return webAuditScanResult{}, fmt.Errorf("audit log file identity changed since checkpoint")
 		}
 		if beforeInfo.Size() < expected.Size {
@@ -175,7 +175,7 @@ func scanWebAuditLog(file *os.File, expected *webAuditCheckpoint, collectIDs boo
 		return webAuditScanResult{}, errors.New("audit log identity or metadata changed during validation")
 	}
 	identity, identityOK := auditFileIdentity(info)
-	if expected != nil && expected.FileIdentity != "" && (!identityOK || identity != expected.FileIdentity) {
+	if expected != nil && expected.FileIdentity != "" && identityOK && identity != expected.FileIdentity {
 		return webAuditScanResult{}, fmt.Errorf("audit log file identity changed since checkpoint")
 	}
 	if expected != nil && lastStructuredEpoch != "" && lastStructuredEpoch != expected.Epoch {
