@@ -3346,6 +3346,61 @@ func TestInitCreatesExampleSkillInAbsoluteSkillDir(t *testing.T) {
 	}
 }
 
+func TestInitCreatesExampleSkillInHomeRelativeSkillDir(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	invokeDir := t.TempDir()
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0o700); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	t.Setenv("HOME", homeDir)
+	if err := os.Chdir(invokeDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalWD) }()
+
+	configPath := filepath.Join(invokeDir, "config.yaml")
+	const configuredSkillDir = "~/review-skills"
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{
+		"init",
+		"--force",
+		"--config", configPath,
+		"--skill-dir", configuredSkillDir,
+		"--example-hook=false",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run init: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	expandedSkillDir := filepath.Join(homeDir, "review-skills")
+	for _, relative := range []string{
+		"example/SKILL.md",
+		"example/tools/echo.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(expandedSkillDir, relative)); err != nil {
+			t.Fatalf("expected generated home-relative skill asset %s: %v", relative, err)
+		}
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if !strings.Contains(string(data), "- ~/review-skills\n") {
+		t.Fatalf("generated config must preserve portable skill dir, got:\n%s", data)
+	}
+	loaded, err := config.Load(configPath, invokeDir)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
+	}
+	if len(loaded.Skills.Dirs) != 1 || loaded.Skills.Dirs[0] != expandedSkillDir {
+		t.Fatalf("loaded skill dirs = %#v, want [%q]", loaded.Skills.Dirs, expandedSkillDir)
+	}
+}
+
 func TestInitReportsMissingCurrentDirectoryBeforeWritingConfig(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {

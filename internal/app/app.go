@@ -2167,10 +2167,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		effectiveSessionDir = defaultInitSessionDir(cwd, cfg.Session.Dir)
 	}
 	effectiveSkillDir := defaultString(*skillDir, "./skills")
-	effectiveSkillPath := effectiveSkillDir
-	if !filepath.IsAbs(effectiveSkillPath) {
-		effectiveSkillPath = filepath.Join(cwd, effectiveSkillPath)
-	}
+	effectiveSkillPath := config.ResolvePath(cwd, effectiveSkillDir)
 	cfg.Session.Dir = effectiveSessionDir
 	cfg.Skills.Dirs = []string{effectiveSkillDir}
 	if *exampleHook {
