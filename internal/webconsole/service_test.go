@@ -6668,6 +6668,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
 		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)
 	}
+	if strings.Contains(v2StylesBody, ".session-chip, .icon-action-btn.stop") {
+		t.Fatalf("expected Web Console v2 mobile layout to preserve the running-session Stop control: %s", v2StylesBody)
+	}
 	for _, disabledAssetPath := range []string{"/app.js", "/styles.css", "/legacy/app.js", "/shared-assets/index.html"} {
 		resp, err := http.Get(server.URL + disabledAssetPath)
 		if err != nil {

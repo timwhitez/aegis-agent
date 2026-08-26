@@ -510,6 +510,12 @@ test('context endpoint is called only after opening Context or requesting Refres
   await appContext.document.listeners.click(tasksClick.event);
   assert.equal(appContext.pendingRequests.length, 0);
 
+  const planFocusClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-focus-inspector-tab': 'plan' });
+  await appContext.document.listeners.click(planFocusClick.event);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), true);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.getAttribute('aria-hidden')`, appContext), 'false');
+  assert.equal(vm.runInContext(`nodes.inspectorToggleBtn.getAttribute('aria-expanded')`, appContext), 'true');
+
   const contextClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'context' });
   const firstLoad = appContext.document.listeners.click(contextClick.event);
   assert.equal(appContext.pendingRequests.length, 1);

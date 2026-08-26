@@ -296,7 +296,7 @@ header {
   .nav-item.active { box-shadow: inset 0 -2px var(--accent); }
   .sidebar-footer { margin: 0; padding: 0; flex: 0 0 42px; }
   header { padding: 0 10px 0 14px; }
-  .session-chip, .icon-action-btn.stop { display: none; }
+  .session-chip { display: none; }
   .header-actions { gap: 4px; }
   .chat-inner { padding-left: 12px; padding-right: 12px; }
   .input-area { padding: 6px 8px 10px; }

@@ -1108,9 +1108,14 @@ function setupEventListeners() {
       }
     }},
     { selector: '[data-inspector-tab], [data-focus-inspector-tab]', handler: async (el) => {
-      const tab = el.getAttribute('data-inspector-tab') || el.getAttribute('data-focus-inspector-tab') || 'tasks';
+      const focusTab = el.getAttribute('data-focus-inspector-tab') || '';
+      const tab = el.getAttribute('data-inspector-tab') || focusTab || 'tasks';
       setInspectorTab(tab);
-      renderCurrentSession();
+      if (focusTab) {
+        openInspectorSlideOut();
+      } else {
+        renderCurrentSession();
+      }
       if (tab === 'context') {
         await loadSessionContextReport();
       }
@@ -1697,19 +1702,25 @@ async function requestContinueSession(sessionID, message = '', options = {}) {
 
 function toggleInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
-  const backdrop = nodes.inspectorBackdrop;
-  if (!slideOut || !backdrop) return;
+  if (!slideOut || !nodes.inspectorBackdrop) return;
   const isOpen = slideOut.classList.contains('is-open');
   if (isOpen) {
     closeInspectorSlideOut();
   } else {
-    renderCurrentSession();
-    slideOut.classList.add('is-open');
-    backdrop.classList.add('is-open');
-    slideOut.setAttribute('aria-hidden', 'false');
-    backdrop.setAttribute('aria-hidden', 'false');
-    nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'true');
+    openInspectorSlideOut();
   }
+}
+
+function openInspectorSlideOut() {
+  const slideOut = nodes.inspectorSlideOut;
+  const backdrop = nodes.inspectorBackdrop;
+  if (!slideOut || !backdrop) return;
+  renderCurrentSession();
+  slideOut.classList.add('is-open');
+  backdrop.classList.add('is-open');
+  slideOut.setAttribute('aria-hidden', 'false');
+  backdrop.setAttribute('aria-hidden', 'false');
+  nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'true');
 }
 
 function closeInspectorSlideOut() {

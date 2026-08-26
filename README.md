@@ -12,7 +12,8 @@ the safety boundary.
 ## What it supports
 
 - Local Web Console v2: session start, steer, continue, Goal and Plan Mode
-  controls, provider settings, timeline, tasks, children, and queue views.
+  controls, provider settings, timeline, tasks, children, and bounded background
+  result summaries.
 - CLI fallback: `init`, `run`, `exec`, `steer`, `continue`, `sessions`,
   `goal`, `tasks`, `probe-provider`, and `doctor`.
 - Provider adapters for OpenAI Responses, Anthropic Messages, Google Gemini
