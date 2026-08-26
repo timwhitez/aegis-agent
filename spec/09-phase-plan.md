@@ -181,8 +181,9 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
+- `node --check internal/webconsole/assets-v2/*.js` 通过（目录存在 JavaScript 时）
 - `node --test validation/scripts/webconsole_utils_test.mjs` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置主路径通过；queue job submit 由 REST API/service test 与 CLI advanced path 验证，默认 Web 不提供表单
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
@@ -219,7 +220,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 验收补充：
 
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
-- `node --check internal/webconsole/assets/*.js` 覆盖内嵌前端语法，`node --test validation/scripts/webconsole_utils_test.mjs` 覆盖前端状态机、异步竞态与模块 API contract
+- `node --check internal/webconsole/assets/*.js` 始终覆盖共享内嵌前端；Web Console v2 资源目录存在后额外执行 `node --check internal/webconsole/assets-v2/*.js`。`node --test validation/scripts/webconsole_utils_test.mjs` 覆盖前端状态机、异步竞态与模块 API contract
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
 - Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI
@@ -272,6 +273,8 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - session inspector 增加懒加载、bounded 的 Context tab 与独立只读 endpoint；默认 overview/home polling 不递归扫描 lineage，也不增加 telemetry dashboard
 
 - `aegis-agent web`
+- 默认页面使用 Web Console v2；原页面保留为 `web.legacy_ui_enabled` 控制的 legacy fallback，并在 v2 验收后默认禁用
+- v2 的选型、双前端 route、配置开关、回滚和完成标准见 `spec/17-web-console-v2-migration.md`
 - `experimental web` 作为旧入口兼容别名
 - 本地 HTTP API
 - 内嵌静态单页前端

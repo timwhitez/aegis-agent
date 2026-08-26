@@ -315,6 +315,7 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 - 对 `steer`、`continue`、`queue submit`、`interrupt` 等控制操作做参数校验与状态映射
 - 提供 goal 的本地 REST 控制面：start payload 创建 goal，session detail 返回 goal，用户可以 pause/resume/clear/complete；内部结构化计划与 validation contract 可被 agent 或高级 REST 调用 patch/approve，但不作为默认用户启动表单
 - 将 WebConsole active handle 的 owner/process 线索写入 session events，并在 session detail、`session.md` 与 long-run checkpoint 中展示最近 owner 线索；不得把 in-memory cancel handle 伪持久化
+- 默认提供 Web Console v2 静态资源；旧页面保留在独立 legacy route，受 `web.legacy_ui_enabled` 控制且默认禁用。v2 与 legacy 允许共用无状态 controller/sanitizer，但不得复制 REST contract 或建立第二套 browser state authority
 
 约束：
 

@@ -304,6 +304,7 @@
 - Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
 - Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
 - 高频用户交互默认应简洁：start、steer、continue、Plan approve 不需要层层确认；queue submit 保留在 CLI/API advanced 面；validation coverage override、删除/清理、API key/config 写入、外部暴露服务等风险动作才需要显式确认
+- 默认 operator page 是基于 Agent UI MIT 组件模式二开的 Web Console v2；只复用 chat-first UI 模式，不引入 AgentOS runtime。旧页面默认禁用并仅作为显式配置的回滚入口
 
 ### 4.2.2 Multi-agent 工具面的当前产品决策
 
