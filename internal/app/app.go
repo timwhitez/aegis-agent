@@ -2167,6 +2167,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		effectiveSessionDir = defaultInitSessionDir(cwd, cfg.Session.Dir)
 	}
 	effectiveSkillDir := defaultString(*skillDir, "./skills")
+	effectiveSkillPath := effectiveSkillDir
+	if !filepath.IsAbs(effectiveSkillPath) {
+		effectiveSkillPath = filepath.Join(cwd, effectiveSkillPath)
+	}
 	cfg.Session.Dir = effectiveSessionDir
 	cfg.Skills.Dirs = []string{effectiveSkillDir}
 	if *exampleHook {
@@ -2200,14 +2204,14 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if err := fileutil.MkdirAllNoSymlink(filepath.Join(cwd, "workspace"), 0o700); err != nil {
 		return err
 	}
-	if err := fileutil.MkdirAllNoSymlink(filepath.Join(cwd, effectiveSkillDir, "example"), 0o700); err != nil {
+	if err := fileutil.MkdirAllNoSymlink(filepath.Join(effectiveSkillPath, "example"), 0o700); err != nil {
 		return err
 	}
 	skillBody := "---\nname: example\ndescription: Example local skill\n---\nWhen asked to inspect the repository, start with rg --files and targeted reads.\n"
-	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(cwd, effectiveSkillDir, "example", "SKILL.md"), []byte(skillBody), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(effectiveSkillPath, "example", "SKILL.md"), []byte(skillBody), 0o600); err != nil {
 		return err
 	}
-	toolDir := filepath.Join(cwd, effectiveSkillDir, "example", "tools")
+	toolDir := filepath.Join(effectiveSkillPath, "example", "tools")
 	if err := fileutil.MkdirAllNoSymlink(toolDir, 0o700); err != nil {
 		return err
 	}
