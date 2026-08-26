@@ -2060,6 +2060,7 @@ function renderInspectorPanel() {
           <div class="inspector-eyebrow">Tracker</div>
           <h3>No session loaded</h3>
         </div>
+        <button class="inspector-close-btn" type="button" data-close-inspector aria-label="Close inspector" title="Close inspector">×</button>
       </div>
       <div class="inspector-content">
         <div class="empty-panel compact">No todo/task state recorded.</div>
@@ -2096,7 +2097,10 @@ function renderInspectorPanel() {
         <div class="inspector-eyebrow">Tracker</div>
         <h3>${escapeHTML(shortId(detail.metadata?.id || state.sessionId))}</h3>
       </div>
-      <span class="status-badge ${toneForStatus(detail.state?.status)}">${escapeHTML(humanizeStatus(detail.state?.status || 'idle'))}</span>
+      <div class="inspector-header-actions">
+        <span class="status-badge ${toneForStatus(detail.state?.status)}">${escapeHTML(humanizeStatus(detail.state?.status || 'idle'))}</span>
+        <button class="inspector-close-btn" type="button" data-close-inspector aria-label="Close inspector" title="Close inspector">×</button>
+      </div>
     </div>
     <div class="inspector-tabs" role="tablist">
       ${tabs.map(([key, label]) => `<button class="inspector-tab ${key === active ? 'active' : ''}" type="button" data-inspector-tab="${escapeAttr(key)}">${escapeHTML(label)}</button>`).join('')}

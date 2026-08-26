@@ -2237,6 +2237,36 @@ textarea {
   color: var(--text-main);
 }
 
+.inspector-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspector-close-btn {
+  display: none;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.inspector-slide-out .inspector-close-btn {
+  display: inline-flex;
+}
+
+.inspector-close-btn:hover,
+.inspector-close-btn:focus-visible {
+  border-color: var(--accent);
+  color: var(--text-main);
+}
+
 .inspector-tabs {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

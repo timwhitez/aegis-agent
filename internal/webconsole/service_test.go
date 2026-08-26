@@ -6625,6 +6625,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, `id="v2-new-session-btn" type="button" aria-label="New session"`) {
 		t.Fatalf("expected compact new-session control to keep an accessible name: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, `id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true"`) {
+		t.Fatalf("expected inspector slide-out to expose modal dialog semantics: %s", indexBody)
+	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
 		t.Fatalf("expected Workspace batch delete to reuse the header trash icon instead of a second text action, got shell body: %s", indexBody)
 	}

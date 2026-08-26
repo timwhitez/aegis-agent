@@ -1120,6 +1120,7 @@ function setupEventListeners() {
         await loadSessionContextReport();
       }
     }},
+    { selector: '[data-close-inspector]', handler: () => { closeInspectorSlideOut(); } },
     { selector: '[data-context-report-refresh]', handler: async (el) => {
       el.disabled = true;
       await loadSessionContextReport({ force: true });
@@ -1289,6 +1290,9 @@ function applyViewVisibility(viewName) {
 function switchView(viewName, options = {}) {
   if (!nodes.views[viewName]) {
     return;
+  }
+  if (viewName !== 'chat') {
+    closeInspectorSlideOut();
   }
   applyViewVisibility(viewName);
   if (!options.skipPersist) {
