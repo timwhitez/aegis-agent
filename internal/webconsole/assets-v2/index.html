@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en" data-ui="aegis-v2">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>Aegis Agent</title>
+  <link rel="stylesheet" href="/v2-assets/aegis.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <div class="logo">
+        <div class="logo-icon"><i data-lucide="shield"></i></div>
+        <div class="brand-copy"><strong>Aegis</strong><span>Agent Console</span></div>
+      </div>
+      <button class="new-chat-primary" id="v2-new-session-btn" type="button" aria-label="New session">
+        <i data-lucide="plus"></i><span>New session</span>
+      </button>
+      <nav>
+        <button class="nav-item active" data-view="chat" aria-label="Session">
+          <i data-lucide="message-square"></i><span>Session</span>
+        </button>
+        <button class="nav-item" data-view="history" aria-label="Sessions">
+          <i data-lucide="history"></i><span>Sessions</span>
+        </button>
+        <button class="nav-item" data-view="skills" aria-label="Skills">
+          <i data-lucide="box"></i><span>Skills</span>
+        </button>
+        <button class="nav-item" data-view="workspace" aria-label="Workspace">
+          <i data-lucide="folder-git-2"></i><span>Workspace</span>
+        </button>
+      </nav>
+      <div class="sidebar-context">
+        <span class="sidebar-context-label">Local runtime</span>
+        <span class="sidebar-context-state"><i class="status-pip"></i> File-backed</span>
+      </div>
+      <div class="sidebar-footer">
+        <button class="nav-item" data-view="settings" aria-label="Settings">
+          <i data-lucide="settings"></i><span>Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header>
+        <div class="status-indicator">
+          <div class="dot online" id="connection-dot"></div>
+          <span id="connection-status">Agent Session</span>
+          <span class="session-chip" id="session-id-display">New local session</span>
+        </div>
+        <div class="header-actions">
+          <span class="v2-local-badge">LOCAL</span>
+          <button class="icon-action-btn inspector-toggle-btn" id="inspector-toggle-btn" aria-label="Toggle inspector" aria-controls="inspector-slide-out" aria-expanded="false" data-tooltip="Inspector"><i data-lucide="panel-right"></i></button>
+          <button class="icon-action-btn stop" id="stop-session-btn" aria-label="Stop session" title="Stop session" data-tooltip="Stop"><i data-lucide="square"></i></button>
+          <button class="icon-action-btn danger" id="interrupt-session-btn" aria-label="Interrupt session" title="Interrupt session" data-tooltip="Interrupt"><i data-lucide="hand"></i></button>
+          <button class="icon-action-btn" id="new-session-btn" aria-label="New session" title="New session" data-tooltip="New session"><i data-lucide="plus"></i></button>
+        </div>
+      </header>
+
+      <div id="chat-view" class="view">
+        <div class="chat-workspace" data-testid="session-workspace">
+          <aside class="session-rail" id="session-rail" data-testid="session-rail"></aside>
+          <div class="chat-container" id="chat-container">
+            <div class="chat-inner" id="chat-messages"></div>
+          </div>
+          <aside class="inspector-panel" id="inspector-panel" data-testid="fixed-task-tracker"></aside>
+        </div>
+        <div class="input-area">
+          <div id="todo-float-panel" class="todo-float-panel"></div>
+          <div class="input-container" id="input-container">
+            <textarea id="chat-input" placeholder="Ask Aegis to work in this workspace…" rows="1"></textarea>
+            <div class="goal-composer-shell" role="group" aria-label="Session composer mode">
+              <button class="goal-toggle-btn" id="goal-toggle-btn" type="button" aria-pressed="false"><i data-lucide="target"></i><span>Goal</span></button>
+              <button class="goal-toggle-btn plan-toggle-btn" id="plan-toggle-btn" type="button" aria-pressed="false"><i data-lucide="clipboard-list"></i><span>Plan</span></button>
+              <div class="goal-composer-panel" id="goal-composer-panel" hidden></div>
+            </div>
+            <div class="input-actions">
+              <button class="interrupt-toggle-btn" id="interrupt-toggle-btn" type="button" aria-pressed="false"><i data-lucide="siren"></i><span>Interrupt next send</span></button>
+              <span class="input-status-text" id="input-status-text">Enter to send · Shift+Enter for new line</span>
+              <div class="plan-mode-input-actions" id="plan-mode-input-actions" hidden></div>
+              <button class="send-btn" id="send-btn" type="button" aria-label="Send message" title="Send message"><i data-lucide="arrow-up"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="skills-view" class="view is-hidden">
+        <div class="view-header skills-header">
+          <div><span class="view-eyebrow">Capability library</span><h2 class="view-title">Skills</h2><p class="view-subtitle">Manage the local skills available to the agent.</p></div>
+          <button class="skill-btn install skill-upload-btn" id="skill-upload-btn" type="button"><i data-lucide="upload"></i> Upload .zip</button>
+          <input type="file" id="skill-upload" class="visually-hidden-file" accept=".zip">
+        </div>
+        <div class="skills-grid" id="skills-grid"></div>
+      </div>
+
+      <div id="workspace-view" class="view is-hidden">
+        <div class="view-header workspace-header">
+          <div><span class="view-eyebrow">Local files</span><h2 class="view-title">Workspace</h2><p class="view-subtitle" id="workspace-subtitle">Browsing the current server workspace.</p></div>
+          <div class="workspace-header-actions">
+            <span class="workspace-selected-chip is-hidden" id="workspace-selected-chip">0 selected</span>
+            <span class="surface-chip" id="workspace-root-chip">current cwd</span>
+            <button class="workspace-icon-btn" id="workspace-new-folder-btn" type="button" aria-label="New folder" title="New folder"><i data-lucide="folder-plus"></i></button>
+            <button class="workspace-icon-btn" id="workspace-upload-btn" type="button" aria-label="Upload file" title="Upload file"><i data-lucide="upload"></i></button>
+            <input type="file" id="workspace-upload-input" class="visually-hidden-file">
+            <button class="workspace-icon-btn" id="workspace-refresh-btn" type="button" aria-label="Refresh workspace" title="Refresh"><i data-lucide="rotate-cw"></i></button>
+            <button class="workspace-icon-btn danger is-hidden" id="workspace-delete-dir-btn" type="button" aria-label="Delete current folder" title="Delete current folder"><i data-lucide="trash-2"></i></button>
+          </div>
+        </div>
+        <div class="workspace-layout">
+          <div class="file-tree" id="file-tree"></div>
+          <div class="editor-container">
+            <div class="editor-header">
+              <span class="editor-title" id="editor-filename">Select a file</span>
+              <div class="workspace-selection-actions" id="workspace-selection-actions">
+                <button class="workspace-editor-action is-hidden" id="workspace-download-btn" type="button" aria-label="Download selected file" title="Download file"><i data-lucide="download"></i></button>
+                <button class="workspace-editor-action is-hidden" id="workspace-rename-btn" type="button" aria-label="Rename selected file" title="Rename file"><i data-lucide="pencil"></i></button>
+                <button class="workspace-editor-action danger is-hidden" id="workspace-delete-file-btn" type="button" aria-label="Delete selected file" title="Delete file"><i data-lucide="trash-2"></i></button>
+              </div>
+            </div>
+            <div class="editor-content" id="editor-content">Select a file to view its content…</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="history-view" class="view is-hidden"></div>
+      <div id="settings-view" class="view is-hidden"></div>
+    </main>
+  </div>
+  <div class="inspector-backdrop" id="inspector-backdrop" aria-hidden="true"></div>
+  <div class="inspector-slide-out" id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true" tabindex="-1"></div>
+  <div class="toast-rack" id="toast-rack" aria-live="polite" aria-atomic="true"></div>
+  <script src="/shared-assets/utils.js"></script>
+  <script src="/shared-assets/markdown-security.js"></script>
+  <script src="/shared-assets/icons.js"></script>
+  <script src="/shared-assets/api.js"></script>
+  <script src="/shared-assets/events.js"></script>
+  <script src="/shared-assets/settings-view.js"></script>
+  <script src="/shared-assets/workspace-view.js"></script>
+  <script src="/shared-assets/session-view.js"></script>
+  <script src="/shared-assets/file-change-disclosure.js"></script>
+  <script src="/shared-assets/app.js"></script>
+  <script src="/v2-assets/v2.js"></script>
+</body>
+</html>

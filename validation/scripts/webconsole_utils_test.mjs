@@ -487,11 +487,15 @@ test('context endpoint is called only after opening Context or requesting Refres
   const delegatedClick = (selector, attributes = {}) => {
     const button = {
       disabled: false,
+      focused: false,
       getAttribute(name) {
         return Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
       },
       querySelector() {
         return null;
+      },
+      focus() {
+        this.focused = true;
       }
     };
     return {
@@ -509,6 +513,45 @@ test('context endpoint is called only after opening Context or requesting Refres
   const tasksClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'tasks' });
   await appContext.document.listeners.click(tasksClick.event);
   assert.equal(appContext.pendingRequests.length, 0);
+
+  const planFocusClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-focus-inspector-tab': 'plan' });
+  appContext.document.activeElement = planFocusClick.button;
+  await appContext.document.listeners.click(planFocusClick.event);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), true);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.getAttribute('aria-hidden')`, appContext), 'false');
+  assert.equal(vm.runInContext(`nodes.inspectorToggleBtn.getAttribute('aria-expanded')`, appContext), 'true');
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.focused`, appContext), true);
+
+  let tabPrevented = false;
+  appContext.document.listeners.keydown({
+    key: 'Tab',
+    shiftKey: false,
+    target: { tagName: 'DIV' },
+    preventDefault() { tabPrevented = true; }
+  });
+  assert.equal(tabPrevented, true);
+
+  let escapePrevented = false;
+  appContext.document.listeners.keydown({
+    key: 'Escape',
+    target: { tagName: 'DIV' },
+    preventDefault() { escapePrevented = true; }
+  });
+  assert.equal(escapePrevented, true);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), false);
+  assert.equal(appContext.pendingRequests.length, 0);
+  assert.equal(planFocusClick.button.focused, true);
+
+  planFocusClick.button.focused = false;
+  appContext.document.activeElement = planFocusClick.button;
+  await appContext.document.listeners.click(planFocusClick.event);
+
+  const inspectorCloseClick = delegatedClick('[data-close-inspector]');
+  await appContext.document.listeners.click(inspectorCloseClick.event);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), false);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.getAttribute('aria-hidden')`, appContext), 'true');
+  assert.equal(vm.runInContext(`nodes.inspectorToggleBtn.getAttribute('aria-expanded')`, appContext), 'false');
+  assert.equal(planFocusClick.button.focused, true);
 
   const contextClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'context' });
   const firstLoad = appContext.document.listeners.click(contextClick.event);
@@ -770,7 +813,8 @@ test('runtime handles are isolated from durable app state', () => {
       'wsReconnectTimer',
       'pendingSessionRefresh',
       'pendingOverviewRefresh',
-      'layoutObserver'
+      'layoutObserver',
+      'inspectorPreviousFocus'
     ];
     runtimeHandles.pendingSessionRefresh = 101;
     runtimeHandles.pendingOverviewRefresh = 102;
@@ -785,6 +829,7 @@ test('runtime handles are isolated from durable app state', () => {
 
   assert.deepEqual(sameRealm(result.stateHandleKeys), []);
   assert.deepEqual(sameRealm(result.runtimeHandleKeys), [
+    'inspectorPreviousFocus',
     'layoutObserver',
     'pendingOverviewRefresh',
     'pendingSessionRefresh',
@@ -6738,6 +6783,7 @@ test('settings save keeps empty API key fields unmasked after success', async ()
 
   assert.equal(savedPayloads.length, 1);
   assert.equal(savedPayloads[0].apiKey, '');
+  assert.equal(savedPayloads[0].legacyUIEnabled, false);
   assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
     disabled: true,
     maxActiveRuntimeSec: 0,
@@ -6749,6 +6795,21 @@ test('settings save keeps empty API key fields unmasked after success', async ()
   assert.equal(toasts.at(-1)?.tone, 'success');
 });
 
+test('settings can explicitly enable the legacy frontend rollback route', async () => {
+  const { elements, savedPayloads, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    elements['settings-enable-legacy-ui'].checked = true;
+    elements['settings-enable-legacy-ui'].listeners.change();
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].legacyUIEnabled, true);
+  assert.equal(elements['settings-legacy-ui-state'].textContent, 'Enabled');
+});
+
 test('settings copy states global scope, soft semantics, default Off, and new-work snapshot behavior', async () => {
   const { container, elements, restore } = await renderSettingsHarness({ hasKey: false });
   try {
@@ -6758,6 +6819,7 @@ test('settings copy states global scope, soft semantics, default Off, and new-wo
     assert.match(container.innerHTML, /Changes affect newly created child\/job work only/);
     assert.equal(elements['settings-child-budget-state'].textContent, 'Off');
     assert.equal(elements['settings-disable-hard-turn-limit'].checked, true);
+    assert.equal(elements['settings-legacy-ui-state'].textContent, 'Disabled');
   } finally {
     restore();
   }
@@ -6910,6 +6972,8 @@ test('renderSettings ignores stale config responses', async () => {
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-global-turn-limit-state': fakeRendererElement(),
+    'settings-enable-legacy-ui': fakeRendererElement(),
+    'settings-legacy-ui-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
     'settings-child-budget-active-runtime': fakeRendererElement(),
     'settings-child-budget-elapsed': fakeRendererElement(),
@@ -7076,6 +7140,7 @@ function settingsConfig({ model, hasKey }) {
     max_turns_soft: 24,
     max_turns_hard: -1,
     disable_hard_turn_limit: true,
+    legacy_ui_enabled: false,
     child_budget: {
       disabled: true,
       max_active_runtime_sec: 0,
@@ -7117,6 +7182,8 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-global-turn-limit-state': fakeRendererElement(),
+    'settings-enable-legacy-ui': fakeRendererElement(),
+    'settings-legacy-ui-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
     'settings-child-budget-active-runtime': fakeRendererElement(),
     'settings-child-budget-elapsed': fakeRendererElement(),

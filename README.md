@@ -11,8 +11,9 @@ the safety boundary.
 
 ## What it supports
 
-- Local Web console: session start, steer, continue, Goal and Plan Mode
-  controls, provider settings, timeline, tasks, children, and queue views.
+- Local Web Console v2: session start, steer, continue, Goal and Plan Mode
+  controls, provider settings, timeline, tasks, children, and bounded background
+  result summaries.
 - CLI fallback: `init`, `run`, `exec`, `steer`, `continue`, `sessions`,
   `goal`, `tasks`, `probe-provider`, and `doctor`.
 - Provider adapters for OpenAI Responses, Anthropic Messages, Google Gemini
@@ -37,6 +38,10 @@ Requirements: Go 1.24+ and Node.js (for the embedded Web console checks).
 
 Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
 `workspace/` directory, which is intentionally ignored by Git.
+
+Web Console v2 is the default UI. The original page remains packaged but is
+disabled by default; its temporary `/legacy/` rollback route can be enabled in
+Settings or with `web.legacy_ui_enabled: true`.
 
 For a CLI-only workflow:
 

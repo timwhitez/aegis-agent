@@ -44,7 +44,8 @@ const runtimeHandles = {
   wsReconnectTimer: null,
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
-  layoutObserver: null
+  layoutObserver: null,
+  inspectorPreviousFocus: null
 };
 
 const skillsViewState = {
@@ -1108,13 +1109,19 @@ function setupEventListeners() {
       }
     }},
     { selector: '[data-inspector-tab], [data-focus-inspector-tab]', handler: async (el) => {
-      const tab = el.getAttribute('data-inspector-tab') || el.getAttribute('data-focus-inspector-tab') || 'tasks';
+      const focusTab = el.getAttribute('data-focus-inspector-tab') || '';
+      const tab = el.getAttribute('data-inspector-tab') || focusTab || 'tasks';
       setInspectorTab(tab);
-      renderCurrentSession();
+      if (focusTab) {
+        openInspectorSlideOut();
+      } else {
+        renderCurrentSession();
+      }
       if (tab === 'context') {
         await loadSessionContextReport();
       }
     }},
+    { selector: '[data-close-inspector]', handler: () => { closeInspectorSlideOut(); } },
     { selector: '[data-context-report-refresh]', handler: async (el) => {
       el.disabled = true;
       await loadSessionContextReport({ force: true });
@@ -1174,16 +1181,25 @@ function setupEventListeners() {
 
   document.addEventListener('keydown', (event) => {
     const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
-    
-    // Always handle Escape even if we are in an input field (to stop generating)
+
+    if (event.key === 'Tab' && trapInspectorFocus(event)) {
+      return;
+    }
+
+    // A visible modal inspector owns Escape before the session Stop shortcut.
     if (event.key === 'Escape' || event.key === 'Esc') {
+      if (nodes.inspectorSlideOut?.classList.contains('is-open')) {
+        event.preventDefault();
+        closeInspectorSlideOut();
+        return;
+      }
       if (isGenerating() && hasDurableSession()) {
         event.preventDefault();
         requestStop();
       }
       return;
     }
-    
+
     if (isInput) {
       return;
     }
@@ -1284,6 +1300,9 @@ function applyViewVisibility(viewName) {
 function switchView(viewName, options = {}) {
   if (!nodes.views[viewName]) {
     return;
+  }
+  if (viewName !== 'chat') {
+    closeInspectorSlideOut({ restoreFocus: false });
   }
   applyViewVisibility(viewName);
   if (!options.skipPersist) {
@@ -1697,27 +1716,76 @@ async function requestContinueSession(sessionID, message = '', options = {}) {
 
 function toggleInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
-  const backdrop = nodes.inspectorBackdrop;
-  if (!slideOut || !backdrop) return;
+  if (!slideOut || !nodes.inspectorBackdrop) return;
   const isOpen = slideOut.classList.contains('is-open');
   if (isOpen) {
     closeInspectorSlideOut();
   } else {
-    renderCurrentSession();
-    slideOut.classList.add('is-open');
-    backdrop.classList.add('is-open');
-    slideOut.setAttribute('aria-hidden', 'false');
-    backdrop.setAttribute('aria-hidden', 'false');
-    nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'true');
+    openInspectorSlideOut();
   }
 }
 
-function closeInspectorSlideOut() {
+function openInspectorSlideOut() {
+  const slideOut = nodes.inspectorSlideOut;
+  const backdrop = nodes.inspectorBackdrop;
+  if (!slideOut || !backdrop) return;
+  if (!slideOut.classList.contains('is-open')) {
+    runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
+  }
+  renderCurrentSession();
+  slideOut.classList.add('is-open');
+  backdrop.classList.add('is-open');
+  slideOut.setAttribute('aria-hidden', 'false');
+  backdrop.setAttribute('aria-hidden', 'false');
+  nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'true');
+  const focusTarget = slideOut.querySelector('[data-close-inspector]') || slideOut;
+  focusTarget.focus?.({ preventScroll: true });
+}
+
+function closeInspectorSlideOut(options = {}) {
+  const restoreFocus = options.restoreFocus !== false;
+  const previousFocus = runtimeHandles.inspectorPreviousFocus;
   nodes.inspectorSlideOut?.classList.remove('is-open');
   nodes.inspectorBackdrop?.classList.remove('is-open');
   nodes.inspectorSlideOut?.setAttribute('aria-hidden', 'true');
   nodes.inspectorBackdrop?.setAttribute('aria-hidden', 'true');
   nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
+  runtimeHandles.inspectorPreviousFocus = null;
+  if (restoreFocus) {
+    previousFocus?.focus?.({ preventScroll: true });
+  }
+}
+
+function trapInspectorFocus(event) {
+  const slideOut = nodes.inspectorSlideOut;
+  if (!slideOut?.classList.contains('is-open')) {
+    return false;
+  }
+  const candidates = Array.from(slideOut.querySelectorAll(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter((element) => {
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  });
+  if (!candidates.length) {
+    event.preventDefault();
+    slideOut.focus?.({ preventScroll: true });
+    return true;
+  }
+  const first = candidates[0];
+  const last = candidates[candidates.length - 1];
+  const active = document.activeElement;
+  const activeInside = typeof slideOut.contains === 'function'
+    ? slideOut.contains(active)
+    : candidates.includes(active);
+  if (event.shiftKey && (!activeInside || active === first)) {
+    event.preventDefault();
+    last.focus?.({ preventScroll: true });
+  } else if (!event.shiftKey && (!activeInside || active === last)) {
+    event.preventDefault();
+    first.focus?.({ preventScroll: true });
+  }
+  return true;
 }
 
 function adoptSession(sessionID, backed) {

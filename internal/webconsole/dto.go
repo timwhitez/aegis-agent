@@ -121,6 +121,7 @@ type UpdateConfigRequest struct {
 	MaxTurnsSoft         *int                                   `json:"max_turns_soft"`
 	MaxTurnsHard         *int                                   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool                                   `json:"disable_hard_turn_limit"`
+	LegacyUIEnabled      *bool                                  `json:"legacy_ui_enabled"`
 	ChildBudget          *ChildBudgetSettingsRequest            `json:"child_budget"`
 	RoleProviders        map[string]RoleProviderOverrideRequest `json:"role_providers"`
 }

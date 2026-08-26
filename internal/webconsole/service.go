@@ -54,6 +54,19 @@ var upgrader = websocket.Upgrader{
 var (
 	webconsoleProcessOwner = newProcessOwner()
 	webconsoleProcessAlive = hostProcessAlive
+	sharedV2AssetNames     = map[string]struct{}{
+		"api.js":                    {},
+		"app.js":                    {},
+		"events.js":                 {},
+		"file-change-disclosure.js": {},
+		"icons.js":                  {},
+		"markdown-security.js":      {},
+		"session-view.js":           {},
+		"settings-view.js":          {},
+		"styles.css":                {},
+		"utils.js":                  {},
+		"workspace-view.js":         {},
+	}
 )
 
 const (
@@ -124,6 +137,7 @@ type Service struct {
 	configPath string
 	store      *session.Store
 	staticFS   fs.FS
+	modernFS   fs.FS
 	workers    *workerPool
 	basicAuth  *basicAuthenticator
 
@@ -336,6 +350,10 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	modernFS, err := assetV2FS()
+	if err != nil {
+		return nil, err
+	}
 	serviceCfg, err := config.Clone(cfg)
 	if err != nil {
 		return nil, err
@@ -350,6 +368,7 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		configPath:      opts.ConfigPath,
 		store:           store,
 		staticFS:        staticFS,
+		modernFS:        modernFS,
 		basicAuth:       basicAuth,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
@@ -521,16 +540,74 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-		serveEmbeddedFileRequest(w, r, s.staticFS, "index.html")
+	if r.URL.Path == "/legacy" {
+		if !s.legacyUIEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "/legacy/", http.StatusPermanentRedirect)
 		return
 	}
-	name := strings.TrimPrefix(r.URL.Path, "/")
-	if _, err := fs.Stat(s.staticFS, name); err == nil {
+	if strings.HasPrefix(r.URL.Path, "/legacy/") {
+		if !s.legacyUIEnabled() {
+			http.NotFound(w, r)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/legacy/")
+		if name == "" {
+			name = "index.html"
+		}
+		if _, err := fs.Stat(s.staticFS, name); err != nil {
+			http.NotFound(w, r)
+			return
+		}
 		serveEmbeddedFileRequest(w, r, s.staticFS, name)
 		return
 	}
-	serveEmbeddedFileRequest(w, r, s.staticFS, "index.html")
+	if strings.HasPrefix(r.URL.Path, "/shared-assets/") {
+		name := strings.TrimPrefix(r.URL.Path, "/shared-assets/")
+		if _, ok := sharedV2AssetNames[name]; !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := fs.Stat(s.staticFS, name); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		serveEmbeddedFileRequest(w, r, s.staticFS, name)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/v2-assets/") {
+		name := strings.TrimPrefix(r.URL.Path, "/v2-assets/")
+		if name == "" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := fs.Stat(s.modernFS, name); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		serveEmbeddedFileRequest(w, r, s.modernFS, name)
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	if name != "" && name != "index.html" {
+		if legacyInfo, legacyErr := fs.Stat(s.staticFS, name); legacyErr == nil && !legacyInfo.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		if modernInfo, modernErr := fs.Stat(s.modernFS, name); modernErr == nil && !modernInfo.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	serveEmbeddedFileRequest(w, r, s.modernFS, "index.html")
+}
+
+func (s *Service) legacyUIEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Web.LegacyUIEnabled
 }
 
 func (s *Service) configSnapshot() (*config.Config, error) {
@@ -4414,6 +4491,7 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_soft":          cfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
+		"legacy_ui_enabled":       cfg.Web.LegacyUIEnabled,
 		"child_budget": map[string]any{
 			"disabled":                     cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
 			"max_active_runtime_sec":       cfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
@@ -4477,6 +4555,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.GuardrailsMode = guardrailsMode
+	}
+	if req.LegacyUIEnabled != nil {
+		updatedCfg.Web.LegacyUIEnabled = *req.LegacyUIEnabled
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
@@ -4722,6 +4803,7 @@ func configAuditData(updatedCfg *config.Config, configPath string) map[string]an
 		"max_turns_soft":                  updatedCfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":                  updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active":          updatedCfg.Runtime.MaxTurnsHard > 0,
+		"legacy_ui_enabled":               updatedCfg.Web.LegacyUIEnabled,
 		"child_budget_active":             updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec > 0 || updatedCfg.Runtime.ChildBudget.MaxElapsedSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt > 0,
 		"child_budget_active_runtime_sec": updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
 		"child_budget_elapsed_sec":        updatedCfg.Runtime.ChildBudget.MaxElapsedSec,
@@ -4750,6 +4832,7 @@ func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
 		req.MaxTurnsSoft != nil ||
 		req.MaxTurnsHard != nil ||
 		req.DisableHardTurnLimit ||
+		req.LegacyUIEnabled != nil ||
 		req.ChildBudget != nil ||
 		configRequestHasProviderScopedFields(req) ||
 		len(req.RoleProviders) > 0
@@ -8342,7 +8425,7 @@ func tailProviderAttempts(items []session.ProviderAttempt, limit int) []session.
 }
 
 var (
-	embeddedAssetCache sync.Map // name -> *assetCacheEntry
+	embeddedAssetCache sync.Map // content identity -> *assetCacheEntry
 )
 
 type assetCacheEntry struct {
@@ -8353,18 +8436,28 @@ type assetCacheEntry struct {
 }
 
 func loadEmbeddedAsset(files fs.FS, name string) (*assetCacheEntry, error) {
-	if v, ok := embeddedAssetCache.Load(name); ok {
-		return v.(*assetCacheEntry), nil
+	cacheKey := ""
+	if namespaced, ok := files.(interface{ cacheNamespace() string }); ok {
+		cacheKey = namespaced.cacheNamespace() + ":" + filepath.Clean(name)
+		if v, found := embeddedAssetCache.Load(cacheKey); found {
+			return v.(*assetCacheEntry), nil
+		}
 	}
 	data, err := fs.ReadFile(files, filepath.Clean(name))
 	if err != nil {
 		return nil, err
 	}
+	sum := sha256.Sum256(data)
+	if cacheKey == "" {
+		cacheKey = filepath.Clean(name) + ":" + hex.EncodeToString(sum[:])
+		if v, found := embeddedAssetCache.Load(cacheKey); found {
+			return v.(*assetCacheEntry), nil
+		}
+	}
 	contentType := mime.TypeByExtension(filepath.Ext(name))
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}
-	sum := sha256.Sum256(data)
 	entry := &assetCacheEntry{
 		body:        data,
 		etag:        `"` + hex.EncodeToString(sum[:16]) + `"`,
@@ -8381,7 +8474,7 @@ func loadEmbeddedAsset(files fs.FS, name string) (*assetCacheEntry, error) {
 			}
 		}
 	}
-	if actual, loaded := embeddedAssetCache.LoadOrStore(name, entry); loaded {
+	if actual, loaded := embeddedAssetCache.LoadOrStore(cacheKey, entry); loaded {
 		return actual.(*assetCacheEntry), nil
 	}
 	return entry, nil

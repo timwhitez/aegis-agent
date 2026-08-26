@@ -100,7 +100,8 @@ type RoleProviderOverride struct {
 // WebConfig controls the local WebConsole adapter. The runtime and session
 // stores do not depend on these operator-surface settings.
 type WebConfig struct {
-	BasicAuth WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
+	BasicAuth       WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
+	LegacyUIEnabled bool               `yaml:"legacy_ui_enabled,omitempty"`
 }
 
 // WebBasicAuthConfig enables HTTP Basic authentication when both fields are

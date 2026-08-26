@@ -6619,8 +6619,17 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
+	if !strings.Contains(indexBody, "Aegis") || !strings.Contains(indexBody, "Ask Aegis to work in this workspace") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
+	}
+	if !strings.Contains(indexBody, `id="v2-new-session-btn" type="button" aria-label="New session"`) {
+		t.Fatalf("expected compact new-session control to keep an accessible name: %s", indexBody)
+	}
+	if !strings.Contains(indexBody, `<meta name="color-scheme" content="light">`) || strings.Contains(indexBody, `<meta name="color-scheme" content="dark">`) {
+		t.Fatalf("expected Web Console v2 to declare a light browser color scheme by default: %s", indexBody)
+	}
+	if !strings.Contains(indexBody, `id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true" tabindex="-1"`) {
+		t.Fatalf("expected inspector slide-out to expose modal dialog semantics: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
 		t.Fatalf("expected Workspace batch delete to reuse the header trash icon instead of a second text action, got shell body: %s", indexBody)
@@ -6637,7 +6646,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "Background Jobs") || strings.Contains(indexBody, `data-view="queue"`) || strings.Contains(indexBody, "queue-view") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
 		t.Fatalf("expected shell navigation to remove standalone Background Jobs and keep Sessions label, got shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
+	if !strings.Contains(indexBody, "Enter to send · Shift+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, `id="plan-mode-input-actions"`) {
@@ -6658,23 +6667,64 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
+	v2StylesBody := checkBody(server.URL + "/v2-assets/aegis.css")
+	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--background: #f3f5f7") || !strings.Contains(v2StylesBody, "--surface: #ffffff") || !strings.Contains(v2StylesBody, "--accent-fill: #b6e858") || !strings.Contains(v2StylesBody, "--text-soft: #68727e") {
+		t.Fatalf("unexpected Web Console v2 stylesheet: %s", v2StylesBody)
+	}
+	if strings.Contains(v2StylesBody, "prefers-color-scheme: dark") || strings.Contains(v2StylesBody, "--background: #090b10") {
+		t.Fatalf("expected Web Console v2 to keep its default palette light regardless of OS preference: %s", v2StylesBody)
+	}
+	if !strings.Contains(v2StylesBody, ".editor-title { color: var(--text-main); }") || !strings.Contains(v2StylesBody, ".editor-content { color: var(--text-main); }") || !strings.Contains(v2StylesBody, ".workspace-selected-chip { color: var(--accent);") || !strings.Contains(v2StylesBody, ".workspace-editor-action { color: var(--text-muted);") {
+		t.Fatalf("expected Web Console v2 Workspace preview and enabled actions to use light-theme text colors: %s", v2StylesBody)
+	}
+	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
+		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)
+	}
+	if strings.Contains(v2StylesBody, ".session-chip, .icon-action-btn.stop") {
+		t.Fatalf("expected Web Console v2 mobile layout to preserve the running-session Stop control: %s", v2StylesBody)
+	}
+	for _, disabledAssetPath := range []string{"/app.js", "/styles.css", "/legacy/app.js", "/shared-assets/index.html"} {
+		resp, err := http.Get(server.URL + disabledAssetPath)
+		if err != nil {
+			t.Fatalf("get disabled legacy asset %s: %v", disabledAssetPath, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("disabled legacy asset %s status = %d, want 404", disabledAssetPath, resp.StatusCode)
+		}
+	}
+	dottedRouteBody := checkBody(server.URL + "/sessions/run.v2")
+	if !strings.Contains(dottedRouteBody, `data-ui="aegis-v2"`) {
+		t.Fatalf("expected unknown dotted SPA route to serve Web Console v2: %s", dottedRouteBody)
+	}
+	legacyResp, err := http.Get(server.URL + "/legacy/")
+	if err != nil {
+		t.Fatalf("get disabled legacy route: %v", err)
+	}
+	legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 while disabled", legacyResp.StatusCode)
+	}
 	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") || !strings.Contains(indexBody, "app.js") {
 		t.Fatalf("expected shell to load utils/icons/api/events/settings/workspace/session/app assets, got shell body: %s", indexBody)
 	}
-	iconsBody := checkBody(server.URL + "/icons.js")
+	iconsBody := checkBody(server.URL + "/shared-assets/icons.js")
 	if !strings.Contains(iconsBody, "window.lucide") || !strings.Contains(iconsBody, "createIcons") {
 		t.Fatalf("unexpected icons.js body: %s", iconsBody)
 	}
-	utilsBody := checkBody(server.URL + "/utils.js")
+	utilsBody := checkBody(server.URL + "/shared-assets/utils.js")
 	if !strings.Contains(utilsBody, "safeMarkdown") || !strings.Contains(utilsBody, "escapeHTML") || !strings.Contains(utilsBody, "collectShellRedirectPaths") || strings.Contains(utilsBody, "unpkg.com") || strings.Contains(utilsBody, "cdn.jsdelivr.net") {
 		t.Fatalf("unexpected utils.js body: %s", utilsBody)
 	}
-	apiBody := checkBody(server.URL + "/api.js")
+	apiBody := checkBody(server.URL + "/shared-assets/api.js")
 	if !strings.Contains(apiBody, "class APIError") || !strings.Contains(apiBody, "function requestJSON") || !strings.Contains(apiBody, "function startSession") || !strings.Contains(apiBody, "function continueSession") || !strings.Contains(apiBody, "function steerSession") {
 		t.Fatalf("unexpected api.js body: %s", apiBody)
 	}
 	if !strings.Contains(apiBody, "child_budget") || !strings.Contains(apiBody, "max_active_runtime_sec: payload.childBudget.maxActiveRuntimeSec") || !strings.Contains(apiBody, "max_elapsed_sec: payload.childBudget.maxElapsedSec") || !strings.Contains(apiBody, "max_turns_per_attempt: payload.childBudget.maxTurnsPerAttempt") {
 		t.Fatalf("expected api.js to persist optional child budget settings, got api.js body: %s", apiBody)
+	}
+	if !strings.Contains(apiBody, "legacy_ui_enabled: payload.legacyUIEnabled") {
+		t.Fatalf("expected api.js to persist the legacy frontend switch, got api.js body: %s", apiBody)
 	}
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
@@ -6685,14 +6735,14 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(apiBody, "unpkg.com") || strings.Contains(apiBody, "cdn.jsdelivr.net") {
 		t.Fatalf("expected api.js to avoid external dependencies, got api.js body: %s", apiBody)
 	}
-	eventsBody := checkBody(server.URL + "/events.js")
+	eventsBody := checkBody(server.URL + "/shared-assets/events.js")
 	if !strings.Contains(eventsBody, "describeTimelineItem") || !strings.Contains(eventsBody, "describeEventDescriptor") || !strings.Contains(eventsBody, "shouldRefreshAfterEvent") || !strings.Contains(eventsBody, "Background results accepted") {
 		t.Fatalf("unexpected events.js body: %s", eventsBody)
 	}
 	if !strings.Contains(eventsBody, "planmode.plan_submitted") || !strings.Contains(eventsBody, "planmode.input_requested") || !strings.Contains(eventsBody, "planmode.execution_started") {
 		t.Fatalf("expected events.js to describe Plan Mode timeline events, got events.js body: %s", eventsBody)
 	}
-	settingsBody := checkBody(server.URL + "/settings-view.js")
+	settingsBody := checkBody(server.URL + "/shared-assets/settings-view.js")
 	if !strings.Contains(settingsBody, "renderSettings") || !strings.Contains(settingsBody, "saveConfig") || !strings.Contains(settingsBody, "testConfig") || !strings.Contains(settingsBody, "settings-provider") || !strings.Contains(settingsBody, "settings-reasoning-mode") || !strings.Contains(settingsBody, "settings-test-btn") {
 		t.Fatalf("unexpected settings-view.js body: %s", settingsBody)
 	}
@@ -6701,6 +6751,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(settingsBody, "settings-enable-child-budget") || !strings.Contains(settingsBody, "currentChildBudget") || !strings.Contains(settingsBody, "Sub-agent budget") {
 		t.Fatalf("expected settings view to expose an optional sub-agent budget, got settings-view.js body: %s", settingsBody)
+	}
+	if !strings.Contains(settingsBody, "settings-enable-legacy-ui") || !strings.Contains(settingsBody, "Legacy frontend") || !strings.Contains(settingsBody, "legacyUIEnabled") {
+		t.Fatalf("expected Settings to expose the legacy frontend rollback switch, got settings-view.js body: %s", settingsBody)
 	}
 	if !strings.Contains(settingsBody, "explorer: 'Explorer'") || !strings.Contains(settingsBody, "data-role-field=\"reasoning_effort\"") || !strings.Contains(settingsBody, "data-role-field=\"max_output_tokens\"") {
 		t.Fatalf("expected Settings role overrides to expose Explorer reasoning/output controls, got settings-view.js body: %s", settingsBody)
@@ -6711,7 +6764,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(settingsBody, "function settingsErrorMessage") || !strings.Contains(settingsBody, "panel.textContent = message") || !strings.Contains(settingsBody, "showToast(message, 'error')") {
 		t.Fatalf("expected settings load failures to surface backend API errors, got settings-view.js body: %s", settingsBody)
 	}
-	workspaceBody := checkBody(server.URL + "/workspace-view.js")
+	workspaceBody := checkBody(server.URL + "/shared-assets/workspace-view.js")
 	if !strings.Contains(workspaceBody, "fetchWorkspace") || !strings.Contains(workspaceBody, "renderFileTree") || !strings.Contains(workspaceBody, "selectedWorkspaceWorkdir") {
 		t.Fatalf("unexpected workspace-view.js body: %s", workspaceBody)
 	}
@@ -6730,7 +6783,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(workspaceBody, "handleDeleteWorkspaceHeaderAction") || !strings.Contains(workspaceBody, "visible: hasSelection || Boolean(currentPath)") || !strings.Contains(workspaceBody, "pending === 'delete-dir' || pending === 'delete-selected'") || strings.Contains(workspaceBody, "nodes.workspaceDeleteSelectedBtn") {
 		t.Fatalf("expected Workspace view to route selected-item deletion through the refresh-adjacent trash button, got workspace-view.js body: %s", workspaceBody)
 	}
-	sessionBody := checkBody(server.URL + "/session-view.js")
+	sessionBody := checkBody(server.URL + "/shared-assets/session-view.js")
 	if !strings.Contains(sessionBody, "renderCurrentSession") || !strings.Contains(sessionBody, "renderPendingStageCard") || !strings.Contains(sessionBody, "renderMessageText") || !strings.Contains(sessionBody, "renderBackgroundResultsMessage") || !strings.Contains(sessionBody, "renderQueueJobCard") {
 		t.Fatalf("unexpected session-view.js body: %s", sessionBody)
 	}
@@ -6756,7 +6809,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("expected session-view.js to avoid external markdown/icon dependencies, got session-view.js body: %s", sessionBody)
 	}
 
-	jsBody := checkBody(server.URL + "/app.js")
+	jsBody := checkBody(server.URL + "/shared-assets/app.js")
 	if !strings.Contains(jsBody, "setupWebSocket") || !strings.Contains(jsBody, "resetChatSession") || !strings.Contains(jsBody, "showToast") || !strings.Contains(jsBody, "requestJSON") || !strings.Contains(jsBody, "refreshSelectedQueueJobDetail") {
 		t.Fatalf("unexpected app.js body: %s", jsBody)
 	}
@@ -6893,7 +6946,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("expected skills download badge to be removed, got app.js body: %s", jsBody)
 	}
 
-	cssBody := checkBody(server.URL + "/styles.css")
+	cssBody := checkBody(server.URL + "/shared-assets/styles.css")
 	if !strings.Contains(cssBody, "--accent") || !strings.Contains(cssBody, ".sidebar") || !strings.Contains(cssBody, ".chat-shell") || !strings.Contains(cssBody, ".pending-stage-card") || !strings.Contains(cssBody, ".toast-rack") || !strings.Contains(cssBody, "Noto Sans SC") || !strings.Contains(cssBody, ".session-rail") || !strings.Contains(cssBody, ".selected-queue-job-panel") {
 		t.Fatalf("unexpected styles.css body: %s", cssBody)
 	}
@@ -6928,6 +6981,68 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(cssBody, "overflow-y: auto") {
 		t.Fatalf("expected non-session views to remain scrollable, got styles.css body: %s", cssBody)
+	}
+}
+
+func TestServiceLegacyUISettingRoundTripAndRoute(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	server := httptest.NewServer(svc)
+	defer server.Close()
+
+	legacyStatus := func(route string) (int, string) {
+		resp, err := http.Get(server.URL + route)
+		if err != nil {
+			t.Fatalf("get legacy route: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read legacy route: %v", err)
+		}
+		return resp.StatusCode, string(body)
+	}
+
+	if status, _ := legacyStatus("/legacy/"); status != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 by default", status)
+	}
+
+	postJSON(t, server.URL+"/api/config", map[string]any{"legacy_ui_enabled": true}, http.StatusOK, nil)
+	var enabled map[string]any
+	postGetJSON(t, server.URL+"/api/config", &enabled)
+	if value, ok := enabled["legacy_ui_enabled"].(bool); !ok || !value {
+		t.Fatalf("legacy_ui_enabled response = %#v, want true", enabled["legacy_ui_enabled"])
+	}
+	status, body := legacyStatus("/legacy/")
+	if status != http.StatusOK || !strings.Contains(body, "Describe the task for this session...") {
+		t.Fatalf("enabled legacy route status/body = %d %q", status, body)
+	}
+	if status, body := legacyStatus("/legacy/app.js"); status != http.StatusOK || !strings.Contains(body, "setupWebSocket") {
+		t.Fatalf("enabled legacy asset status/body = %d %q", status, body)
+	}
+	if status, _ := legacyStatus("/shared-assets/index.html"); status != http.StatusNotFound {
+		t.Fatalf("shared legacy index status = %d, want 404 while legacy UI is enabled", status)
+	}
+
+	postJSON(t, server.URL+"/api/config", map[string]any{"legacy_ui_enabled": false}, http.StatusOK, nil)
+	if status, _ := legacyStatus("/legacy/"); status != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 after disabling", status)
+	}
+	if status, _ := legacyStatus("/legacy/app.js"); status != http.StatusNotFound {
+		t.Fatalf("legacy asset status = %d, want 404 after disabling", status)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	if strings.Contains(string(configBytes), "legacy_ui_enabled: true") {
+		t.Fatalf("legacy frontend remained enabled in config: %s", configBytes)
 	}
 }
 
