@@ -56,6 +56,10 @@ v2 保持单窗口、chat-first、轻量导航：
 移动布局折叠为单列。默认页面不新增 workflow canvas、worker dashboard、文件编辑器或
 细粒度 orchestration 面板。
 
+v2 默认使用浅色主题，并通过浏览器 `color-scheme: light` 与内嵌浅色 palette 保持首次
+打开、无本地偏好和无系统主题依赖时的一致外观。深色主题不作为迁移完成条件；后续若
+加入主题切换，只能作为显示偏好，不能分叉 controller、API 或持久化业务状态。
+
 ## 5. 迁移与回滚
 
 1. 先部署 v2 与共享 controller，legacy 页面继续保留在 binary 中。
@@ -75,5 +79,7 @@ v2 保持单窗口、chat-first、轻量导航：
 - legacy 页面默认禁用，显式开关可恢复且有配置审计事实。
 - embedded binary 不依赖外部 CDN、Next.js server、AgentOS 或 npm runtime。
 - root Web smoke、Go tests、JavaScript tests、语法检查和真实浏览器 smoke 全部通过。
+- 桌面与移动端真实浏览器截图确认默认浅色主题、可读对比度、响应式导航和 inspector
+  modal 行为；不得依赖操作系统的深色偏好改变默认主题。
 - 默认页面不存在独立 Queue/Background surface；API 提交的 job 只通过 service/API/文件事实
   验证，防止 large-project profile 反向主导默认 Web。
