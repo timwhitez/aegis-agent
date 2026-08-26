@@ -170,6 +170,7 @@ function saveConfig(payload) {
     max_turns_soft: payload.maxTurnsSoft,
     max_turns_hard: payload.maxTurnsHard,
     disable_hard_turn_limit: payload.disableHardTurnLimit,
+    legacy_ui_enabled: payload.legacyUIEnabled,
     child_budget: {
       disabled: payload.childBudget.disabled,
       max_active_runtime_sec: payload.childBudget.maxActiveRuntimeSec,

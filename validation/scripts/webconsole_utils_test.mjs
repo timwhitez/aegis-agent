@@ -6738,6 +6738,7 @@ test('settings save keeps empty API key fields unmasked after success', async ()
 
   assert.equal(savedPayloads.length, 1);
   assert.equal(savedPayloads[0].apiKey, '');
+  assert.equal(savedPayloads[0].legacyUIEnabled, false);
   assert.deepEqual(sameRealm(savedPayloads[0].childBudget), {
     disabled: true,
     maxActiveRuntimeSec: 0,
@@ -6749,6 +6750,21 @@ test('settings save keeps empty API key fields unmasked after success', async ()
   assert.equal(toasts.at(-1)?.tone, 'success');
 });
 
+test('settings can explicitly enable the legacy frontend rollback route', async () => {
+  const { elements, savedPayloads, restore } = await renderSettingsHarness({ hasKey: false });
+  try {
+    elements['settings-enable-legacy-ui'].checked = true;
+    elements['settings-enable-legacy-ui'].listeners.change();
+    await elements['settings-save-btn'].listeners.click();
+  } finally {
+    restore();
+  }
+
+  assert.equal(savedPayloads.length, 1);
+  assert.equal(savedPayloads[0].legacyUIEnabled, true);
+  assert.equal(elements['settings-legacy-ui-state'].textContent, 'Enabled');
+});
+
 test('settings copy states global scope, soft semantics, default Off, and new-work snapshot behavior', async () => {
   const { container, elements, restore } = await renderSettingsHarness({ hasKey: false });
   try {
@@ -6758,6 +6774,7 @@ test('settings copy states global scope, soft semantics, default Off, and new-wo
     assert.match(container.innerHTML, /Changes affect newly created child\/job work only/);
     assert.equal(elements['settings-child-budget-state'].textContent, 'Off');
     assert.equal(elements['settings-disable-hard-turn-limit'].checked, true);
+    assert.equal(elements['settings-legacy-ui-state'].textContent, 'Disabled');
   } finally {
     restore();
   }
@@ -6910,6 +6927,8 @@ test('renderSettings ignores stale config responses', async () => {
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-global-turn-limit-state': fakeRendererElement(),
+    'settings-enable-legacy-ui': fakeRendererElement(),
+    'settings-legacy-ui-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
     'settings-child-budget-active-runtime': fakeRendererElement(),
     'settings-child-budget-elapsed': fakeRendererElement(),
@@ -7076,6 +7095,7 @@ function settingsConfig({ model, hasKey }) {
     max_turns_soft: 24,
     max_turns_hard: -1,
     disable_hard_turn_limit: true,
+    legacy_ui_enabled: false,
     child_budget: {
       disabled: true,
       max_active_runtime_sec: 0,
@@ -7117,6 +7137,8 @@ async function renderSettingsHarness({ hasKey }) {
     'settings-max-turns-hard': fakeRendererElement(),
     'settings-disable-hard-turn-limit': fakeRendererElement(),
     'settings-global-turn-limit-state': fakeRendererElement(),
+    'settings-enable-legacy-ui': fakeRendererElement(),
+    'settings-legacy-ui-state': fakeRendererElement(),
     'settings-enable-child-budget': fakeRendererElement(),
     'settings-child-budget-active-runtime': fakeRendererElement(),
     'settings-child-budget-elapsed': fakeRendererElement(),

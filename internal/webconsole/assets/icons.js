@@ -1,6 +1,7 @@
 (function registerLocalIcons() {
   const glyphs = {
     zap: 'M13 2 4 14h7l-1 8 9-12h-7l1-8z',
+    shield: 'M12 2l8 4v6c0 5.5-3.8 10.7-8 12-4.2-1.3-8-6.5-8-12V6l8-4z',
     'layout-dashboard': 'M3 3h8v8H3z M13 3h8v5h-8z M13 10h8v11h-8z M3 13h8v8H3z',
     'message-square': 'M4 5h16v11H8l-4 4z',
     'list-checks': 'M9 6h12 M9 12h12 M9 18h12 M3 6l1 1 2-2 M3 12l1 1 2-2 M3 18l1 1 2-2',
@@ -19,6 +20,7 @@
     plus: 'M12 5v14 M5 12h14',
     siren: 'M7 18h10 M8 14v-3a4 4 0 0 1 8 0v3 M5 10l-2-2 M19 10l2-2 M12 4V2',
     send: 'M3 11l18-8-8 18-2-7z M11 14l10-11',
+    'arrow-up': 'M12 19V5 M6 11l6-6 6 6',
     trash: 'M4 7h16 M9 7V5h6v2 M7 7l1 13h8l1-13',
     'trash-2': 'M4 7h16 M9 7V5h6v2 M7 7l1 13h8l1-13',
     'chevron-left': 'M15 6l-6 6 6 6',

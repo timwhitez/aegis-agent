@@ -113,6 +113,7 @@ func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
 		Username:     "operator",
 		PasswordHash: "$2a$10$abcdefghijklmnopqrstuuJ7lHjSuP9gGCP3zZ8KXw2mzg9S0FZ7mP9m",
 	}
+	cfg.Web.LegacyUIEnabled = true
 
 	cloned, err := Clone(cfg)
 	if err != nil {
@@ -121,6 +122,9 @@ func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
 	if cloned.Web.BasicAuth != cfg.Web.BasicAuth {
 		t.Fatalf("web basic auth changed after clone: got %#v want %#v", cloned.Web.BasicAuth, cfg.Web.BasicAuth)
 	}
+	if !cloned.Web.LegacyUIEnabled {
+		t.Fatal("web legacy UI setting changed after clone")
+	}
 
 	data, err := MarshalYAML(cfg)
 	if err != nil {
@@ -128,6 +132,9 @@ func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "password_hash:") || strings.Contains(string(data), "password:") {
 		t.Fatalf("unexpected web basic auth YAML: %s", data)
+	}
+	if !strings.Contains(string(data), "legacy_ui_enabled: true") {
+		t.Fatalf("expected web legacy UI setting in YAML: %s", data)
 	}
 }
 

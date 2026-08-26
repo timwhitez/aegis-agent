@@ -6619,7 +6619,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 
 	indexBody := checkBody(server.URL + "/")
-	if !strings.Contains(indexBody, "Agent Console") || !strings.Contains(indexBody, "Describe the task for this session...") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
+	if !strings.Contains(indexBody, "Aegis") || !strings.Contains(indexBody, "Ask Aegis to work in this workspace") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
@@ -6637,7 +6637,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "Background Jobs") || strings.Contains(indexBody, `data-view="queue"`) || strings.Contains(indexBody, "queue-view") || !strings.Contains(indexBody, "<span>Sessions</span>") || strings.Contains(indexBody, "<span>Queue</span>") || strings.Contains(indexBody, "<span>History</span>") {
 		t.Fatalf("expected shell navigation to remove standalone Background Jobs and keep Sessions label, got shell body: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, "Enter to send, Shift+Enter / Ctrl+Enter for new line") {
+	if !strings.Contains(indexBody, "Enter to send · Shift+Enter for new line") {
 		t.Fatalf("expected updated input shortcut hint, got shell body: %s", indexBody)
 	}
 	if !strings.Contains(indexBody, `id="plan-mode-input-actions"`) {
@@ -6658,6 +6658,18 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(indexBody, "https://") || !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
+	v2StylesBody := checkBody(server.URL + "/v2-assets/aegis.css")
+	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--accent: #b6f542") {
+		t.Fatalf("unexpected Web Console v2 stylesheet: %s", v2StylesBody)
+	}
+	legacyResp, err := http.Get(server.URL + "/legacy/")
+	if err != nil {
+		t.Fatalf("get disabled legacy route: %v", err)
+	}
+	legacyResp.Body.Close()
+	if legacyResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 while disabled", legacyResp.StatusCode)
+	}
 	if !strings.Contains(indexBody, "utils.js") || !strings.Contains(indexBody, "icons.js") || !strings.Contains(indexBody, "api.js") || !strings.Contains(indexBody, "events.js") || !strings.Contains(indexBody, "settings-view.js") || !strings.Contains(indexBody, "workspace-view.js") || !strings.Contains(indexBody, "session-view.js") || !strings.Contains(indexBody, "app.js") {
 		t.Fatalf("expected shell to load utils/icons/api/events/settings/workspace/session/app assets, got shell body: %s", indexBody)
 	}
@@ -6675,6 +6687,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(apiBody, "child_budget") || !strings.Contains(apiBody, "max_active_runtime_sec: payload.childBudget.maxActiveRuntimeSec") || !strings.Contains(apiBody, "max_elapsed_sec: payload.childBudget.maxElapsedSec") || !strings.Contains(apiBody, "max_turns_per_attempt: payload.childBudget.maxTurnsPerAttempt") {
 		t.Fatalf("expected api.js to persist optional child budget settings, got api.js body: %s", apiBody)
+	}
+	if !strings.Contains(apiBody, "legacy_ui_enabled: payload.legacyUIEnabled") {
+		t.Fatalf("expected api.js to persist the legacy frontend switch, got api.js body: %s", apiBody)
 	}
 	if !strings.Contains(apiBody, "function getPlanMode") || !strings.Contains(apiBody, "function approvePlanMode") || !strings.Contains(apiBody, "function revisePlanMode") || !strings.Contains(apiBody, "function cancelPlanMode") || !strings.Contains(apiBody, "function answerPlanModeInput") || !strings.Contains(apiBody, "request_id: payload.requestID") {
 		t.Fatalf("expected api.js to expose Plan Mode helpers and snake_case input payload, got api.js body: %s", apiBody)
@@ -6701,6 +6716,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(settingsBody, "settings-enable-child-budget") || !strings.Contains(settingsBody, "currentChildBudget") || !strings.Contains(settingsBody, "Sub-agent budget") {
 		t.Fatalf("expected settings view to expose an optional sub-agent budget, got settings-view.js body: %s", settingsBody)
+	}
+	if !strings.Contains(settingsBody, "settings-enable-legacy-ui") || !strings.Contains(settingsBody, "Legacy frontend") || !strings.Contains(settingsBody, "legacyUIEnabled") {
+		t.Fatalf("expected Settings to expose the legacy frontend rollback switch, got settings-view.js body: %s", settingsBody)
 	}
 	if !strings.Contains(settingsBody, "explorer: 'Explorer'") || !strings.Contains(settingsBody, "data-role-field=\"reasoning_effort\"") || !strings.Contains(settingsBody, "data-role-field=\"max_output_tokens\"") {
 		t.Fatalf("expected Settings role overrides to expose Explorer reasoning/output controls, got settings-view.js body: %s", settingsBody)
@@ -6928,6 +6946,59 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	}
 	if !strings.Contains(cssBody, "overflow-y: auto") {
 		t.Fatalf("expected non-session views to remain scrollable, got styles.css body: %s", cssBody)
+	}
+}
+
+func TestServiceLegacyUISettingRoundTripAndRoute(t *testing.T) {
+	cfg := testConfig(t, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	server := httptest.NewServer(svc)
+	defer server.Close()
+
+	legacyStatus := func() (int, string) {
+		resp, err := http.Get(server.URL + "/legacy/")
+		if err != nil {
+			t.Fatalf("get legacy route: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read legacy route: %v", err)
+		}
+		return resp.StatusCode, string(body)
+	}
+
+	if status, _ := legacyStatus(); status != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 by default", status)
+	}
+
+	postJSON(t, server.URL+"/api/config", map[string]any{"legacy_ui_enabled": true}, http.StatusOK, nil)
+	var enabled map[string]any
+	postGetJSON(t, server.URL+"/api/config", &enabled)
+	if value, ok := enabled["legacy_ui_enabled"].(bool); !ok || !value {
+		t.Fatalf("legacy_ui_enabled response = %#v, want true", enabled["legacy_ui_enabled"])
+	}
+	status, body := legacyStatus()
+	if status != http.StatusOK || !strings.Contains(body, "Describe the task for this session...") {
+		t.Fatalf("enabled legacy route status/body = %d %q", status, body)
+	}
+
+	postJSON(t, server.URL+"/api/config", map[string]any{"legacy_ui_enabled": false}, http.StatusOK, nil)
+	if status, _ := legacyStatus(); status != http.StatusNotFound {
+		t.Fatalf("legacy route status = %d, want 404 after disabling", status)
+	}
+	configBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read persisted config: %v", err)
+	}
+	if strings.Contains(string(configBytes), "legacy_ui_enabled: true") {
+		t.Fatalf("legacy frontend remained enabled in config: %s", configBytes)
 	}
 }
 

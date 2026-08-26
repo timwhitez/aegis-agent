@@ -48,6 +48,7 @@ async function renderSettings() {
     const guardrailsMode = configData.guardrails_mode || 'yolo';
     const maxTurnsSoft = Number(configData.max_turns_soft || 24);
     const disableHardTurnLimit = Boolean(configData.disable_hard_turn_limit);
+    const legacyUIEnabled = Boolean(configData.legacy_ui_enabled);
     const maxTurnsHard = Number(configData.max_turns_hard || 0);
     const childBudget = configData.child_budget || {};
     const childBudgetMaxActiveRuntimeSec = Number(childBudget.max_active_runtime_sec || childBudget.max_wall_clock_sec || 0);
@@ -165,6 +166,29 @@ async function renderSettings() {
             <p class="view-subtitle settings-help">
               YOLO disables non-essential runtime reminders and checks for new or resumed turns; tool safety boundaries still apply.
             </p>
+          </div>
+          <div class="field settings-runtime-section">
+            <div class="settings-section-heading">
+              <div>
+                <span class="field-label">Frontend Migration</span>
+                <p class="view-subtitle settings-help">
+                  Web Console v2 is the default operator surface. The original page remains packaged only as a short-term local rollback path.
+                </p>
+              </div>
+            </div>
+            <section class="settings-limit-card settings-legacy-ui-card">
+              <div class="settings-limit-header">
+                <div>
+                  <strong>Legacy frontend</strong>
+                  <small>When enabled, the original page is available at <code>/legacy/</code> after save. It uses the same Aegis APIs and durable stores.</small>
+                </div>
+                <span id="settings-legacy-ui-state" class="settings-limit-state">Disabled</span>
+              </div>
+              <label class="check-row settings-budget-toggle">
+                <input id="settings-enable-legacy-ui" type="checkbox">
+                <span>Enable legacy frontend rollback route</span>
+              </label>
+            </section>
           </div>
           <div class="field settings-runtime-section">
             <div class="settings-section-heading">
@@ -310,6 +334,8 @@ async function renderSettings() {
     const maxTurnsHardInput = document.getElementById('settings-max-turns-hard');
     const disableHardTurnLimitInput = document.getElementById('settings-disable-hard-turn-limit');
     const globalTurnLimitState = document.getElementById('settings-global-turn-limit-state');
+    const enableLegacyUIInput = document.getElementById('settings-enable-legacy-ui');
+    const legacyUIState = document.getElementById('settings-legacy-ui-state');
     const enableChildBudgetInput = document.getElementById('settings-enable-child-budget');
     const childBudgetActiveRuntimeInput = document.getElementById('settings-child-budget-active-runtime');
     const childBudgetElapsedInput = document.getElementById('settings-child-budget-elapsed');
@@ -413,6 +439,12 @@ async function renderSettings() {
     };
     disableHardTurnLimitInput.addEventListener('change', syncMasterLimitControls);
     syncMasterLimitControls();
+    enableLegacyUIInput.checked = legacyUIEnabled;
+    const syncLegacyUIControls = () => {
+      legacyUIState.textContent = enableLegacyUIInput.checked ? 'Enabled' : 'Disabled';
+    };
+    enableLegacyUIInput.addEventListener('change', syncLegacyUIControls);
+    syncLegacyUIControls();
     enableChildBudgetInput.checked = !childBudgetDisabled;
     childBudgetActiveRuntimeInput.value = formatSettingsDuration(childBudgetMaxActiveRuntimeSec);
     childBudgetElapsedInput.value = formatSettingsDuration(childBudgetMaxElapsedSec);
@@ -530,6 +562,7 @@ async function renderSettings() {
       maxTurnsSoft: Number.parseInt(maxTurnsSoftInput.value || '0', 10),
       maxTurnsHard: Number.parseInt(maxTurnsHardInput.value || '0', 10),
       disableHardTurnLimit: disableHardTurnLimitInput.checked,
+      legacyUIEnabled: enableLegacyUIInput.checked,
       childBudget: currentChildBudget(),
       ...buildProviderPayload()
     });
