@@ -2605,7 +2605,7 @@ func TestEngineYoloBypassesRetrievalGuards(t *testing.T) {
 					ID:   "call_shell_yolo",
 					Name: "shell",
 					Arguments: json.RawMessage(`{
-						"command":"python - <<'PY'\nfrom pathlib import Path\nprint(Path('docs/guide.md').read_text())\nPY"
+						"command":"cat docs/guide.md"
 					}`),
 				}},
 				StopReason: "tool_use",
