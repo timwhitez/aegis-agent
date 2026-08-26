@@ -6662,6 +6662,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--accent: #b6f542") {
 		t.Fatalf("unexpected Web Console v2 stylesheet: %s", v2StylesBody)
 	}
+	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
+		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)
+	}
 	legacyResp, err := http.Get(server.URL + "/legacy/")
 	if err != nil {
 		t.Fatalf("get disabled legacy route: %v", err)
