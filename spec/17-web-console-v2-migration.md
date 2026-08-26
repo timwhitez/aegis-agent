@@ -28,8 +28,9 @@ runtime facade 和 workspace 文件仍是唯一事实源。
 ## 3. 双前端与路由契约
 
 - `/`、`/index.html` 和未知 SPA route 默认返回 v2。
-- v2 资源从 `/v2-assets/*` 提供；共享的无状态 view/controller 模块从
-  `/shared-assets/*` 提供。
+- v2 资源从 `/v2-assets/*` 提供；`/shared-assets/*` 固定映射到已受现有语法与
+  module-contract 测试覆盖的 `internal/webconsole/assets/*` 无状态 view/controller 模块，
+  不允许另建未受检的 shared 目录。
 - `/legacy/` 与 `/legacy/index.html` 只在 `web.legacy_ui_enabled: true` 时提供旧页面。
 - `web.legacy_ui_enabled` 默认 `false`；禁用时 legacy 页面与 legacy-only asset route
   返回 `404`，不得通过 SPA fallback 绕过。
@@ -44,7 +45,9 @@ runtime facade 和 workspace 文件仍是唯一事实源。
 v2 保持单窗口、chat-first、轻量导航：
 
 - Session：start / steer / continue、Goal、Plan Mode、stop / interrupt、timeline 与 inspector
-- Sessions：历史、session detail、children、queue 和 task 状态
+- Sessions：历史、session detail、children 和 task 状态；queue/background 只通过已接纳
+  的 durable message 或有界关联摘要出现，不新增 Queue tab、Background tracker、Open job
+  或 selected-job inspector
 - Skills：只管理 Web service 已授权的本地 skill 目录
 - Workspace：受限预览、上传、重命名、建目录和删除，不加入浏览器编辑器
 - Settings：provider/model/reasoning、runtime/child budget、role provider 和 legacy UI 开关
@@ -57,8 +60,11 @@ v2 保持单窗口、chat-first、轻量导航：
 
 1. 先部署 v2 与共享 controller，legacy 页面继续保留在 binary 中。
 2. 自动测试同时验证 v2 默认路由、legacy 默认 404、显式启用 legacy、配置 round-trip、
-   JavaScript syntax、XSS sanitizer 和已有状态机回归。
-3. 浏览器 smoke 覆盖 v2 加载、导航、Settings、new session composer 和 responsive layout。
+   两个资源目录的 JavaScript syntax、XSS sanitizer 和已有状态机回归。
+3. `spec/17-web-console.md` 的完整 browser acceptance matrix 必须在 v2 默认 route 重跑，
+   至少真实覆盖 start、running steer、continue、Goal、Plan Mode approve/revision/input、
+   stop/interrupt、timeline/tool cards、Settings、Skills、Workspace 风险操作、Sessions history
+   与 responsive layout。queue submit 只由 API/service/CLI smoke 验证；默认 Web 不提供表单。
 4. 验收通过后保持 `legacy_ui_enabled: false`。短期回滚只需在配置中显式设为 `true` 并
    重启 Web service；不会改变 session/runtime 数据。
 
@@ -69,3 +75,5 @@ v2 保持单窗口、chat-first、轻量导航：
 - legacy 页面默认禁用，显式开关可恢复且有配置审计事实。
 - embedded binary 不依赖外部 CDN、Next.js server、AgentOS 或 npm runtime。
 - root Web smoke、Go tests、JavaScript tests、语法检查和真实浏览器 smoke 全部通过。
+- 默认页面不存在独立 Queue/Background surface；API 提交的 job 只通过 service/API/文件事实
+  验证，防止 large-project profile 反向主导默认 Web。

@@ -270,9 +270,9 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - 状态芯片：running / awaiting_input / paused / completed / failed / queued
 - 摘要卡片：当前 session / queue 局部计数
 - 时间线卡片：消息与事件混合流
-- 数据表格：queue jobs、children
+- 数据表格：children；queue jobs 只属于 API/CLI/文件事实验证面
 - 摘要卡：session health / recovery / provider options / current focus
-- 过滤工具栏：session rail / queue jobs / timeline 的 search + filter
+- 过滤工具栏：session rail / timeline 的 search + filter
 - 右侧 action panel：统一提交交互
 - 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
 - mini action chips：从 queue/children/notification 等卡片直接跳到相关 session

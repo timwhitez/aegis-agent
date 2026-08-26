@@ -175,7 +175,8 @@ runtime 只提供循环、工具、知识入口、权限边界和状态持久化
 - Timeline / tool lane / event activity
 - Goal 与 Plan Mode inspector
 - Settings provider / model 配置
-- Queue / children / tasks 的对象级观测与轻量控制
+- children / tasks 的对象级观测与轻量控制；queue/background 只保留 durable message 的
+  有界关联摘要，独立 queue detail 与 submit 使用 API/CLI fallback
 
 CLI 仍然是稳定的底层控制面，用于：
 
@@ -264,7 +265,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 
 - 能完成纯文本任务
 - 能完成带工具调用任务
-- Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制、Settings provider/model 配置与 queue job 提交
+- Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制与 Settings provider/model 配置；queue job 提交由 REST API/service test 与 CLI advanced path 验证，默认 Web 不提供提交表单
 - `run` 只在显式等待/停靠场景进入 `awaiting_input`；普通无 tool / 无 `finish` turn 会继续 loop
 - `await_input` 会把未完成任务显式停靠为可恢复状态，保留 active Goal 与 blocker/resume condition 事实，不绕过 `finish` 的完成审计
 - `exec` 在未 `finish` 时不会误判成功

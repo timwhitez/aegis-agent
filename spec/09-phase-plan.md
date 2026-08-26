@@ -183,7 +183,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `node --check internal/webconsole/assets/*.js` 通过
 - `node --check internal/webconsole/assets-v2/*.js` 通过（目录存在 JavaScript 时）
 - `node --test validation/scripts/webconsole_utils_test.mjs` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
+- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置主路径通过；queue job submit 由 REST API/service test 与 CLI advanced path 验证，默认 Web 不提供表单
 - `run` / `exec` / `steer` / `continue` 主路径通过
 - provider probe / doctor 主路径通过
 
