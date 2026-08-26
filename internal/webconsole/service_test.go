@@ -6674,6 +6674,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if strings.Contains(v2StylesBody, "prefers-color-scheme: dark") || strings.Contains(v2StylesBody, "--background: #090b10") {
 		t.Fatalf("expected Web Console v2 to keep its default palette light regardless of OS preference: %s", v2StylesBody)
 	}
+	if !strings.Contains(v2StylesBody, ".editor-title { color: var(--text-main); }") || !strings.Contains(v2StylesBody, ".editor-content { color: var(--text-main); }") || !strings.Contains(v2StylesBody, ".workspace-selected-chip { color: var(--accent);") || !strings.Contains(v2StylesBody, ".workspace-editor-action { color: var(--text-muted);") {
+		t.Fatalf("expected Web Console v2 Workspace preview and enabled actions to use light-theme text colors: %s", v2StylesBody)
+	}
 	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
 		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)
 	}

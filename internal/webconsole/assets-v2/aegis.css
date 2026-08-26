@@ -7,9 +7,9 @@
   --surface-strong: #eef1f3;
   --border: #dce1e5;
   --primary: #20242a;
-  --accent: #567c0c;
+  --accent: #4e720a;
   --accent-fill: #b6e858;
-  --accent-soft: rgba(86, 124, 12, 0.11);
+  --accent-soft: rgba(78, 114, 10, 0.11);
   --accent-strong: #a2d23e;
   --text-main: #20242a;
   --text-muted: #5e6772;
@@ -240,6 +240,20 @@ header {
 .file-tree, .editor-container, .editor-header, .editor-content { background-color: #ffffff; border-color: rgba(32,36,42,.08); }
 .tree-node:hover, .tree-node.active { background: rgba(32,36,42,.05); }
 .tree-node.active { color: var(--accent); }
+.editor-header { color: var(--text-muted); border-bottom-color: rgba(32,36,42,.08); }
+.editor-title { color: var(--text-main); }
+.editor-content { color: var(--text-main); }
+.workspace-selected-chip { color: var(--accent); border-color: rgba(86,124,12,.22); background: var(--accent-soft); }
+.workspace-editor-action { color: var(--text-muted); background: #ffffff; border-color: rgba(32,36,42,.11); }
+.workspace-icon-btn:hover:not(:disabled),
+.workspace-icon-btn:focus-visible:not(:disabled),
+.workspace-editor-action:hover:not(:disabled),
+.workspace-editor-action:focus-visible:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: rgba(86,124,12,.24); }
+.workspace-preview-footer { border-top-color: rgba(32,36,42,.1); }
+.workspace-preview-meta { color: var(--text-muted); }
+.workspace-preview-error { color: var(--error); }
+.workspace-preview-more { color: var(--accent); background: var(--accent-soft); }
+.workspace-preview-more:hover:not(:disabled), .workspace-preview-more:focus-visible:not(:disabled) { color: #26310f; background: rgba(86,124,12,.18); }
 
 .settings-form { gap: 17px; }
 .settings-input, select.settings-input, input.settings-input {
