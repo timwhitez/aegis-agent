@@ -94,6 +94,7 @@ task graph 是当前 session 的“持久化任务板”。
 
 - `in_progress` 表示该条工作已经启动；允许多个互不依赖或并行推进的 todo 同时处于 `in_progress`
 - 空 todo 列表合法
+- `updated_at` 由 runtime 管理：新增条目或 content/status/priority 发生被允许的语义变化时写当前时间；未变化条目必须保留原时间，调用方回传的旧时间不能覆盖真实推进时间
 
 ## 6. Task 数据结构
 
@@ -203,6 +204,7 @@ task graph 是一个多文件事实源：跨进程写入必须在同一 durable 
 - 校验失败时返回 directive recovery 错误（提示 `todo_read` 后重发完整快照、或改用 append），帮助模型自纠而不是反复触发同一错误
 - 写 `todo.updated` 事件
 - 当 normalized todo snapshot（content/status/priority/order）未变化时，返回 `noop=true` / `changed=false`，保留原 `todo.json` 的 `updated_at`，避免把自动更新时间戳误当成进展
+- 当完整快照中只有部分条目推进时，只刷新发生语义变化的条目；其余条目逐项保留原 `updated_at`
 - `todo_write` 只记录执行进度，不执行任务、不验证任务，也不能作为 `finish` 或交付物完成的证据
 
 ### 9.2 `todo_read`

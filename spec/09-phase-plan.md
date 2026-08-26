@@ -221,6 +221,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
 - `node --check internal/webconsole/assets/*.js` 始终覆盖共享内嵌前端；Web Console v2 资源目录存在后额外执行 `node --check internal/webconsole/assets-v2/*.js`。`node --test validation/scripts/webconsole_utils_test.mjs` 覆盖前端状态机、异步竞态与模块 API contract
+- repo-owned browser E2E 使用 deterministic local provider 覆盖 v2 全部默认页面、关键交互、`zh-CN`/`en` 切换、桌面/移动浅色截图和无 console/page/network error manifest；CI 上传本次 commit 对应的 screenshot artifact
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
 - Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI
@@ -275,6 +276,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - `aegis-agent web`
 - 默认页面使用 Web Console v2；原页面保留为 `web.legacy_ui_enabled` 控制的 legacy fallback，并在 v2 验收后默认禁用
 - v2 的选型、双前端 route、配置开关、回滚和完成标准见 `spec/17-web-console-v2-migration.md`
+- v2 默认简体中文、可持久化切换 English，固定浅色基线与 44px/键盘/modal accessibility gate 属于 Phase 15 完成标准
 - `experimental web` 作为旧入口兼容别名
 - 本地 HTTP API
 - 内嵌静态单页前端

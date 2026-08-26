@@ -115,6 +115,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 禁止使用 `CombinedOutput()` 或等价的执行后全量内存缓冲；stdout/stderr 必须接入同一个 streaming collector，合并后只保留有界 UTF-8-safe head/tail preview，并把可保存的原始合并字节流写入当前 session artifact
 - 返回码、timeout、workdir、sandbox、原始输出长度和截断状态必须写入 metadata，并以简短执行摘要进入 `llm_output`，避免模型只能在 UI/event metadata 中看到关键执行事实
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程
+- shell 必须使用不加载 login profile 和交互 rc 的执行模式；过滤后的 `Env` 不能被 `$HOME/.bash_profile`、`.profile`、`.bashrc` 或同类启动脚本重新注入变量或副作用
 - 轻量 `runtime.exec_policy.mode` 默认 `warn`，对提权命令、明显危险删除、secret path 写入和常见网络出站命令只写 metadata warning；显式设为 `deny` 时才阻断；设为 `off` 时不附加策略 metadata
 - exec policy 的嵌套展开受深度与「嵌套展开工作量」预算约束（按嵌套派生出的命令串字节计费，不以输入长度为界，也不以视图条数为界）；顶层 segment 派生的视图始终完整检查，不计入该预算，因此合法长命令（数万行内联脚本、列举数千文件的命令行）不会因规模被判为不可判定；预算耗尽且未命中任何具体类别时，必须产出 `unverifiable` 类别而不是空结果，即 fail-closed——否则把 payload 嵌套到预算之外即可绕过 `deny`。预算耗尽时达到的那一层仍须完成同层归一化（segment 拆分、环境赋值前缀、`env` / `command` 内建、引号与反斜杠剥离），只停止继续下探，否则预算落点那一层本身会变成检出空洞；`unverifiable` 须区分「深度耗尽」与「工作量耗尽」两种原因
 - exec policy 只能作为安全/权限边界，不得演变为任务路线、审计路线、委派策略或交互审批 UI
@@ -193,7 +194,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 在工作区内递归搜索文本内容
 - 例外：已注册 skill bundle 文件和目录属于只读资源根，允许用 `skills/<skill-name>/...`、`load_skill` 返回的绝对路径，或唯一匹配的 skill-relative 链接路径搜索；不得把这些路径误解析成 `workspace/skills/...`
 - 仅返回命中文件路径，不返回整段上下文
-- 用于先做便宜的候选文件发现，再配合 `read_file` 定点读取
+- 用于路径未知时做便宜的候选文件发现；已知路径或用户给出的 owning file 可以直接用 `read_file`，tool description 不规定固定检索顺序
 - 默认跳过常见构建产物、缓存目录和二进制文件
 - 实现必须按 stable walk order 收集 `effective_limit + 1` 个候选，只在确实存在第 `limit + 1` 项时返回 `has_more=true`；恰好等于 limit 不得误报不完整
 - metadata 固定包含 `returned_count`、原始 `requested_limit`（省略/非正数保持原值）、`effective_limit`、`has_more`、`limit_capped`、`truncated_snippet_count=0`。真实 overflow 时模型可见输出还要提示缩小 `path` / `include` / `pattern`

@@ -22,6 +22,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
   durable message 或有界关联摘要出现，不提供独立 tracker
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
+- 默认语言为简体中文，可在全局入口切换 English 并跨刷新保留；默认主题固定为浅色
 
 ## 2. 产品边界
 
@@ -164,6 +165,16 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - todo 列表
 - ready / blocked / completed / cancelled / done task 统计
 - task board 分组
+
+Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progress` 条目；task board 必须按 runtime 派生的 `in_progress / ready / blocked / completed / cancelled` groups 展示，不能用 persistent task counter 冒充 Todo 进度或只画平铺列表。
+
+### 4.5 Language, accessibility, and interaction baseline
+
+- operator-owned 静态/动态文案、toast/dialog、ARIA、placeholder/title、日期和数字必须覆盖 `zh-CN` 与 `en`；默认 `zh-CN`
+- local preference 只保存在浏览器中；用户消息、tool/provider 原文、文件内容、路径和 durable session facts 保持原样
+- 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
+- modal 与移动 inspector 必须 trap focus、Esc 关闭、恢复触发焦点，并让背景不可交互
+- 清空历史在任何 queued/running/blocked queue work 或 running session 未收敛时返回 conflict；reaper 状态迁移不能产生允许清理的窗口
 
 #### Children
 
