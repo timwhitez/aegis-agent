@@ -578,11 +578,9 @@ func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/")
-	if name != "" && name != "index.html" {
-		if _, err := fs.Stat(s.staticFS, name); err == nil {
-			serveEmbeddedFileRequest(w, r, s.staticFS, name)
-			return
-		}
+	if name != "" && name != "index.html" && path.Ext(name) != "" {
+		http.NotFound(w, r)
+		return
 	}
 	serveEmbeddedFileRequest(w, r, s.modernFS, "index.html")
 }
