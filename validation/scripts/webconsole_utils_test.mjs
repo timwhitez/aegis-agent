@@ -1264,6 +1264,24 @@ test('history parent expansion is isolated from durable app state', () => {
   assert.equal(result.childVisible, true);
 });
 
+test('history session titles localize the fallback and preserve custom agent facts', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    window.AegisI18n = {
+      t(value) { return value === 'Master session' ? '主会话' : value; }
+    };
+    return {
+      fallback: renderHistorySessionTitle({}),
+      custom: renderHistorySessionTitle({ agent_name: 'Ready', agent_role: 'evaluator' })
+    };
+  })()`, appContext);
+
+  assert.match(result.fallback, /class="history-session-fallback">主会话<\/span>/);
+  assert.doesNotMatch(result.fallback, /data-i18n-skip/);
+  assert.match(result.custom, /class="history-session-agent-label" translate="no" data-i18n-skip>Ready · evaluator<\/span>/);
+  assert.doesNotMatch(result.custom, /主会话/);
+});
+
 test('floating panel expansion preferences are isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`

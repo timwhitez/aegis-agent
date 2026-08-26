@@ -30,7 +30,6 @@
 	'.sa-tree-meta',
 	'.session-rail-meta',
 	'.session-rail-id',
-	'.history-session-title',
     '.task-card-title',
     '.task-card-copy',
     '.todo-card-title',

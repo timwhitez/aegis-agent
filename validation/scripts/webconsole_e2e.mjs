@@ -424,11 +424,18 @@ try {
 
   await page.locator('[data-view="history"]').click();
   await page.locator('#history-view:not(.is-hidden) [data-delete-session]').first().waitFor();
+  await check('Sessions translates its fallback while preserving custom agent identity facts', async () => {
+    await assertText(page.locator('#history-view .history-session-fallback').first(), '主会话');
+    const customAgent = page.locator('#history-view .history-session-agent-label').filter({ hasText: 'e2e-child · evaluator' }).first();
+    assert.equal((await customAgent.textContent())?.trim(), 'e2e-child · evaluator');
+    assert.equal(await customAgent.getAttribute('translate'), 'no');
+  });
   await capture(page, '12-sessions-zh-desktop.png');
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
 	await check('Sessions switches existing rows and relative times to English', async () => {
 	  await assertText(page.locator('#history-view .view-header .view-title'), 'Sessions');
+	  await assertText(page.locator('#history-view .history-session-fallback').first(), 'Master session');
 	  assert.match(await page.locator('#history-view .history-session-time').first().innerText(), /^(?:just now|\d+m ago)$/);
 	  assert.equal(await page.locator('#history-view').getByText('刚刚', { exact: true }).count(), 0);
 	});
@@ -601,7 +608,7 @@ async function assertMinimumTargets(page) {
 
 async function collectUntranslatedOperatorText(page) {
   return page.evaluate(() => {
-	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .history-session-title, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const values = new Set();
     const allowedTechnicalText = (value) => ['Aegis', 'Google Gemini', 'Token'].includes(value)
@@ -632,7 +639,7 @@ async function collectUntranslatedOperatorText(page) {
 
 async function collectUnexpectedChineseOperatorText(page) {
   return page.evaluate(() => {
-	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .history-session-title, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
     const values = new Set();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;

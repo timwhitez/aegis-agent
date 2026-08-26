@@ -3816,7 +3816,7 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
           ${childrenBadge}
           <span class="history-session-time" title="${escapeAttr(formatTimestamp(item.updated_at || item.created_at))}">${escapeHTML(formatRelativeTime(item.updated_at || item.created_at))}</span>
         </div>
-        <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
+        <div class="history-session-title">${renderHistorySessionTitle(item)}</div>
         <div class="history-session-meta">${escapeHTML(metaText)}</div>
       </div>
       <div class="history-row-actions">
@@ -3833,6 +3833,15 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
       </div>
     </div>
   `;
+}
+
+function renderHistorySessionTitle(item) {
+  const agentIdentity = agentLabel(item?.agent_name, item?.agent_role);
+  if (agentIdentity) {
+    return `<span class="history-session-agent-label" translate="no" data-i18n-skip>${escapeHTML(agentIdentity)}</span>`;
+  }
+  const fallback = window.AegisI18n?.t?.('Master session') || 'Master session';
+  return `<span class="history-session-fallback">${escapeHTML(fallback)}</span>`;
 }
 
 async function deleteHistorySession(sessionID) {
