@@ -297,7 +297,8 @@ fixture 内容：
 
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
 - `gofmt -l cmd internal pkg validation/cmd` 结果为空
-- `node --check internal/webconsole/assets/*.js internal/webconsole/assets-v2/*.js`
+- `node --check internal/webconsole/assets/*.js`
+- Web Console v2 资源目录存在后，额外执行 `node --check internal/webconsole/assets-v2/*.js`
 - `node --test validation/scripts/webconsole_utils_test.mjs`
 
 可选增强：

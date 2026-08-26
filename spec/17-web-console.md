@@ -18,7 +18,8 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 - 默认启动表单不要求也不展示 agent name / agent role；role hints 仍由 agent 内部 mission plan、child/queue 高级 API 或 CLI/API advanced payload 显式传递
 - 可以对运行中的 session 追加 steer
 - 可以对暂停、等待输入、失败的 session 或已完成的 root session 执行 continue；completed child / queue session 只能从 parent 使用 `agent_prompt` 的可恢复路径，或重新提交 queue job
-- 可以查看 background queue / children / task board / timeline / errors
+- 可以查看 children / task board / timeline / errors；background queue 只通过已接纳的
+  durable message 或有界关联摘要出现，不提供独立 tracker
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
 
@@ -772,17 +773,20 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - 新建 session
 - 运行中 steer
 - awaiting_input continue
-- 提交多个 queue job 并观察并发消费
-- 页面响应式、截图与 queue-links 通知可见性
+- 通过 REST API/CLI 提交多个 queue job，并从 service/API/文件事实观察并发消费
+- 页面响应式与截图；queue-links notification 只验证 durable message 的有界摘要及
+  API/文件事实，不新增默认 tracker
 
 ## 12. 验收标准
 
 - `aegis-agent web` 能稳定启动本地控制台；`experimental web` 作为兼容别名保持可用
 - embedded shell 与前端 assets 能由同一进程本地服务直接提供
 - 页面可在无外部网络资源时加载；缺失 CDN 不得导致 `lucide is not defined` 或 `marked is not defined`
-- 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入、继续执行和后台排队
+- 用户无需记忆 CLI 全命令，也能完成 session 启动、追加输入和继续执行；后台排队是
+  REST API/CLI advanced surface，不属于默认 Web 完成标准
 - queue worker pool 支持真实并发消费，但默认 UI 不暴露 worker 并发配置卡
 - retry-resume proof 以 durable retry metadata 加真实 `provider.retry` 事件作为主要通过条件；若 proof 已成立，session 是否最终落成 `completed` 只作为附带运行状态记录
 - 浏览器可以完成核心交互链且无前端运行时错误
-- 页面能清晰展示 session、tasks、queue、children、errors 的最新状态
+- 页面能清晰展示 session、tasks、children、errors 的最新状态；queue 只显示已接纳
+  durable message 中的有界关联摘要，完整状态由 API/CLI/文件事实提供
 - 所有页面状态都来自本地文件事实与 runtime 真执行，而不是前端假数据
