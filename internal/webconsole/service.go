@@ -54,6 +54,19 @@ var upgrader = websocket.Upgrader{
 var (
 	webconsoleProcessOwner = newProcessOwner()
 	webconsoleProcessAlive = hostProcessAlive
+	sharedV2AssetNames     = map[string]struct{}{
+		"api.js":                    {},
+		"app.js":                    {},
+		"events.js":                 {},
+		"file-change-disclosure.js": {},
+		"icons.js":                  {},
+		"markdown-security.js":      {},
+		"session-view.js":           {},
+		"settings-view.js":          {},
+		"styles.css":                {},
+		"utils.js":                  {},
+		"workspace-view.js":         {},
+	}
 )
 
 const (
@@ -553,7 +566,7 @@ func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/shared-assets/") {
 		name := strings.TrimPrefix(r.URL.Path, "/shared-assets/")
-		if name == "" {
+		if _, ok := sharedV2AssetNames[name]; !ok {
 			http.NotFound(w, r)
 			return
 		}
@@ -578,9 +591,15 @@ func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/")
-	if name != "" && name != "index.html" && path.Ext(name) != "" {
-		http.NotFound(w, r)
-		return
+	if name != "" && name != "index.html" {
+		if legacyInfo, legacyErr := fs.Stat(s.staticFS, name); legacyErr == nil && !legacyInfo.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		if modernInfo, modernErr := fs.Stat(s.modernFS, name); modernErr == nil && !modernInfo.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	serveEmbeddedFileRequest(w, r, s.modernFS, "index.html")
 }

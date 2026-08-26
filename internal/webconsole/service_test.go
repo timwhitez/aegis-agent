@@ -6622,6 +6622,9 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, "Aegis") || !strings.Contains(indexBody, "Ask Aegis to work in this workspace") || !strings.Contains(indexBody, "new-session-btn") || !strings.Contains(indexBody, "interrupt-session-btn") || !strings.Contains(indexBody, "stop-session-btn") || !strings.Contains(indexBody, "interrupt-toggle-btn") || !strings.Contains(indexBody, "chat-messages") || !strings.Contains(indexBody, "toast-rack") || !strings.Contains(indexBody, "workspace-subtitle") || !strings.Contains(indexBody, "workspace-new-folder-btn") || !strings.Contains(indexBody, "workspace-upload-btn") || !strings.Contains(indexBody, "workspace-upload-input") || !strings.Contains(indexBody, "workspace-download-btn") || !strings.Contains(indexBody, "workspace-rename-btn") || !strings.Contains(indexBody, "workspace-delete-dir-btn") || !strings.Contains(indexBody, "workspace-delete-file-btn") {
 		t.Fatalf("unexpected shell body: %s", indexBody)
 	}
+	if !strings.Contains(indexBody, `id="v2-new-session-btn" type="button" aria-label="New session"`) {
+		t.Fatalf("expected compact new-session control to keep an accessible name: %s", indexBody)
+	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
 		t.Fatalf("expected Workspace batch delete to reuse the header trash icon instead of a second text action, got shell body: %s", indexBody)
 	}
@@ -6665,7 +6668,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
 		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)
 	}
-	for _, disabledAssetPath := range []string{"/app.js", "/styles.css", "/legacy/app.js"} {
+	for _, disabledAssetPath := range []string{"/app.js", "/styles.css", "/legacy/app.js", "/shared-assets/index.html"} {
 		resp, err := http.Get(server.URL + disabledAssetPath)
 		if err != nil {
 			t.Fatalf("get disabled legacy asset %s: %v", disabledAssetPath, err)
@@ -6674,6 +6677,10 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("disabled legacy asset %s status = %d, want 404", disabledAssetPath, resp.StatusCode)
 		}
+	}
+	dottedRouteBody := checkBody(server.URL + "/sessions/run.v2")
+	if !strings.Contains(dottedRouteBody, `data-ui="aegis-v2"`) {
+		t.Fatalf("expected unknown dotted SPA route to serve Web Console v2: %s", dottedRouteBody)
 	}
 	legacyResp, err := http.Get(server.URL + "/legacy/")
 	if err != nil {
@@ -7003,6 +7010,9 @@ func TestServiceLegacyUISettingRoundTripAndRoute(t *testing.T) {
 	}
 	if status, body := legacyStatus("/legacy/app.js"); status != http.StatusOK || !strings.Contains(body, "setupWebSocket") {
 		t.Fatalf("enabled legacy asset status/body = %d %q", status, body)
+	}
+	if status, _ := legacyStatus("/shared-assets/index.html"); status != http.StatusNotFound {
+		t.Fatalf("shared legacy index status = %d, want 404 while legacy UI is enabled", status)
 	}
 
 	postJSON(t, server.URL+"/api/config", map[string]any{"legacy_ui_enabled": false}, http.StatusOK, nil)
