@@ -878,6 +878,55 @@ func TestHardFitPreservesOpenAIAnthropicGoogleMultiCallReplay(t *testing.T) {
 	}
 }
 
+func TestHardFitPreservesNewestGoogleFallbackReplayClosureAcrossTurns(t *testing.T) {
+	adapter := provider.NewGoogle("http://127.0.0.1", "test", nil)
+	oldID := "call_google_aaaaaaaaaaaaaaaaaaaaaaaa"
+	newID := "call_google_bbbbbbbbbbbbbbbbbbbbbbbb"
+	oldArgs := json.RawMessage(`{"command":"old fallback"}`)
+	newArgs := json.RawMessage(`{"command":"newest fallback must remain exact"}`)
+	makeAssistant := func(id string, args json.RawMessage) session.Message {
+		message := session.NewAssistantMessage("", "", []session.ToolCall{{ID: id, Name: "shell", Arguments: args}})
+		message.ProviderContentBlocks = []session.ProviderContentBlock{{Provider: "google", Type: "function_call", ID: id, Name: "shell", Args: args}}
+		return message
+	}
+	oldPayload := strings.Repeat("old-google-fallback-output-", 1400)
+	request := provider.TurnRequest{
+		SessionID:       "hard-fit-google-fallback",
+		Model:           "gemini-2.5-flash",
+		MaxOutputTokens: 1,
+		Messages: []session.Message{
+			makeAssistant(oldID, oldArgs),
+			session.NewToolMessage([]session.ToolResult{{ToolCallID: oldID, Name: "shell", LLMOutput: oldPayload}}),
+			makeAssistant(newID, newArgs),
+			session.NewToolMessage([]session.ToolResult{{ToolCallID: newID, Name: "shell", LLMOutput: "newest fallback result"}}),
+			session.NewMessage("user", "latest external instruction"),
+		},
+	}
+	baseline, err := preflightProviderRequest(adapter, request, requestBudgetPolicy{EffectiveWindowTokens: 1 << 20, UtilizationFactor: 1}, requestBudgetContext{RequestKind: requestKindMain, SessionID: request.SessionID})
+	if err != nil {
+		t.Fatalf("baseline provider estimate: %v", err)
+	}
+	fit, err := fitProviderRequestToBudget(adapter, request, requestBudgetPolicy{EffectiveWindowTokens: baseline.RequiredTokens - len(oldPayload)/16, UtilizationFactor: 1}, requestBudgetContext{RequestKind: requestKindMain, SessionID: request.SessionID}, config.Default())
+	if err != nil {
+		t.Fatalf("hard fit Google fallback replay: %v", err)
+	}
+	if _, err := provider.EstimateAdapterRequest(adapter, fit.Request); err != nil {
+		t.Fatalf("fitted Google fallback replay no longer encodes: %v", err)
+	}
+	serialized, err := json.Marshal(fit.Request.Messages)
+	if err != nil {
+		t.Fatalf("marshal fitted request: %v", err)
+	}
+	for _, want := range []string{newID, "newest fallback must remain exact", "newest fallback result", "latest external instruction"} {
+		if !strings.Contains(string(serialized), want) {
+			t.Fatalf("hard fit dropped newest fallback closure fact %q: %s", want, serialized)
+		}
+	}
+	if strings.Contains(string(serialized), oldID) || strings.Contains(string(serialized), oldPayload[:80]) {
+		t.Fatalf("hard fit left part of the old fallback replay closure: %s", serialized)
+	}
+}
+
 func TestEngineUsesFittedRequestRecordsActionsAndLeavesDurableMessagesUntouched(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.Compact.SemanticSummary.Enabled = false

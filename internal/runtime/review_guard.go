@@ -32,18 +32,6 @@ func activeReviewArtifactRequirement(messages []session.Message) reviewArtifactR
 }
 
 func requiresReviewArtifact(text string) bool {
-	paths := extractLiteralArtifactPaths(text)
-	if len(paths) > 0 {
-		for _, path := range paths {
-			if isChangeSummaryPath(path) || isProjectMemoryPath(path) {
-				continue
-			}
-			if looksRequestedReviewArtifactPath(path) {
-				return true
-			}
-		}
-		return false
-	}
 	lowered := strings.ToLower(text)
 	for _, phrase := range []string{
 		"write a report", "write the report", "create a report", "create the report",
@@ -55,6 +43,18 @@ func requiresReviewArtifact(text string) bool {
 		if strings.Contains(lowered, phrase) {
 			return true
 		}
+	}
+	paths := extractLiteralArtifactPaths(text)
+	if len(paths) > 0 {
+		for _, path := range paths {
+			if isChangeSummaryPath(path) || isProjectMemoryPath(path) {
+				continue
+			}
+			if looksRequestedReviewArtifactPath(path) {
+				return true
+			}
+		}
+		return false
 	}
 	return false
 }
@@ -95,7 +95,7 @@ func reviewArtifactGuard(workdir string, messages []session.Message, toolName st
 			return "review_artifact", "Review artifact guard: requested artifact/report writes must stay within the workspace before execution. Fix the path and try again."
 		}
 		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-		if !ok || !looksReviewArtifactCandidate(target.Path, target.Content) {
+		if !ok || (!pathInList(target.Path, requestedPaths) && !looksReviewArtifactCandidate(target.Path, target.Content)) {
 			return "", ""
 		}
 		validation := review.ValidateMarkdownArtifactWithWorkspace(workdir, target.Content)
@@ -152,7 +152,8 @@ func annotateReviewArtifactResult(workdir string, messages []session.Message, to
 		return
 	}
 	target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-	if !ok || !looksReviewArtifactCandidate(target.Path, target.Content) {
+	requestedPaths := requestedArtifactPaths(workdir, messages)
+	if !ok || (!pathInList(target.Path, requestedPaths) && !looksReviewArtifactCandidate(target.Path, target.Content)) {
 		return
 	}
 	validation := review.ValidateMarkdownArtifactWithWorkspace(workdir, target.Content)

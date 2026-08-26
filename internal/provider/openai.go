@@ -133,19 +133,17 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		delete(body, "metadata")
 		metadataSent = false
 		metadataFallback = true
-		if emit != nil {
-			data := map[string]any{
-				"provider":         "openai",
-				"provider_profile": req.ProviderProfile,
-				"api_provider":     req.APIProvider,
-				"feature":          "metadata",
-				"reason":           "unsupported_argument",
-			}
-			if httpErr != nil && httpErr.StatusCode > 0 {
-				data["status_code"] = httpErr.StatusCode
-			}
-			emitEvent(emit, "provider.capability_fallback", data)
+		data := map[string]any{
+			"provider":         "openai",
+			"provider_profile": req.ProviderProfile,
+			"api_provider":     req.APIProvider,
+			"feature":          "metadata",
+			"reason":           "unsupported_argument",
 		}
+		if httpErr != nil && httpErr.StatusCode > 0 {
+			data["status_code"] = httpErr.StatusCode
+		}
+		emitEvent(emit, "provider.capability_fallback", data)
 		err = a.client.DoJSON(ctx, http.MethodPost, "/responses", map[string]string{
 			"Authorization": "Bearer " + a.apiKey,
 		}, body, &resp, emit)

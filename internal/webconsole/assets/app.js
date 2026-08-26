@@ -1379,10 +1379,13 @@ async function sendMessage() {
     showToast('Session launch is already in progress.', 'info');
     return;
   }
+	const currentStatus = state.sessionDetail?.state?.status || '';
+	const routesToContinue = hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus);
+	const routesToSteer = isGenerating() && hasDurableSession() && !routesToContinue;
 
   const optimisticID = appendOptimisticMessage('user', text, {
-    source: isGenerating() ? 'steer' : 'user',
-    interrupt: isNextSendInterruptArmed() && isGenerating() && hasDurableSession()
+	source: routesToSteer ? 'steer' : 'user',
+	interrupt: isNextSendInterruptArmed() && routesToSteer
   });
 
   nodes.chatInput.value = '';
@@ -1391,7 +1394,7 @@ async function sendMessage() {
   updateUI();
   renderCurrentSession();
 
-  if (isGenerating() && hasDurableSession()) {
+  if (routesToSteer) {
     const sessionID = state.sessionId;
     const requestedInterrupt = isNextSendInterruptArmed();
     const actionSteerIdentity = currentSteerActionIdentity();
@@ -1427,8 +1430,7 @@ async function sendMessage() {
     return;
   }
 
-  const currentStatus = state.sessionDetail?.state?.status || '';
-  if (hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus)) {
+  if (routesToContinue) {
     const sessionID = state.sessionId;
     const actionPlanModeIdentity = currentPlanModeActionIdentity();
     let revisingPlanMode = false;
@@ -2453,6 +2455,7 @@ async function handlePlanModeAction(button) {
       }
       showToast('Plan Mode cancelled.', 'success');
     } else if (action === 'revise') {
+	  closeInspectorSlideOut({ restoreFocus: false });
       nodes.chatInput?.focus();
       showToast('Type the requested plan change and send it.', 'info');
     }
@@ -3923,7 +3926,7 @@ function renderSkills(skills) {
         <i data-lucide="package-open" class="empty-icon"></i>
         <strong>No local skills found.</strong>
         <span>Upload a .zip skill package to extend your agent's capabilities.</span>
-        <button class="skill-btn install empty-upload-btn" type="button" id="empty-upload-btn">Upload .zip Skill</button>
+        <button class="skill-btn install empty-upload-btn" type="button" id="empty-upload-btn" data-upload-default-label="Upload .zip Skill"><span data-upload-label>Upload .zip Skill</span></button>
       </div>
     `;
     if (window.lucide && lucide.createIcons) {
@@ -3949,8 +3952,8 @@ function renderSkills(skills) {
       : '';
     const button = isReadOnly
       ? `<button class="skill-btn uninstall" type="button" disabled>Disabled</button>`
-      : `<button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
-          ${skill.installed ? 'Uninstall' : 'Upload to Install'}
+      : `<button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}"${skill.installed ? '' : ' data-upload-default-label="Upload to Install"'}>
+          <span data-upload-label>${skill.installed ? 'Uninstall' : 'Upload to Install'}</span>
         </button>`;
     return `
       <div class="skill-card">

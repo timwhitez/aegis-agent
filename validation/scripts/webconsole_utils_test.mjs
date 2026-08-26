@@ -2450,7 +2450,10 @@ test('setSkillUploadPending disables and restores upload controls', () => {
       }
     };
   }
-  const mainButton = fakeControl('Upload .zip Skill');
+  const mainLabel = fakeControl('上传 .zip');
+  const mainButton = fakeControl('button shell with icon');
+  mainButton.dataset.uploadDefaultLabel = 'Upload .zip';
+  mainButton.querySelector = (selector) => selector === '[data-upload-label]' ? mainLabel : null;
   const emptyButton = fakeControl('Upload .zip Skill');
   const cardButton = fakeControl('Upload to Install');
   const freshCardButton = fakeControl('Upload to Install');
@@ -2473,15 +2476,19 @@ test('setSkillUploadPending disables and restores upload controls', () => {
 
   for (const control of [mainButton, emptyButton, cardButton]) {
     assert.equal(control.disabled, true);
-    assert.equal(control.textContent, 'Uploading...');
     assert.equal(control.getAttribute('aria-busy'), 'true');
   }
+  assert.equal(mainLabel.textContent, 'Uploading...');
+  assert.equal(mainButton.textContent, 'button shell with icon');
+  assert.equal(emptyButton.textContent, 'Uploading...');
+  assert.equal(cardButton.textContent, 'Uploading...');
   assert.equal(uploadInput.disabled, true);
 
   context.setSkillUploadPending(root, false);
 
   assert.equal(mainButton.disabled, false);
-  assert.equal(mainButton.textContent, 'Upload .zip Skill');
+  assert.equal(mainLabel.textContent, 'Upload .zip');
+  assert.equal(mainButton.textContent, 'button shell with icon');
   assert.equal(emptyButton.disabled, false);
   assert.equal(emptyButton.textContent, 'Upload .zip Skill');
   assert.equal(cardButton.disabled, false);
@@ -3653,6 +3660,38 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   });
 });
 
+test('Plan Mode revision action closes modal inspector and focuses the composer', async () => {
+  const appContext = createAppHarnessContext();
+  appContext.planReviseButton = fakeActionButton({ 'data-plan-action': 'revise' });
+
+  await vm.runInContext(`
+    renderCurrentSession = function() {};
+    updateUI = function() {};
+    state.sessionId = 'session_plan_revision_focus';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_revision_focus' },
+      state: { status: 'awaiting_input' },
+      plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_focus', plan_version: 1 }
+    };
+    openInspectorSlideOut();
+    handlePlanModeAction(planReviseButton);
+  `, appContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    open: nodes.inspectorSlideOut.classList.contains('is-open'),
+    hidden: nodes.inspectorSlideOut.getAttribute('aria-hidden'),
+    expanded: nodes.inspectorToggleBtn.getAttribute('aria-expanded'),
+    composerFocused: nodes.chatInput.focused === true
+  })`, appContext)), {
+    open: false,
+    hidden: 'true',
+    expanded: 'false',
+    composerFocused: true
+  });
+  assert.equal(appContext.pendingRequests.length, 0);
+});
+
 test('Plan Mode approval override ignores stale confirmation after session changes', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
@@ -4394,6 +4433,34 @@ test('continue completion does not mark a newly selected session as generating',
     generating: false,
     activityTitle: 'Loaded session B'
   });
+});
+
+test('durable awaiting-input state routes to continue during active-handle teardown', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_continue_teardown';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Starting turn', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_continue_teardown' },
+      state: { status: 'awaiting_input' },
+      active_handle: true,
+      active_handle_owner: { owned_by_current_process: true },
+      plan_mode: null,
+      messages: []
+    };
+    nodes.chatInput.value = 'continue after teardown';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_continue_teardown\/continue/);
+  assert.doesNotMatch(appContext.pendingRequests[0].url, /\/steer$/);
+  appContext.pendingRequests[0].resolve({ session_id: 'session_continue_teardown', status: 'accepted' });
+  await send;
 });
 
 test('continue completion ignores refreshed same-session state', async () => {
@@ -6215,14 +6282,16 @@ test('workspace selected paths use the refresh-adjacent trash action', async () 
     deletedPaths,
     selectedCount: selectedWorkspacePathCount(),
     reloadedPath: state.reloadedPath,
-    pending: workspaceActionPending()
+	pending: workspaceActionPending(),
+	refreshFocused: nodes.workspaceRefreshBtn.focused === true
   })`, workspaceContext)), {
     confirmTitle: 'Delete selected items',
     confirmLabel: 'Delete selected',
     deletedPaths: [['src/main.go', 'src/util.go']],
     selectedCount: 0,
     reloadedPath: 'src',
-    pending: ''
+	pending: '',
+	refreshFocused: true
   });
 });
 
@@ -6311,6 +6380,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
     loadedFile: state.loadedFile,
     selectedPath: selectedWorkspaceTreePath(),
     pending: workspaceActionPending(),
+	renameFocused: nodes.workspaceRenameBtn.focused === true,
     toast: toasts[0]
   })`, workspaceContext)), {
     renameCalls: [{ path: 'src/draft.txt', name: 'final.txt' }],
@@ -6318,6 +6388,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
     loadedFile: 'src/final.txt',
     selectedPath: 'src/final.txt',
     pending: '',
+	renameFocused: true,
     toast: { message: 'Renamed file to final.txt.', tone: 'success' }
   });
 });
@@ -6740,6 +6811,47 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(first.t('Settings'), 'Settings');
 	const restored = makeContext();
 	assert.equal(restored.locale(), 'en');
+});
+
+test('i18n restores existing translated text and attributes when switching to English', () => {
+	const document = {
+		readyState: 'loading',
+		documentElement: { lang: '', setAttribute() {} },
+		addEventListener() {},
+		dispatchEvent() {},
+		getElementById() { return null; },
+		querySelectorAll() { return []; }
+	};
+	const window = { document, localStorage: { getItem() { return null; }, setItem() {} } };
+	const i18nContext = { window };
+	vm.createContext(i18nContext);
+	vm.runInContext(i18nSource, i18nContext, { filename: 'i18n.js' });
+	const i18n = window.AegisI18n;
+	const parent = {
+		nodeType: 1,
+		closest() { return null; },
+		hasAttribute() { return false; }
+	};
+	const textNode = { nodeType: 3, nodeValue: 'Settings', parentElement: parent };
+	const attributes = new Map([['aria-label', 'Settings']]);
+	const element = {
+		nodeType: 1,
+		closest() { return null; },
+		hasAttribute(name) { return attributes.has(name); },
+		getAttribute(name) { return attributes.get(name) || ''; },
+		setAttribute(name, value) { attributes.set(name, value); },
+		querySelectorAll() { return []; }
+	};
+
+	i18n.apply(textNode);
+	i18n.apply(element);
+	assert.equal(textNode.nodeValue, '设置');
+	assert.equal(attributes.get('aria-label'), '设置');
+	i18n.setLocale('en', { persist: false });
+	i18n.apply(textNode);
+	i18n.apply(element);
+	assert.equal(textNode.nodeValue, 'Settings');
+	assert.equal(attributes.get('aria-label'), 'Settings');
 });
 
 test('summary panel renders provider attempt ledger facts', () => {

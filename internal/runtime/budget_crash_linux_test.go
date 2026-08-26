@@ -158,7 +158,9 @@ func TestChildActiveRuntimeSurvivesProviderAndShellProcessKills(t *testing.T) {
 			resumeServer := newBudgetCrashResumeServer(t)
 			cfg := budgetCrashConfig(sessionRoot, workdir, resumeServer.URL)
 			runner := NewRunner(cfg)
+			resumeStarted := time.Now()
 			result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Source: "crash_recovery_test"})
+			resumeElapsed := time.Since(resumeStarted)
 			if err != nil || result.Status != session.StatusAwaitingInput {
 				t.Fatalf("resume killed child: result=%#v err=%v", result, err)
 			}
@@ -169,8 +171,10 @@ func TestChildActiveRuntimeSurvivesProviderAndShellProcessKills(t *testing.T) {
 			if recovered.EffectiveBudget == nil || recovered.EffectiveBudget.ActiveRuntimeLastRecoveryMS != 100 || recovered.EffectiveBudget.ActiveRuntimeLastRecoveryAt == "" || recovered.EffectiveBudget.ActiveRuntimeLeaseOpen || recovered.EffectiveBudget.ActiveRuntimeLeaseOwner != "" {
 				t.Fatalf("restart did not apply and settle one bounded recovery charge: %#v", recovered.EffectiveBudget)
 			}
-			if recovered.EffectiveBudget.UsedActiveRuntimeMS-beforeKill.UsedActiveRuntimeMS >= 1200 {
-				t.Fatalf("offline wall time leaked into active runtime: before=%#v after=%#v", beforeKill, recovered.EffectiveBudget)
+			resumeDeltaMS := recovered.EffectiveBudget.UsedActiveRuntimeMS - crashed.EffectiveBudget.UsedActiveRuntimeMS
+			maxExpectedDeltaMS := recovered.EffectiveBudget.ActiveRuntimeLastRecoveryMS + resumeElapsed.Milliseconds() + 250
+			if resumeDeltaMS < recovered.EffectiveBudget.ActiveRuntimeLastRecoveryMS || resumeDeltaMS > maxExpectedDeltaMS {
+				t.Fatalf("offline wall time leaked into active runtime: crashed=%#v recovered=%#v resume_elapsed=%s delta_ms=%d max_expected_ms=%d", crashed.EffectiveBudget, recovered.EffectiveBudget, resumeElapsed, resumeDeltaMS, maxExpectedDeltaMS)
 			}
 			eventsList, err := store.LoadEvents(meta.ID)
 			if err != nil {

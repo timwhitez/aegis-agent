@@ -120,6 +120,8 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `finish` 设置 `final`
 - `await_input` 返回结构化等待 metadata 且不设置 `final`
 - `shell` 仅继承 allowlist 环境变量，且临时 HOME 中的 login/profile/rc 脚本不能注入变量或产生副作用；trusted command 走同一语义
+- Linux 且 bwrap namespace 可用时，必须真实执行位于 `/tmp` 或其他非系统根下的 workspace：验证 namespace 内 bind target 创建顺序、稳定 descriptor cwd、命令成功，以及 profile/rc 仍不能注入变量或产生副作用；仅检查 argv 不构成该验收
+- background-wait 测试必须以持久化 `awaiting_input/background_wait` 状态同步结果注入，传播 resolver/notification 写入错误，并使用测试级有界 context；不能用固定 sleep 加无界 `context.Background()` 把失败拖到 package timeout
 - `todo_write` 仅刷新新增或发生状态推进的条目时间，未变化条目保留时间，调用方旧 timestamp 不能覆盖 runtime 时间
 - `todo_write` 允许多个 `in_progress` 并完整持久化
 - `task_create` / `task_update` 保持依赖边双向一致

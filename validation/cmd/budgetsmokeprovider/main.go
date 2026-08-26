@@ -195,6 +195,53 @@ func (s *providerState) handleResponses(w http.ResponseWriter, r *http.Request) 
 }
 
 func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int) (scriptedToolCall, error) {
+	if strings.Contains(facts.InputText, "E2E_UI_PLAN_REVISE") {
+		switch callNumber {
+		case 1:
+			return scriptedToolCall{Name: "submit_plan", Arguments: map[string]any{
+				"title": "E2E original plan", "summary": "Original plan before browser revision.",
+				"plan_markdown": "# Original plan\n\n1. Revise this plan from the browser.",
+				"verification":  []string{"Browser submits a revision"},
+			}}, nil
+		case 2:
+			return scriptedToolCall{Name: "submit_plan", Arguments: map[string]any{
+				"title": "E2E revised plan", "summary": "Revised plan accepted the browser change request.",
+				"plan_markdown": "# Revised plan\n\n1. Apply the requested narrower scope.\n2. Verify the durable revision.",
+				"verification":  []string{"Browser observes plan version 2", "Browser approves the revised plan"},
+			}}, nil
+		default:
+			return scriptedToolCall{Name: "finish", Arguments: map[string]any{"message": "E2E revised plan completed"}}, nil
+		}
+	}
+	if strings.Contains(facts.InputText, "E2E_UI_PLAN_INPUT") {
+		switch callNumber {
+		case 1:
+			return scriptedToolCall{Name: "request_user_input", Arguments: map[string]any{"questions": []map[string]any{{
+				"id": "scope_choice", "header": "Scope", "question": "Which scope should the browser plan use?",
+				"options": []map[string]any{
+					{"label": "Narrow (Recommended)", "description": "Keep the plan focused."},
+					{"label": "Broad", "description": "Include adjacent cleanup."},
+				},
+			}}}}, nil
+		case 2:
+			return scriptedToolCall{Name: "submit_plan", Arguments: map[string]any{
+				"title": "E2E answered plan", "summary": "Plan created after durable browser input.",
+				"plan_markdown": "# Answered plan\n\n1. Use the selected scope.\n2. Verify input replay.",
+				"verification":  []string{"Browser answers request_user_input", "Browser approves the resulting plan"},
+			}}, nil
+		default:
+			return scriptedToolCall{Name: "finish", Arguments: map[string]any{"message": "E2E plan input completed"}}, nil
+		}
+	}
+	if strings.Contains(facts.InputText, "E2E_UI_CHILDREN") {
+		if callNumber == 1 {
+			return scriptedToolCall{Name: "agent_spawn", Arguments: map[string]any{
+				"prompt": "E2E child: finish with a durable child result.", "agent_name": "e2e-child", "agent_role": "evaluator",
+				"mode": "exec", "background": false, "isolation_mode": "off",
+			}}, nil
+		}
+		return scriptedToolCall{Name: "finish", Arguments: map[string]any{"message": "E2E parent observed its child"}}, nil
+	}
 	if strings.Contains(facts.InputText, "E2E_UI_PLAN") {
 		if callNumber == 1 {
 			return scriptedToolCall{Name: "submit_plan", Arguments: map[string]any{
@@ -242,8 +289,18 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 		case 3:
 			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Verify UI contract", "description": "Blocked until implementation", "priority": "high", "blocked_by": []string{"task_0001"}}}, nil
 		case 4:
-			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0001", "status": "in_progress"}}, nil
+			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Ready UI verification", "description": "No blockers remain", "priority": "medium"}}, nil
 		case 5:
+			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Completed UI verification", "description": "Will transition to completed", "priority": "low"}}, nil
+		case 6:
+			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0004", "status": "completed"}}, nil
+		case 7:
+			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Cancelled UI verification", "description": "Will transition to cancelled", "priority": "low"}}, nil
+		case 8:
+			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0005", "status": "cancelled"}}, nil
+		case 9:
+			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0001", "status": "in_progress"}}, nil
+		case 10:
 			return scriptedToolCall{Name: "shell", Arguments: map[string]any{"command": "printf 'e2e workspace artifact\\n' > e2e-created.txt"}}, nil
 		default:
 			return scriptedToolCall{Name: "finish", Arguments: map[string]any{"message": "E2E main completed"}}, nil

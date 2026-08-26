@@ -334,18 +334,19 @@ function setSkillUploadPending(root, pending) {
   ].filter(Boolean);
   const label = pending ? 'Uploading...' : '';
   for (const control of controls) {
+	const labelNode = control.querySelector?.('[data-upload-label]') || control;
     if (pending) {
       if (!control.dataset.uploadIdleLabel) {
-        control.dataset.uploadIdleLabel = control.textContent || 'Upload .zip Skill';
+		control.dataset.uploadIdleLabel = control.dataset.uploadDefaultLabel || labelNode.textContent || 'Upload .zip Skill';
       }
       control.disabled = true;
-      control.textContent = label;
+	  labelNode.textContent = label;
       control.setAttribute('aria-busy', 'true');
       continue;
     }
     control.disabled = false;
     if (control.dataset.uploadIdleLabel) {
-      control.textContent = control.dataset.uploadIdleLabel;
+	  labelNode.textContent = control.dataset.uploadIdleLabel;
     }
     delete control.dataset.uploadIdleLabel;
     control.removeAttribute('aria-busy');

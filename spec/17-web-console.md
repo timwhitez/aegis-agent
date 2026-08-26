@@ -236,7 +236,7 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 
 - WebConsole 只读写 `planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`，不维护第二套 Plan 状态
 - Approve & Run 必须走 runtime continue path，追加 `meta.source=planmode_approval` 的 user message 后恢复普通执行
-- Ask for Changes 只是 plan revision user message；不会执行 plan，也不会变成 Todo/Task 写入
+- Ask for Changes 只是 plan revision user message；不会执行 plan，也不会变成 Todo/Task 写入。若该动作来自 modal inspector，前端必须先关闭 inspector、解除背景 `inert`，再把焦点移到 composer；不能把输入焦点留在仍打开的 modal 背后
 - Pending Plan Mode 下，带当前 session `parent_session_id` 的 Web queue submit / delegate 类控制面必须被拒绝；无 parent 的独立 queue job 不受影响
 
 ### 4.5 右侧动作区

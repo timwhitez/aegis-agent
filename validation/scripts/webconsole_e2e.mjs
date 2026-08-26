@@ -30,6 +30,7 @@ const children = [];
 const screenshots = [];
 const checks = [];
 const untranslatedByScreenshot = [];
+const unexpectedChineseByScreenshot = [];
 const browserErrors = { console: [], page: [], request: [], response: [] };
 
 await mkdir(outputDir, { recursive: true });
@@ -113,28 +114,51 @@ try {
   });
   await openInspectorTab(page, 'tasks');
   await check('Todo and derived task groups render from durable facts', async () => {
-    await page.locator('[data-task-group="in_progress"]').waitFor();
-    await page.locator('[data-task-group="blocked"]').waitFor();
-    await page.locator('[data-task-id="task_0001"]').waitFor();
-    await page.locator('[data-task-id="task_0002"]').waitFor();
+	for (const group of ['in_progress', 'ready', 'blocked', 'completed', 'cancelled']) {
+	  await page.locator(`[data-task-group="${group}"]`).waitFor();
+	}
+	for (const taskID of ['task_0001', 'task_0002', 'task_0003', 'task_0004', 'task_0005']) {
+	  await page.locator(`[data-task-id="${taskID}"]`).waitFor();
+	}
     assert.match(await page.locator('.metric-card').filter({ hasText: '待办' }).innerText(), /2 个进行中/);
     assert.equal(await page.locator('[data-inspector-tab="agents"]').count(), 0);
   });
   await check('inspector tabs support Arrow, Home, and End keyboard navigation', async () => {
     const tasksTab = page.locator('[data-inspector-tab="tasks"]');
-    await tasksTab.focus();
-    await page.keyboard.press('ArrowRight');
+	await tasksTab.press('ArrowRight');
     const contextTab = page.locator('[data-inspector-tab="context"][aria-selected="true"]');
     await contextTab.waitFor();
-    await contextTab.focus();
-    await page.keyboard.press('End');
+	await page.waitForFunction(() => {
+	  const selected = document.querySelector('[data-inspector-tab="context"][aria-selected="true"]');
+	  const panel = document.querySelector('.inspector-content');
+	  return selected && !String(panel?.textContent || '').includes('Loading context');
+	});
+	await page.locator('[data-inspector-tab="context"][aria-selected="true"]').press('End');
     const timelineTab = page.locator('[data-inspector-tab="timeline"][aria-selected="true"]');
     await timelineTab.waitFor();
-    await timelineTab.focus();
-    await page.keyboard.press('Home');
+	await timelineTab.press('Home');
     await page.locator('[data-inspector-tab="summary"][aria-selected="true"]').waitFor();
     await tasksTab.click();
   });
+	await page.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await openInspectorTab(page, 'tasks');
+	await check('English translates dynamic Todo and all task groups without changing durable data', async () => {
+	  await assertText(page.locator('[data-view="settings"] span'), 'Settings');
+	  await assertText(page.locator('[data-view="workspace"] span'), 'Workspace');
+	  await assertText(page.locator('[data-task-group="in_progress"] .task-group-heading span').first(), 'In progress');
+	  await assertText(page.locator('[data-task-group="ready"] .task-group-heading span').first(), 'Ready');
+	  await assertText(page.locator('[data-task-group="blocked"] .task-group-heading span').first(), 'Blocked');
+	  await assertText(page.locator('[data-task-group="completed"] .task-group-heading span').first(), 'Completed');
+	  await assertText(page.locator('[data-task-group="cancelled"] .task-group-heading span').first(), 'Cancelled');
+	  await page.locator('.todo-card-title').filter({ hasText: 'Inspect bilingual Web Console' }).waitFor();
+	});
+	await capture(page, '03b-session-task-todo-en-desktop.png');
+	await page.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
+	await openInspectorTab(page, 'tasks');
   await capture(page, '03-session-task-todo-zh-desktop.png');
   await openInspectorTab(page, 'timeline');
   await check('timeline and tool lanes are visible', async () => {
@@ -165,6 +189,69 @@ try {
     const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(planID)}`);
     assert.equal(detail.plan_mode.status, 'executing');
   });
+
+	const revisedPlanID = await startSession(page, 'E2E_UI_PLAN_REVISE exercise a real browser revision.', { plan: true });
+	await waitForSession(baseURL, revisedPlanID, (detail) => detail?.plan_mode?.status === 'awaiting_approval' && detail?.plan_mode?.plan_version === 1, 25_000);
+	await openSession(page, revisedPlanID);
+	await openInspectorTab(page, 'plan');
+	await page.locator('#inspector-slide-out [data-plan-action="revise"]').click();
+	await page.locator('#chat-input').fill('Use the narrower verified scope.');
+	const reviseResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().includes(`/api/sessions/${revisedPlanID}/`));
+	await page.locator('#send-btn').click();
+	const revised = await reviseResponse;
+	assert.ok(revised.url().endsWith(`/api/sessions/${revisedPlanID}/planmode/revise`), `unexpected Plan revision route: ${revised.url()}`);
+	assert.equal(revised.status(), 202);
+	await waitForSession(baseURL, revisedPlanID, (detail) => detail?.plan_mode?.status === 'awaiting_approval' && detail?.plan_mode?.plan_version === 2, 25_000);
+	await openSession(page, revisedPlanID);
+	await openInspectorTab(page, 'plan');
+	await check('Plan revision creates a second durable version before approval', async () => {
+	  const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(revisedPlanID)}`);
+	  assert.equal(detail.plan_mode.plan_version, 2);
+	  assert.match(detail.plan_mode.summary, /Revised plan accepted/);
+	  await page.locator('.plan-panel').filter({ hasText: 'Revised plan' }).waitFor();
+	});
+	await capture(page, '05b-plan-revised-zh-desktop.png');
+	await page.locator('#inspector-slide-out [data-plan-action="approve"]').click();
+	await waitForSession(baseURL, revisedPlanID, (detail) => detail?.state?.status === 'completed', 25_000);
+
+	const inputPlanID = await startSession(page, 'E2E_UI_PLAN_INPUT exercise request_user_input.', { plan: true });
+	await waitForSession(baseURL, inputPlanID, (detail) => detail?.plan_mode?.status === 'awaiting_user_input' && detail?.plan_mode?.pending_request, 25_000);
+	await openSession(page, inputPlanID);
+	await openInspectorTab(page, 'plan');
+	await page.locator('[data-plan-input-action="select"][data-value="Narrow (Recommended)"]').click();
+	const planInputSubmit = page.locator('[data-plan-input-action="submit"]:not([disabled])');
+	await planInputSubmit.waitFor();
+	await capture(page, '05c-plan-input-zh-desktop.png');
+	const inputResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`/api/sessions/${inputPlanID}/planmode/input`));
+	await planInputSubmit.click();
+	assert.equal((await inputResponse).status(), 202);
+	await waitForSession(baseURL, inputPlanID, (detail) => detail?.plan_mode?.status === 'awaiting_approval' && detail?.plan_mode?.plan_version === 1, 25_000);
+	await openSession(page, inputPlanID);
+	await openInspectorTab(page, 'plan');
+	await check('request_user_input answer resumes planning and produces an approvable plan', async () => {
+	  const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(inputPlanID)}`);
+	  assert.equal(detail.plan_mode.pending_request, undefined);
+	  assert.match(detail.plan_mode.summary, /durable browser input/);
+	});
+	await page.locator('#inspector-slide-out [data-plan-action="approve"]').click();
+	await waitForSession(baseURL, inputPlanID, (detail) => detail?.state?.status === 'completed', 25_000);
+
+	const childrenID = await startSession(page, 'E2E_UI_CHILDREN spawn and expose a real child.');
+	const childrenDetail = await waitForSession(baseURL, childrenID, (detail) => detail?.state?.status === 'completed' && detail?.children?.sessions?.length === 1, 30_000);
+	const childID = childrenDetail.children.sessions[0].id;
+	await openSession(page, childrenID);
+	await check('child delegation is visible and its durable child session opens from v2', async () => {
+	  const openChild = page.locator(`[data-sub-agent-open="${childID}"]`).first();
+	  await openChild.waitFor();
+	  await openChild.click();
+	  await confirmDialog(page);
+	  await page.waitForFunction((id) => typeof state !== 'undefined' && state.sessionId === id, childID);
+	  const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(childID)}`);
+	  assert.equal(detail.metadata.parent_session_id, childrenID);
+	});
+	await openSession(page, childrenID);
+	await openInspectorTab(page, 'timeline');
+	await capture(page, '05d-child-delegation-zh-desktop.png');
 
   const awaitID = await startSession(page, 'E2E_UI_AWAIT park until browser continues.');
   await waitForSession(baseURL, awaitID, (detail) => detail?.state?.status === 'awaiting_input', 25_000);
@@ -223,21 +310,30 @@ try {
   await downloaded.saveAs(downloadPath);
   assert.equal((await readFile(downloadPath, 'utf8')).trim(), 'e2e workspace artifact');
 
-  await page.locator('#workspace-new-folder-btn').click();
-  await completePromptDialog(page, 'e2e-folder');
+	await page.locator('#workspace-new-folder-btn').focus();
+	await page.locator('#workspace-new-folder-btn').click();
+	await completePromptDialog(page, 'e2e-folder');
   await page.locator('.tree-node[data-path="e2e-folder"]').waitFor();
+	await page.waitForFunction(() => document.activeElement?.id === 'workspace-new-folder-btn');
   await page.locator('#workspace-upload-input').setInputFiles(uploadPath);
   await page.locator('.tree-node[data-path="upload-note.txt"]').waitFor();
   await page.locator('.tree-node[data-path="upload-note.txt"]').click();
-  await page.locator('#workspace-rename-btn').click();
-  await completePromptDialog(page, 'e2e-upload-renamed.txt');
+	await page.locator('#workspace-rename-btn').focus();
+	await page.locator('#workspace-rename-btn').click();
+	await completePromptDialog(page, 'e2e-upload-renamed.txt');
   await page.locator('.tree-node[data-path="e2e-upload-renamed.txt"]').waitFor();
-  await page.locator('#workspace-delete-file-btn').click();
-  await confirmDialog(page);
+	await page.waitForFunction(() => document.activeElement?.id === 'workspace-rename-btn');
+	await page.locator('#workspace-delete-file-btn').focus();
+	await page.locator('#workspace-delete-file-btn').click();
+	await confirmDialog(page);
   await page.locator('.tree-node[data-path="e2e-upload-renamed.txt"]').waitFor({ state: 'detached' });
+	await page.waitForFunction(() => document.activeElement?.id === 'workspace-refresh-btn');
   await page.locator('.tree-node[data-path="e2e-folder"]').click();
-  await page.locator('#workspace-delete-dir-btn').click();
-  await confirmDialog(page);
+	await page.locator('#workspace-delete-dir-btn').focus();
+	await page.locator('#workspace-delete-dir-btn').click();
+	await confirmDialog(page);
+	await page.locator('.tree-node[data-path="e2e-folder"]').waitFor({ state: 'detached' });
+	await page.waitForFunction(() => document.activeElement?.id === 'workspace-refresh-btn');
   await check('workspace create/upload/rename/delete interactions complete', async () => {
     const listing = await getJSON(`${baseURL}/api/files?path=.`);
     const names = listing.map((item) => item.name);
@@ -245,6 +341,16 @@ try {
     assert.ok(!names.includes('e2e-upload-renamed.txt'));
   });
   await capture(page, '07-workspace-zh-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await check('Workspace switches existing controls to English', async () => {
+	  await assertText(page.locator('#workspace-view .view-title'), 'Workspace');
+	  assert.equal(await page.locator('#workspace-new-folder-btn').getAttribute('aria-label'), 'New folder');
+	  assert.equal(await page.locator('#workspace-refresh-btn').getAttribute('title'), 'Refresh');
+	});
+	await capture(page, '07b-workspace-en-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 
   await page.locator('[data-view="skills"]').click();
   await page.locator('#skills-view:not(.is-hidden)').waitFor();
@@ -252,6 +358,16 @@ try {
   await page.locator('.skill-card').filter({ hasText: 'e2e-skill' }).waitFor();
   await capture(page, '08-skills-installed-zh-desktop.png');
   const skillCard = page.locator('.skill-card').filter({ hasText: 'e2e-skill' });
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await check('Skills switches existing controls to English', async () => {
+	  await assertText(page.locator('#skills-view .view-title'), 'Skills');
+	  await assertText(page.locator('#skill-upload-btn'), 'Upload .zip');
+	  await assertText(skillCard.locator('[data-skill-action]'), 'Uninstall');
+	});
+	await capture(page, '08b-skills-installed-en-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
   await skillCard.locator('[data-skill-action]').click();
   await confirmDialog(page);
   await skillCard.waitFor({ state: 'detached' });
@@ -294,24 +410,60 @@ try {
   await capture(page, '09-settings-top-zh-desktop.png');
   await page.locator('#settings-save-btn').scrollIntoViewIfNeeded();
   await capture(page, '10-settings-bottom-zh-desktop.png');
+	await page.locator('#settings-view').evaluate((element) => { element.scrollTop = 0; });
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await check('Settings switches existing form controls to English', async () => {
+	  await assertText(page.locator('#settings-view .view-title'), 'Settings');
+	  await assertText(page.locator('#settings-save-btn'), 'Save Changes');
+	  await page.locator('#settings-view').getByText('Frontend Migration', { exact: true }).waitFor();
+	});
+	await capture(page, '10b-settings-en-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 
   await page.locator('[data-view="history"]').click();
   await page.locator('#history-view:not(.is-hidden) [data-delete-session]').first().waitFor();
   await capture(page, '12-sessions-zh-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await check('Sessions switches existing rows and relative times to English', async () => {
+	  await assertText(page.locator('#history-view .view-header .view-title'), 'Sessions');
+	  assert.match(await page.locator('#history-view .history-session-time').first().innerText(), /^(?:just now|\d+m ago)$/);
+	  assert.equal(await page.locator('#history-view').getByText('刚刚', { exact: true }).count(), 0);
+	});
+	await capture(page, '12b-sessions-en-desktop.png');
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 
   await openSession(page, mainID);
   await page.setViewportSize({ width: 390, height: 844 });
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
   await openInspectorTab(page, 'tasks');
   const slide = page.locator('#inspector-slide-out');
-  await check('mobile inspector traps focus and exposes no Background tab', async () => {
+	await check('English mobile dynamic inspector stays translated and exposes no Background tab', async () => {
     await slide.waitFor();
     assert.equal(await slide.getAttribute('aria-hidden'), 'false');
     assert.equal(await page.locator('[data-inspector-tab="agents"]').count(), 0);
     assert.equal(await page.locator('#app').getAttribute('inert'), '');
+	  await assertText(page.locator('[data-task-group="in_progress"] .task-group-heading span').first(), 'In progress');
   });
+	await capture(page, '13b-inspector-open-en-mobile.png');
+	await page.keyboard.press('Escape');
+	assert.equal(await slide.getAttribute('aria-hidden'), 'true');
+	assert.equal(await page.locator('#inspector-toggle-btn').evaluate((node) => document.activeElement === node), true);
+	await page.locator('#language-toggle-btn').click();
+	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
+	await openInspectorTab(page, 'tasks');
+	await check('mobile inspector traps focus, inerts the background, and restores its opener', async () => {
+	  assert.equal(await slide.getAttribute('aria-hidden'), 'false');
+	  assert.equal(await page.locator('#app').getAttribute('inert'), '');
+	});
   await capture(page, '13-inspector-open-zh-mobile.png');
   await page.keyboard.press('Escape');
   assert.equal(await slide.getAttribute('aria-hidden'), 'true');
+	assert.equal(await page.locator('#inspector-toggle-btn').evaluate((node) => document.activeElement === node), true);
   await capture(page, '14-session-zh-mobile.png');
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('[data-view="history"]').click();
@@ -335,6 +487,9 @@ try {
   const untranslated = Array.from(new Set(untranslatedByScreenshot.flatMap((entry) => entry.values))).sort();
   assert.deepEqual(untranslated, [], `untranslated operator text: ${JSON.stringify(untranslated)}`);
   checks.push({ name: 'untranslated operator text audit', ok: true, detail: untranslated });
+  const unexpectedChinese = Array.from(new Set(unexpectedChineseByScreenshot.flatMap((entry) => entry.values))).sort();
+  assert.deepEqual(unexpectedChinese, [], `Chinese operator text in English locale: ${JSON.stringify(unexpectedChinese)}`);
+  checks.push({ name: 'English locale operator text audit', ok: true, detail: unexpectedChinese });
   assertBrowserErrors();
 
   const manifest = {
@@ -378,13 +533,13 @@ async function startSession(page, prompt, options = {}) {
   assert.equal(response.status(), 202, await response.text());
   const payload = await response.json();
   assert.ok(payload.session_id);
-  await page.waitForFunction((id) => document.querySelector('#session-id-display')?.textContent?.includes(id.slice(0, 8)), payload.session_id).catch(() => {});
+	await page.waitForFunction((id) => typeof state !== 'undefined' && state.sessionId === id, payload.session_id);
   return payload.session_id;
 }
 
 async function openSession(page, sessionID) {
   await page.evaluate(async (id) => { await openSession(id, { switchToChat: true }); }, sessionID);
-  await page.waitForFunction((id) => document.querySelector('#session-id-display')?.textContent?.includes(id.slice(0, 8)), sessionID);
+	await page.waitForFunction((id) => typeof state !== 'undefined' && state.sessionId === id, sessionID);
 }
 
 async function openInspectorTab(page, tab) {
@@ -395,7 +550,7 @@ async function openInspectorTab(page, tab) {
   await page.locator(`[data-inspector-tab="${tab}"][aria-selected="true"]`).waitFor();
 }
 
-async function confirmDialog(page) {
+async function confirmDialog(page, restoreSelector = '') {
   const dialog = page.locator('.confirm-dialog');
   await dialog.waitFor();
   const first = dialog.locator('button').first();
@@ -405,12 +560,19 @@ async function confirmDialog(page) {
   assert.equal(await first.evaluate((node) => document.activeElement === node), true);
   await dialog.locator('.confirm-dialog-confirm').click();
   await dialog.waitFor({ state: 'detached' });
+	if (restoreSelector) {
+	  assert.equal(await page.locator(restoreSelector).evaluate((node) => document.activeElement === node), true);
+	}
 }
 
 async function completePromptDialog(page, value) {
   const dialog = page.locator('.prompt-dialog');
   await dialog.waitFor();
-  await dialog.locator('.prompt-dialog-input').fill(value);
+	const input = dialog.locator('.prompt-dialog-input');
+	await dialog.locator('.confirm-dialog-confirm').focus();
+	await page.keyboard.press('Tab');
+	assert.equal(await input.evaluate((node) => document.activeElement === node), true);
+	await input.fill(value);
   await dialog.locator('.confirm-dialog-confirm').click();
   await dialog.waitFor({ state: 'detached' });
 }
@@ -432,28 +594,52 @@ async function assertMinimumTargets(page) {
 
 async function collectUntranslatedOperatorText(page) {
   return page.evaluate(() => {
-    const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .history-session-title, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const values = new Set();
     const allowedTechnicalText = (value) => ['Aegis', 'Google Gemini', 'Token'].includes(value)
       || /^ID[：:].+/.test(value)
       || /^Token \d+(?:\.\d+)?$/.test(value)
-      || /^task_\d+$/.test(value);
+      || /^task_\d+$/.test(value)
+	  || /^\d{6,}…[0-9a-f]{4}$/i.test(value);
     let node;
     while ((node = walker.nextNode())) {
       const parent = node.parentElement;
       const text = node.nodeValue.trim();
-      if (!text || parent?.closest(skip) || getComputedStyle(parent).display === 'none') continue;
+      if (!text || parent?.closest(skip) || !parent?.getClientRects?.().length || getComputedStyle(parent).display === 'none') continue;
       if (/\p{Script=Han}/u.test(text)) continue;
       if (/[A-Za-z]{2,}/.test(text) && !allowedTechnicalText(text)) values.add(text);
     }
     for (const element of document.querySelectorAll('[aria-label], [title], [placeholder], [data-tooltip]')) {
-      if (element.closest(skip) || getComputedStyle(element).display === 'none') continue;
+      if (element.closest(skip) || !element.getClientRects().length || getComputedStyle(element).display === 'none') continue;
       for (const name of ['aria-label', 'title', 'placeholder', 'data-tooltip']) {
         const value = String(element.getAttribute(name) || '').trim();
         if (!value || /\p{Script=Han}/u.test(value) || !/[A-Za-z]{2,}/.test(value)) continue;
         if (allowedTechnicalText(value)) continue;
         values.add(`${name}: ${value}`);
+      }
+    }
+    return Array.from(values).sort();
+  });
+}
+
+async function collectUnexpectedChineseOperatorText(page) {
+  return page.evaluate(() => {
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .history-session-title, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+    const values = new Set();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const parent = node.parentElement;
+      const text = node.nodeValue.trim();
+      if (!text || parent?.closest(skip) || !parent?.getClientRects?.().length || getComputedStyle(parent).display === 'none') continue;
+      if (/\p{Script=Han}/u.test(text)) values.add(text);
+    }
+    for (const element of document.querySelectorAll('[aria-label], [title], [placeholder], [data-tooltip]')) {
+      if (element.closest(skip) || !element.getClientRects().length || getComputedStyle(element).display === 'none') continue;
+      for (const name of ['aria-label', 'title', 'placeholder', 'data-tooltip']) {
+        const value = String(element.getAttribute(name) || '').trim();
+        if (/\p{Script=Han}/u.test(value)) values.add(`${name}: ${value}`);
       }
     }
     return Array.from(values).sort();
@@ -484,6 +670,8 @@ async function capture(page, name) {
   await page.waitForTimeout(350);
   if ((await page.locator('html').getAttribute('lang')) === 'zh-CN') {
     untranslatedByScreenshot.push({ name, values: await collectUntranslatedOperatorText(page) });
+  } else {
+    unexpectedChineseByScreenshot.push({ name, values: await collectUnexpectedChineseOperatorText(page) });
   }
   if ((await page.locator('html').getAttribute('data-ui')) === 'aegis-v2') {
     await assertMinimumTargets(page);

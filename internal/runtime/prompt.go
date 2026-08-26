@@ -1262,7 +1262,7 @@ func pathDiscoveryReminder(workdir string, messages []session.Message) harnessRe
 	}
 	return harnessReminder{
 		Kind: "path_discovery_needed",
-		Text: fmt.Sprintf("Harness reminder: %d consecutive read_file not-found errors under %s suggest guessed source paths. Locate the path with grep_files or glob before reading; do not read source paths from memory.", count, prefix),
+		Text: fmt.Sprintf("Harness reminder: %d consecutive read_file not-found errors under %s suggest guessed source paths. Do not keep guessing: use grep_files or glob when the path is unknown, or read an exact path supplied by the user or a prior tool result.", count, prefix),
 	}
 }
 

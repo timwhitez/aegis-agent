@@ -3,6 +3,7 @@ package webconsole
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3699,7 +3700,9 @@ func TestServicePlanModeCancelPrunesFailedStaleHandleBeforeRecovery(t *testing.T
 		t.Fatalf("set pending request: %v", err)
 	}
 	staleRunner := agentruntime.NewRunner(cfg)
-	if err := svc.addHandle(newLaunchHandle(meta.ID, staleRunner, func() {})); err != nil {
+	staleHandle := newLaunchHandle(meta.ID, staleRunner, func() {})
+	staleHandle.startedAt = meta.CreatedAt
+	if err := svc.addHandle(staleHandle); err != nil {
 		t.Fatalf("add stale handle: %v", err)
 	}
 	ts := httptest.NewServer(svc)
@@ -5233,7 +5236,9 @@ func TestInterruptPrunesTerminalStaleHandleBeforeOwnershipCheck(t *testing.T) {
 	if err := svc.store.Create(meta, testSessionState(session.StatusFailed)); err != nil {
 		t.Fatalf("create failed session: %v", err)
 	}
-	if err := svc.addHandle(newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})); err != nil {
+	staleHandle := newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})
+	staleHandle.startedAt = meta.CreatedAt
+	if err := svc.addHandle(staleHandle); err != nil {
 		t.Fatalf("add stale handle: %v", err)
 	}
 
@@ -5283,7 +5288,9 @@ func TestStopPrunesTerminalStaleHandleBeforeOwnershipCheck(t *testing.T) {
 	if err := svc.store.Create(meta, testSessionState(session.StatusCompleted)); err != nil {
 		t.Fatalf("create completed session: %v", err)
 	}
-	if err := svc.addHandle(newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})); err != nil {
+	staleHandle := newLaunchHandle(meta.ID, agentruntime.NewRunner(cfg), func() {})
+	staleHandle.startedAt = meta.CreatedAt
+	if err := svc.addHandle(staleHandle); err != nil {
 		t.Fatalf("add stale handle: %v", err)
 	}
 
@@ -5366,6 +5373,84 @@ func TestSessionDetailReportsActiveHandleOwner(t *testing.T) {
 	postGetJSON(t, ts.URL+"/api/sessions/"+settled.ID, &settledDetail)
 	if settledDetail.ActiveHandle || settledDetail.ActiveHandleOwner.State != "settled" {
 		t.Fatalf("expected settled owner detail, got %#v", settledDetail.ActiveHandleOwner)
+	}
+}
+
+func TestHandleStartedNoLaterThanState(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		handleStarted string
+		stateUpdated  string
+		want          bool
+	}{
+		{name: "older handle is settling", handleStarted: "2026-08-27T04:00:00Z", stateUpdated: "2026-08-27T04:00:01Z", want: true},
+		{name: "equal timestamps are settling", handleStarted: "2026-08-27T04:00:00.123Z", stateUpdated: "2026-08-27T04:00:00.123Z", want: true},
+		{name: "newer handle is a new action", handleStarted: "2026-08-27T04:00:01Z", stateUpdated: "2026-08-27T04:00:00Z", want: false},
+		{name: "invalid handle timestamp fails closed", handleStarted: "invalid", stateUpdated: "2026-08-27T04:00:00Z", want: false},
+		{name: "invalid state timestamp fails closed", handleStarted: "2026-08-27T04:00:00Z", stateUpdated: "invalid", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := handleStartedNoLaterThanState(tt.handleStarted, tt.stateUpdated); got != tt.want {
+				t.Fatalf("handleStartedNoLaterThanState(%q, %q) = %v, want %v", tt.handleStarted, tt.stateUpdated, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForSettlingActiveHandleWaitsForOldGeneration(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	stateUpdated := time.Now().UTC()
+	meta := testSessionMetadata(t, "session_wait_settling_handle")
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "awaiting_input", UpdatedAt: stateUpdated.Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	handle := &launchHandle{sessionID: meta.ID, cancel: func() {}, startedAt: stateUpdated.Add(-time.Second).Format(time.RFC3339Nano)}
+	svc.handles[meta.ID] = handle
+	done := make(chan bool, 1)
+	go func() {
+		done <- svc.waitForSettlingActiveHandle(context.Background(), meta.ID, stateUpdated.Format(time.RFC3339Nano))
+	}()
+	time.Sleep(30 * time.Millisecond)
+	select {
+	case result := <-done:
+		t.Fatalf("settling handle wait returned before release: %v", result)
+	default:
+	}
+	svc.mu.Lock()
+	delete(svc.handles, meta.ID)
+	svc.mu.Unlock()
+	select {
+	case result := <-done:
+		if !result {
+			t.Fatal("settling handle release was not accepted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("settling handle release was not observed")
+	}
+}
+
+func TestWaitForSettlingActiveHandleRejectsNewerGeneration(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	stateUpdated := time.Now().UTC()
+	meta := testSessionMetadata(t, "session_reject_newer_handle")
+	if err := svc.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "awaiting_input", UpdatedAt: stateUpdated.Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	svc.handles[meta.ID] = &launchHandle{sessionID: meta.ID, cancel: func() {}, startedAt: stateUpdated.Add(time.Second).Format(time.RFC3339Nano)}
+	if svc.waitForSettlingActiveHandle(context.Background(), meta.ID, stateUpdated.Format(time.RFC3339Nano)) {
+		t.Fatal("newer active handle was mistaken for a settling generation")
 	}
 }
 
@@ -9394,6 +9479,7 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	svc.handles[meta.ID] = &launchHandle{
 		sessionID: meta.ID,
 		cancel:    func() {},
+		startedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
 	}
 
 	recorder := httptest.NewRecorder()
@@ -9402,6 +9488,43 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected clear status with stale handle: %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServicePruneInactiveHandlesKeepsNewerContinuationHandle(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	stateUpdated := time.Now().UTC()
+	meta := session.SessionMetadata{
+		SchemaVersion: 1, ID: "newer_continuation_handle", CreatedAt: stateUpdated.Add(-time.Hour).Format(time.RFC3339Nano),
+		Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Mode: session.ModeRun, Provider: "openai", Model: "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyInteractive, RootSessionID: "newer_continuation_handle",
+	}
+	if err := svc.store.Create(meta, session.State{Status: session.StatusCompleted, Phase: "turn_decide", UpdatedAt: stateUpdated.Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	handle := &launchHandle{sessionID: meta.ID, cancel: func() {}, startedAt: stateUpdated.Add(time.Second).Format(time.RFC3339Nano)}
+	svc.handles[meta.ID] = handle
+
+	svc.pruneInactiveHandles()
+	if current, ok := svc.handleForSession(meta.ID); !ok || current != handle {
+		t.Fatalf("new continuation handle was pruned: current=%#v ok=%v", current, ok)
+	}
+}
+
+func TestServiceRemoveMatchingInactiveHandlesKeepsReplacement(t *testing.T) {
+	oldHandle := &launchHandle{sessionID: "replacement_handle"}
+	replacement := &launchHandle{sessionID: "replacement_handle"}
+	svc := &Service{handles: map[string]*launchHandle{"replacement_handle": replacement}}
+	if pruned := svc.removeMatchingInactiveHandles(map[string]*launchHandle{"replacement_handle": oldHandle}); len(pruned) != 0 {
+		t.Fatalf("replacement handle was reported pruned: %#v", pruned)
+	}
+	if current, ok := svc.handles["replacement_handle"]; !ok || current != replacement {
+		t.Fatalf("replacement handle was deleted: current=%#v ok=%v", current, ok)
 	}
 }
 
@@ -9961,6 +10084,182 @@ func TestServiceClearSessionsRejectsQueuedAndBlockedQueueJobs(t *testing.T) {
 				t.Fatalf("expected conflict for %s job, got %d body=%s", status, recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestServiceClearSessionsObservesRunningJobRequeuedDuringSerializedReaperPass(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	job := session.QueueJob{
+		SchemaVersion: 1, ID: "job_reaper_clear_overlap", Status: session.QueueStatusRunning,
+		CreatedAt: now, UpdatedAt: now, ClaimedBy: "process:999999:" + now, ClaimedAt: now, HeartbeatAt: now,
+		WorkerPID: 999999, ProcessStartID: "999999:" + now, Prompt: "requeue before clear", Mode: session.ModeExec,
+	}
+	if err := svc.store.SaveJob(job); err != nil {
+		t.Fatalf("save stale running job: %v", err)
+	}
+	reaperEntered := make(chan struct{})
+	releaseReaper := make(chan struct{})
+	var enterOnce sync.Once
+	svc.beforeQueueReaperPass = func() {
+		enterOnce.Do(func() { close(reaperEntered) })
+		<-releaseReaper
+	}
+	reaperDone := make(chan struct{})
+	go func() {
+		svc.runReaperPass()
+		close(reaperDone)
+	}()
+	<-reaperEntered
+	clearRecorder := httptest.NewRecorder()
+	clearDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req.Header.Set(webMutationHeader, "1")
+		svc.ServeHTTP(clearRecorder, req)
+		close(clearDone)
+	}()
+	close(releaseReaper)
+	<-reaperDone
+	<-clearDone
+	if clearRecorder.Code != http.StatusConflict || !strings.Contains(clearRecorder.Body.String(), "queue jobs are still unsettled") {
+		t.Fatalf("clear must observe the requeued job, got %d body=%s", clearRecorder.Code, clearRecorder.Body.String())
+	}
+	loaded, err := svc.store.LoadJob(job.ID)
+	if err != nil || loaded.Status != session.QueueStatusQueued {
+		t.Fatalf("reaper/clear overlap lost the queued job: job=%#v err=%v", loaded, err)
+	}
+}
+
+func TestServiceClearSessionsRejectsJobAcrossConcurrentClaim(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	job := session.QueueJob{SchemaVersion: 1, ID: "job_claim_clear_overlap", Status: session.QueueStatusQueued, Prompt: "claim during clear", Mode: session.ModeExec}
+	if err := svc.store.SaveJob(job); err != nil {
+		t.Fatalf("save queued job: %v", err)
+	}
+	claimStore := session.NewStore(svc.store.Root())
+	start := make(chan struct{})
+	claimDone := make(chan error, 1)
+	go func() {
+		<-start
+		_, ok, err := claimStore.ClaimNextQueuedJob()
+		if err == nil && !ok {
+			err = errors.New("queued job was not claimed")
+		}
+		claimDone <- err
+	}()
+	clearRecorder := httptest.NewRecorder()
+	clearDone := make(chan struct{})
+	go func() {
+		<-start
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req.Header.Set(webMutationHeader, "1")
+		svc.ServeHTTP(clearRecorder, req)
+		close(clearDone)
+	}()
+	close(start)
+	if err := <-claimDone; err != nil {
+		t.Fatalf("claim queued job: %v", err)
+	}
+	<-clearDone
+	if clearRecorder.Code != http.StatusConflict {
+		t.Fatalf("clear must reject queued or running form of concurrently claimed job, got %d body=%s", clearRecorder.Code, clearRecorder.Body.String())
+	}
+	loaded, err := svc.store.LoadJob(job.ID)
+	if err != nil || loaded.Status != session.QueueStatusRunning {
+		t.Fatalf("clear removed concurrently claimed job: job=%#v err=%v", loaded, err)
+	}
+}
+
+func TestServiceClearSessionsSerializesConcurrentQueueSubmitAfterMutation(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	clearEntered := make(chan struct{})
+	releaseClear := make(chan struct{})
+	var enterOnce sync.Once
+	previousHook := beforeWebHistoryBackupRootCreate
+	beforeWebHistoryBackupRootCreate = func(string) error {
+		enterOnce.Do(func() { close(clearEntered) })
+		<-releaseClear
+		return nil
+	}
+	t.Cleanup(func() { beforeWebHistoryBackupRootCreate = previousHook })
+	clearRecorder := httptest.NewRecorder()
+	clearDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req.Header.Set(webMutationHeader, "1")
+		svc.ServeHTTP(clearRecorder, req)
+		close(clearDone)
+	}()
+	<-clearEntered
+	submitRecorder := httptest.NewRecorder()
+	submitDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(`{"prompt":"submitted after clear boundary","mode":"exec"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(webMutationHeader, "1")
+		svc.ServeHTTP(submitRecorder, req)
+		close(submitDone)
+	}()
+	close(releaseClear)
+	<-clearDone
+	<-submitDone
+	if clearRecorder.Code != http.StatusOK || submitRecorder.Code != http.StatusAccepted {
+		t.Fatalf("expected clear then submit, clear=%d %s submit=%d %s", clearRecorder.Code, clearRecorder.Body.String(), submitRecorder.Code, submitRecorder.Body.String())
+	}
+	jobs, err := svc.store.ListJobs(10)
+	if err != nil || len(jobs) != 1 || jobs[0].Status != session.QueueStatusQueued || jobs[0].Prompt != "submitted after clear boundary" {
+		t.Fatalf("serialized submit did not survive clear: jobs=%#v err=%v", jobs, err)
+	}
+}
+
+func TestServiceClearSessionsAcceptsTerminalOnlyQueueHistory(t *testing.T) {
+	cfg := testConfig(t, "")
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	for index, status := range []string{session.QueueStatusCompleted, session.QueueStatusCancelled, session.QueueStatusFailed} {
+		job := session.QueueJob{SchemaVersion: 1, ID: fmt.Sprintf("job_terminal_clear_%d", index), Status: status, Prompt: "terminal", Mode: session.ModeExec}
+		if status == session.QueueStatusCompleted {
+			job.FinalText = "done"
+		} else {
+			job.LastError = "settled"
+		}
+		if err := svc.store.SaveJob(job); err != nil {
+			t.Fatalf("save %s job: %v", status, err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req.Header.Set(webMutationHeader, "1")
+	svc.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("terminal-only history should clear, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	jobs, err := svc.store.ListJobs(10)
+	if err != nil || len(jobs) != 0 {
+		t.Fatalf("terminal queue history remains after clear: jobs=%#v err=%v", jobs, err)
 	}
 }
 

@@ -170,6 +170,8 @@ active `run` / `exec` 进程启动后，需要额外启动一个 control watcher
 - `steer` 返回错误
 - 提示使用 `continue`
 
+Web adapter 必须先按持久化 session status 选择 `continue` / `steer`，不能仅因 current-process active handle 尚未释放就把 `awaiting_input` 等可恢复状态误判为 `running`。若 active handle 的 `started_at` 不晚于该可恢复 state 的 `updated_at`，它属于该次状态转换的收尾窗口；adapter 可以有界等待同一个 handle 释放后再原子 claim `continue`。terminal state 的 stale-handle 清理也只能删除这个旧 generation，并必须比较扫描时的同一个 handle；更晚的新 handle 或扫描期间替换的 handle 仍应 fail closed 为 active-session conflict。
+
 ## 9. 与 `Esc` 的关系
 
 - `Esc` 仍然是“明确暂停当前运行”

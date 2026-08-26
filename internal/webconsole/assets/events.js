@@ -163,7 +163,8 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
       return {
         icon: 'git-branch',
         title: 'Child session spawned',
-        copy: agentLabel(data?.agent_name, data?.agent_role) || 'Child session created.',
+		copy: agentLabel(data?.agent_name, data?.agent_role) || 'Child session created.',
+		copyIsRaw: Boolean(agentLabel(data?.agent_name, data?.agent_role)),
         meta: data?.session_id ? shortId(data.session_id) : phaseHeadline(phase),
         tone: 'live',
         data: ''

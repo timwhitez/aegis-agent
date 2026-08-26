@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -2431,42 +2432,80 @@ func TestShellRejectsBlankCommand(t *testing.T) {
 	}
 }
 
+func TestDiscoveryToolDescriptionsDoNotMandateRetrievalOrder(t *testing.T) {
+	definitions := []Definition{defReadFile(), defGrepFiles(), defGrep(), defGlob()}
+	for _, definition := range definitions {
+		lowered := strings.ToLower(definition.Description)
+		for _, forbidden := range []string{"grep_files first", "before reading", "before read_file"} {
+			if strings.Contains(lowered, forbidden) {
+				t.Fatalf("%s description fixes a model workflow with %q: %s", definition.Name, forbidden, definition.Description)
+			}
+		}
+	}
+	grepDescription := strings.ToLower(defGrep().Description)
+	if !strings.Contains(grepDescription, "when paths are unknown") || !strings.Contains(grepDescription, "exact snippets or line numbers") {
+		t.Fatalf("grep description must explain capabilities without ordering them: %s", defGrep().Description)
+	}
+}
+
 func TestShellDoesNotLoadLoginOrInteractiveStartupFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("bash startup-file contract is Unix-specific")
 	}
-	cfg := config.Default()
-	cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}
-	store := session.NewStore(t.TempDir())
-	workdir := t.TempDir()
-	profileHome := t.TempDir()
-	sentinel := filepath.Join(profileHome, "startup-side-effect")
-	startup := "export AUDIT_PROFILE_SECRET=profile-leak\nprintf loaded > " + strconv.Quote(sentinel) + "\n"
-	for _, name := range []string{".bash_profile", ".profile", ".bashrc"} {
-		if err := os.WriteFile(filepath.Join(profileHome, name), []byte(startup), 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-	t.Setenv("HOME", profileHome)
-	t.Setenv("AUDIT_PROFILE_SECRET", "parent-leak")
-	t.Setenv("BASH_ENV", filepath.Join(profileHome, ".bashrc"))
-	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
-	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	registry, err := NewRegistry(cfg, nil, store, nil)
-	if err != nil {
-		t.Fatalf("new registry: %v", err)
-	}
-	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{"command":"printf '%s' \"${AUDIT_PROFILE_SECRET-unset}\""}`))
-	if err != nil || result.IsError {
-		t.Fatalf("shell err=%v result=%#v", err, result)
-	}
-	if strings.TrimSpace(result.DisplayOutput) != "unset" {
-		t.Fatalf("startup or parent environment bypassed allowlist: %q", result.DisplayOutput)
-	}
-	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Fatalf("startup file executed side effect, stat err=%v", err)
+	for _, sandbox := range []string{"off", "bwrap"} {
+		t.Run(sandbox, func(t *testing.T) {
+			if sandbox == "bwrap" {
+				bwrapPath, err := exec.LookPath("bwrap")
+				if err != nil {
+					t.Skip("bwrap is not installed")
+				}
+				if err := exec.Command(bwrapPath, "--die-with-parent", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "/bin/true").Run(); err != nil {
+					t.Skipf("bwrap namespaces are unavailable: %v", err)
+				}
+			}
+			cfg := config.Default()
+			cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}
+			if sandbox == "bwrap" {
+				cfg.Runtime.Shell.Sandbox = "bwrap"
+			}
+			store := session.NewStore(t.TempDir())
+			workdir := t.TempDir()
+			profileHome := filepath.Join(workdir, "profile-home")
+			if err := os.MkdirAll(profileHome, 0o700); err != nil {
+				t.Fatalf("create profile home: %v", err)
+			}
+			sentinel := filepath.Join(profileHome, "startup-side-effect")
+			startup := "export AUDIT_PROFILE_SECRET=profile-leak\nprintf loaded > " + strconv.Quote(sentinel) + "\n"
+			for _, name := range []string{".bash_profile", ".profile", ".bashrc"} {
+				if err := os.WriteFile(filepath.Join(profileHome, name), []byte(startup), 0o600); err != nil {
+					t.Fatalf("write %s: %v", name, err)
+				}
+			}
+			t.Setenv("HOME", profileHome)
+			t.Setenv("AUDIT_PROFILE_SECRET", "parent-leak")
+			t.Setenv("BASH_ENV", filepath.Join(profileHome, ".bashrc"))
+			meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+			if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+				t.Fatalf("create session: %v", err)
+			}
+			registry, err := NewRegistry(cfg, nil, store, nil)
+			if err != nil {
+				t.Fatalf("new registry: %v", err)
+			}
+			result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{"command":"printf '%s' \"${AUDIT_PROFILE_SECRET-unset}\""}`))
+			if err != nil || result.IsError {
+				t.Fatalf("shell err=%v result=%#v", err, result)
+			}
+			if strings.TrimSpace(result.DisplayOutput) != "unset" {
+				t.Fatalf("startup or parent environment bypassed allowlist: %q", result.DisplayOutput)
+			}
+			if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+				t.Fatalf("startup file executed side effect, stat err=%v", err)
+			}
+			if got := result.Metadata["sandbox"]; got != sandbox {
+				t.Fatalf("shell reported sandbox=%#v, want %q", got, sandbox)
+			}
+		})
 	}
 }
 
@@ -4496,7 +4535,7 @@ func TestReadFileNotFoundSuggestsDiscoveryFirst(t *testing.T) {
 	if !result.IsError {
 		t.Fatalf("expected read_file not-found error, got %#v", result)
 	}
-	for _, want := range []string{"Locate the path with grep_files or glob before reading", "do not read source paths from memory"} {
+	for _, want := range []string{"Do not keep guessing source paths", "when the path is unknown", "exact path supplied by the user or a prior tool result"} {
 		if !strings.Contains(result.DisplayOutput, want) {
 			t.Fatalf("expected read_file not-found hint %q, got %q", want, result.DisplayOutput)
 		}

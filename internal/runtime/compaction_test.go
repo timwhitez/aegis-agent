@@ -325,6 +325,38 @@ func TestMicroCompactionCompactsOnlyMatchingMultiCallReplayArguments(t *testing.
 	}
 }
 
+func TestMicroCompactionPreservesNewestGoogleFallbackReplayClosureAcrossTurns(t *testing.T) {
+	oldID := "call_google_111111111111111111111111"
+	newID := "call_google_222222222222222222222222"
+	oldArgs := json.RawMessage(`{"command":"` + strings.Repeat("old-", 900) + `"}`)
+	newArgs := json.RawMessage(`{"command":"newest fallback call must remain exact"}`)
+	oldAssistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: oldID, Name: "shell", Arguments: oldArgs}})
+	oldAssistant.ProviderContentBlocks = []session.ProviderContentBlock{{Provider: "google", Type: "function_call", ID: oldID, Name: "shell", Args: oldArgs}}
+	newAssistant := session.NewAssistantMessage("", "", []session.ToolCall{{ID: newID, Name: "shell", Arguments: newArgs}})
+	newAssistant.ProviderContentBlocks = []session.ProviderContentBlock{{Provider: "google", Type: "function_call", ID: newID, Name: "shell", Args: newArgs}}
+	messages := []session.Message{
+		oldAssistant,
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: oldID, Name: "shell", LLMOutput: strings.Repeat("old result ", 500)}}),
+		newAssistant,
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: newID, Name: "shell", LLMOutput: "newest result"}}),
+	}
+
+	view := buildMicroCompactionView(t, messages, 1, 64*1024)
+	if string(view[0].ToolCalls[0].Arguments) == string(oldArgs) || string(view[0].ProviderContentBlocks[0].Args) == string(oldArgs) {
+		t.Fatalf("expected only the old fallback closure to be compacted: %#v", view[0])
+	}
+	if string(view[2].ToolCalls[0].Arguments) != string(newArgs) || string(view[2].ProviderContentBlocks[0].Args) != string(newArgs) {
+		t.Fatalf("newest fallback arguments changed: %#v", view[2])
+	}
+	if view[0].ToolCalls[0].ID != oldID || view[0].ProviderContentBlocks[0].ID != oldID || view[1].ToolResults[0].ToolCallID != oldID ||
+		view[2].ToolCalls[0].ID != newID || view[2].ProviderContentBlocks[0].ID != newID || view[3].ToolResults[0].ToolCallID != newID {
+		t.Fatalf("fallback replay IDs or ordering changed: %#v", view)
+	}
+	if view[3].ToolResults[0].LLMOutput != "newest result" {
+		t.Fatalf("newest fallback result changed: %#v", view[3].ToolResults[0])
+	}
+}
+
 func TestMicroCompactionExpandsInternalAndProviderCallIDAliases(t *testing.T) {
 	longOld := strings.Repeat("old", 800)
 	longNew := strings.Repeat("new", 800)

@@ -907,7 +907,7 @@ func TestNextHarnessReminderNudgesAfterRepeatedReadFileNotFound(t *testing.T) {
 	if reminder.Kind != "path_discovery_needed" {
 		t.Fatalf("expected path_discovery_needed reminder, got %#v", reminder)
 	}
-	for _, want := range []string{"3 consecutive read_file not-found", "vllm", "grep_files or glob", "do not read source paths from memory"} {
+	for _, want := range []string{"3 consecutive read_file not-found", "vllm", "when the path is unknown", "exact path supplied by the user or a prior tool result"} {
 		if !strings.Contains(reminder.Text, want) {
 			t.Fatalf("expected path discovery reminder to contain %q, got %q", want, reminder.Text)
 		}

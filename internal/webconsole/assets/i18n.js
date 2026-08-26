@@ -23,6 +23,14 @@
     '.timeline-card-data',
     '.notification-copy',
     '.agent-result-copy',
+	'.agent-card-title',
+	'.agent-card-copy',
+	'.agent-card-meta',
+	'.sa-tree-label',
+	'.sa-tree-meta',
+	'.session-rail-meta',
+	'.session-rail-id',
+	'.history-session-title',
     '.task-card-title',
     '.task-card-copy',
     '.todo-card-title',
@@ -132,6 +140,8 @@
     'Deferred': '已延后',
     'Awaiting input': '等待输入',
     'Awaiting approval': '等待审批',
+	'Awaiting user input': '等待用户输入',
+	'Awaiting plan input': '等待计划输入',
     'Agent Connected': '智能体已连接',
     'Disconnected': '连接已断开',
     'Planning': '规划中',
@@ -259,6 +269,54 @@
     'Cancel Plan Mode': '取消计划模式',
     'Plan Mode': '计划模式',
     'No plan mode is attached to this session.': '此会话未启用计划模式。',
+	'Input requested': '请求输入',
+	'Input': '输入',
+	'Other': '其他',
+	'Submit answers': '提交回答',
+	'Plan Mode input actions': '计划模式输入操作',
+	'Open the pending Plan Mode question': '打开待回答的计划模式问题',
+	'Plan Mode is waiting for your answer in the Plan inspector.': '计划模式正在等待你在计划检查器中回答。',
+	'Plan Mode is waiting for your answer in the Plan inspector before it can continue planning.': '计划模式正在等待你在计划检查器中回答，然后才能继续规划。',
+	'Answer the pending Plan Mode question before planning can continue.': '请先回答待处理的计划模式问题，然后才能继续规划。',
+
+	'Child': '子会话',
+	'Delegate': '委派',
+	'Assistant message': '助手消息',
+	'User message': '用户消息',
+	'System message': '系统消息',
+	'(empty message)': '（空消息）',
+	'Assistant output': '助手输出',
+	'Assistant output persisted': '助手输出已持久化',
+	'Assistant text recorded.': '已记录助手文本。',
+	'Tool results appended': '已追加工具结果',
+	'Tool output recorded.': '已记录工具输出。',
+	'Child session spawned': '已创建子会话',
+	'Child session created.': '已创建子会话。',
+	'Completion evaluate started': '开始完成度评估',
+	'Completion evaluate finished': '完成度评估结束',
+	'Completion gate passed': '完成门禁已通过',
+	'Contract created': '已创建契约',
+	'Durable runtime event recorded.': '已记录持久化运行时事件。',
+	'Durable turn request assembled.': '已组装持久化轮次请求。',
+	'Parent coordination parked': '父会话协调已暂停',
+	'Parent coordination resumed': '父会话协调已恢复',
+	'Plan input requested': '已请求计划输入',
+	'Provider request completed': '提供商请求已完成',
+	'Provider request failed': '提供商请求失败',
+	'Request prepared': '请求已准备',
+	'Session context loaded': '会话上下文已加载',
+	'Session created': '会话已创建',
+	'Session started': '会话已启动',
+	'Starting turn': '正在开始轮次',
+	'Turn stopped': '轮次已停止',
+	'Webconsole handle acquired': 'Web 控制台已取得执行句柄',
+	'Webconsole handle released': 'Web 控制台已释放执行句柄',
+	'The runner is active. Tool calls and child-agent transitions will stream into this panel as durable events.': '运行器处于活动状态；工具调用和子 Agent 状态变化会作为持久化事件显示在此面板。',
+	'Send a steer message into the running session...': '向运行中的会话发送 steer 消息…',
+	'Click to open child session': '点击打开子会话',
+	'Expand children': '展开子会话',
+	'Collapse children': '收起子会话',
+	'low': '低',
 
     'All durable sessions with parent-child hierarchy. Open one to inspect or continue it.': '所有持久化会话及其父子层级。打开会话即可检查或继续执行。',
     'Clear sessions': '清空会话',
@@ -470,6 +528,9 @@
     [/^(\d+) notifications?$/, '$1 条通知'],
     [/^(\d+) calls?$/, '$1 次调用'],
     [/^(\d+) children$/, '$1 个子会话'],
+	[/^(\d+) child$/, '$1 个子会话'],
+	[/^(\d+) calls? · (\d+) child$/, '$1 次调用 · $2 个子会话'],
+	[/^(\d+) planning questions? waiting for an answer\.$/, '$1 个规划问题正在等待回答。'],
     [/^blocked by (\d+)$/, '被 $1 项阻塞'],
     [/^blocks (\d+)$/, '阻塞 $1 项'],
     [/^turn (\d+)$/, '第 $1 轮'],
@@ -506,6 +567,13 @@
     [/^provider time (.+)$/, '提供商耗时 $1'],
     [/^tokens (.+)$/, 'Token $1'],
     [/^plan · Awaiting approval$/, '计划 · 等待审批'],
+	[/^plan · Awaiting user input$/, '计划 · 等待用户输入'],
+	[/^Awaiting plan input · (.+)$/, '等待计划输入 · $1'],
+	[/^Parent coordination · (evt_.+)$/, '父会话协调 · $1'],
+	[/^Prepare · (evt_.+)$/, '准备 · $1'],
+	[/^Provider call · (evt_.+)$/, '提供商调用 · $1'],
+	[/^Tool execute · (evt_.+)$/, '工具执行 · $1'],
+	[/^Webconsole · (evt_.+)$/, 'Web 控制台 · $1'],
     [/^source (.+)$/, '来源 $1'],
     [/^status Complete$/i, '状态：完成'],
     [/^updated (.+)$/, '更新于 $1'],
@@ -564,13 +632,21 @@
     return Boolean(element.closest?.(rawContentSelector));
   }
 
+  function matchesKnownRendering(current, source) {
+    if (current === source) return true;
+    for (const locale of supportedLocales) {
+      if (current === translate(source, locale)) return true;
+    }
+    return false;
+  }
+
   function translateTextNode(node) {
     const parent = node?.parentElement;
     if (!node || shouldSkip(parent) || parent?.hasAttribute?.('data-i18n-control')) return;
     const current = String(node.nodeValue ?? '');
     const previous = sourceText.get(node);
     let source = previous;
-    if (!source || (current !== previous && current !== translate(previous))) {
+    if (!source || !matchesKnownRendering(current, previous)) {
       source = current;
       sourceText.set(node, source);
     }
@@ -589,7 +665,7 @@
       if (!element.hasAttribute?.(name)) continue;
       const current = element.getAttribute(name) || '';
       const previous = originals[name];
-      if (!previous || (current !== previous && current !== translate(previous))) originals[name] = current;
+      if (!previous || !matchesKnownRendering(current, previous)) originals[name] = current;
       const next = translate(originals[name]);
       if (current !== next) element.setAttribute(name, next);
     }

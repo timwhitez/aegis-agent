@@ -834,7 +834,7 @@ function renderMessageMetaChips(message) {
   }
   if (meta.source) {
     const sourceLabel = meta.source === 'background_results' ? 'background results' : meta.source;
-    chips.push(`<span class="message-meta-chip">${escapeHTML(sourceLabel)}</span>`);
+	chips.push(`<span class="message-meta-chip" translate="no" data-i18n-skip>${escapeHTML(sourceLabel)}</span>`);
   }
   if (meta.interrupt) {
     chips.push('<span class="message-meta-chip">interrupt</span>');
@@ -1063,9 +1063,9 @@ function renderSpecialToolResult(result, parsed) {
       <div class="tool-special-card">
         <div class="sa-tree-row parent sa-tree-row-static">
           <span class="sa-tree-dot ${statusTone}"></span>
-          <span class="sa-tree-label">${escapeHTML(label)}</span>
+		  <span class="sa-tree-label" translate="no" data-i18n-skip>${escapeHTML(label)}</span>
           <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(parsed.status || parsed.session_status || 'unknown'))}</span>
-          <span class="sa-tree-meta">${escapeHTML(shortId(parsed.session_id || ''))}</span>
+		  <span class="sa-tree-meta" translate="no" data-i18n-skip>${escapeHTML(shortId(parsed.session_id || ''))}</span>
           ${parsed.session_id ? `<button class="mini-link-btn sa-tree-open" type="button" data-sub-agent-open="${escapeAttr(parsed.session_id)}">Open</button>` : ''}
         </div>
         ${parsed.last_error ? `<div class="tl-preview tool-special-error">${escapeHTML(truncateText(parsed.last_error, 120))}</div>` : ''}
@@ -2074,8 +2074,8 @@ function renderSessionRail() {
         <button class="session-rail-row ${item.id === currentID ? 'active' : ''}" type="button" data-open-session="${escapeAttr(item.id)}" data-session-id="${escapeAttr(item.id)}">
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="session-rail-id">${escapeHTML(shortId(item.id))}</span>
-          <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
-          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · goal:${escapeHTML(item.goal_status)}` : ''}</span>
+		  <span class="session-rail-meta" translate="no" data-i18n-skip>${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
+		  <span class="session-rail-meta" translate="no" data-i18n-skip>${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · goal:${escapeHTML(item.goal_status)}` : ''}</span>
         </button>
       `).join('') : emptyHTML}
     </div>
@@ -2312,13 +2312,13 @@ function renderPlanInputQuestion(requestID, question, selected) {
   return `
     <div class="goal-item plan-question">
       <div class="goal-item-top">
-        <span>${escapeHTML(question.header || question.id || 'Question')}</span>
+		<span translate="no" data-i18n-skip>${escapeHTML(question.header || question.id || 'Question')}</span>
         <span class="status-badge queued">Input</span>
       </div>
-      <div class="goal-meta-line">${escapeHTML(question.question || '')}</div>
+	  <div class="goal-meta-line" translate="no" data-i18n-skip>${escapeHTML(question.question || '')}</div>
       <div class="goal-actions plan-option-row">
         ${options.map((option) => `
-          <button class="mini-link-btn${!selectedIsOther && selectedValue === String(option.label || '') ? ' is-selected' : ''}" type="button"
+		  <button class="mini-link-btn${!selectedIsOther && selectedValue === String(option.label || '') ? ' is-selected' : ''}" type="button" translate="no" data-i18n-skip
             data-plan-input-action="select"
             data-request-id="${escapeAttr(requestID || '')}"
             data-question-id="${escapeAttr(question.id || '')}"
@@ -2336,7 +2336,7 @@ function renderPlanInputQuestion(requestID, question, selected) {
           data-other="1"
           aria-pressed="${selectedIsOther ? 'true' : 'false'}">Other</button>
       </div>
-      ${options.length ? `<div class="goal-meta-line">${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
+	  ${options.length ? `<div class="goal-meta-line" translate="no" data-i18n-skip>${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
     </div>
   `;
 }

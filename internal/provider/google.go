@@ -131,6 +131,13 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	candidate := resp.Candidates[0]
 	finishReason := strings.TrimSpace(candidate.FinishReason)
+	if finishReason == "" {
+		return TurnResult{}, &HTTPError{
+			Provider: "google",
+			Class:    "response_parse_error",
+			Message:  "google candidate did not include finishReason",
+		}
+	}
 	allowFunctionCalls := finishReason == "STOP"
 	var textParts []string
 	var thinkingParts []string
@@ -245,11 +252,6 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case finishReason != "":
 		stopReason = "error"
 		suppressFunctionCalls = true
-	case len(calls) > 0:
-		stopReason = "error"
-		suppressFunctionCalls = true
-	case finishReason == "":
-		stopReason = "error"
 	}
 	if suppressFunctionCalls {
 		calls = nil

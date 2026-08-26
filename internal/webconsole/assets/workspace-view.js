@@ -545,6 +545,7 @@ async function handleCreateWorkspaceFolder() {
     showToast(workspaceErrorMessage(err, 'Failed to create folder.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceNewFolderBtn?.focus?.({ preventScroll: true });
   }
 }
 
@@ -585,6 +586,7 @@ async function handleRefreshWorkspace() {
     showToast(workspaceErrorMessage(err, 'Failed to refresh workspace.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceRefreshBtn?.focus?.({ preventScroll: true });
   }
 }
 
@@ -612,6 +614,7 @@ async function handleDeleteCurrentWorkspaceDirectory() {
     showToast(workspaceErrorMessage(err, 'Failed to delete folder.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceRefreshBtn?.focus?.({ preventScroll: true });
   }
 }
 
@@ -682,6 +685,7 @@ async function handleRenameSelectedWorkspaceFile() {
     showToast(workspaceErrorMessage(err, 'Failed to rename file.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceRenameBtn?.focus?.({ preventScroll: true });
   }
 }
 
@@ -710,6 +714,7 @@ async function handleDeleteSelectedWorkspaceFile() {
     showToast(workspaceErrorMessage(err, 'Failed to delete file.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceRefreshBtn?.focus?.({ preventScroll: true });
   }
 }
 
@@ -740,6 +745,7 @@ async function handleDeleteSelectedWorkspaceItems() {
     showToast(workspaceErrorMessage(err, 'Failed to delete selected items.'), 'error');
   } finally {
     setWorkspaceActionPending('');
+	nodes.workspaceRefreshBtn?.focus?.({ preventScroll: true });
   }
 }
 

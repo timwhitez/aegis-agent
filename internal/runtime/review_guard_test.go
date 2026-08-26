@@ -88,6 +88,24 @@ func TestRequiresReviewArtifactNeedsExplicitArtifactRequest(t *testing.T) {
 	if !requiresReviewArtifact("Review the runtime and write a report with severity and evidence.") {
 		t.Fatal("explicit report request must activate the review artifact contract")
 	}
+	if !requiresReviewArtifact("Audit the runtime and write a report to reports/final.md.") {
+		t.Fatal("explicit report wording must activate the contract even when the requested filename is generic")
+	}
+}
+
+func TestToolGuardEnforcesExplicitReportAtGenericRequestedPath(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the runtime and write a report to reports/final.md."),
+	}
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{"path":"reports/final.md","content":"# Notes\n\nLooks fine.\n"}`))
+	if kind != "review_artifact" || !strings.Contains(text, "canonical structure") {
+		t.Fatalf("expected the explicit generic report path to be validated, got kind=%q text=%q", kind, text)
+	}
+	kind, text = toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`))
+	if kind == "" || !strings.Contains(text, "reports/final.md") {
+		t.Fatalf("expected finish to remain fail closed for the generic report path, got kind=%q text=%q", kind, text)
+	}
 }
 
 func TestToolGuardAllowsFinishAfterChangeSummaryWrite(t *testing.T) {

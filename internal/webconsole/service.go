@@ -88,6 +88,8 @@ const (
 	maxWorkspaceUploadBytes         = 50 << 20
 	maxWorkspaceUploadRequestBytes  = maxWorkspaceUploadBytes + (1 << 20)
 	workspaceFilePreviewDefaultSize = 256 << 10
+	continueHandleSettleWait        = 2 * time.Second
+	continueHandleSettlePoll        = 10 * time.Millisecond
 	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
 	stopFallbackSteerMessage        = runtime.StopWithoutFinishSteerMessage
@@ -153,6 +155,9 @@ type Service struct {
 	// beforeAppendGoalMutation is set only by package tests to force deterministic
 	// goal mutation persistence failures after earlier side facts have been recorded.
 	beforeAppendGoalMutation func(sessionID string, goal session.SessionGoal, eventType string) error
+	// beforeQueueReaperPass is set only by package tests after historyMu is held,
+	// allowing clear-history/reaper ordering to be exercised deterministically.
+	beforeQueueReaperPass func()
 
 	auditMu sync.Mutex
 	// historyMu serializes destructive history mutation with local queue
@@ -2516,8 +2521,19 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
+		if !s.waitForSettlingActiveHandle(r.Context(), sessionID, state.UpdatedAt) {
+			writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+			return
+		}
+		state, err = s.store.LoadState(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+			writeError(w, http.StatusConflict, webContinueError(err))
+			return
+		}
 	}
 	cfg, err := s.configSnapshot()
 	if err != nil {
@@ -6657,6 +6673,54 @@ func (s *Service) hasActiveHandle(sessionID string) bool {
 	return ok
 }
 
+func (s *Service) waitForSettlingActiveHandle(ctx context.Context, sessionID, stateUpdatedAt string) bool {
+	s.pruneInactiveHandles()
+	s.mu.RLock()
+	handle, ok := s.handles[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return true
+	}
+	if !handleStartedNoLaterThanState(handle.startedAt, stateUpdatedAt) {
+		return false
+	}
+
+	timer := time.NewTimer(continueHandleSettleWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(continueHandleSettlePoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			s.mu.RLock()
+			current, exists := s.handles[sessionID]
+			s.mu.RUnlock()
+			if !exists {
+				return true
+			}
+			if current != handle {
+				return false
+			}
+		}
+	}
+}
+
+func handleStartedNoLaterThanState(handleStartedAt, stateUpdatedAt string) bool {
+	handleStarted, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(handleStartedAt))
+	if err != nil {
+		return false
+	}
+	stateUpdated, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stateUpdatedAt))
+	if err != nil {
+		return false
+	}
+	return !handleStarted.After(stateUpdated)
+}
+
 func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList []events.Event) ActiveHandleOwner {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
@@ -6857,39 +6921,42 @@ func queueJobBelongsToTargets(job session.QueueJob, targets map[string]struct{})
 
 func (s *Service) pruneInactiveHandles() {
 	s.mu.RLock()
-	ids := make([]string, 0, len(s.handles))
-	for id := range s.handles {
-		ids = append(ids, id)
+	handles := make(map[string]*launchHandle, len(s.handles))
+	for id, handle := range s.handles {
+		handles[id] = handle
 	}
 	s.mu.RUnlock()
-	if len(ids) == 0 {
+	if len(handles) == 0 {
 		return
 	}
-	stale := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
+	stale := make(map[string]*launchHandle, len(handles))
+	for id, handle := range handles {
 		state, err := s.store.LoadState(id)
 		if err != nil {
 			continue
 		}
-		if currentProcessHandleCanBePruned(state.Status) {
-			stale[id] = struct{}{}
+		if currentProcessHandleCanBePruned(state.Status) && handleStartedNoLaterThanState(handle.startedAt, state.UpdatedAt) {
+			stale[id] = handle
 		}
 	}
 	if len(stale) == 0 {
 		return
 	}
+	s.removeMatchingInactiveHandles(stale)
+}
+
+func (s *Service) removeMatchingInactiveHandles(stale map[string]*launchHandle) []*launchHandle {
 	s.mu.Lock()
 	prunedHandles := make([]*launchHandle, 0, len(stale))
-	for id := range stale {
-		if handle, ok := s.handles[id]; ok {
+	for id, staleHandle := range stale {
+		if handle, ok := s.handles[id]; ok && handle == staleHandle {
+			_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "pruned_terminal_state"})
 			prunedHandles = append(prunedHandles, handle)
 			delete(s.handles, id)
 		}
 	}
 	s.mu.Unlock()
-	for _, handle := range prunedHandles {
-		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "pruned_terminal_state"})
-	}
+	return prunedHandles
 }
 
 func currentProcessHandleCanBePruned(status string) bool {

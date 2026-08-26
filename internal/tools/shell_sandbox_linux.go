@@ -47,7 +47,6 @@ func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string,
 	}
 	args := []string{
 		"--die-with-parent",
-		"--bind", bindSource, workdir,
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--ro-bind", "/bin", "/bin",
@@ -56,11 +55,55 @@ func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string,
 		"--ro-bind-try", "/lib64", "/lib64",
 		"--ro-bind-try", "/etc", "/etc",
 		"--tmpfs", "/tmp",
+	}
+	targetArgs, err := bwrapWorkspaceTargetArgs(workdir)
+	if err != nil {
+		return "", nil, "bwrap_workspace_target", err
+	}
+	args = append(args, targetArgs...)
+	args = append(args,
+		"--bind", bindSource, workdir,
 		"--chdir", workdir,
 		"--ro-bind-try", filepath.Join(bindSource, ".git"), filepath.Join(workdir, ".git"),
-	}
+	)
 	args = append(args, argv...)
 	return bwrapPath, args, "bwrap", nil
+}
+
+// bwrapWorkspaceTargetArgs creates only namespace-local mount targets. It does
+// not bind host parents, so a workspace under /root, /home, /tmp, /var, or a
+// custom mount keeps the same absolute cwd without exposing its siblings.
+func bwrapWorkspaceTargetArgs(workdir string) ([]string, error) {
+	clean := filepath.Clean(strings.TrimSpace(workdir))
+	if !filepath.IsAbs(clean) || clean == string(filepath.Separator) {
+		return nil, fmt.Errorf("runtime.shell.sandbox=bwrap requires a non-root absolute workspace: %s", workdir)
+	}
+	if clean == "/proc" || strings.HasPrefix(clean, "/proc/") {
+		return nil, fmt.Errorf("runtime.shell.sandbox=bwrap cannot place a workspace inside procfs: %s", clean)
+	}
+	for _, visibleRoot := range []string{"/bin", "/usr", "/lib", "/lib64", "/etc"} {
+		if clean == visibleRoot || strings.HasPrefix(clean, visibleRoot+"/") {
+			// These roots are already mounted read-only from the host. The source
+			// workspace exists there, so its same-path bind target also exists.
+			return nil, nil
+		}
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, "/"), "/")
+	current := ""
+	args := make([]string, 0, len(parts)*2)
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("runtime.shell.sandbox=bwrap workspace has an invalid path component: %s", clean)
+		}
+		current = filepath.Join(current, string(filepath.Separator), part)
+		if current == "/tmp" || current == "/dev" {
+			// The base sandbox already creates these mount points. Descendants
+			// still need explicit namespace-local directories.
+			continue
+		}
+		args = append(args, "--dir", current)
+	}
+	return args, nil
 }
 
 // bwrapInspectionSource handles the child-only /proc/self/fd/3 bind source.

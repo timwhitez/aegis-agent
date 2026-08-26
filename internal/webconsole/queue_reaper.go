@@ -69,6 +69,9 @@ func (s *Service) stopQueueReaper() {
 func (s *Service) runReaperPass() {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
+	if s.beforeQueueReaperPass != nil {
+		s.beforeQueueReaperPass()
+	}
 	_, _ = s.store.ReapStaleQueueJobs(s.leaseStaleAfter())
 	// Zombie running sessions (status=running with no live owning process) are
 	// reconciled to paused via the existing self-filtering helper, which only

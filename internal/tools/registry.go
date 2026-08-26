@@ -1390,7 +1390,7 @@ func validateGlobMatchedPath(execCtx ExecContext, root resolvedSearchRoot, path,
 func defGrep() Definition {
 	return Definition{
 		Name:        "grep",
-		Description: "Search workspace UTF-8 text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; use grep_files first when you only need candidate file paths. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results stop on either match limit or total byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Long snippets expose source and match byte spans for read_file byte mode. Cursor pages are current-view best effort.",
+		Description: "Search workspace UTF-8 text recursively and return matching lines as path:line:text. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this when exact snippets or line numbers matter; grep_files is optimized for candidate file paths when paths are unknown. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results stop on either match limit or total byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Long snippets expose source and match byte spans for read_file byte mode. Cursor pages are current-view best effort.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -4875,7 +4875,7 @@ func withReadFileDiscoveryHint(err error) error {
 	if classifyToolError(err) != FailureClassNotFound {
 		return err
 	}
-	return fmt.Errorf("%w. Locate the path with grep_files or glob before reading; do not read source paths from memory", err)
+	return fmt.Errorf("%w. Do not keep guessing source paths: use grep_files or glob when the path is unknown, or read an exact path supplied by the user or a prior tool result", err)
 }
 
 func classifyToolError(err error) string {

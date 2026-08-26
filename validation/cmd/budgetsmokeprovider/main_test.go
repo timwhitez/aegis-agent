@@ -94,9 +94,12 @@ func TestScriptedCallCoversBrowserE2ELifecycleMarkers(t *testing.T) {
 		input string
 		calls []string
 	}{
-		{name: "main", input: "E2E_UI_MAIN", calls: []string{"todo_write", "task_create", "task_create", "task_update", "shell", "finish"}},
+		{name: "main", input: "E2E_UI_MAIN", calls: []string{"todo_write", "task_create", "task_create", "task_create", "task_create", "task_update", "task_create", "task_update", "task_update", "shell", "finish"}},
 		{name: "goal", input: "E2E_UI_GOAL", calls: []string{"update_goal", "finish"}},
 		{name: "plan", input: "E2E_UI_PLAN", calls: []string{"submit_plan", "finish"}},
+		{name: "plan revision", input: "E2E_UI_PLAN_REVISE", calls: []string{"submit_plan", "submit_plan", "finish"}},
+		{name: "plan input", input: "E2E_UI_PLAN_INPUT", calls: []string{"request_user_input", "submit_plan", "finish"}},
+		{name: "children", input: "E2E_UI_CHILDREN", calls: []string{"agent_spawn", "finish"}},
 		{name: "await", input: "E2E_UI_AWAIT", calls: []string{"await_input", "finish"}},
 		{name: "slow", input: "E2E_UI_SLOW", calls: []string{"finish", "finish"}},
 	}
