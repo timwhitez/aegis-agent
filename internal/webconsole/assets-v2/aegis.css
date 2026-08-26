@@ -180,6 +180,26 @@ header {
 .message.system .message-bubble { background: rgba(245,184,61,.07); border-color: rgba(245,184,61,.15); }
 .message-meta-chip, .tool-chip, .surface-chip { border-color: rgba(255,255,255,.065); background: rgba(255,255,255,.025); color: #8c919b; }
 .tool-call-card, .tool-result-card, .timeline-card, .activity-card { border-color: rgba(255,255,255,.06); background: rgba(255,255,255,.018); box-shadow: none; }
+#chat-view .tool-card { border-color: rgba(255,255,255,.07); background: #11151d; }
+#chat-view .tool-card summary { color: var(--text-main); background: rgba(255,255,255,.022); }
+#chat-view .tool-card[open] { box-shadow: none; }
+#chat-view .tool-call-card { border-left-color: rgba(182,245,66,.25); }
+#chat-view .tool-result-card { border-left-color: rgba(139,212,80,.25); }
+#chat-view .pending-stage-card { border-color: rgba(182,245,66,.17); background: #141820; }
+.tool-lane { border-left-color: rgba(182,245,66,.24); background: rgba(255,255,255,.018); }
+.tool-lane-header .tl-header-icon { color: rgba(182,245,66,.6); }
+.tl-row { border-top-color: rgba(255,255,255,.045); }
+.tl-row[open] { background: rgba(255,255,255,.025); }
+.tl-row .tl-summary:hover { background: rgba(255,255,255,.025); }
+.tl-row.tl-indent { border-left-color: rgba(255,255,255,.075); }
+.tl-body, .tool-json-block, .tool-output-block { color: #d5d8de; background: #0c0f15; border-color: rgba(255,255,255,.05); }
+.tl-type-chip.call, .tool-card-type { color: var(--accent); background: var(--accent-soft); }
+.tl-type-chip.result { color: var(--success); background: var(--success-soft); }
+.tl-type-chip.error { color: var(--error); background: var(--error-soft); }
+.tl-type-chip.child { color: #a5b4fc; background: rgba(129,140,248,.12); }
+.tl-badge.final { color: var(--success); background: var(--success-soft); }
+.tl-badge.delegate { color: #a5b4fc; background: rgba(129,140,248,.12); }
+.agent-result-item.danger { background: var(--error-soft); }
 
 .input-area {
   padding: 8px 24px 18px;
