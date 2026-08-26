@@ -30,6 +30,7 @@ func (c *runControl) clearCancel(cancel context.CancelFunc) {
 	c.cancel = nil
 }
 
+//lint:ignore U1000 requestPause is exercised by in-package interruption tests.
 func (c *runControl) requestPause() {
 	c.requestPauseWithReason("keyboard_interrupt")
 }

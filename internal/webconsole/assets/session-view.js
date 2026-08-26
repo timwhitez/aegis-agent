@@ -84,7 +84,7 @@ function renderCurrentSession() {
       mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
     }
     if (slideOutInspectorAvailable) {
-      patchAuxSlot(nodes.inspectorSlideOut, 'inspectorSlideOut', inspectorHTML);
+      patchScrollableAuxSlot(nodes.inspectorSlideOut, 'inspectorSlideOut', inspectorHTML);
     }
   }
   if (nodes.todoFloatPanel) {
@@ -112,6 +112,15 @@ function renderCurrentSession() {
 
 function patchAuxSlot(node, key, html) {
   return patchCachedMarkup(node, key, html);
+}
+
+function patchScrollableAuxSlot(node, key, html) {
+  const previousScrollTop = Number(node?.scrollTop || 0);
+  const mutated = patchAuxSlot(node, key, html);
+  if (mutated && node) {
+    node.scrollTop = previousScrollTop;
+  }
+  return mutated;
 }
 
 function prefersReducedMotion() {
@@ -417,6 +426,10 @@ function goalRuntimeFacts(detail) {
   };
 }
 
+function humanizeGoalEventType(value) {
+  return humanizeStatus(String(value || '').replaceAll('.', ' '));
+}
+
 function isHistoricalCompletedGoal(detail) {
   return String(detail?.goal?.status || '').toLowerCase() === 'complete' &&
     String(detail?.state?.status || '').toLowerCase() !== 'completed';
@@ -438,7 +451,7 @@ function renderSessionGoalLine(detail) {
     facts.runPhase ? phaseHeadline(facts.runPhase) : '',
     `tokens ${formatBudget(goal.tokens_used, goal.token_budget)}`,
     `provider time ${formatSecondsBudget(goal.provider_time_used_seconds ?? goal.time_used_seconds, goal.provider_time_budget_seconds ?? goal.time_budget_seconds)}`,
-    facts.latestType ? `latest ${facts.latestType}` : '',
+    facts.latestType ? `latest ${humanizeGoalEventType(facts.latestType)}` : '',
     facts.latestAt ? formatTimestamp(facts.latestAt) : ''
   ].filter(Boolean);
   return `
@@ -574,14 +587,14 @@ function renderMessageText(message) {
     return renderBackgroundResultsMessage(message);
   }
   if (message.role === 'user') {
-    return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
+		return `<div class="message-bubble message-bubble-plaintext" translate="no">${escapeHTML(String(message.text || ''))}</div>`;
   }
   const cacheKey = message.id
     ? `msg:${message.id}`
     : message.optimisticKey
       ? `optim:${message.optimisticKey}`
       : 'msg:anon';
-  return `<div class="message-bubble prose">${renderMarkdownCached(cacheKey, message.text)}</div>`;
+	return `<div class="message-bubble prose" translate="no">${renderMarkdownCached(cacheKey, message.text)}</div>`;
 }
 
 function primaryFinalFinishResult(message) {
@@ -596,7 +609,7 @@ function primaryFinalFinishResult(message) {
 function renderFinalToolResultBubble(result) {
   const text = result.display_output || result.llm_output || '';
   const cacheKey = result.tool_call_id ? `final:${result.tool_call_id}` : `final-anon:${(text || '').length}`;
-  return `<div class="message-bubble prose final-response-bubble">${renderMarkdownCached(cacheKey, text)}</div>`;
+	return `<div class="message-bubble prose final-response-bubble" translate="no">${renderMarkdownCached(cacheKey, text)}</div>`;
 }
 
 function renderThinkingBlock(thinking) {
@@ -608,7 +621,7 @@ function renderThinkingBlock(thinking) {
         <span>Thinking (${thinking.length} chars)</span>
         <span class="thinking-preview">${escapeHTML(preview)}</span>
       </summary>
-      <div class="thinking-body">${renderMarkdownCached(`thinking:${thinking.length}`, thinking)}</div>
+		<div class="thinking-body" translate="no">${renderMarkdownCached(`thinking:${thinking.length}`, thinking)}</div>
     </details>
   `;
 }
@@ -651,7 +664,7 @@ function renderBackgroundResultsMessage(message) {
   const payload = parseBackgroundResultsPayload(message.text);
   const results = maybeArray(payload?.background_results);
   if (!results.length) {
-    return `<div class="message-bubble message-bubble-plaintext">${escapeHTML(String(message.text || ''))}</div>`;
+		return `<div class="message-bubble message-bubble-plaintext" translate="no">${escapeHTML(String(message.text || ''))}</div>`;
   }
   const completed = results.filter((item) => backgroundResultStatus(item).toLowerCase() === 'completed').length;
   const failed = results.filter((item) => backgroundResultTone(item) === 'danger').length;
@@ -691,7 +704,7 @@ function renderBackgroundResultItem(item) {
         </div>
         <span class="status-badge ${tone}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
-      <div class="agent-result-copy">${escapeHTML(body)}</div>
+			<div class="agent-result-copy" translate="no">${escapeHTML(body)}</div>
       <div class="agent-result-meta">
         ${item.queue_job_id ? `<span class="tiny-code-chip">job ${escapeHTML(shortId(item.queue_job_id))}</span>` : ''}
         ${item.session_id ? `<span class="tiny-code-chip">child ${escapeHTML(shortId(item.session_id))}</span>` : ''}
@@ -759,6 +772,8 @@ function renderToolLane(message, options = {}) {
     const delegate = isMultiAgentTool(call.name);
     const compactFinal = options.finalTextRendered && call.name === 'finish' && callResults.some(isFinalFinishResult);
     const hasExpanded = delegate || callResults.some(function(r) { return r.is_error || (r.final && !compactFinal); });
+    const callPreview = summarizeToolCall(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults });
+    const callPreviewRaw = toolCallPreviewIsRaw(call, compactFinal);
 
     treeHTML +=
       '<details class="tl-row tl-row-call"' + (hasExpanded ? ' open' : '') + '>' +
@@ -766,7 +781,7 @@ function renderToolLane(message, options = {}) {
           '<span class="tl-type-chip call">Call</span>' +
           '<strong class="tl-name">' + escapeHTML(call.name) + '</strong>' +
           (call.id ? '<span class="tl-id-chip">' + escapeHTML(shortId(call.id)) + '</span>' : '') +
-          '<span class="tl-preview">' + escapeHTML(summarizeToolCall(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults })) + '</span>' +
+          '<span class="tl-preview"' + (callPreviewRaw ? ' translate="no" data-i18n-skip' : '') + '>' + escapeHTML(callPreview) + '</span>' +
         '</summary>' +
         renderToolCallBody(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults }) +
         callResults.map(function(r) { return renderToolLaneResultRow(r, true, options); }).join('') +
@@ -812,7 +827,7 @@ function renderToolLaneResultRow(result, indent, options = {}) {
         '<strong class="tl-name">' + escapeHTML(result.name) + '</strong>' +
         (result.final ? '<span class="tl-badge final">Final</span>' : '') +
         (delegate ? '<span class="tl-badge delegate">Delegate</span>' : '') +
-        '<span class="tl-preview">' + escapeHTML(compactFinal ? 'Final response captured' : summarizeToolResult(result, parsed, payloadText)) + '</span>' +
+        '<span class="tl-preview"' + (compactFinal ? '' : ' translate="no" data-i18n-skip') + '>' + escapeHTML(compactFinal ? 'Final response captured' : summarizeToolResult(result, parsed, payloadText)) + '</span>' +
       '</summary>' +
       body +
       renderMetadataChips(result.metadata) +
@@ -828,7 +843,7 @@ function renderMessageMetaChips(message) {
   }
   if (meta.source) {
     const sourceLabel = meta.source === 'background_results' ? 'background results' : meta.source;
-    chips.push(`<span class="message-meta-chip">${escapeHTML(sourceLabel)}</span>`);
+	chips.push(`<span class="message-meta-chip" translate="no" data-i18n-skip>${escapeHTML(sourceLabel)}</span>`);
   }
   if (meta.interrupt) {
     chips.push('<span class="message-meta-chip">interrupt</span>');
@@ -863,6 +878,14 @@ function renderToolCallBody(call, options = {}) {
 
 function isFinalFinishResult(result) {
   return result?.name === 'finish' && result?.final && !result?.is_error;
+}
+
+function toolCallPreviewIsRaw(call, compactFinal) {
+  if (compactFinal || isGoalToolName(call?.name)) {
+    return false;
+  }
+  const parsed = parseMaybeJSON(call?.arguments);
+  return !(parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Array.isArray(parsed.todos));
 }
 
 function isGoalToolName(name) {
@@ -1049,9 +1072,9 @@ function renderSpecialToolResult(result, parsed) {
       <div class="tool-special-card">
         <div class="sa-tree-row parent sa-tree-row-static">
           <span class="sa-tree-dot ${statusTone}"></span>
-          <span class="sa-tree-label">${escapeHTML(label)}</span>
+		  <span class="sa-tree-label" translate="no" data-i18n-skip>${escapeHTML(label)}</span>
           <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(parsed.status || parsed.session_status || 'unknown'))}</span>
-          <span class="sa-tree-meta">${escapeHTML(shortId(parsed.session_id || ''))}</span>
+		  <span class="sa-tree-meta" translate="no" data-i18n-skip>${escapeHTML(shortId(parsed.session_id || ''))}</span>
           ${parsed.session_id ? `<button class="mini-link-btn sa-tree-open" type="button" data-sub-agent-open="${escapeAttr(parsed.session_id)}">Open</button>` : ''}
         </div>
         ${parsed.last_error ? `<div class="tl-preview tool-special-error">${escapeHTML(truncateText(parsed.last_error, 120))}</div>` : ''}
@@ -1169,7 +1192,7 @@ function renderGoalToolCallBody(call) {
     return `
       <div class="tool-special-card goal-tool-card">
         <div class="goal-tool-head">
-          <span class="status-badge neutral">${escapeHTML(name)}</span>
+          <span class="status-badge neutral goal-raw" translate="no">${escapeHTML(name)}</span>
           <span class="goal-tool-title">${escapeHTML(action)}</span>
         </div>
       </div>
@@ -1189,7 +1212,7 @@ function renderGoalToolCallBody(call) {
   return `
     <div class="tool-special-card goal-tool-card">
       <div class="goal-tool-head">
-        <span class="status-badge neutral">${escapeHTML(name)}</span>
+        <span class="status-badge neutral goal-raw" translate="no">${escapeHTML(name)}</span>
         <span class="goal-tool-title">${escapeHTML(action)}</span>
       </div>
       ${parsed.objective ? `<div class="goal-tool-objective">${escapeHTML(goalObjectiveReference(parsed.objective))}</div>` : ''}
@@ -1218,7 +1241,7 @@ function renderMetadataChips(metadata) {
     return '';
   }
   return `
-    <div class="meta-chip-row padded">
+    <div class="meta-chip-row padded" translate="no" data-i18n-skip>
       ${entries.map(([key, value]) => `<span class="surface-chip">${escapeHTML(key)}: ${escapeHTML(metadataValue(value))}</span>`).join('')}
     </div>
   `;
@@ -1304,16 +1327,18 @@ function renderSummaryPanel(detail) {
       ` : '<div class="empty-panel">No tool activity yet.</div>'}
     </section>
 
-    <section class="panel-section">
-      <div class="section-title-row">
-        <h4>Queued input and notifications</h4>
-        <button class="inline-action-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
-      </div>
-      <div class="card-stack">
-        ${renderSteerQueue(detail.steer_requests)}
-        ${renderBackgroundNotificationsPreview(detail.background_notifications)}
-      </div>
-    </section>
+	${isModernWebConsole() ? '' : `
+		<section class="panel-section">
+			<div class="section-title-row">
+				<h4>Queued input and notifications</h4>
+				<button class="inline-action-btn" type="button" data-focus-inspector-tab="agents">Open agents</button>
+			</div>
+			<div class="card-stack">
+				${renderSteerQueue(detail.steer_requests)}
+				${renderBackgroundNotificationsPreview(detail.background_notifications)}
+			</div>
+		</section>
+	`}
   `;
 }
 
@@ -1517,7 +1542,7 @@ function renderProviderAttemptCard(attempt) {
         <div class="job-card-title">${escapeHTML(providerAttemptTitle(attempt))}</div>
         <span class="status-badge ${providerAttemptTone(outcome)}">${escapeHTML(humanizeStatus(outcome))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(copy)}</div>
+			<div class="notification-copy" translate="no">${escapeHTML(copy)}</div>
       <div class="job-card-meta">${escapeHTML(metaParts.join(' · '))}</div>
     </div>
   `;
@@ -1688,12 +1713,22 @@ function compareCreatedAscending(left, right) {
 function renderTasksPanel(detail) {
   const taskBoard = detail.task_board || {};
   const todos = maybeArray(taskBoard.todo);
-  const tasks = maybeArray(taskBoard.tasks);
-  const counters = taskBoard.counters || {};
-  return `
+	const counters = taskBoard.counters || {};
+	const groups = taskBoard.groups || {};
+	const todoInProgress = todos.filter((item) => String(item?.status || '').toLowerCase() === 'in_progress').length;
+	const groupOrder = [
+		['in_progress', 'In progress'],
+		['ready', 'Ready'],
+		['blocked', 'Blocked'],
+		['completed', 'Completed'],
+		['cancelled', 'Cancelled']
+	];
+	const groupedTasks = groupOrder.map(([key, label]) => [key, label, maybeArray(groups[key])]);
+	const taskCount = groupedTasks.reduce((count, [, , items]) => count + items.length, 0);
+	return `
     <section class="panel-section">
       <div class="summary-grid wide">
-        ${renderMetricCard('Todo items', String(todos.length), `${counters.in_progress || 0} in progress`)}
+		${renderMetricCard('Todo items', String(todos.length), `${todoInProgress} in progress`)}
         ${renderMetricCard('Ready tasks', String((taskBoard.groups?.ready || []).length), `${(taskBoard.groups?.blocked || []).length} blocked`)}
         ${renderMetricCard('Completed', String(counters.completed || 0), `${counters.cancelled || 0} cancelled`)}
       </div>
@@ -1710,7 +1745,12 @@ function renderTasksPanel(detail) {
       <div class="section-title-row">
         <h4>Task graph</h4>
       </div>
-      ${tasks.length ? `<div class="card-stack">${tasks.map((task) => renderTaskItem(task)).join('')}</div>` : '<div class="empty-panel">No persistent tasks.</div>'}
+		${taskCount ? `<div class="task-group-stack">${groupedTasks.filter(([, , items]) => items.length).map(([key, label, items]) => `
+			<section class="task-derived-group" data-task-group="${escapeAttr(key)}">
+				<div class="task-group-heading"><span>${escapeHTML(label)}</span><span class="task-chip">${items.length}</span></div>
+				<div class="card-stack">${items.map((task) => renderTaskItem(task, key)).join('')}</div>
+			</section>
+		`).join('')}</div>` : '<div class="empty-panel">No persistent tasks.</div>'}
     </section>
   `;
 }
@@ -1856,7 +1896,7 @@ function renderTodoFloat() {
 
   return `
     <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
-      <div class="tf-header" data-todo-float-toggle>
+		<div class="tf-header" data-todo-float-toggle role="button" tabindex="0" aria-expanded="${expanded ? 'true' : 'false'}">
         <div class="tf-header-left">
           <span class="tf-title">Todo / Tasks</span>
           <div class="tf-progress-bar" role="progressbar" aria-label="Task completion" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progressPct}">
@@ -1903,7 +1943,7 @@ function renderFileChangesFloat() {
 
   return `
     <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
-      <div class="tf-header" data-files-float-toggle>
+		<div class="tf-header" data-files-float-toggle role="button" tabindex="0" aria-expanded="${expanded ? 'true' : 'false'}">
         <div class="tf-header-left">
           <span class="tf-title">Files</span>
         </div>
@@ -1956,7 +1996,7 @@ function renderSubAgentFloat() {
   return `
     <div class="sa-float-panel">
       <div class="tf-inner ${expanded ? 'is-expanded' : ''}">
-        <div class="tf-header" data-sub-agent-toggle>
+		<div class="tf-header" data-sub-agent-toggle role="button" tabindex="0" aria-expanded="${expanded ? 'true' : 'false'}">
           <div class="tf-header-left">
             <span class="tf-title">Sub Agents</span>
           </div>
@@ -1977,7 +2017,7 @@ function renderSubAgentSessionRow(sess, job) {
   const label = agentLabel(sess.agent_name, sess.agent_role) || shortId(sess.id);
   const jobMeta = job ? ` · ${escapeHTML(job.mode || '')}` : '';
   return `
-    <div class="sa-tree-row parent" data-sub-agent-open="${escapeAttr(sess.id)}" title="Click to open child session">
+		<div class="sa-tree-row parent" data-sub-agent-open="${escapeAttr(sess.id)}" role="button" tabindex="0" aria-label="Open child session ${escapeAttr(label)}" title="Click to open child session">
       <span class="sa-tree-dot ${statusTone}"></span>
       <span class="sa-tree-label">${escapeHTML(label)}</span>
       <span class="status-badge ${statusTone}">${escapeHTML(humanizeStatus(status))}</span>
@@ -1991,8 +2031,8 @@ function renderSubAgentJobRow(job) {
   const status = queueJobDisplayStatus(job);
   const statusTone = toneForStatus(status);
   const label = agentLabel(job.agent_name, job.agent_role) || shortId(job.id);
-  const targetAttr = job.session_id
-    ? `data-sub-agent-open="${escapeAttr(job.session_id)}" title="Click to open child session"`
+	const targetAttr = job.session_id
+		? `data-sub-agent-open="${escapeAttr(job.session_id)}" role="button" tabindex="0" aria-label="Open child session ${escapeAttr(label)}" title="Click to open child session"`
     : 'data-static-row';
   return `
     <div class="sa-tree-row orphan" ${targetAttr}>
@@ -2043,8 +2083,8 @@ function renderSessionRail() {
         <button class="session-rail-row ${item.id === currentID ? 'active' : ''}" type="button" data-open-session="${escapeAttr(item.id)}" data-session-id="${escapeAttr(item.id)}">
           <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
           <span class="session-rail-id">${escapeHTML(shortId(item.id))}</span>
-          <span class="session-rail-meta">${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
-          <span class="session-rail-meta">${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · goal:${escapeHTML(item.goal_status)}` : ''}</span>
+		  <span class="session-rail-meta" translate="no" data-i18n-skip>${escapeHTML(item.provider || 'provider')} · ${escapeHTML(item.model || 'model')}</span>
+		  <span class="session-rail-meta" translate="no" data-i18n-skip>${escapeHTML(workdirBase(item.workdir))}${item.agent_role ? ` · ${escapeHTML(item.agent_role)}` : ''}${item.goal_status ? ` · goal:${escapeHTML(item.goal_status)}` : ''}</span>
         </button>
       `).join('') : emptyHTML}
     </div>
@@ -2067,12 +2107,12 @@ function renderInspectorPanel() {
       </div>
     `;
   }
-  const tabs = [
+	const tabs = [
     ['summary', 'Summary'],
     ['goal', 'Goal'],
     ['plan', 'Plan'],
     ['tasks', 'Tasks'],
-    ['agents', 'Background'],
+		...(isModernWebConsole() ? [] : [['agents', 'Background']]),
     ['context', 'Context'],
     ['timeline', 'Timeline']
   ];
@@ -2095,7 +2135,7 @@ function renderInspectorPanel() {
     <div class="inspector-header">
       <div>
         <div class="inspector-eyebrow">Tracker</div>
-        <h3>${escapeHTML(shortId(detail.metadata?.id || state.sessionId))}</h3>
+        <h3 translate="no" data-i18n-skip>${escapeHTML(shortId(detail.metadata?.id || state.sessionId))}</h3>
       </div>
       <div class="inspector-header-actions">
         <span class="status-badge ${toneForStatus(detail.state?.status)}">${escapeHTML(humanizeStatus(detail.state?.status || 'idle'))}</span>
@@ -2103,9 +2143,9 @@ function renderInspectorPanel() {
       </div>
     </div>
     <div class="inspector-tabs" role="tablist">
-      ${tabs.map(([key, label]) => `<button class="inspector-tab ${key === active ? 'active' : ''}" type="button" data-inspector-tab="${escapeAttr(key)}">${escapeHTML(label)}</button>`).join('')}
-    </div>
-    <div class="inspector-content">${panel}</div>
+		${tabs.map(([key, label]) => `<button class="inspector-tab ${key === active ? 'active' : ''}" type="button" role="tab" id="inspector-tab-${escapeAttr(key)}" aria-controls="inspector-panel-${escapeAttr(key)}" aria-selected="${key === active ? 'true' : 'false'}" tabindex="${key === active ? '0' : '-1'}" data-inspector-tab="${escapeAttr(key)}">${escapeHTML(label)}</button>`).join('')}
+	</div>
+	<div class="inspector-content" role="tabpanel" id="inspector-panel-${escapeAttr(active)}" aria-labelledby="inspector-tab-${escapeAttr(active)}" tabindex="0">${panel}</div>
   `;
 }
 
@@ -2195,7 +2235,7 @@ function contextMetric(value) {
   if (!Number.isFinite(number)) {
     return '0';
   }
-  return Math.trunc(number).toLocaleString('en-US');
+	return Math.trunc(number).toLocaleString(currentDisplayLocale());
 }
 
 function renderPlanPanel(detail) {
@@ -2232,7 +2272,7 @@ function renderPlanPanel(detail) {
       ${planMode.summary ? `
         <div class="goal-section">
           <div class="goal-section-title">Summary</div>
-          <div class="goal-meta-line">${escapeHTML(planMode.summary)}</div>
+          <div class="goal-meta-line goal-raw" translate="no">${escapeHTML(planMode.summary)}</div>
         </div>
       ` : ''}
       ${renderPlanList('Assumptions', planMode.assumptions)}
@@ -2241,7 +2281,7 @@ function renderPlanPanel(detail) {
       ${planMarkdown ? `
         <div class="goal-section">
           <div class="goal-section-title">Plan</div>
-          <div class="message-bubble prose plan-markdown">${renderMarkdownCached('plan-markdown', planMarkdown)}</div>
+		<div class="message-bubble prose plan-markdown" translate="no">${renderMarkdownCached('plan-markdown', planMarkdown)}</div>
         </div>
       ` : ''}
     </div>
@@ -2281,13 +2321,13 @@ function renderPlanInputQuestion(requestID, question, selected) {
   return `
     <div class="goal-item plan-question">
       <div class="goal-item-top">
-        <span>${escapeHTML(question.header || question.id || 'Question')}</span>
+		<span translate="no" data-i18n-skip>${escapeHTML(question.header || question.id || 'Question')}</span>
         <span class="status-badge queued">Input</span>
       </div>
-      <div class="goal-meta-line">${escapeHTML(question.question || '')}</div>
+	  <div class="goal-meta-line" translate="no" data-i18n-skip>${escapeHTML(question.question || '')}</div>
       <div class="goal-actions plan-option-row">
         ${options.map((option) => `
-          <button class="mini-link-btn${!selectedIsOther && selectedValue === String(option.label || '') ? ' is-selected' : ''}" type="button"
+		  <button class="mini-link-btn${!selectedIsOther && selectedValue === String(option.label || '') ? ' is-selected' : ''}" type="button" translate="no" data-i18n-skip
             data-plan-input-action="select"
             data-request-id="${escapeAttr(requestID || '')}"
             data-question-id="${escapeAttr(question.id || '')}"
@@ -2305,7 +2345,7 @@ function renderPlanInputQuestion(requestID, question, selected) {
           data-other="1"
           aria-pressed="${selectedIsOther ? 'true' : 'false'}">Other</button>
       </div>
-      ${options.length ? `<div class="goal-meta-line">${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
+	  ${options.length ? `<div class="goal-meta-line" translate="no" data-i18n-skip>${escapeHTML(options.map((option) => option.description).filter(Boolean).join(' · '))}</div>` : ''}
     </div>
   `;
 }
@@ -2319,7 +2359,7 @@ function renderPlanList(label, items) {
     <div class="goal-section">
       <div class="goal-section-title">${escapeHTML(label)}</div>
       <div class="goal-item-list">
-        ${values.map((item) => `<div class="goal-item"><div class="goal-meta-line">${escapeHTML(String(item))}</div></div>`).join('')}
+        ${values.map((item) => `<div class="goal-item"><div class="goal-meta-line goal-raw" translate="no">${escapeHTML(String(item))}</div></div>`).join('')}
       </div>
     </div>
   `;
@@ -2404,7 +2444,7 @@ function renderGoalRuntimeStatus(facts) {
   }
   const goal = facts.goal;
   const latestSummary = [
-    facts.latestType ? `latest ${facts.latestType}` : '',
+    facts.latestType ? `latest ${humanizeGoalEventType(facts.latestType)}` : '',
     facts.latestAt ? formatTimestamp(facts.latestAt) : ''
   ].filter(Boolean).join(' · ');
   const chips = [
@@ -2455,18 +2495,18 @@ function renderGoalFacts(facts) {
       ${lines.length ? `<div class="goal-meta-line">${escapeHTML(lines.join(' · '))}</div>` : '<div class="goal-meta-line">No coverage, evaluator, child, queue, or blocker facts recorded.</div>'}
       ${maybeArray(coverage.uncovered_assertions).length ? `<div class="goal-meta-line">Uncovered ${escapeHTML(maybeArray(coverage.uncovered_assertions).join(', '))}</div>` : ''}
       ${coverage.approval_blocked ? '<div class="goal-meta-line">Approval override requires explicit confirmation for this local session.</div>' : ''}
-      ${latest ? `<div class="goal-meta-line">Latest ${escapeHTML(latest.type || 'goal event')} · ${escapeHTML(formatTimestamp(latest.created_at))}</div>` : ''}
+      ${latest ? `<div class="goal-meta-line">Latest ${escapeHTML(humanizeGoalEventType(latest.type || 'goal event'))} · ${escapeHTML(formatTimestamp(latest.created_at))}</div>` : ''}
       ${progress.length ? `
         <div class="goal-section-title sub">Recent progress</div>
         <div class="goal-item-list">
           ${progress.map((item) => `
             <div class="goal-item">
               <div class="goal-item-top">
-                <span>${escapeHTML(item.summary || item.kind || 'progress')}</span>
+                <span class="goal-raw" translate="no">${escapeHTML(item.summary || item.kind || 'progress')}</span>
                 <span class="status-badge neutral">${escapeHTML(item.kind || 'progress')}</span>
               </div>
-              ${maybeArray(item.evidence).length ? `<div class="goal-meta-line">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
-              ${maybeArray(item.blockers).length ? `<div class="goal-meta-line">${escapeHTML(`blockers ${maybeArray(item.blockers).join(' · ')}`)}</div>` : ''}
+              ${maybeArray(item.evidence).length ? `<div class="goal-meta-line goal-raw" translate="no">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
+              ${maybeArray(item.blockers).length ? `<div class="goal-meta-line goal-raw" translate="no">${escapeHTML(`blockers ${maybeArray(item.blockers).join(' · ')}`)}</div>` : ''}
             </div>
           `).join('')}
         </div>
@@ -2480,9 +2520,9 @@ function renderGoalCompletionAudit(audit) {
   return `
     <div class="goal-section">
       <div class="goal-section-title">Completion audit</div>
-      ${audit?.summary ? `<div class="goal-meta-line">${escapeHTML(audit.summary)}</div>` : ''}
+      ${audit?.summary ? `<div class="goal-meta-line goal-raw" translate="no">${escapeHTML(audit.summary)}</div>` : ''}
       <div class="goal-meta-line">${escapeHTML([audit?.completed_by ? `by ${audit.completed_by}` : '', audit?.completed_at ? formatTimestamp(audit.completed_at) : ''].filter(Boolean).join(' · '))}</div>
-      ${evidence.length ? `<div class="goal-item-list">${evidence.map((item) => `<div class="goal-item"><div class="goal-meta-line">${escapeHTML(item)}</div></div>`).join('')}</div>` : ''}
+      ${evidence.length ? `<div class="goal-item-list">${evidence.map((item) => `<div class="goal-item"><div class="goal-meta-line goal-raw" translate="no">${escapeHTML(item)}</div></div>`).join('')}</div>` : ''}
     </div>
   `;
 }
@@ -2710,8 +2750,8 @@ function renderTimelineItem(item, options = {}) {
           <div class="timeline-card-title">${escapeHTML(descriptor.title)}</div>
           <span class="timeline-card-meta">${escapeHTML(formatTimestamp(item.time))}</span>
         </div>
-        <div class="timeline-card-text">${escapeHTML(descriptor.copy)}</div>
-        ${descriptor.meta ? `<div class="timeline-card-meta">${escapeHTML(descriptor.meta)}</div>` : ''}
+        <div class="timeline-card-text"${descriptor.copyIsRaw ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(descriptor.copy)}</div>
+        ${descriptor.meta ? `<div class="timeline-card-meta"${descriptor.metaIsRaw ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(descriptor.meta)}</div>` : ''}
         ${showData ? `<pre class="timeline-card-data">${escapeHTML(descriptor.data)}</pre>` : ''}
       </div>
     </div>
@@ -2938,7 +2978,7 @@ function renderTodoItem(item) {
   return `
     <div class="todo-card">
       <div class="job-card-top">
-        <div class="todo-card-title">${escapeHTML(item.content || 'Untitled todo')}</div>
+				<div class="todo-card-title" translate="no">${escapeHTML(item.content || 'Untitled todo')}</div>
         <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
       </div>
       <div class="todo-pill-row">
@@ -2949,15 +2989,17 @@ function renderTodoItem(item) {
   `;
 }
 
-function renderTaskItem(task) {
-  return `
-    <div class="task-card">
-      <div class="job-card-top">
-        <div class="task-card-title">${escapeHTML(task.subject || task.id || 'Task')}</div>
-        <span class="status-badge ${toneForStatus(task.status)}">${escapeHTML(humanizeStatus(task.status))}</span>
+function renderTaskItem(task, derivedStatus = '') {
+	const displayStatus = derivedStatus || task.status;
+	return `
+		<div class="task-card" data-task-id="${escapeAttr(task.id || '')}" data-derived-status="${escapeAttr(displayStatus || '')}">
+			<div class="job-card-top">
+				<div class="task-card-title" translate="no">${escapeHTML(task.subject || task.id || 'Task')}</div>
+				<span class="status-badge ${toneForStatus(displayStatus)}">${escapeHTML(humanizeStatus(displayStatus))}</span>
       </div>
-      <div class="task-card-copy">${escapeHTML(task.description || 'No description.')}</div>
-      <div class="task-pill-row">
+			<div class="task-card-copy" translate="no">${escapeHTML(task.description || 'No description.')}</div>
+			<div class="task-pill-row">
+				${task.id ? `<span class="task-chip">${escapeHTML(task.id)}</span>` : ''}
         ${task.priority ? `<span class="task-chip">${escapeHTML(task.priority)}</span>` : ''}
         ${task.owner ? `<span class="task-chip">${escapeHTML(task.owner)}</span>` : ''}
         ${maybeArray(task.blocked_by).length ? `<span class="task-chip">blocked by ${escapeHTML(String(task.blocked_by.length))}</span>` : ''}

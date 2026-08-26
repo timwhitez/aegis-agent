@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
+const i18nSource = readFileSync(new URL('../../internal/webconsole/assets/i18n.js', import.meta.url), 'utf8');
 const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets/session-view.js', import.meta.url), 'utf8');
 const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
 const workspaceViewSource = readFileSync(new URL('../../internal/webconsole/assets/workspace-view.js', import.meta.url), 'utf8');
@@ -765,6 +766,24 @@ test('desktop and compact inspectors use independent render cache slots', () => 
   });
 });
 
+test('compact inspector patches preserve the current scroll position', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+  const result = vm.runInContext(`(() => {
+    const compact = { scrollTop: 180, innerHTML: '', querySelectorAll() { return []; } };
+    const first = patchScrollableAuxSlot(compact, 'inspectorSlideOut', '<section>Tasks</section>');
+    compact.scrollTop = 240;
+    const second = patchScrollableAuxSlot(compact, 'inspectorSlideOut', '<section>Updated tasks</section>');
+    return { first, second, scrollTop: compact.scrollTop };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    first: true,
+    second: true,
+    scrollTop: 240
+  });
+});
+
 test('Plan Mode input actions reuse cached markup and hide after the gate clears', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -1245,6 +1264,24 @@ test('history parent expansion is isolated from durable app state', () => {
   assert.equal(result.childVisible, true);
 });
 
+test('history session titles localize the fallback and preserve custom agent facts', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    window.AegisI18n = {
+      t(value) { return value === 'Master session' ? '主会话' : value; }
+    };
+    return {
+      fallback: renderHistorySessionTitle({}),
+      custom: renderHistorySessionTitle({ agent_name: 'Ready', agent_role: 'evaluator' })
+    };
+  })()`, appContext);
+
+  assert.match(result.fallback, /class="history-session-fallback">主会话<\/span>/);
+  assert.doesNotMatch(result.fallback, /data-i18n-skip/);
+  assert.match(result.custom, /class="history-session-agent-label" translate="no" data-i18n-skip>Ready · evaluator<\/span>/);
+  assert.doesNotMatch(result.custom, /主会话/);
+});
+
 test('floating panel expansion preferences are isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
   vm.runInContext(`
@@ -1622,7 +1659,7 @@ test('session activity card surfaces durable Goal runtime status', () => {
       hasGoalChipClass: html.includes('status-badge live'),
       hasPhase: html.includes('Tool execute') || html.includes('Tool Execute'),
       hasAccounting: html.includes('tokens 42') && html.includes('time 9s'),
-      hasLatestHistory: html.includes('goal.accounting.updated')
+      hasLatestHistory: html.includes('Goal accounting updated')
     };
   })()`, appContext);
 
@@ -2449,7 +2486,10 @@ test('setSkillUploadPending disables and restores upload controls', () => {
       }
     };
   }
-  const mainButton = fakeControl('Upload .zip Skill');
+  const mainLabel = fakeControl('上传 .zip');
+  const mainButton = fakeControl('button shell with icon');
+  mainButton.dataset.uploadDefaultLabel = 'Upload .zip';
+  mainButton.querySelector = (selector) => selector === '[data-upload-label]' ? mainLabel : null;
   const emptyButton = fakeControl('Upload .zip Skill');
   const cardButton = fakeControl('Upload to Install');
   const freshCardButton = fakeControl('Upload to Install');
@@ -2472,15 +2512,19 @@ test('setSkillUploadPending disables and restores upload controls', () => {
 
   for (const control of [mainButton, emptyButton, cardButton]) {
     assert.equal(control.disabled, true);
-    assert.equal(control.textContent, 'Uploading...');
     assert.equal(control.getAttribute('aria-busy'), 'true');
   }
+  assert.equal(mainLabel.textContent, 'Uploading...');
+  assert.equal(mainButton.textContent, 'button shell with icon');
+  assert.equal(emptyButton.textContent, 'Uploading...');
+  assert.equal(cardButton.textContent, 'Uploading...');
   assert.equal(uploadInput.disabled, true);
 
   context.setSkillUploadPending(root, false);
 
   assert.equal(mainButton.disabled, false);
-  assert.equal(mainButton.textContent, 'Upload .zip Skill');
+  assert.equal(mainLabel.textContent, 'Upload .zip');
+  assert.equal(mainButton.textContent, 'button shell with icon');
   assert.equal(emptyButton.disabled, false);
   assert.equal(emptyButton.textContent, 'Upload .zip Skill');
   assert.equal(cardButton.disabled, false);
@@ -3652,6 +3696,53 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
   });
 });
 
+test('Plan Mode revision action closes modal inspector and focuses the composer', async () => {
+  const appContext = createAppHarnessContext();
+  appContext.planReviseButton = fakeActionButton({ 'data-plan-action': 'revise' });
+
+  await vm.runInContext(`
+    renderCurrentSession = function() {};
+    updateUI = function() {};
+    state.sessionId = 'session_plan_revision_focus';
+    state.sessionBacked = true;
+    state.sessionDetail = {
+      metadata: { id: 'session_plan_revision_focus' },
+      state: { status: 'awaiting_input' },
+      plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_focus', plan_version: 1 }
+    };
+    openInspectorSlideOut();
+    handlePlanModeAction(planReviseButton);
+  `, appContext);
+
+  assert.deepEqual(sameRealm(vm.runInContext(`({
+    open: nodes.inspectorSlideOut.classList.contains('is-open'),
+    hidden: nodes.inspectorSlideOut.getAttribute('aria-hidden'),
+    expanded: nodes.inspectorToggleBtn.getAttribute('aria-expanded'),
+    composerFocused: nodes.chatInput.focused === true
+  })`, appContext)), {
+    open: false,
+    hidden: 'true',
+    expanded: 'false',
+    composerFocused: true
+  });
+  assert.equal(appContext.pendingRequests.length, 0);
+});
+
+test('modal inspector resets scroll only when reopening from closed state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    renderCurrentSession = function() {};
+    nodes.inspectorSlideOut.scrollTop = 240;
+    openInspectorSlideOut();
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.inspectorSlideOut.scrollTop', appContext), 0);
+  vm.runInContext(`
+    nodes.inspectorSlideOut.scrollTop = 180;
+    openInspectorSlideOut();
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.inspectorSlideOut.scrollTop', appContext), 180);
+});
+
 test('Plan Mode approval override ignores stale confirmation after session changes', async () => {
   const appContext = createAppHarnessContext();
   installPlanModeAPITestWrappers(appContext);
@@ -4393,6 +4484,34 @@ test('continue completion does not mark a newly selected session as generating',
     generating: false,
     activityTitle: 'Loaded session B'
   });
+});
+
+test('durable awaiting-input state routes to continue during active-handle teardown', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+
+  const send = vm.runInContext(`
+    state.sessionId = 'session_continue_teardown';
+    state.sessionBacked = true;
+    setGeneratingViewState(true);
+    setLiveActivity({ title: 'Starting turn', copy: '', tone: 'live' });
+    state.sessionDetail = {
+      metadata: { id: 'session_continue_teardown' },
+      state: { status: 'awaiting_input' },
+      active_handle: true,
+      active_handle_owner: { owned_by_current_process: true },
+      plan_mode: null,
+      messages: []
+    };
+    nodes.chatInput.value = 'continue after teardown';
+    sendMessage();
+  `, appContext);
+
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.match(appContext.pendingRequests[0].url, /session_continue_teardown\/continue/);
+  assert.doesNotMatch(appContext.pendingRequests[0].url, /\/steer$/);
+  appContext.pendingRequests[0].resolve({ session_id: 'session_continue_teardown', status: 'accepted' });
+  await send;
 });
 
 test('continue completion ignores refreshed same-session state', async () => {
@@ -6214,14 +6333,16 @@ test('workspace selected paths use the refresh-adjacent trash action', async () 
     deletedPaths,
     selectedCount: selectedWorkspacePathCount(),
     reloadedPath: state.reloadedPath,
-    pending: workspaceActionPending()
+	pending: workspaceActionPending(),
+	refreshFocused: nodes.workspaceRefreshBtn.focused === true
   })`, workspaceContext)), {
     confirmTitle: 'Delete selected items',
     confirmLabel: 'Delete selected',
     deletedPaths: [['src/main.go', 'src/util.go']],
     selectedCount: 0,
     reloadedPath: 'src',
-    pending: ''
+	pending: '',
+	refreshFocused: true
   });
 });
 
@@ -6282,7 +6403,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
   vm.runInContext(`
     renameCalls = [];
     toasts = [];
-    window.prompt = function() { return 'final.txt'; };
+		promptLocalAction = async function() { return 'final.txt'; };
     renameWorkspaceFile = async function(path, name) {
       renameCalls.push({ path, name });
       return { path: 'src/final.txt' };
@@ -6310,6 +6431,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
     loadedFile: state.loadedFile,
     selectedPath: selectedWorkspaceTreePath(),
     pending: workspaceActionPending(),
+	renameFocused: nodes.workspaceRenameBtn.focused === true,
     toast: toasts[0]
   })`, workspaceContext)), {
     renameCalls: [{ path: 'src/draft.txt', name: 'final.txt' }],
@@ -6317,6 +6439,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
     loadedFile: 'src/final.txt',
     selectedPath: 'src/final.txt',
     pending: '',
+	renameFocused: true,
     toast: { message: 'Renamed file to final.txt.', tone: 'success' }
   });
 });
@@ -6661,6 +6784,125 @@ test('task panel renders cancelled count separately from completed tasks', () =>
   assert.match(html, /<span class="metric-label">Completed<\/span>/);
   assert.match(html, /<div class="metric-card-value">1<\/div>/);
   assert.match(html, /<div class="metric-card-copy">1 cancelled<\/div>/);
+});
+
+test('task panel counts Todo progress independently and renders derived task groups', () => {
+	const html = context.renderTasksPanel({
+		task_board: {
+			todo: [
+				{ content: 'One', status: 'in_progress' },
+				{ content: 'Two', status: 'in_progress' },
+				{ content: 'Three', status: 'pending' }
+			],
+			counters: { in_progress: 1, completed: 1, cancelled: 0 },
+			groups: {
+				in_progress: [{ id: 'task_0001', subject: 'Working', status: 'in_progress' }],
+				ready: [{ id: 'task_0002', subject: 'Ready task', status: 'pending' }],
+				blocked: [{ id: 'task_0003', subject: 'Blocked task', status: 'pending', blocked_by: ['task_0001'] }],
+				completed: [{ id: 'task_0004', subject: 'Done', status: 'completed' }],
+				cancelled: []
+			}
+		}
+	});
+	assert.match(html, /<div class="metric-card-copy">2 in progress<\/div>/);
+	assert.match(html, /data-task-group="in_progress"/);
+	assert.match(html, /data-task-group="ready"/);
+	assert.match(html, /data-derived-status="ready"/);
+	assert.match(html, />Ready<\/span>/);
+	assert.match(html, />task_0002<\/span>/);
+	assert.ok(html.indexOf('data-task-group="in_progress"') < html.indexOf('data-task-group="ready"'));
+});
+
+test('Web Console v2 inspector excludes Background and exposes complete tab semantics', () => {
+	context.document.documentElement = { dataset: { ui: 'aegis-v2' } };
+	vm.runInContext(`
+		state.sessionDetail = {
+			metadata: { id: 'session_v2_tabs' },
+			state: { status: 'paused' },
+			task_board: { todo: [], counters: {}, groups: {} }
+		};
+		inspectorViewState.tab = 'tasks';
+	`, context);
+	const html = vm.runInContext('renderInspectorPanel()', context);
+	delete context.document.documentElement;
+	assert.doesNotMatch(html, /data-inspector-tab="agents"/);
+	assert.doesNotMatch(html, />Background<\/button>/);
+	assert.match(html, /role="tablist"/);
+	assert.match(html, /role="tab"[^>]+aria-selected="true"[^>]+tabindex="0"/);
+	assert.match(html, /role="tabpanel"[^>]+aria-labelledby="inspector-tab-tasks"/);
+});
+
+test('i18n defaults to zh-CN, switches to English, and persists the locale', () => {
+	const values = new Map();
+	const makeContext = () => {
+		const document = {
+			readyState: 'loading',
+			documentElement: { lang: '', dataset: {}, setAttribute() {} },
+			addEventListener() {},
+			dispatchEvent() {},
+			getElementById() { return null; }
+		};
+		const window = {
+			document,
+			localStorage: {
+				getItem(key) { return values.get(key) || null; },
+				setItem(key, value) { values.set(key, value); }
+			}
+		};
+		const i18nContext = { window };
+		vm.createContext(i18nContext);
+		vm.runInContext(i18nSource, i18nContext, { filename: 'i18n.js' });
+		return window.AegisI18n;
+	};
+	const first = makeContext();
+	assert.equal(first.locale(), 'zh-CN');
+	assert.equal(first.t('Settings'), '设置');
+	assert.equal(first.t('2 in progress'), '2 个进行中');
+	assert.equal(first.setLocale('en'), 'en');
+	assert.equal(first.t('Settings'), 'Settings');
+	const restored = makeContext();
+	assert.equal(restored.locale(), 'en');
+});
+
+test('i18n restores existing translated text and attributes when switching to English', () => {
+	const document = {
+		readyState: 'loading',
+		documentElement: { lang: '', setAttribute() {} },
+		addEventListener() {},
+		dispatchEvent() {},
+		getElementById() { return null; },
+		querySelectorAll() { return []; }
+	};
+	const window = { document, localStorage: { getItem() { return null; }, setItem() {} } };
+	const i18nContext = { window };
+	vm.createContext(i18nContext);
+	vm.runInContext(i18nSource, i18nContext, { filename: 'i18n.js' });
+	const i18n = window.AegisI18n;
+	const parent = {
+		nodeType: 1,
+		closest() { return null; },
+		hasAttribute() { return false; }
+	};
+	const textNode = { nodeType: 3, nodeValue: 'Settings', parentElement: parent };
+	const attributes = new Map([['aria-label', 'Settings']]);
+	const element = {
+		nodeType: 1,
+		closest() { return null; },
+		hasAttribute(name) { return attributes.has(name); },
+		getAttribute(name) { return attributes.get(name) || ''; },
+		setAttribute(name, value) { attributes.set(name, value); },
+		querySelectorAll() { return []; }
+	};
+
+	i18n.apply(textNode);
+	i18n.apply(element);
+	assert.equal(textNode.nodeValue, '设置');
+	assert.equal(attributes.get('aria-label'), '设置');
+	i18n.setLocale('en', { persist: false });
+	i18n.apply(textNode);
+	i18n.apply(element);
+	assert.equal(textNode.nodeValue, 'Settings');
+	assert.equal(attributes.get('aria-label'), 'Settings');
 });
 
 test('summary panel renders provider attempt ledger facts', () => {

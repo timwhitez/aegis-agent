@@ -24,6 +24,7 @@ type ToolSchema struct {
 
 type TurnRequest struct {
 	SessionID        string
+	RequestID        string
 	Model            string
 	SystemPrompt     string
 	Messages         []session.Message
@@ -100,6 +101,12 @@ func providerStopReasonIsCancelled(value string) bool {
 }
 
 type EmitFunc func(eventType string, data map[string]any)
+
+func emitEvent(emit EmitFunc, eventType string, data map[string]any) {
+	if emit != nil {
+		emit(eventType, data)
+	}
+}
 
 type Adapter interface {
 	Name() string

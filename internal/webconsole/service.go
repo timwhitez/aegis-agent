@@ -60,6 +60,7 @@ var (
 		"events.js":                 {},
 		"file-change-disclosure.js": {},
 		"icons.js":                  {},
+		"i18n.js":                   {},
 		"markdown-security.js":      {},
 		"session-view.js":           {},
 		"settings-view.js":          {},
@@ -87,6 +88,8 @@ const (
 	maxWorkspaceUploadBytes         = 50 << 20
 	maxWorkspaceUploadRequestBytes  = maxWorkspaceUploadBytes + (1 << 20)
 	workspaceFilePreviewDefaultSize = 256 << 10
+	continueHandleSettleWait        = 2 * time.Second
+	continueHandleSettlePoll        = 10 * time.Millisecond
 	workspaceFilePreviewMaxSize     = 1 << 20
 	sessionStartObservationTimeout  = 15 * time.Second
 	stopFallbackSteerMessage        = runtime.StopWithoutFinishSteerMessage
@@ -152,8 +155,16 @@ type Service struct {
 	// beforeAppendGoalMutation is set only by package tests to force deterministic
 	// goal mutation persistence failures after earlier side facts have been recorded.
 	beforeAppendGoalMutation func(sessionID string, goal session.SessionGoal, eventType string) error
+	// beforeQueueReaperPass is set only by package tests after historyMu is held,
+	// allowing clear-history/reaper ordering to be exercised deterministically.
+	beforeQueueReaperPass func()
 
 	auditMu sync.Mutex
+	// historyMu serializes destructive history mutation with local queue
+	// submission and the startup/periodic reaper. Queue state may move between
+	// running, queued, and blocked during reconciliation; all are unsettled and
+	// must remain visible to the clear-history preflight.
+	historyMu sync.Mutex
 
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
@@ -1037,6 +1048,8 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	if _, err := s.store.LoadMetadata(sessionID); err != nil {
 		writeError(w, sessionStoreStatus(err), err)
 		return
@@ -1097,17 +1110,19 @@ func (s *Service) handleClearSessions(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	if s.hasAnyActiveHandle() {
 		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are active in this web console"))
 		return
 	}
-	hasRunningJobs, err := s.hasRunningQueueJobs("")
+	hasUnsettledJobs, err := s.hasUnsettledQueueJobs("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if hasRunningJobs {
-		writeError(w, http.StatusConflict, errors.New("cannot clear history while queue jobs are still running"))
+	if hasUnsettledJobs {
+		writeError(w, http.StatusConflict, errors.New("cannot clear history while queue jobs are still unsettled"))
 		return
 	}
 	hasRunningSessions, err := s.hasRunningSessions("")
@@ -1177,17 +1192,6 @@ func newWebHistoryMutationTransaction(root, prefix string) (*webHistoryMutationT
 		return nil, fmt.Errorf("invalid history backup path: %s", backupRoot)
 	}
 	return &webHistoryMutationTransaction{root: root, backupRoot: backupRoot}, nil
-}
-
-func (tx *webHistoryMutationTransaction) MovePathIfExists(path string) error {
-	path = filepath.Clean(path)
-	if _, err := os.Lstat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return tx.MovePath(path)
 }
 
 func (tx *webHistoryMutationTransaction) MovePath(path string) error {
@@ -1269,73 +1273,6 @@ func (tx *webHistoryMutationTransaction) Rollback() error {
 	return nil
 }
 
-func (s *Service) prepareDeleteSessionTreeTransaction(sessionID string) (*webHistoryMutationTransaction, error) {
-	if _, err := s.store.LoadMetadata(sessionID); err != nil {
-		return nil, err
-	}
-	items, _, err := s.store.ListPage(1000000, 0)
-	if err != nil {
-		return nil, err
-	}
-	targets := sessionTreeTargetIDs(sessionID, items)
-	jobs, _, err := s.store.ListJobsPage(1000000, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	tx, err := newWebHistoryMutationTransaction(s.store.Root(), "delete")
-	if err != nil {
-		return nil, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	targetIDs := make([]string, 0, len(targets))
-	for id := range targets {
-		targetIDs = append(targetIDs, id)
-	}
-	sort.Strings(targetIDs)
-	for _, id := range targetIDs {
-		if err := tx.MovePathIfExists(s.store.SessionDir(id)); err != nil {
-			return nil, err
-		}
-	}
-
-	jobIDs := make(map[string]struct{})
-	for _, job := range jobs {
-		if _, ok := targets[job.ParentSessionID]; ok {
-			jobIDs[job.ID] = struct{}{}
-			continue
-		}
-		if _, ok := targets[job.SessionID]; ok {
-			jobIDs[job.ID] = struct{}{}
-			continue
-		}
-		if _, ok := targets[job.RootSessionID]; ok {
-			jobIDs[job.ID] = struct{}{}
-		}
-	}
-	orderedJobIDs := make([]string, 0, len(jobIDs))
-	for id := range jobIDs {
-		orderedJobIDs = append(orderedJobIDs, id)
-	}
-	sort.Strings(orderedJobIDs)
-	for _, jobID := range orderedJobIDs {
-		for _, status := range webQueueStatuses() {
-			jobPath := filepath.Join(s.store.Root(), "_queue", status, jobID+".json")
-			if err := tx.MovePathIfExists(jobPath); err != nil {
-				return nil, err
-			}
-		}
-	}
-	committed = true
-	return tx, nil
-}
-
 func (s *Service) prepareClearHistoryTransaction() (*webHistoryMutationTransaction, error) {
 	if err := s.store.EnsureRoot(); err != nil {
 		return nil, err
@@ -1365,17 +1302,6 @@ func (s *Service) prepareClearHistoryTransaction() (*webHistoryMutationTransacti
 	}
 	committed = true
 	return tx, nil
-}
-
-func webQueueStatuses() []string {
-	return []string{
-		session.QueueStatusQueued,
-		session.QueueStatusRunning,
-		session.QueueStatusBlocked,
-		session.QueueStatusCompleted,
-		session.QueueStatusCancelled,
-		session.QueueStatusFailed,
-	}
 }
 
 func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailResponse, error) {
@@ -2595,8 +2521,19 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
+		if !s.waitForSettlingActiveHandle(r.Context(), sessionID, state.UpdatedAt) {
+			writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
+			return
+		}
+		state, err = s.store.LoadState(sessionID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+			writeError(w, http.StatusConflict, webContinueError(err))
+			return
+		}
 	}
 	cfg, err := s.configSnapshot()
 	if err != nil {
@@ -3080,6 +3017,8 @@ func (s *Service) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("prompt is required"))
 		return
 	}
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	cfg, err := s.configSnapshot()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -6734,6 +6673,54 @@ func (s *Service) hasActiveHandle(sessionID string) bool {
 	return ok
 }
 
+func (s *Service) waitForSettlingActiveHandle(ctx context.Context, sessionID, stateUpdatedAt string) bool {
+	s.pruneInactiveHandles()
+	s.mu.RLock()
+	handle, ok := s.handles[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return true
+	}
+	if !handleStartedNoLaterThanState(handle.startedAt, stateUpdatedAt) {
+		return false
+	}
+
+	timer := time.NewTimer(continueHandleSettleWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(continueHandleSettlePoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+			s.mu.RLock()
+			current, exists := s.handles[sessionID]
+			s.mu.RUnlock()
+			if !exists {
+				return true
+			}
+			if current != handle {
+				return false
+			}
+		}
+	}
+}
+
+func handleStartedNoLaterThanState(handleStartedAt, stateUpdatedAt string) bool {
+	handleStarted, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(handleStartedAt))
+	if err != nil {
+		return false
+	}
+	stateUpdated, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(stateUpdatedAt))
+	if err != nil {
+		return false
+	}
+	return !handleStarted.After(stateUpdated)
+}
+
 func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList []events.Event) ActiveHandleOwner {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
@@ -6934,39 +6921,42 @@ func queueJobBelongsToTargets(job session.QueueJob, targets map[string]struct{})
 
 func (s *Service) pruneInactiveHandles() {
 	s.mu.RLock()
-	ids := make([]string, 0, len(s.handles))
-	for id := range s.handles {
-		ids = append(ids, id)
+	handles := make(map[string]*launchHandle, len(s.handles))
+	for id, handle := range s.handles {
+		handles[id] = handle
 	}
 	s.mu.RUnlock()
-	if len(ids) == 0 {
+	if len(handles) == 0 {
 		return
 	}
-	stale := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
+	stale := make(map[string]*launchHandle, len(handles))
+	for id, handle := range handles {
 		state, err := s.store.LoadState(id)
 		if err != nil {
 			continue
 		}
-		if currentProcessHandleCanBePruned(state.Status) {
-			stale[id] = struct{}{}
+		if currentProcessHandleCanBePruned(state.Status) && handleStartedNoLaterThanState(handle.startedAt, state.UpdatedAt) {
+			stale[id] = handle
 		}
 	}
 	if len(stale) == 0 {
 		return
 	}
+	s.removeMatchingInactiveHandles(stale)
+}
+
+func (s *Service) removeMatchingInactiveHandles(stale map[string]*launchHandle) []*launchHandle {
 	s.mu.Lock()
 	prunedHandles := make([]*launchHandle, 0, len(stale))
-	for id := range stale {
-		if handle, ok := s.handles[id]; ok {
+	for id, staleHandle := range stale {
+		if handle, ok := s.handles[id]; ok && handle == staleHandle {
+			_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "pruned_terminal_state"})
 			prunedHandles = append(prunedHandles, handle)
 			delete(s.handles, id)
 		}
 	}
 	s.mu.Unlock()
-	for _, handle := range prunedHandles {
-		_ = s.recordLaunchHandleEvent(handle, "webconsole.handle.released", map[string]any{"reason": "pruned_terminal_state"})
-	}
+	return prunedHandles
 }
 
 func currentProcessHandleCanBePruned(status string) bool {
@@ -7179,14 +7169,65 @@ func (s *Service) ensureSessionTreeNotLive(sessionID string) error {
 	if hasRunningSessions {
 		return errors.New("cannot delete a running session tree")
 	}
-	hasRunningJobs, err := s.hasRunningQueueJobs(sessionID)
+	hasUnsettledJobs, err := s.hasUnsafeQueueJobsForSessionDelete(sessionID)
 	if err != nil {
 		return err
 	}
-	if hasRunningJobs {
-		return errors.New("cannot delete a running session tree")
+	if hasUnsettledJobs {
+		return errors.New("cannot delete a session tree with unsettled queue work")
 	}
 	return nil
+}
+
+func (s *Service) hasUnsafeQueueJobsForSessionDelete(sessionID string) (bool, error) {
+	jobs, _, err := s.store.ListJobsPage(1000000, 0)
+	if err != nil {
+		return false, err
+	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		return false, err
+	}
+	targets := sessionTreeTargetIDs(sessionID, items)
+	linkedSessionByJob := make(map[string]string, len(targets))
+	for id := range targets {
+		meta, loadErr := s.store.LoadMetadata(id)
+		if loadErr == nil && strings.TrimSpace(meta.QueueJobID) != "" {
+			linkedSessionByJob[meta.QueueJobID] = id
+		}
+	}
+	for _, job := range jobs {
+		if !queueJobTargetsSessionTree(job, targets) {
+			continue
+		}
+		if !queueJobIsUnsettled(job.Status) {
+			continue
+		}
+		if job.Status != session.QueueStatusBlocked {
+			return true, nil
+		}
+		linkedSessionID := strings.TrimSpace(job.SessionID)
+		if linkedSessionID == "" {
+			linkedSessionID = linkedSessionByJob[job.ID]
+		}
+		if _, ok := targets[linkedSessionID]; !ok {
+			return true, nil
+		}
+		state, loadErr := s.store.LoadState(linkedSessionID)
+		if loadErr != nil || (state.Status != session.StatusPaused && state.Status != session.StatusAwaitingInput) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func queueJobTargetsSessionTree(job session.QueueJob, targets map[string]struct{}) bool {
+	for _, id := range []string{job.ParentSessionID, job.SessionID, job.RootSessionID} {
+		if _, ok := targets[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) hasRunningSessions(sessionID string) (bool, error) {
@@ -7215,14 +7256,14 @@ func (s *Service) hasRunningSessions(sessionID string) (bool, error) {
 	return false, nil
 }
 
-func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
+func (s *Service) hasUnsettledQueueJobs(sessionID string) (bool, error) {
 	jobs, _, err := s.store.ListJobsPage(1000000, 0)
 	if err != nil {
 		return false, err
 	}
 	if sessionID == "" {
 		for _, job := range jobs {
-			if job.Status == session.QueueStatusRunning {
+			if queueJobIsUnsettled(job.Status) {
 				return true, nil
 			}
 		}
@@ -7235,7 +7276,7 @@ func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
 	}
 	targets := sessionTreeTargetIDs(sessionID, items)
 	for _, job := range jobs {
-		if job.Status != session.QueueStatusRunning {
+		if !queueJobIsUnsettled(job.Status) {
 			continue
 		}
 		if _, ok := targets[job.ParentSessionID]; ok {
@@ -7249,6 +7290,15 @@ func (s *Service) hasRunningQueueJobs(sessionID string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func queueJobIsUnsettled(status string) bool {
+	switch status {
+	case session.QueueStatusQueued, session.QueueStatusRunning, session.QueueStatusBlocked:
+		return true
+	default:
+		return false
+	}
 }
 
 func sessionTreeTargetIDs(sessionID string, items []session.SessionSummary) map[string]struct{} {
@@ -7317,11 +7367,6 @@ func waitForSessionIDWithTimeout(sub <-chan events.Event, outcomeCh <-chan launc
 			return "", nil, errors.New("timed out waiting for session creation")
 		}
 	}
-}
-
-func stringValue(value any) string {
-	text, _ := value.(string)
-	return text
 }
 
 func goalDraftFromWebRequest(req *GoalDraftRequest, source string) (*session.GoalDraft, error) {
@@ -8299,13 +8344,6 @@ func buildTimeline(messages []session.Message, eventsList []events.Event) []Time
 	return items
 }
 
-func tailMessages(items []session.Message, limit int) []session.Message {
-	if limit <= 0 || len(items) <= limit {
-		return items
-	}
-	return items[len(items)-limit:]
-}
-
 // sessionFileChanges returns the durable file-change accounting for a session.
 //
 // The runtime records changes incrementally as tools succeed, so the durable
@@ -8370,13 +8408,6 @@ func (s *Service) backfillSessionFileChanges(sessionID, workdir string) ([]FileC
 	return computed, nil
 }
 
-func tailEvents(items []events.Event, limit int) []events.Event {
-	if limit <= 0 || len(items) <= limit {
-		return items
-	}
-	return items[len(items)-limit:]
-}
-
 func dedupeBackgroundNotifications(items []session.BackgroundNotification) []session.BackgroundNotification {
 	if len(items) <= 1 {
 		return items
@@ -8411,13 +8442,6 @@ func tailBackground(items []session.BackgroundNotification, limit int) []session
 }
 
 func tailSteers(items []session.SteerRequest, limit int) []session.SteerRequest {
-	if limit <= 0 || len(items) <= limit {
-		return items
-	}
-	return items[len(items)-limit:]
-}
-
-func tailProviderAttempts(items []session.ProviderAttempt, limit int) []session.ProviderAttempt {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}

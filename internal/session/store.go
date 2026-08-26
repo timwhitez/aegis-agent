@@ -4076,25 +4076,6 @@ func (s *Store) appendJSONL(path string, payload any) error {
 	return enc.Encode(payload)
 }
 
-func (s *Store) appendEventsJSONL(path string, payload []events.Event) error {
-	if err := s.ensureDir(filepath.Dir(path)); err != nil {
-		return err
-	}
-	file, err := openAppendNoSymlink(path, s.fileMode)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	chmodBestEffort(path, s.fileMode)
-	enc := json.NewEncoder(file)
-	for _, item := range payload {
-		if err := enc.Encode(item); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *Store) writeJSONL(path string, payload any) error {
 	if err := s.ensureDir(filepath.Dir(path)); err != nil {
 		return err
@@ -4588,17 +4569,6 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 	}
 	return job, true, nil
-}
-
-func (s *Store) reconcileSessionQueueJob(meta SessionMetadata) error {
-	if strings.TrimSpace(meta.QueueJobID) == "" {
-		return nil
-	}
-	_, err := s.LoadJob(meta.QueueJobID)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
 }
 
 func (s *Store) ReconcileSessionQueueJob(sessionID string) (QueueJob, bool, error) {

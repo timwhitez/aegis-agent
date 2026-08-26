@@ -226,13 +226,6 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 	}
 }
 
-type runDeps struct {
-	adapter  provider.Adapter
-	catalog  *skills.Catalog
-	registry *tools.Registry
-	hooks    *hooks.Manager
-}
-
 type RunResult struct {
 	SessionID string
 	Status    string
@@ -3160,10 +3153,6 @@ func backgroundPayload(notifications []session.BackgroundNotification) []map[str
 	return out
 }
 
-func countOpenSteerRequests(requests []session.SteerRequest) int {
-	return session.CountOpenSteerRequests(requests)
-}
-
 func sessionHookPayload(meta session.SessionMetadata, status string) map[string]any {
 	return map[string]any{
 		"session_id": meta.ID,
@@ -3174,6 +3163,7 @@ func sessionHookPayload(meta session.SessionMetadata, status string) map[string]
 	}
 }
 
+//lint:ignore U1000 providerTools is exercised by in-package history tests.
 func providerTools(registry *tools.Registry) []provider.ToolSchema {
 	defs := registry.Definitions()
 	out := make([]provider.ToolSchema, 0, len(defs))

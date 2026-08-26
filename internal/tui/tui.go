@@ -349,11 +349,6 @@ func (d *keySequenceDecoder) Push(data []byte, final bool) [][]byte {
 	return out
 }
 
-func splitKeySequences(data []byte) [][]byte {
-	decoder := keySequenceDecoder{}
-	return decoder.Push(data, true)
-}
-
 func panel(title string, lines []string) string {
 	if len(lines) == 0 {
 		lines = []string{"(empty)"}
@@ -503,18 +498,4 @@ func prefixAtRuneBoundary(text string, limit int) string {
 		limit--
 	}
 	return text[:limit]
-}
-
-func tailMessages(messages []session.Message, limit int) []session.Message {
-	if len(messages) <= limit {
-		return messages
-	}
-	return messages[len(messages)-limit:]
-}
-
-func tailEvents(items []events.Event, limit int) []events.Event {
-	if len(items) <= limit {
-		return items
-	}
-	return items[len(items)-limit:]
 }

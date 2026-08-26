@@ -1,0 +1,13 @@
+{
+  "name": "aegis-agent-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:web",
+    "test:web": "node --test validation/scripts/*_test.mjs",
+    "test:e2e": "node validation/scripts/webconsole_e2e.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

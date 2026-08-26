@@ -2289,8 +2289,59 @@ textarea {
 }
 
 .inspector-tab.active {
-  background: var(--primary);
-  color: white;
+	background: var(--primary);
+	color: white;
+}
+
+.language-toggle-btn {
+	min-width: 44px;
+	min-height: 44px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 10px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	background: var(--surface-hover);
+	color: var(--text-main);
+	font: 600 11px/1 var(--font-mono);
+}
+
+.language-toggle-btn:hover,
+.language-toggle-btn:focus-visible {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.task-group-stack,
+.task-derived-group {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.task-group-heading {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-height: 28px;
+	color: var(--text-muted);
+	font-size: 12px;
+	font-weight: 650;
+}
+
+.workspace-preview-content {
+	margin: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font: inherit;
+	color: inherit;
+}
+
+.sa-tree-row[role="button"]:focus-visible,
+.tf-header[role="button"]:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 
 .inspector-content {

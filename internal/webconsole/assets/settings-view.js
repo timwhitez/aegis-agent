@@ -59,10 +59,10 @@ async function renderSettings() {
       : childBudgetMaxActiveRuntimeSec <= 0 && childBudgetMaxElapsedSec <= 0 && childBudgetMaxTurnsPerAttempt <= 0;
     const roleProviders = configData.role_providers || {};
     const options = Object.keys(providers).map((providerName) => `
-      <option value="${escapeAttr(providerName)}" ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
+      <option value="${escapeAttr(providerName)}" translate="no" data-i18n-skip ${providerName === defaultProvider ? 'selected' : ''}>${escapeHTML(providerName)}</option>
     `).join('');
     const inheritedProviderOptions = `<option value="">Inherit default</option>${Object.keys(providers).map((providerName) => `
-      <option value="${escapeAttr(providerName)}">${escapeHTML(providerName)}</option>
+      <option value="${escapeAttr(providerName)}" translate="no" data-i18n-skip>${escapeHTML(providerName)}</option>
     `).join('')}`;
     const apiProviderOptions = `
       <option value="">Inherit adapter</option>

@@ -47,7 +47,7 @@ func TestBuildSystemPromptIncludesDirectToolGuidance(t *testing.T) {
 		"Do not chain shell commands with separators",
 		"reports/_*.txt",
 		"Avoid `cat`, `grep`, `sed`, and `echo` inside `shell`",
-		"Do not read a source path from memory",
+		"Use discovery when paths are unknown; read a known or user-supplied owning file directly",
 		"issue them together; keep dependent operations sequential",
 		"Do not guess required tool arguments, paths, or skill names",
 		"`context/...` and `.context/...` are different paths",
@@ -84,7 +84,7 @@ func TestBuildSystemPromptUsesInitializerMode(t *testing.T) {
 	)
 	for _, needle := range []string{
 		"You are a project initializer agent",
-		"Use `feature_list_create` early",
+		"Use `feature_list_create` when a durable roadmap would help",
 		"Do not implement product features yet",
 	} {
 		if !strings.Contains(prompt, needle) {
@@ -108,7 +108,7 @@ func TestBuildSystemPromptSkipsSymlinkEscapedAgentsDoc(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptAddsAuditEvidenceNoteForReviewTasks(t *testing.T) {
+func TestBuildSystemPromptKeepsOrdinaryReviewInline(t *testing.T) {
 	prompt := buildSystemPrompt(
 		"/tmp/work",
 		session.ModeExec,
@@ -120,12 +120,14 @@ func TestBuildSystemPromptAddsAuditEvidenceNoteForReviewTasks(t *testing.T) {
 			session.NewMessage("user", "Audit whether the default runtime surface stays aligned with the docs."),
 		},
 	)
-	// After prompt simplification, audit tasks without explicit artifact path get a simpler note
-	if !strings.Contains(prompt, "For audit or review tasks, write a durable Markdown artifact before finishing") {
-		t.Fatalf("expected audit task note, got:\n%s", prompt)
+	if !strings.Contains(prompt, "For audit or review responses, lead with findings ordered by severity") {
+		t.Fatalf("expected inline audit response guidance, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Keep findings first, and separate unresolved questions or inference-limited points from validated findings") {
+	if !strings.Contains(prompt, "Do not create a report file unless the user explicitly requested one") {
 		t.Fatalf("expected findings structure guidance, got:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "reports/final-audit.md") || strings.Contains(prompt, "durable Markdown artifact") {
+		t.Fatalf("ordinary review must not infer an artifact, got:\n%s", prompt)
 	}
 }
 
@@ -905,7 +907,7 @@ func TestNextHarnessReminderNudgesAfterRepeatedReadFileNotFound(t *testing.T) {
 	if reminder.Kind != "path_discovery_needed" {
 		t.Fatalf("expected path_discovery_needed reminder, got %#v", reminder)
 	}
-	for _, want := range []string{"3 consecutive read_file not-found", "vllm", "grep_files or glob", "do not read source paths from memory"} {
+	for _, want := range []string{"3 consecutive read_file not-found", "vllm", "when the path is unknown", "exact path supplied by the user or a prior tool result"} {
 		if !strings.Contains(reminder.Text, want) {
 			t.Fatalf("expected path discovery reminder to contain %q, got %q", want, reminder.Text)
 		}
@@ -1195,15 +1197,12 @@ func TestToolGuardBlocksFinishUntilReviewArtifactIsWritten(t *testing.T) {
 	}
 }
 
-func TestToolGuardBlocksFinishForReviewTaskWithoutExplicitArtifactPath(t *testing.T) {
+func TestToolGuardAllowsFinishForReviewTaskWithoutExplicitArtifactPath(t *testing.T) {
 	kind, text := toolGuard("/tmp/work", []session.Message{
 		session.NewMessage("user", "Review the default runtime surface and validate the risks."),
 	}, "finish", json.RawMessage(`{"message":"done"}`))
-	if kind != "review_artifact" {
-		t.Fatalf("expected review_artifact guard, got %q", kind)
-	}
-	if !strings.Contains(text, "reports/final-audit.md") {
-		t.Fatalf("expected fallback artifact path guidance, got %q", text)
+	if kind != "" || text != "" {
+		t.Fatalf("expected ordinary inline review to finish without an artifact guard, got kind=%q text=%q", kind, text)
 	}
 }
 
@@ -1457,7 +1456,7 @@ func TestToolGuardAllowsProjectMemoryWritesDuringReviewTask(t *testing.T) {
 func TestToolGuardBlocksEscapingReviewArtifactPathBeforeExecution(t *testing.T) {
 	workdir := t.TempDir()
 	kind, text := toolGuard(workdir, []session.Message{
-		session.NewMessage("user", "Audit the repo and write findings with remaining risks."),
+		session.NewMessage("user", "Audit the repo and write a review report with findings and remaining risks."),
 	}, "write_file", json.RawMessage(`{"path":"../review.md","content":"# findings\n\n## remaining risks\n- none\n"}`))
 	if kind != "review_artifact" {
 		t.Fatalf("expected review_artifact guard, got %q", kind)

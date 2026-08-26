@@ -1,6 +1,7 @@
 @import url('/shared-assets/styles.css');
 
 :root {
+	color-scheme: light;
   --background: #f3f5f7;
   --surface: #ffffff;
   --surface-hover: #f5f7f8;
@@ -141,6 +142,8 @@ header {
 .session-chip { margin-left: 2px; border-color: rgba(32,36,42,.08); background: rgba(32,36,42,.025); color: #68727e; }
 .v2-local-badge { color: var(--accent); font: 9px/1 var(--font-mono); letter-spacing: .15em; }
 .header-actions { gap: 6px; }
+.language-toggle-btn { border-color: rgba(32,36,42,.1); background: rgba(32,36,42,.025); color: #4f5964; }
+.language-toggle-btn:hover, .language-toggle-btn:focus-visible { color: var(--accent); background: var(--accent-soft); border-color: rgba(86,124,12,.24); }
 .icon-action-btn {
   width: 32px;
   height: 32px;
@@ -271,13 +274,27 @@ header {
 .modal-card, .dialog-card { border-color: rgba(32,36,42,.1); background: #ffffff; box-shadow: var(--shadow-float); }
 .toast { border-color: rgba(32,36,42,.1); background: rgba(255,255,255,.97); color: #20242a; box-shadow: var(--shadow-float); }
 
+html[data-ui="aegis-v2"] button,
+html[data-ui="aegis-v2"] [role="button"] { min-height: 44px; }
+html[data-ui="aegis-v2"] .icon-action-btn,
+html[data-ui="aegis-v2"] .send-btn,
+html[data-ui="aegis-v2"] .workspace-icon-btn,
+html[data-ui="aegis-v2"] .workspace-editor-action,
+html[data-ui="aegis-v2"] .inspector-close-btn,
+html[data-ui="aegis-v2"] .tf-chevron { min-width: 44px; width: 44px; height: 44px; }
+html[data-ui="aegis-v2"] .nav-item,
+html[data-ui="aegis-v2"] .new-chat-primary { min-height: 44px; }
+html[data-ui="aegis-v2"] .inspector-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+html[data-ui="aegis-v2"] .inspector-tab { min-height: 44px; }
+html[data-ui="aegis-v2"] .check-row { min-height: 44px; }
+
 @media (max-width: 900px) {
   #app { padding: 0; flex-direction: row; }
   .main-content { border: 0; border-radius: 0; }
   .sidebar { width: 64px; margin: 0; border-width: 0 1px 0 0; border-radius: 0; padding: 12px 8px; flex-direction: column; align-items: stretch; gap: 0; overflow: hidden; }
   .logo { justify-content: center; padding: 3px 0 18px; }
   .brand-copy, .new-chat-primary span, .nav-item span, .sidebar-context, .v2-local-badge { display: none; }
-  .new-chat-primary { width: 40px; height: 40px; margin: 0 auto 16px; }
+  .new-chat-primary { width: 44px; height: 44px; margin: 0 auto 16px; }
   .sidebar nav { flex-direction: column; gap: 3px; }
   .nav-item { justify-content: center; padding: 10px; }
   .sidebar-footer { margin-top: auto; margin-left: 0; padding-top: 6px; border: 0; }
@@ -306,11 +323,11 @@ header {
   }
   .inspector-slide-out { z-index: 60; }
   .logo, .sidebar-context { display: none; }
-  .new-chat-primary { width: 42px; height: 42px; margin: 0; flex: 0 0 42px; }
+  .new-chat-primary { width: 44px; height: 44px; margin: 0; flex: 0 0 44px; }
   .sidebar nav { flex: 1; flex-direction: row; justify-content: space-around; gap: 2px; }
-  .nav-item { width: 42px; min-height: 42px; padding: 10px; flex: 0 0 42px; }
+  .nav-item { width: 44px; min-height: 44px; padding: 10px; flex: 0 0 44px; }
   .nav-item.active { box-shadow: inset 0 -2px var(--accent); }
-  .sidebar-footer { margin: 0; padding: 0; flex: 0 0 42px; }
+  .sidebar-footer { margin: 0; padding: 0; flex: 0 0 44px; }
   header { padding: 0 10px 0 14px; }
   .session-chip { display: none; }
   .header-actions { gap: 4px; }

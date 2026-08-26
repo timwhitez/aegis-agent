@@ -10,6 +10,7 @@
 # Build output and disposable local workspaces.
 /bin/
 /aegis-agent
+/node_modules/
 /tmp/
 /workspace/
 /.tmp_*/

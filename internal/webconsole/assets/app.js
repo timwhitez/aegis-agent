@@ -45,7 +45,8 @@ const runtimeHandles = {
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   layoutObserver: null,
-  inspectorPreviousFocus: null
+	inspectorPreviousFocus: null,
+	inspectorRestoreIsolation: null
 };
 
 const skillsViewState = {
@@ -970,7 +971,14 @@ function pushLiveEvent(event) {
 }
 
 function setupEventListeners() {
-  nodes.navItems.forEach((item) => {
+	document.addEventListener('aegis:localechange', () => {
+		renderCurrentSession();
+		if (currentViewName() === 'history' && currentHistoryData()) {
+			renderHistory();
+		}
+		window.AegisI18n?.apply?.(document.body);
+	});
+	nodes.navItems.forEach((item) => {
     item.addEventListener('click', () => {
       const view = item.getAttribute('data-view');
       switchView(view);
@@ -1179,8 +1187,33 @@ function setupEventListeners() {
 
   document.addEventListener('change', handleSkillUploadChange);
 
-  document.addEventListener('keydown', (event) => {
-    const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+	document.addEventListener('keydown', (event) => {
+		const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+		const actionableRow = event.target?.closest?.('[data-sub-agent-open][role="button"], [data-sub-agent-toggle][role="button"], [data-todo-float-toggle][role="button"], [data-files-float-toggle][role="button"]');
+		if (actionableRow && (event.key === 'Enter' || event.key === ' ')) {
+			const nestedControl = event.target !== actionableRow && event.target?.closest?.('button, a, input, select, textarea');
+			if (!nestedControl) {
+				event.preventDefault();
+				actionableRow.click?.();
+				return;
+			}
+		}
+		const activeTab = event.target?.closest?.('[role="tab"][data-inspector-tab]');
+		if (activeTab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+			const tabs = Array.from(activeTab.parentElement?.querySelectorAll?.('[role="tab"]') || []);
+			const index = tabs.indexOf(activeTab);
+			let nextIndex = index;
+			if (event.key === 'Home') nextIndex = 0;
+			if (event.key === 'End') nextIndex = tabs.length - 1;
+			if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+			if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+			if (tabs[nextIndex]) {
+				event.preventDefault();
+				tabs[nextIndex].click?.();
+				tabs[nextIndex].focus?.();
+				return;
+			}
+		}
 
     if (event.key === 'Tab' && trapInspectorFocus(event)) {
       return;
@@ -1346,10 +1379,13 @@ async function sendMessage() {
     showToast('Session launch is already in progress.', 'info');
     return;
   }
+	const currentStatus = state.sessionDetail?.state?.status || '';
+	const routesToContinue = hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus);
+	const routesToSteer = isGenerating() && hasDurableSession() && !routesToContinue;
 
   const optimisticID = appendOptimisticMessage('user', text, {
-    source: isGenerating() ? 'steer' : 'user',
-    interrupt: isNextSendInterruptArmed() && isGenerating() && hasDurableSession()
+	source: routesToSteer ? 'steer' : 'user',
+	interrupt: isNextSendInterruptArmed() && routesToSteer
   });
 
   nodes.chatInput.value = '';
@@ -1358,7 +1394,7 @@ async function sendMessage() {
   updateUI();
   renderCurrentSession();
 
-  if (isGenerating() && hasDurableSession()) {
+  if (routesToSteer) {
     const sessionID = state.sessionId;
     const requestedInterrupt = isNextSendInterruptArmed();
     const actionSteerIdentity = currentSteerActionIdentity();
@@ -1394,8 +1430,7 @@ async function sendMessage() {
     return;
   }
 
-  const currentStatus = state.sessionDetail?.state?.status || '';
-  if (hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus)) {
+  if (routesToContinue) {
     const sessionID = state.sessionId;
     const actionPlanModeIdentity = currentPlanModeActionIdentity();
     let revisingPlanMode = false;
@@ -1729,10 +1764,13 @@ function openInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
   const backdrop = nodes.inspectorBackdrop;
   if (!slideOut || !backdrop) return;
-  if (!slideOut.classList.contains('is-open')) {
-    runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
+	const isOpening = !slideOut.classList.contains('is-open');
+	if (isOpening) {
+		runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
+		runtimeHandles.inspectorRestoreIsolation = isolateModalElements([slideOut, backdrop]);
   }
   renderCurrentSession();
+	if (isOpening) slideOut.scrollTop = 0;
   slideOut.classList.add('is-open');
   backdrop.classList.add('is-open');
   slideOut.setAttribute('aria-hidden', 'false');
@@ -1749,7 +1787,9 @@ function closeInspectorSlideOut(options = {}) {
   nodes.inspectorBackdrop?.classList.remove('is-open');
   nodes.inspectorSlideOut?.setAttribute('aria-hidden', 'true');
   nodes.inspectorBackdrop?.setAttribute('aria-hidden', 'true');
-  nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
+	nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
+	runtimeHandles.inspectorRestoreIsolation?.();
+	runtimeHandles.inspectorRestoreIsolation = null;
   runtimeHandles.inspectorPreviousFocus = null;
   if (restoreFocus) {
     previousFocus?.focus?.({ preventScroll: true });
@@ -2417,6 +2457,7 @@ async function handlePlanModeAction(button) {
       }
       showToast('Plan Mode cancelled.', 'success');
     } else if (action === 'revise') {
+	  closeInspectorSlideOut({ restoreFocus: false });
       nodes.chatInput?.focus();
       showToast('Type the requested plan change and send it.', 'info');
     }
@@ -3775,7 +3816,7 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
           ${childrenBadge}
           <span class="history-session-time" title="${escapeAttr(formatTimestamp(item.updated_at || item.created_at))}">${escapeHTML(formatRelativeTime(item.updated_at || item.created_at))}</span>
         </div>
-        <div class="history-session-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Master session')}</div>
+        <div class="history-session-title">${renderHistorySessionTitle(item)}</div>
         <div class="history-session-meta">${escapeHTML(metaText)}</div>
       </div>
       <div class="history-row-actions">
@@ -3792,6 +3833,15 @@ function renderHistorySessionCard(item, isChild, hasChildren, isExpanded, chevro
       </div>
     </div>
   `;
+}
+
+function renderHistorySessionTitle(item) {
+  const agentIdentity = agentLabel(item?.agent_name, item?.agent_role);
+  if (agentIdentity) {
+    return `<span class="history-session-agent-label" translate="no" data-i18n-skip>${escapeHTML(agentIdentity)}</span>`;
+  }
+  const fallback = window.AegisI18n?.t?.('Master session') || 'Master session';
+  return `<span class="history-session-fallback">${escapeHTML(fallback)}</span>`;
 }
 
 async function deleteHistorySession(sessionID) {
@@ -3887,7 +3937,7 @@ function renderSkills(skills) {
         <i data-lucide="package-open" class="empty-icon"></i>
         <strong>No local skills found.</strong>
         <span>Upload a .zip skill package to extend your agent's capabilities.</span>
-        <button class="skill-btn install empty-upload-btn" type="button" id="empty-upload-btn">Upload .zip Skill</button>
+        <button class="skill-btn install empty-upload-btn" type="button" id="empty-upload-btn" data-upload-default-label="Upload .zip Skill"><span data-upload-label>Upload .zip Skill</span></button>
       </div>
     `;
     if (window.lucide && lucide.createIcons) {
@@ -3913,8 +3963,8 @@ function renderSkills(skills) {
       : '';
     const button = isReadOnly
       ? `<button class="skill-btn uninstall" type="button" disabled>Disabled</button>`
-      : `<button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}">
-          ${skill.installed ? 'Uninstall' : 'Upload to Install'}
+      : `<button class="skill-btn ${skill.installed ? 'uninstall' : 'install'}" data-skill-action="${escapeAttr(skill.id)}" data-skill-installed="${skill.installed ? '1' : '0'}"${skill.installed ? '' : ' data-upload-default-label="Upload to Install"'}>
+          <span data-upload-label>${skill.installed ? 'Uninstall' : 'Upload to Install'}</span>
         </button>`;
     return `
       <div class="skill-card">

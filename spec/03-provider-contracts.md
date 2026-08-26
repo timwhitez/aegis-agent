@@ -147,6 +147,8 @@ adapter 可向 runtime 发出：
 - `provider.retry`
 - `turn.stopped`
 
+Event sink 是可选的观测能力。`RunTurn` 收到 `nil` sink 时必须安全跳过事件发送，不得 panic；是否提供 sink 不改变 provider 请求或归一化结果。
+
 v1 允许 adapter 采用“单次响应 + 事件回放”的伪流式模式。
 
 ## 3. StopReason
@@ -390,6 +392,7 @@ role capability 约束在进入 adapter 之前完成：
 
 - 工具结果通过 `functionResponse` 回传
 - 若 provider 返回了 `functionCall.id`，应尽量原样带回
+- 若 provider 未返回 `functionCall.id`，adapter 生成的 fallback id 必须包含本次 harness request 的稳定相关标识与 part 序号，保证跨 turn、同名多调用和 replay/compaction 历史中的全局唯一性；不得只使用函数名
 - 若 provider 返回了 `thoughtSignature`，adapter 应在 session provider content blocks 中保留，并在后续 `contents` replay 中随原 part 带回
 - v1 当前使用 `ToolCallID` 保存回放所需的 function id
 
@@ -402,6 +405,7 @@ role capability 约束在进入 adapter 之前完成：
 - 非 `STOP` finishReason 必须先按 provider boundary / safety / incomplete 语义处理，并且不得把同一 candidate 里的 `functionCall` 暴露为可执行 tool call
 - 缺失 `finishReason` 时若 candidate 包含 `functionCall`，adapter 必须按 provider boundary failure 处理，不能把缺失成功边界的调用暴露给 runtime
 - 缺失 `finishReason` 的最终 candidate 必须按 provider boundary failure 处理，不能降级为普通 `done_candidate`
+- HTTP 成功但 `candidates` 为空、且没有明确 safety `blockReason` 的响应属于结构性无效成功，必须归类为 typed `response_parse_error`
 - cancel -> `cancelled`
 - 其他错误 -> `error`
 

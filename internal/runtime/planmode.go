@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -164,22 +163,6 @@ func terminalPlanModeSyntheticResult(action string) string {
 		return "Error: Plan Mode was cancelled; this later tool call was not executed"
 	default:
 		return "Error: Plan Mode ended this turn; this later tool call was not executed"
-	}
-}
-
-func planModeToolResultPayload(toolName string, payload any) session.ToolResult {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		data = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
-	}
-	text := string(data)
-	return session.ToolResult{
-		Name:          toolName,
-		LLMOutput:     text,
-		DisplayOutput: text,
-		Metadata: map[string]any{
-			"planmode": true,
-		},
 	}
 }
 

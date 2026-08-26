@@ -404,12 +404,3 @@ func parseLooseFrontmatterScalars(text string) (map[string]string, bool) {
 	_, hasDescription := meta["description"]
 	return meta, hasName || hasDescription
 }
-
-func firstParagraph(body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return "No description"
-	}
-	parts := strings.Split(body, "\n\n")
-	return strings.TrimSpace(parts[0])
-}

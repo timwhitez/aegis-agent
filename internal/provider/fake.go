@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-
-	"aegis-agent/internal/session"
 )
 
 type FakeAdapter struct {
@@ -167,13 +165,4 @@ func fakeDefaultTurn(ctx context.Context, req TurnRequest) (TurnResult, error) {
 		Text:       fmt.Sprintf("Fake provider saw role %s.", last.Role),
 		StopReason: "done_candidate",
 	}, nil
-}
-
-func lastUserMessage(messages []session.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" {
-			return messages[i].Text
-		}
-	}
-	return ""
 }

@@ -32,84 +32,31 @@ func activeReviewArtifactRequirement(messages []session.Message) reviewArtifactR
 }
 
 func requiresReviewArtifact(text string) bool {
+	lowered := strings.ToLower(text)
+	for _, phrase := range []string{
+		"write a report", "write the report", "create a report", "create the report",
+		"write a review report", "write an audit report", "create a review report", "create an audit report",
+		"draft a report", "draft the report", "review artifact", "audit artifact",
+		"markdown report", "durable report", "durable artifact",
+		"写一份报告", "写报告", "创建报告", "生成报告", "审计报告", "评审报告",
+	} {
+		if strings.Contains(lowered, phrase) {
+			return true
+		}
+	}
 	paths := extractLiteralArtifactPaths(text)
 	if len(paths) > 0 {
-		onlyChangeSummaryAndProjectMemoryPaths := true
 		for _, path := range paths {
-			if !isChangeSummaryPath(path) && !isProjectMemoryPath(path) {
-				onlyChangeSummaryAndProjectMemoryPaths = false
-				break
+			if isChangeSummaryPath(path) || isProjectMemoryPath(path) {
+				continue
+			}
+			if looksRequestedReviewArtifactPath(path) {
+				return true
 			}
 		}
-		if onlyChangeSummaryAndProjectMemoryPaths {
-			return false
-		}
-	}
-	if mentionsStructuredReviewExpectation(text) {
-		return true
-	}
-	if len(paths) == 0 {
-		return true
-	}
-	for _, path := range paths {
-		if looksRequestedReviewArtifactPath(path) {
-			return true
-		}
+		return false
 	}
 	return false
-}
-
-func mentionsStructuredReviewExpectation(text string) bool {
-	lowered := strings.ToLower(text)
-	for _, token := range []string{
-		"severity:",
-		"confidence:",
-		"evidence:",
-		"why it matters:",
-	} {
-		if strings.Contains(lowered, token) {
-			return true
-		}
-	}
-	for _, token := range []string{
-		"no validated findings",
-		"validated findings",
-		"validated finding",
-		"findings first",
-	} {
-		if strings.Contains(lowered, token) {
-			return true
-		}
-	}
-	signals := 0
-	for _, token := range []string{
-		"findings",
-		"finding ",
-	} {
-		if strings.Contains(lowered, token) {
-			signals++
-			break
-		}
-	}
-	for _, token := range []string{
-		"remaining risks",
-		"remaining risk",
-	} {
-		if strings.Contains(lowered, token) {
-			signals++
-			break
-		}
-	}
-	for _, token := range []string{
-		"unresolved questions",
-		"unresolved question",
-	} {
-		if strings.Contains(lowered, token) {
-			signals++
-			break
-		}
-	}
-	return signals >= 2
 }
 
 func looksRequestedReviewArtifactPath(path string) bool {
@@ -148,7 +95,7 @@ func reviewArtifactGuard(workdir string, messages []session.Message, toolName st
 			return "review_artifact", "Review artifact guard: requested artifact/report writes must stay within the workspace before execution. Fix the path and try again."
 		}
 		target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-		if !ok || !looksReviewArtifactCandidate(target.Path, target.Content) {
+		if !ok || (!pathInList(target.Path, requestedPaths) && !looksReviewArtifactCandidate(target.Path, target.Content)) {
 			return "", ""
 		}
 		validation := review.ValidateMarkdownArtifactWithWorkspace(workdir, target.Content)
@@ -163,7 +110,7 @@ func reviewArtifactGuard(workdir string, messages []session.Message, toolName st
 		if len(requestedPaths) > 0 {
 			return "review_artifact", fmt.Sprintf("Review artifact guard: before finishing this audit/review task, write the report artifact to %s with findings plus Severity/Confidence/Evidence/Why it matters fields with concrete path:line support, snippet-level evidence support, and a separate unresolved or remaining-risks section.", joinPromptItems(displayRequestedArtifactPaths(workdir, requestedPaths)))
 		}
-		return "review_artifact", "Review artifact guard: before finishing this audit/review task, write a report artifact (for example reports/final-audit.md) that includes findings plus Severity/Confidence/Evidence/Why it matters fields with concrete path:line support, snippet-level evidence support, and a separate unresolved or remaining-risks section."
+		return "review_artifact", "Review artifact guard: before finishing this audit/review task, write the explicitly requested report artifact with findings plus Severity/Confidence/Evidence/Why it matters fields, concrete path:line support, snippet-level evidence support, and a separate unresolved or remaining-risks section."
 	default:
 		return "", ""
 	}
@@ -205,7 +152,8 @@ func annotateReviewArtifactResult(workdir string, messages []session.Message, to
 		return
 	}
 	target, ok := requestedArtifactWrite(workdir, toolName, rawArgs)
-	if !ok || !looksReviewArtifactCandidate(target.Path, target.Content) {
+	requestedPaths := requestedArtifactPaths(workdir, messages)
+	if !ok || (!pathInList(target.Path, requestedPaths) && !looksReviewArtifactCandidate(target.Path, target.Content)) {
 		return
 	}
 	validation := review.ValidateMarkdownArtifactWithWorkspace(workdir, target.Content)

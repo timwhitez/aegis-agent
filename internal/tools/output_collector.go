@@ -570,11 +570,6 @@ func buildCommandLLMChannelWithPreviewBudget(summary, status, notice, preview st
 	return strings.Join(components, "\n"), previewBudget
 }
 
-func buildCommandDisplayChannel(status, notice, preview string, rawBytes int, fullInline bool, maxBytes int) string {
-	output, _ := buildCommandDisplayChannelWithPreviewBudget(status, notice, preview, rawBytes, fullInline, maxBytes)
-	return output
-}
-
 func buildCommandDisplayChannelWithPreviewBudget(status, notice, preview string, rawBytes int, fullInline bool, maxBytes int) (string, int) {
 	if fullInline && strings.TrimSpace(status) == "" && strings.TrimSpace(notice) == "" {
 		return boundedCommandText(preview, maxBytes), maxBytes

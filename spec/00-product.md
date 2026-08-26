@@ -52,7 +52,8 @@
 ### 3.1 Web-first v1 必须达成
 
 - 提供稳定的本地 Web-first agent 运行时，可在工作目录内完成多轮任务
-- 提供完整的本地 Web Console v2，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、Settings provider/model 配置、任务/队列/children 观测与基础控制；原页面只作为默认禁用的 legacy fallback 保留
+- 提供完整的本地 Web Console v2，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、Settings provider/model 配置、任务与 children 观测及基础控制；原页面只作为默认禁用的 legacy fallback 保留
+- Web Console 默认使用简体中文与浅色主题，提供持久化的 English 切换；语言偏好只属于浏览器显示状态，不得成为第二套 runtime/session 状态源
 - 保留稳定 CLI 命令面，作为脚本化、CI、故障恢复和高级操作入口
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
@@ -230,7 +231,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - skills 和 `AGENTS.md` 指令链
 - hooks v1
 - compaction
-- local Web console：session start/continue/steer、Goal、Plan Mode、Settings provider/model 配置、timeline、tasks、children、queue、settings，以及支持预览、下载、上传、文件重命名、建目录和删除的受限 workspace browser
+- local Web console：session start/continue/steer、Goal、Plan Mode、Settings provider/model 配置、timeline、tasks、children、settings，以及支持预览、下载、上传、文件重命名、建目录和删除的受限 workspace browser；queue/background 保留在 API/CLI/文件事实源，不进入默认页面
 - `run` / `exec` / `steer` / `continue` / `sessions` / `goal` / `tasks` / `init`
 - provider probe / doctor
 - OpenAI / Anthropic / Google adapter
@@ -252,7 +253,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 
 ## 8. 非功能要求
 
-- Go 1.24+ 兼容
+- Go 1.26.7+ 兼容；声明的最低版本必须位于 Go 官方仍受支持且已包含已知标准库安全修复的 release line
 - Linux / macOS / WSL 优先
 - 配置文件默认 YAML
 - 会话数据采用 JSON / JSONL
@@ -266,6 +267,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 - 能完成纯文本任务
 - 能完成带工具调用任务
 - Web 控制台能完成 session start、steer、continue、Goal / Plan Mode 基础控制与 Settings provider/model 配置；queue job 提交由 REST API/service test 与 CLI advanced path 验证，默认 Web 不提供提交表单
+- Web 控制台默认以 `zh-CN` 展示所有 operator-owned 文案、ARIA 标签、日期和数字格式，可切换并持久化 `en`；两种语言都必须通过真实浏览器验收
 - `run` 只在显式等待/停靠场景进入 `awaiting_input`；普通无 tool / 无 `finish` turn 会继续 loop
 - `await_input` 会把未完成任务显式停靠为可恢复状态，保留 active Goal 与 blocker/resume condition 事实，不绕过 `finish` 的完成审计
 - `exec` 在未 `finish` 时不会误判成功

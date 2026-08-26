@@ -123,12 +123,13 @@
 - 审计 / review 任务里的 `validated findings` 必须只写被行为证据支持的结论
 - 声明、保留名、接口、文档提及、目录形状、类型或枚举本身，不足以证明运行时行为
 - 若结论依赖默认暴露、注册路径、配置门控或真实执行语义，必须核对 owning code path；做不到时应降级为 risk / inference
-- findings-first review 产物应显式记录 `severity`、`confidence`、`evidence`、`why it matters` 和 `unresolved questions`
-- 当任务进入 review / audit 语义时，harness 可以对 `write_file` / `edit_file` / `finish` 施加轻量 validator，并在缺少 durable artifact 时阻断完成，避免缺字段或无证据锚点的报告被当作完成
+- findings-first review 回复或显式产物应记录 `severity`、`confidence`、`evidence`、`why it matters` 和 `unresolved questions`
+- 普通 review / audit 请求只要求在最终回复中交付 findings，不得由关键词推断出 Markdown 文件、默认路径、固定阅读路线或 completion workflow
+- 只有用户明确要求 review artifact、精确路径、模板或字面锚点时，harness 才能对对应 `write_file` / `edit_file` / `finish` 施加轻量 validator；validator 只能守住该显式交付契约
 - 当外部指令已经明确声明“这不是 review / audit task”时，即使 prompt 中出现 `proof`、`drift` 一类词，runtime 也不应误启用 review artifact validator
 - 当外部指令已经显式给出 review / audit 交付路径时，`finish` 的满足条件必须绑定到该 exact artifact path，而不是被其他 review-like scratch artifact 旁路
 - 当 validator 进入 workspace-aware 模式时，`evidence` 不应只写 `path:line` 形状；还应附带短 snippet / identifier，并验证 cited path 可读、行窗存在、snippet 能在 cited lines 中找到
-- 当声明级线索已经指向具体文件时，应优先在同文件内追到 owning function / gate，再决定是否扩大检索范围
+- 当声明级线索已经指向具体文件时，模型可直接读取 owning file；路径未知时可先使用 discovery 能力。harness 不固定 grep/glob/read 的先后顺序
 - 当任务显式要求固定标题、精确 opening block、首个 section 顺序、literal anchor sentence 或 exact proof-anchor bullet/text 时，这些约束必须优先于默认 findings-first 习惯；runtime 可以在 write/edit/finish 前校验 exact-template 与 required literal anchors 是否都被保留
 
 ### 2.9 Planner / Generator / Evaluator Separation

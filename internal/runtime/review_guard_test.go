@@ -37,7 +37,7 @@ func TestReviewIssueDetailAddsReadablePathHint(t *testing.T) {
 func TestToolGuardBlocksInvalidReviewArtifactWriteOnReviewLikeScratchPath(t *testing.T) {
 	workdir := t.TempDir()
 	kind, text := toolGuard(workdir, []session.Message{
-		session.NewMessage("user", "Audit the repo and write findings with remaining risks."),
+		session.NewMessage("user", "Audit the repo and write a review artifact with findings and remaining risks."),
 	}, "write_file", json.RawMessage(`{"path":"scratch/review-notes.txt","content":"# Findings\n\n## Finding 1\nEvidence only\n\n## Remaining risks\n- still open\n"}`))
 	if kind != "review_artifact" {
 		t.Fatalf("expected review_artifact guard, got %q", kind)
@@ -78,6 +78,33 @@ func TestRequiresReviewArtifactIgnoresChangeSummaryPlusProjectMemoryPrompt(t *te
 	text := "Implement the planned multi-package fixes, refresh reports/progress.md and reports/validation.md, write reports/change-summary.md with sections: findings, files changed, verification, remaining risks, and only call finish after go test ./... passes."
 	if requiresReviewArtifact(text) {
 		t.Fatalf("expected change-summary plus project-memory repair prompt not to require review artifact")
+	}
+}
+
+func TestRequiresReviewArtifactNeedsExplicitArtifactRequest(t *testing.T) {
+	if requiresReviewArtifact("Review the runtime and return findings with severity and evidence.") {
+		t.Fatal("ordinary inline review must not infer an artifact")
+	}
+	if !requiresReviewArtifact("Review the runtime and write a report with severity and evidence.") {
+		t.Fatal("explicit report request must activate the review artifact contract")
+	}
+	if !requiresReviewArtifact("Audit the runtime and write a report to reports/final.md.") {
+		t.Fatal("explicit report wording must activate the contract even when the requested filename is generic")
+	}
+}
+
+func TestToolGuardEnforcesExplicitReportAtGenericRequestedPath(t *testing.T) {
+	workdir := t.TempDir()
+	messages := []session.Message{
+		session.NewMessage("user", "Audit the runtime and write a report to reports/final.md."),
+	}
+	kind, text := toolGuard(workdir, messages, "write_file", json.RawMessage(`{"path":"reports/final.md","content":"# Notes\n\nLooks fine.\n"}`))
+	if kind != "review_artifact" || !strings.Contains(text, "canonical structure") {
+		t.Fatalf("expected the explicit generic report path to be validated, got kind=%q text=%q", kind, text)
+	}
+	kind, text = toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`))
+	if kind == "" || !strings.Contains(text, "reports/final.md") {
+		t.Fatalf("expected finish to remain fail closed for the generic report path, got kind=%q text=%q", kind, text)
 	}
 }
 

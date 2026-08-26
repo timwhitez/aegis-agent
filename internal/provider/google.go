@@ -2,10 +2,14 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"aegis-agent/internal/session"
 )
@@ -14,6 +18,8 @@ type GoogleAdapter struct {
 	client JSONClient
 	apiKey string
 }
+
+var googleFallbackNonce uint64
 
 func NewGoogle(baseURL, apiKey string, httpClient *http.Client) *GoogleAdapter {
 	return NewGoogleWithRetry(baseURL, apiKey, httpClient, RetryConfig{})
@@ -117,10 +123,21 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				}),
 			}, nil
 		}
-		return TurnResult{}, fmt.Errorf("google: empty candidates")
+		return TurnResult{}, &HTTPError{
+			Provider: "google",
+			Class:    "response_parse_error",
+			Message:  "google response did not include candidates or a prompt block reason",
+		}
 	}
 	candidate := resp.Candidates[0]
 	finishReason := strings.TrimSpace(candidate.FinishReason)
+	if finishReason == "" {
+		return TurnResult{}, &HTTPError{
+			Provider: "google",
+			Class:    "response_parse_error",
+			Message:  "google candidate did not include finishReason",
+		}
+	}
 	allowFunctionCalls := finishReason == "STOP"
 	var textParts []string
 	var thinkingParts []string
@@ -129,7 +146,8 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	thoughtPartCount := 0
 	thoughtSignatureCount := 0
 	seenCallIDs := map[string]struct{}{}
-	for _, part := range candidate.Content.Parts {
+	fallbackRequestKey := googleFallbackRequestKey(req, resp.ResponseID)
+	for partIndex, part := range candidate.Content.Parts {
 		if part.Thought {
 			thoughtPartCount++
 			if part.Text != "" {
@@ -187,7 +205,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			providerCallID := strings.TrimSpace(part.FunctionCall.ID)
 			callID := providerCallID
 			if callID == "" {
-				callID = "call_" + part.FunctionCall.Name
+				callID = googleFallbackToolCallID(fallbackRequestKey, partIndex, part.FunctionCall.Name)
 			}
 			callID = uniqueGoogleToolCallID(callID, seenCallIDs)
 			providerBlocks = append(providerBlocks, session.ProviderContentBlock{
@@ -211,7 +229,7 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	text := strings.Join(textParts, "\n")
 	if text != "" {
-		emit("assistant.delta", map[string]any{"text": text})
+		emitEvent(emit, "assistant.delta", map[string]any{"text": text})
 	}
 	stopReason := "done_candidate"
 	suppressFunctionCalls := false
@@ -234,11 +252,6 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	case finishReason != "":
 		stopReason = "error"
 		suppressFunctionCalls = true
-	case len(calls) > 0:
-		stopReason = "error"
-		suppressFunctionCalls = true
-	case finishReason == "":
-		stopReason = "error"
 	}
 	if suppressFunctionCalls {
 		calls = nil
@@ -261,6 +274,25 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			"thinking_strategy":         thinkingStrategy,
 		}),
 	}, nil
+}
+
+func googleFallbackRequestKey(req TurnRequest, responseID string) string {
+	if requestID := strings.TrimSpace(req.RequestID); requestID != "" {
+		return requestID
+	}
+	if responseID = strings.TrimSpace(responseID); responseID != "" {
+		return "response:" + responseID
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err == nil {
+		return fmt.Sprintf("nonce:%x", nonce[:])
+	}
+	return fmt.Sprintf("fallback:%s:%d:%d", strings.TrimSpace(req.SessionID), time.Now().UnixNano(), atomic.AddUint64(&googleFallbackNonce, 1))
+}
+
+func googleFallbackToolCallID(requestKey string, partIndex int, name string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", requestKey, partIndex, strings.TrimSpace(name))))
+	return fmt.Sprintf("call_google_%x", sum[:12])
 }
 
 func uniqueGoogleToolCallID(base string, seen map[string]struct{}) string {

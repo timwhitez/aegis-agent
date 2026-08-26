@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-ui="aegis-v2">
+<html lang="zh-CN" data-ui="aegis-v2">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -49,8 +49,9 @@
           <span id="connection-status">Agent Session</span>
           <span class="session-chip" id="session-id-display">New local session</span>
         </div>
-        <div class="header-actions">
-          <span class="v2-local-badge">LOCAL</span>
+		<div class="header-actions">
+			<span class="v2-local-badge">LOCAL</span>
+			<button class="language-toggle-btn" id="language-toggle-btn" type="button" data-i18n-control aria-label="Switch to English" title="Switch to English"><span data-language-label>EN</span></button>
           <button class="icon-action-btn inspector-toggle-btn" id="inspector-toggle-btn" aria-label="Toggle inspector" aria-controls="inspector-slide-out" aria-expanded="false" data-tooltip="Inspector"><i data-lucide="panel-right"></i></button>
           <button class="icon-action-btn stop" id="stop-session-btn" aria-label="Stop session" title="Stop session" data-tooltip="Stop"><i data-lucide="square"></i></button>
           <button class="icon-action-btn danger" id="interrupt-session-btn" aria-label="Interrupt session" title="Interrupt session" data-tooltip="Interrupt"><i data-lucide="hand"></i></button>
@@ -88,7 +89,7 @@
       <div id="skills-view" class="view is-hidden">
         <div class="view-header skills-header">
           <div><span class="view-eyebrow">Capability library</span><h2 class="view-title">Skills</h2><p class="view-subtitle">Manage the local skills available to the agent.</p></div>
-          <button class="skill-btn install skill-upload-btn" id="skill-upload-btn" type="button"><i data-lucide="upload"></i> Upload .zip</button>
+          <button class="skill-btn install skill-upload-btn" id="skill-upload-btn" type="button" data-upload-default-label="Upload .zip"><i data-lucide="upload"></i> <span data-upload-label>Upload .zip</span></button>
           <input type="file" id="skill-upload" class="visually-hidden-file" accept=".zip">
         </div>
         <div class="skills-grid" id="skills-grid"></div>
@@ -130,7 +131,8 @@
   <div class="inspector-backdrop" id="inspector-backdrop" aria-hidden="true"></div>
   <div class="inspector-slide-out" id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true" tabindex="-1"></div>
   <div class="toast-rack" id="toast-rack" aria-live="polite" aria-atomic="true"></div>
-  <script src="/shared-assets/utils.js"></script>
+	<script src="/shared-assets/i18n.js"></script>
+	<script src="/shared-assets/utils.js"></script>
   <script src="/shared-assets/markdown-security.js"></script>
   <script src="/shared-assets/icons.js"></script>
   <script src="/shared-assets/api.js"></script>

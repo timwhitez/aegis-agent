@@ -22,6 +22,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
   durable message 或有界关联摘要出现，不提供独立 tracker
 - 默认界面不暴露 worker pool 调参；worker 并发仍由启动参数和后端 API 管理
 - 默认交互要简洁：高频路径少确认，agent 在明确安全边界内拥有较大执行权限；只有覆盖 validation coverage、删除/清理、写配置/API key、暴露非 loopback 服务等风险动作需要显式确认
+- 默认语言为简体中文，可在全局入口切换 English 并跨刷新保留；默认主题固定为浅色
 
 ## 2. 产品边界
 
@@ -165,6 +166,18 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 - ready / blocked / completed / cancelled / done task 统计
 - task board 分组
 
+Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progress` 条目；task board 必须按 runtime 派生的 `in_progress / ready / blocked / completed / cancelled` groups 展示，不能用 persistent task counter 冒充 Todo 进度或只画平铺列表。
+
+### 4.5 Language, accessibility, and interaction baseline
+
+- operator-owned 静态/动态文案、toast/dialog、ARIA、placeholder/title、日期和数字必须覆盖 `zh-CN` 与 `en`；默认 `zh-CN`
+- local preference 只保存在浏览器中；用户消息、tool/provider 原文、文件内容、路径和 durable session facts 保持原样
+- operator-owned fallback label 必须随 locale 翻译，但自定义 agent name/role 等 durable facts 必须保持原文；不能用整块 raw-content 排除规则掩盖同一节点中的 fallback
+- 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
+- modal 与移动 inspector 必须 trap focus、Esc 关闭、恢复触发焦点，并让背景不可交互
+- 移动 inspector 每次从关闭状态重新打开时必须把 slide-out 滚动容器复位到顶部，使标题、状态和关闭按钮立即可见；已经打开时的普通 re-render 不得重置用户正在查看的位置
+- 清空历史在任何 queued/running/blocked queue work 或 running session 未收敛时返回 conflict；reaper 状态迁移不能产生允许清理的窗口
+
 #### Children
 
 展示：
@@ -225,7 +238,7 @@ assistant tool call 与紧随其后的 matching tool result 虽然在 `messages.
 
 - WebConsole 只读写 `planmode.json`、`artifacts/planmode-history.jsonl` 和 `artifacts/planmode-plan.md`，不维护第二套 Plan 状态
 - Approve & Run 必须走 runtime continue path，追加 `meta.source=planmode_approval` 的 user message 后恢复普通执行
-- Ask for Changes 只是 plan revision user message；不会执行 plan，也不会变成 Todo/Task 写入
+- Ask for Changes 只是 plan revision user message；不会执行 plan，也不会变成 Todo/Task 写入。若该动作来自 modal inspector，前端必须先关闭 inspector、解除背景 `inert`，再把焦点移到 composer；不能把输入焦点留在仍打开的 modal 背后
 - Pending Plan Mode 下，带当前 session `parent_session_id` 的 Web queue submit / delegate 类控制面必须被拒绝；无 parent 的独立 queue job 不受影响
 
 ### 4.5 右侧动作区

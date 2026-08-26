@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,7 +86,7 @@ func TestEngineRunModeDoesNotEmitAwaitingInputForPlainDoneCandidate(t *testing.T
 }
 
 func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine, meta, state, _, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	engine.cfg.Runtime.Queue.PollIntervalMS = 1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate and wait")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -95,8 +97,15 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resolverErr := make(chan error, 1)
 	go func() {
-		time.Sleep(20 * time.Millisecond)
+		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
+			resolverErr <- err
+			cancel()
+			return
+		}
 		job := session.QueueJob{
 			ID:               "job_background_wait",
 			Status:           session.QueueStatusCompleted,
@@ -108,7 +117,7 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 			FinalText:        "child done",
 			ResumeParent:     true,
 		}
-		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		resolverErr <- engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
 	}()
 	turns := 0
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
@@ -123,7 +132,11 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 		}, nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	cancel()
+	if resolverErr := <-resolverErr; resolverErr != nil {
+		t.Fatalf("resolve background notification: %v", resolverErr)
+	}
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -199,27 +212,44 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 			}, nil
 		},
 	)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	// The resolver goroutine writes into the session directory. Wait for it in a
 	// cleanup hook so it cannot still be writing while t.TempDir() removes the
 	// tree: a late write recreates the just-deleted directory and makes RemoveAll
 	// fail with "directory not empty".
 	resolverDone := make(chan struct{})
+	resolverErr := make(chan error, 1)
 	t.Cleanup(func() { <-resolverDone })
 	go func() {
 		defer close(resolverDone)
-		time.Sleep(40 * time.Millisecond)
+		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
+			resolverErr <- err
+			cancel()
+			return
+		}
 		if err := resolveParentQueueJob(engine.store, meta.ID, "job_unresolved", session.QueueStatusCompleted); err != nil {
+			resolverErr <- err
+			cancel()
 			return
 		}
 		job := session.QueueJob{ID: "job_unresolved", Status: session.QueueStatusCompleted, ParentSessionID: meta.ID, SessionID: "child_unresolved", SessionStatus: session.StatusCompleted, FinalText: "child finished", ResumeParent: true}
-		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		if err := engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job)); err != nil {
+			resolverErr <- err
+			cancel()
+			return
+		}
+		resolverErr <- nil
 	}()
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
 
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	cancel()
+	<-resolverDone
+	if resolverErr := <-resolverErr; resolverErr != nil {
+		t.Fatalf("resolve queued background work: %v", resolverErr)
+	}
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -241,6 +271,25 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	}
 	if !foundReminder {
 		t.Fatalf("expected unresolved background reminder, got %#v", messages)
+	}
+}
+
+func waitForEngineStatePhase(ctx context.Context, store *session.Store, sessionID, status, phase string) error {
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, err := store.LoadState(sessionID)
+		if err != nil {
+			return fmt.Errorf("load session state while waiting for %s/%s: %w", status, phase, err)
+		}
+		if state.Status == status && state.Phase == phase {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for session state %s/%s: %w", status, phase, ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -840,6 +889,49 @@ func TestEngineProviderParseErrorFailsBeforeAssistantPersist(t *testing.T) {
 	}
 	if len(attempts) != 1 || attempts[0].Outcome != "failure" || attempts[0].ErrorClass != "response_parse_error" {
 		t.Fatalf("expected parse error provider attempt, got %#v", attempts)
+	}
+}
+
+func TestEnginePersistsGoogleMalformedSuccessAsResponseParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"responseId":"google-malformed","candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`))
+	}))
+	defer server.Close()
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	meta.Provider = "google"
+	meta.Model = "gemini-2.5-flash"
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save google metadata: %v", err)
+	}
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "hello")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	adapter := provider.NewGoogle(server.URL, "key", server.Client())
+	result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+	if err == nil || result.Status != session.StatusFailed {
+		t.Fatalf("expected durable Google parse failure, result=%#v err=%v", result, err)
+	}
+	attempts, loadErr := engine.store.LoadProviderAttempts(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load provider attempts: %v", loadErr)
+	}
+	if len(attempts) != 1 || attempts[0].Outcome != "failure" || attempts[0].ErrorClass != "response_parse_error" || attempts[0].Provider != "google" {
+		t.Fatalf("expected durable Google response_parse_error attempt, got %#v", attempts)
+	}
+	eventsList, loadErr := engine.store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		t.Fatalf("load events: %v", loadErr)
+	}
+	found := false
+	for _, evt := range eventsList {
+		if evt.Type == "provider.request.failed" && evt.Data["error_class"] == "response_parse_error" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected durable provider.request.failed classification, got %#v", eventsList)
 	}
 }
 
@@ -2378,7 +2470,7 @@ func TestEngineAwaitInputParksActiveGoalWithoutCompletingIt(t *testing.T) {
 func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
-	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	engine, meta, state, registry, _, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
 	tokenBudget := int64(1)
 	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
 		Enabled:      true,
@@ -2404,7 +2496,7 @@ func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 			Command: []string{"/bin/sh", "-c", "printf '{' > '" + escapedSessionRoot + "'/\"$SESSION_ID\"/goal.json"},
 		},
 	}
-	hookManager = hooks.New(cfg.Hooks, meta.Workdir)
+	hookManager := hooks.New(cfg.Hooks, meta.Workdir)
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
 			ToolCalls: []provider.ToolCall{
@@ -4401,12 +4493,12 @@ func TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails(t *testing.T) {
 }
 
 func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	steerLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "steer.lock")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-steer-update",
 			Inject: &config.HookInject{
@@ -4461,12 +4553,12 @@ func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T
 }
 
 func TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	stateLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "state.lock")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-state-update",
 			Inject: &config.HookInject{
@@ -5093,7 +5185,7 @@ func TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFail
 }
 
 func TestEngineBackgroundAcceptanceRollsBackMessageWhenNotificationUpdateFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	notification := session.NewBackgroundNotification(session.QueueJob{
 		ID:            "job_1",
 		Status:        session.QueueStatusCompleted,
@@ -5105,7 +5197,7 @@ func TestEngineBackgroundAcceptanceRollsBackMessageWhenNotificationUpdateFails(t
 		t.Fatalf("append background notification: %v", err)
 	}
 	backgroundPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "background.jsonl")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-background-update",
 			Inject: &config.HookInject{

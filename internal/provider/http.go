@@ -89,27 +89,25 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		if errors.As(err, &delayErr) && delayErr.RetryAfter > 0 {
 			delay = retryAfterDelay(delayErr.RetryAfter, delay)
 		}
-		if emit != nil {
-			data := map[string]any{
-				"provider":     providerName,
-				"attempt":      attempt,
-				"next_attempt": attempt + 1,
-				"max_attempts": maxAttempts,
-				"delay_ms":     delay.Milliseconds(),
-				"error":        err.Error(),
-			}
-			var httpErr *HTTPError
-			if errors.As(err, &httpErr) {
-				data["class"] = httpErr.Class
-				if httpErr.StatusCode > 0 {
-					data["status_code"] = httpErr.StatusCode
-				}
-				if strings.TrimSpace(httpErr.TimeoutKind) != "" {
-					data["timeout_kind"] = httpErr.TimeoutKind
-				}
-			}
-			emit("provider.retry", data)
+		data := map[string]any{
+			"provider":     providerName,
+			"attempt":      attempt,
+			"next_attempt": attempt + 1,
+			"max_attempts": maxAttempts,
+			"delay_ms":     delay.Milliseconds(),
+			"error":        err.Error(),
 		}
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) {
+			data["class"] = httpErr.Class
+			if httpErr.StatusCode > 0 {
+				data["status_code"] = httpErr.StatusCode
+			}
+			if strings.TrimSpace(httpErr.TimeoutKind) != "" {
+				data["timeout_kind"] = httpErr.TimeoutKind
+			}
+		}
+		emitEvent(emit, "provider.retry", data)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

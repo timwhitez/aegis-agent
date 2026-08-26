@@ -122,20 +122,20 @@ For each required path, the runtime records:
 - latest writer tool and turn
 - optional content validator
 
-The generic required-artifact gate is only active when the contract has explicit required artifacts. Ordinary non-artifact tasks must not be blocked by this gate. Review or audit artifacts still use the existing review validator for content quality.
+The generic required-artifact gate is only active when the contract has explicit required artifacts. Ordinary non-artifact tasks, including review or audit requests that only ask for an inline response, must not be blocked by this gate. The review validator is active only for an explicitly requested review artifact/path/template/literal and checks that explicit contract for content quality.
 
 ## 4. Completion Controller
 
 `CompletionController` is the unified finish/tool gate entrypoint. It wraps existing guard behavior first, then applies explicit contract gates:
 
-- existing review/artifact/template/literal/target/taskboard/steer guards
+- explicit review-artifact/template/literal/target and latest-steer contract guards
 - pre-completion feature checks
 - required artifact baseline/touched/changed gate
 - parent coordination unresolved work gate
 - active goal completion audit gate
 - pending Plan Mode gate, before artifact/parent/goal completion gates
 
-The first migration is behavior-equivalent for existing guard kinds and messages. New generic artifact checks are limited to explicit required artifacts.
+Generic artifact checks and completion blocking are limited to explicit user contracts, safety/permission boundaries, recovery consistency, and provider/tool protocol integrity. Durable taskboard state and inferred review keywords may produce model-facing reminders, but do not create a completion gate by themselves.
 When a current goal is `active`, `finish` is blocked until the model audits the objective, success criteria, and validation plan against concrete session evidence and calls `update_goal(status="complete")`. Paused or budget-limited goals may finish only as an explicit paused/wrap-up state; they must not be reported as complete unless the completion audit actually passed.
 
 If the goal is still active but execution cannot continue because an external prerequisite failed, a user decision is missing, or an external state must change, the model may call `await_input`. This is a separate non-completion terminal action for the current run: it persists the blocker and resume condition, stops the remaining tool batch, and moves the session to `awaiting_input` while leaving the Goal active. Target/artifact completion guards must not force the model to invent a deliverable merely to use this blocked path.

@@ -272,6 +272,8 @@ func removeString(items []string, item string) []string {
 // non-terminal state with no live owner — i.e. nothing will ever wake the
 // parent. It is the cross-restart safety net behind the queue reaper: detection
 // here only wakes the model with facts; it never resolves the work itself.
+//
+//lint:ignore U1000 coordinationDeadlockReason is exercised by in-package liveness tests.
 func coordinationDeadlockReason(store *session.Store, parentSessionID string) (string, bool, error) {
 	info, err := coordinationDeadlockState(store, parentSessionID)
 	if err != nil {

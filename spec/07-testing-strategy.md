@@ -96,6 +96,9 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - Web 发起的 `start` / goal create/pause/resume/clear/complete / mission plan approve / `continue` / `steer` / worker pool 更新都走真实 runtime 与文件事实；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
 - Workspace upload / rename 走真实 HTTP API 和本地文件事实；覆盖 request/body 上限、同目录 no-replace rename、敏感路径、symlink/escape 拒绝、审计事件与前端 pending/refresh 行为
 - headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
+- browser smoke 必须是 repo-owned、无 provider credential 的可重放入口；每次运行记录 commit SHA、浏览器版本、viewport、console/page/network error、截图路径与 SHA-256 manifest，并在 CI 上传桌面/移动截图 artifact
+- 默认 `zh-CN` 与持久化 `en` 都要覆盖静态和动态文案、ARIA/placeholder/title、日期/数字 locale；截图确认浅色主题不随系统深色偏好漂移
+- 键盘验收覆盖 tab 语义、Enter/Space 激活、dialog focus trap/restore、Esc 关闭和移动端 inspector；所有高频交互 target 的可点击尺寸至少为 44×44 CSS px
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
 
@@ -116,7 +119,10 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `edit_file` 替换失败时报错
 - `finish` 设置 `final`
 - `await_input` 返回结构化等待 metadata 且不设置 `final`
-- `shell` 仅继承 allowlist 环境变量
+- `shell` 仅继承 allowlist 环境变量，且临时 HOME 中的 login/profile/rc 脚本不能注入变量或产生副作用；trusted command 走同一语义
+- Linux 且 bwrap namespace 可用时，必须真实执行位于 `/tmp` 或其他非系统根下的 workspace：验证 namespace 内 bind target 创建顺序、稳定 descriptor cwd、命令成功，以及 profile/rc 仍不能注入变量或产生副作用；仅检查 argv 不构成该验收
+- background-wait 测试必须以持久化 `awaiting_input/background_wait` 状态同步结果注入，传播 resolver/notification 写入错误，并使用测试级有界 context；不能用固定 sleep 加无界 `context.Background()` 把失败拖到 package timeout
+- `todo_write` 仅刷新新增或发生状态推进的条目时间，未变化条目保留时间，调用方旧 timestamp 不能覆盖 runtime 时间
 - `todo_write` 允许多个 `in_progress` 并完整持久化
 - `task_create` / `task_update` 保持依赖边双向一致
 - task graph cycle 被拒绝
@@ -141,6 +147,8 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - micro-compaction 永久矩阵覆盖 1×N、N×1、混合 batch 与 `keep_recent_tool_results=3`，证明最多最近三个独立 result 保留完整 payload，窗口边界可落在同一 tool message 内且 sibling 的 ToolCallID/Name/IsError/Final/metadata 不串位
 - `keep_recent_tool_result_bytes` 覆盖 exact boundary、`+1` byte、count 与 bytes 同时触发、最新单 result 自身超限、已 pointerize result；重复构造 provider view 不生成嵌套 marker/重复 artifact，durable `messages.jsonl` byte-for-byte 不变
 - OpenAI multi-call、Anthropic `tool_use/tool_result`、Google `functionCall/functionResponse` 分别验证只有对应旧 result 的 call arguments/provider block 被裁剪，call/result id、name、顺序和 replay wire shape 仍合法
+- Google 无 provider call id 的连续同名 function call 必须获得跨 turn 唯一 fallback id，并在 micro-compaction 与 hard-fit 中保持新旧 replay closure 独立
+- 三个 provider adapter 在 nil event sink 下完成文本/tool 响应而不 panic；Google 空 candidates/无 block reason 返回 typed `response_parse_error`
 - `compact.started` / `compact.finished` / `compact.reused` 以及 main/semantic-summary/probe 共用的 `RequestBudgetSnapshot` 验证六个 result-level 字段：inline/compacted/pointerized 的 count 与 provider-view `llm_output` bytes；三类计数之和等于 request view 的 ToolResult 总数
 - `read_file` / `grep` / `grep_files` / `glob` canonical arguments 覆盖省略默认值、显式默认值、limit cap、tool-output byte cap、line/byte mode和 path/pattern/include/cursor 任一变化；非 allowlist 与 malformed/unknown input 必须 fail closed
 - result-content hash 覆盖 inline、超过 cap 后仍基于 cap 前原文、重复 finalizer 和 source metadata clone；没有可靠 hash 的 legacy result 不参与去重
@@ -215,6 +223,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - provider schema 的工具名集合精确等于 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`；包含 trusted command skill 时集合不变
 - 对每个已注册但禁用的 built-in/trusted command 直接调用 `Registry.Execute`，都返回 `schema_reject/tool_not_allowed_for_role` 且 workspace、session、command sentinel 不变化
 - explorer system prompt 只规定只读 capability 与有界 handoff，不写固定搜索顺序、强制 delegation、固定 DAG、强制 wait 或 taskboard workflow；`agent_spawn` description 保持 model-led 信息经济 guidance
+- 普通与 initializer prompt 同样只描述 discovery/task 能力，不强制 grep-before-read、固定 taskboard 节奏或由 review 关键词推断 artifact；显式 artifact/path/template 仍保持 fail-closed validator
 - sync、background + wait、失败、暂停、取消与 parent resume/recovery 沿用现有 lifecycle；handoff 经过统一 ToolResult/background budget，deterministic fake-provider fixture 证明 parent provider messages 不含 child 原始 tool trajectory，只含有界 final/reference
 - Web Settings 渲染 Explorer row 与 reasoning/output 字段；session inspector 显示 role、provider/model、effective reasoning/output/isolation/tool profile；默认首页 fixture 不出现新的 orchestration panel
 - deterministic browser smoke 对 Explorer row 写入非默认 model/reasoning/max-output，保存后通过 `/api/config` 和重新渲染的 Settings 表单双重核对；测试只使用临时 config，不修改 operator 配置

@@ -60,6 +60,15 @@ v2 默认使用浅色主题，并通过浏览器 `color-scheme: light` 与内嵌
 打开、无本地偏好和无系统主题依赖时的一致外观。深色主题不作为迁移完成条件；后续若
 加入主题切换，只能作为显示偏好，不能分叉 controller、API 或持久化业务状态。
 
+v2 默认 locale 为 `zh-CN`，并在全局 header 提供 `中文 / EN` 切换。选择持久化在浏览器
+local storage，切换时同步 `<html lang>`、静态/动态 operator 文案、ARIA、placeholder、title、
+日期与数字格式；用户消息、tool payload、provider error、文件内容和路径不得被翻译。
+legacy fallback 复用同一 i18n controller，不能维护第二套词典或偏好状态。
+
+键盘和触控基线：所有高频 button/tab hit target 至少 `44×44 CSS px`；tab 使用完整
+`tablist/tab/tabpanel` 语义；modal/slide-out 打开后焦点进入并困在对话框内，Esc 关闭后恢复到
+触发元素，背景不可交互。可点击行必须使用原生 button/link 或等价键盘语义。
+
 ## 5. 迁移与回滚
 
 1. 先部署 v2 与共享 controller，legacy 页面继续保留在 binary 中。
@@ -69,6 +78,7 @@ v2 默认使用浅色主题，并通过浏览器 `color-scheme: light` 与内嵌
    至少真实覆盖 start、running steer、continue、Goal、Plan Mode approve/revision/input、
    stop/interrupt、timeline/tool cards、Settings、Skills、Workspace 风险操作、Sessions history
    与 responsive layout。queue submit 只由 API/service/CLI smoke 验证；默认 Web 不提供表单。
+   同一 runner 还要切换 `zh-CN`/`en`、重载验证偏好，并 fail on console/page/network error。
 4. 验收通过后保持 `legacy_ui_enabled: false`。短期回滚只需在配置中显式设为 `true` 并
    重启 Web service；不会改变 session/runtime 数据。
 
@@ -81,5 +91,7 @@ v2 默认使用浅色主题，并通过浏览器 `color-scheme: light` 与内嵌
 - root Web smoke、Go tests、JavaScript tests、语法检查和真实浏览器 smoke 全部通过。
 - 桌面与移动端真实浏览器截图确认默认浅色主题、可读对比度、响应式导航和 inspector
   modal 行为；不得依赖操作系统的深色偏好改变默认主题。
+- 截图由 repo-owned browser runner 生成 manifest，包含 commit/browser/viewport/locale/hash，
+  CI 上传 artifact；仅在 PR 文案中声称人工运行而无可重放脚本不构成验收证据。
 - 默认页面不存在独立 Queue/Background surface；API 提交的 job 只通过 service/API/文件事实
   验证，防止 large-project profile 反向主导默认 Web。
