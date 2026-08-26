@@ -772,6 +772,12 @@ func resolveMaybeRelative(cwd, value string) string {
 	return filepath.Join(cwd, value)
 }
 
+// ResolvePath applies the same home and invocation-directory expansion used
+// when loading path values from the configuration file.
+func ResolvePath(cwd, value string) string {
+	return resolveMaybeRelative(cwd, value)
+}
+
 func normalizeIsolationRootDir(cwd, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || filepath.Clean(value) == filepath.Clean(legacyIsolationRootDir) {
