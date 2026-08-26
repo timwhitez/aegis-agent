@@ -3304,6 +3304,48 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	}
 }
 
+func TestInitCreatesExampleSkillInAbsoluteSkillDir(t *testing.T) {
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	invokeDir := t.TempDir()
+	absoluteSkillDir := filepath.Join(t.TempDir(), "skills")
+	if err := os.Chdir(invokeDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(originalWD) }()
+
+	configPath := filepath.Join(invokeDir, "config.yaml")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run(context.Background(), []string{
+		"init",
+		"--force",
+		"--config", configPath,
+		"--skill-dir", absoluteSkillDir,
+		"--example-hook=false",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run init: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	for _, relative := range []string{
+		"example/SKILL.md",
+		"example/tools/echo.yaml",
+	} {
+		if _, err := os.Stat(filepath.Join(absoluteSkillDir, relative)); err != nil {
+			t.Fatalf("expected generated absolute skill asset %s: %v", relative, err)
+		}
+	}
+	loaded, err := config.Load(configPath, invokeDir)
+	if err != nil {
+		t.Fatalf("load generated config: %v", err)
+	}
+	if len(loaded.Skills.Dirs) != 1 || loaded.Skills.Dirs[0] != absoluteSkillDir {
+		t.Fatalf("generated skill dirs = %#v, want [%q]", loaded.Skills.Dirs, absoluteSkillDir)
+	}
+}
+
 func TestInitReportsMissingCurrentDirectoryBeforeWritingConfig(t *testing.T) {
 	originalWD, err := os.Getwd()
 	if err != nil {
