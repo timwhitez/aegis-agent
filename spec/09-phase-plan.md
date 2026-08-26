@@ -181,6 +181,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
+- `node --check internal/webconsole/assets-v2/*.js` 通过（目录存在 JavaScript 时）
 - `node --test validation/scripts/webconsole_utils_test.mjs` 通过
 - Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置和 queue job 提交主路径通过
 - `run` / `exec` / `steer` / `continue` 主路径通过
@@ -272,6 +273,8 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - session inspector 增加懒加载、bounded 的 Context tab 与独立只读 endpoint；默认 overview/home polling 不递归扫描 lineage，也不增加 telemetry dashboard
 
 - `aegis-agent web`
+- 默认页面使用 Web Console v2；原页面保留为 `web.legacy_ui_enabled` 控制的 legacy fallback，并在 v2 验收后默认禁用
+- v2 的选型、双前端 route、配置开关、回滚和完成标准见 `spec/17-web-console-v2-migration.md`
 - `experimental web` 作为旧入口兼容别名
 - 本地 HTTP API
 - 内嵌静态单页前端

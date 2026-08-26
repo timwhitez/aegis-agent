@@ -52,7 +52,7 @@
 ### 3.1 Web-first v1 必须达成
 
 - 提供稳定的本地 Web-first agent 运行时，可在工作目录内完成多轮任务
-- 提供完整的本地 Web 控制台，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、Settings provider/model 配置、任务/队列/children 观测与基础控制
+- 提供完整的本地 Web Console v2，作为默认用户入口承载 session 启动、追加输入、继续执行、Goal、Plan Mode、Settings provider/model 配置、任务/队列/children 观测与基础控制；原页面只作为默认禁用的 legacy fallback 保留
 - 保留稳定 CLI 命令面，作为脚本化、CI、故障恢复和高级操作入口
 - 支持 OpenAI Responses、Anthropic Messages、Google Gemini `generateContent`
 - 支持 `openai-compatible` 的 Responses 形状兼容入口
@@ -129,6 +129,7 @@
 - 默认入口是本地 Web 控制台
 - 用户从 Session 工作区启动任务、打开 Goal 或 Plan Mode、追加 steer、continue、查看 timeline / tasks / queue / children；provider/model 通过 Settings 配置，避免每个 session 输入框重复暴露高级 provider 面板
 - Web 控制台只通过 runtime / session store / queue store 做真实控制，不维护第二套状态
+- 默认页面是 repo-owned Web Console v2；`web.legacy_ui_enabled` 默认关闭，只有显式启用时才提供旧页面。两套页面不得产生第二套 API、session 或浏览器权威状态
 - 默认交互要简洁：高频路径不要求多轮用户确认；只有 validation coverage override、删除/清理、配置/API key 写入、外部暴露服务和其他不可逆或安全敏感动作需要显式确认
 
 ### 5.2 `run`
