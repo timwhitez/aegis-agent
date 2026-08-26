@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="color-scheme" content="light">
   <title>Agent Console</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -52,7 +53,8 @@
           <span id="connection-status">Agent Session</span>
           <span class="session-chip" id="session-id-display">ID: 0x8F9A2B</span>
         </div>
-        <div class="header-actions">
+		<div class="header-actions">
+			<button class="language-toggle-btn" id="language-toggle-btn" type="button" data-i18n-control aria-label="Switch to English" title="Switch to English"><span data-language-label>EN</span></button>
           <button class="icon-action-btn inspector-toggle-btn" id="inspector-toggle-btn" aria-label="Toggle inspector" aria-controls="inspector-slide-out" aria-expanded="false" data-tooltip="Inspector">
             <i data-lucide="panel-right"></i>
           </button>
@@ -191,7 +193,8 @@
   <div class="inspector-backdrop" id="inspector-backdrop" aria-hidden="true"></div>
   <div class="inspector-slide-out" id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true" tabindex="-1"></div>
   <div class="toast-rack" id="toast-rack" aria-live="polite" aria-atomic="true"></div>
-  <script src="utils.js"></script>
+	<script src="i18n.js"></script>
+	<script src="utils.js"></script>
   <script src="markdown-security.js"></script>
   <script src="icons.js"></script>
   <script src="api.js"></script>

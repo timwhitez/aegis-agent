@@ -9,6 +9,8 @@ function describeTimelineItem(item) {
         title: 'Background results accepted',
         copy: summarizeBackgroundResultsPayload(payload) || 'Background agent results were accepted into this session.',
         meta: item.message_id ? shortId(item.message_id) : '',
+        copyIsRaw: Boolean(summarizeBackgroundResultsPayload(payload)),
+        metaIsRaw: Boolean(item.message_id),
         tone: failed ? 'danger' : 'live',
         data: ''
       };
@@ -19,6 +21,8 @@ function describeTimelineItem(item) {
         title: 'Tool results appended',
         copy: truncateText(item.text || 'Tool output recorded.', 180),
         meta: item.message_id ? shortId(item.message_id) : '',
+        copyIsRaw: Boolean(item.text),
+        metaIsRaw: Boolean(item.message_id),
         tone: 'live',
         data: ''
       };
@@ -28,6 +32,8 @@ function describeTimelineItem(item) {
       title: `${humanizeStatus(item.role || 'message')} message`,
       copy: truncateText(item.text || '(empty message)', 180),
       meta: item.message_id ? shortId(item.message_id) : '',
+      copyIsRaw: Boolean(item.text),
+      metaIsRaw: Boolean(item.message_id),
       tone: item.role === 'system' ? 'danger' : 'neutral',
       data: ''
     };
@@ -101,6 +107,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'sparkles',
         title: 'Assistant output persisted',
         copy: truncateText(data?.text || 'Assistant text recorded.', 180),
+        copyIsRaw: Boolean(data?.text),
         meta: phaseHeadline(phase),
         tone: 'live',
         data: ''
@@ -110,6 +117,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'wrench',
         title: `Tool started: ${toolName || 'tool'}`,
         copy: summarizeToolArgumentsData(data?.arguments),
+        copyIsRaw: Boolean(data?.arguments),
         meta: phaseHeadline(phase),
         tone: 'live',
         data: truncateText(data?.arguments || '', 600)
@@ -119,6 +127,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'check-circle-2',
         title: `Tool finished: ${toolName || 'tool'}`,
         copy: summarizeToolOutputData(data?.display_output || 'Tool output recorded.'),
+        copyIsRaw: Boolean(data?.display_output),
         meta: phaseHeadline(phase),
         tone: data?.is_error ? 'danger' : 'live',
         data: data?.metadata ? prettyJSON(data.metadata) : ''
@@ -201,6 +210,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: eventType === 'goal.completed' ? 'badge-check' : eventType === 'goal.budget_limited' || eventType === 'goal.budget_wrapup_required' ? 'timer-off' : 'target',
         title: humanizeEventType(eventType),
         copy: data?.summary || data?.objective ? truncateText(data.summary || data.objective, 180) : 'Session goal state changed.',
+        copyIsRaw: Boolean(data?.summary || data?.objective),
         meta: data?.status ? humanizeStatus(data.status) : phaseHeadline(phase),
         tone: eventType === 'goal.budget_limited' || eventType === 'goal.budget_wrapup_required' ? 'queued' : eventType === 'goal.completed' ? 'live' : 'neutral',
         data: data ? prettyJSON(data) : ''
@@ -229,6 +239,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: planModeEventIcon(eventType),
         title: planModeEventTitle(eventType),
         copy: planModeEventCopy(eventType, data),
+        copyIsRaw: Boolean(data?.summary || data?.objective),
         meta: data?.plan_version ? `v${data.plan_version}` : data?.status ? humanizeStatus(data.status) : phaseHeadline(phase),
         tone: eventType === 'planmode.cancelled' || eventType === 'planmode.input_cancelled'
           ? 'danger'
@@ -255,6 +266,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'ban',
         title: 'Provider request cancelled',
         copy: data?.reason || 'The in-flight provider call was cancelled.',
+        copyIsRaw: Boolean(data?.reason),
         meta: phaseHeadline(phase),
         tone: 'danger',
         data: ''
@@ -275,6 +287,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'ban',
         title: 'Run cancelled',
         copy: data?.reason || 'The session was cancelled by its parent or operator.',
+        copyIsRaw: Boolean(data?.reason),
         meta: phaseHeadline(phase),
         tone: 'danger',
         data: ''
@@ -293,6 +306,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         icon: 'x-circle',
         title: 'Session failed',
         copy: data?.error || 'The run failed.',
+        copyIsRaw: Boolean(data?.error),
         meta: phaseHeadline(phase),
         tone: 'danger',
         data: ''

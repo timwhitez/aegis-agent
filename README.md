@@ -26,7 +26,7 @@ IDE features, remote terminals, or a fixed workflow engine.
 
 ## Quick start
 
-Requirements: Go 1.24+ and Node.js (for the embedded Web console checks).
+Requirements: Go 1.26.7+ and Node.js (for the embedded Web console checks).
 
 ```sh
 ./build.sh
@@ -42,6 +42,11 @@ Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
 Web Console v2 is the default UI. The original page remains packaged but is
 disabled by default; its temporary `/legacy/` rollback route can be enabled in
 Settings or with `web.legacy_ui_enabled: true`.
+
+The console uses a light theme and starts in Simplified Chinese. Use the `EN` /
+`中文` control in the header to switch languages; the browser stores the choice
+locally. Session prompts, model output, tool payloads, file contents, and other
+operator data are preserved verbatim rather than translated.
 
 For a CLI-only workflow:
 
@@ -83,6 +88,21 @@ The test script checks Go formatting, embedded Web console JavaScript, and the
 repository-owned Go and JavaScript regression suites. It does not require live
 provider credentials. For focused development, run the relevant package with
 `go test ./internal/<package> -count=1`.
+
+The deterministic browser suite exercises the real local service, provider
+fixture, durable sessions, Goal, Plan Mode, Todo/tasks, steering, interruption,
+workspace, skills, settings, history, locale persistence, responsive layout,
+and screenshot inspection without live credentials:
+
+```sh
+npm ci --ignore-scripts
+npx playwright install chromium
+npm run test:e2e
+```
+
+Each run writes a screenshot set and hashed manifest under
+`validation/runs/webconsole-e2e-*`; that directory is ignored locally and
+uploaded by CI as a short-lived artifact.
 
 Generated binaries, local sessions, workspace contents, validation output,
 editor state, local skills, and archives are ignored. Do not add live-provider

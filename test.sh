@@ -4,6 +4,19 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+GO_VERSION="$(go env GOVERSION)"
+if [[ ! "$GO_VERSION" =~ ^go([0-9]+)\.([0-9]+)(\.([0-9]+))? ]]; then
+	printf 'unable to parse Go version: %s\n' "$GO_VERSION" >&2
+	exit 1
+fi
+GO_MAJOR="${BASH_REMATCH[1]}"
+GO_MINOR="${BASH_REMATCH[2]}"
+GO_PATCH="${BASH_REMATCH[4]:-0}"
+if (( GO_MAJOR < 1 || (GO_MAJOR == 1 && GO_MINOR < 26) || (GO_MAJOR == 1 && GO_MINOR == 26 && GO_PATCH < 7) )); then
+	printf 'Go 1.26.7 or newer is required; found %s\n' "$GO_VERSION" >&2
+	exit 1
+fi
+
 if [[ ! -x ./build.sh ]]; then
 	printf 'build.sh must be executable because README documents ./build.sh\n' >&2
 	exit 1
@@ -24,7 +37,7 @@ for js_file in internal/webconsole/assets/*.js internal/webconsole/assets-v2/*.j
   node --check "$js_file"
 done
 
-node --test validation/scripts/*.mjs
+node --test validation/scripts/*_test.mjs
 
 PKG_PATTERNS=(
   ./cmd/...

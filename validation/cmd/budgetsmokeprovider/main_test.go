@@ -88,6 +88,29 @@ func TestCaptureToolReferencesIgnoresPartialArtifactsAndNonShellHistory(t *testi
 	}
 }
 
+func TestScriptedCallCoversBrowserE2ELifecycleMarkers(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		calls []string
+	}{
+		{name: "main", input: "E2E_UI_MAIN", calls: []string{"todo_write", "task_create", "task_create", "task_update", "shell", "finish"}},
+		{name: "goal", input: "E2E_UI_GOAL", calls: []string{"update_goal", "finish"}},
+		{name: "plan", input: "E2E_UI_PLAN", calls: []string{"submit_plan", "finish"}},
+		{name: "await", input: "E2E_UI_AWAIT", calls: []string{"await_input", "finish"}},
+		{name: "slow", input: "E2E_UI_SLOW", calls: []string{"finish", "finish"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			facts := requestFacts{SessionID: "browser-session", InputText: test.input}
+			state := &sessionScriptState{}
+			for index, want := range test.calls {
+				assertScriptedCall(t, facts, state, index+1, want, nil)
+			}
+		})
+	}
+}
+
 func assertScriptedCall(t *testing.T, facts requestFacts, state *sessionScriptState, callNumber int, wantName string, wantArguments map[string]any) {
 	t.Helper()
 	call, err := scriptedCall(facts, state, callNumber)

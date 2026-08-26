@@ -193,7 +193,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	}
 	text := strings.Join(textParts, "\n")
 	if text != "" {
-		emit("assistant.delta", map[string]any{"text": text})
+		emitEvent(emit, "assistant.delta", map[string]any{"text": text})
 	}
 	if stopReasonRaw == "tool_use" && len(calls) == 0 {
 		return TurnResult{}, &HTTPError{

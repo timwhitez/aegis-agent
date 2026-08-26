@@ -4,6 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
+const i18nSource = readFileSync(new URL('../../internal/webconsole/assets/i18n.js', import.meta.url), 'utf8');
 const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets/session-view.js', import.meta.url), 'utf8');
 const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
 const workspaceViewSource = readFileSync(new URL('../../internal/webconsole/assets/workspace-view.js', import.meta.url), 'utf8');
@@ -1622,7 +1623,7 @@ test('session activity card surfaces durable Goal runtime status', () => {
       hasGoalChipClass: html.includes('status-badge live'),
       hasPhase: html.includes('Tool execute') || html.includes('Tool Execute'),
       hasAccounting: html.includes('tokens 42') && html.includes('time 9s'),
-      hasLatestHistory: html.includes('goal.accounting.updated')
+      hasLatestHistory: html.includes('Goal accounting updated')
     };
   })()`, appContext);
 
@@ -6282,7 +6283,7 @@ test('workspace rename control renames the previewed file and keeps its preview 
   vm.runInContext(`
     renameCalls = [];
     toasts = [];
-    window.prompt = function() { return 'final.txt'; };
+		promptLocalAction = async function() { return 'final.txt'; };
     renameWorkspaceFile = async function(path, name) {
       renameCalls.push({ path, name });
       return { path: 'src/final.txt' };
@@ -6661,6 +6662,84 @@ test('task panel renders cancelled count separately from completed tasks', () =>
   assert.match(html, /<span class="metric-label">Completed<\/span>/);
   assert.match(html, /<div class="metric-card-value">1<\/div>/);
   assert.match(html, /<div class="metric-card-copy">1 cancelled<\/div>/);
+});
+
+test('task panel counts Todo progress independently and renders derived task groups', () => {
+	const html = context.renderTasksPanel({
+		task_board: {
+			todo: [
+				{ content: 'One', status: 'in_progress' },
+				{ content: 'Two', status: 'in_progress' },
+				{ content: 'Three', status: 'pending' }
+			],
+			counters: { in_progress: 1, completed: 1, cancelled: 0 },
+			groups: {
+				in_progress: [{ id: 'task_0001', subject: 'Working', status: 'in_progress' }],
+				ready: [{ id: 'task_0002', subject: 'Ready task', status: 'pending' }],
+				blocked: [{ id: 'task_0003', subject: 'Blocked task', status: 'pending', blocked_by: ['task_0001'] }],
+				completed: [{ id: 'task_0004', subject: 'Done', status: 'completed' }],
+				cancelled: []
+			}
+		}
+	});
+	assert.match(html, /<div class="metric-card-copy">2 in progress<\/div>/);
+	assert.match(html, /data-task-group="in_progress"/);
+	assert.match(html, /data-task-group="ready"/);
+	assert.match(html, /data-derived-status="ready"/);
+	assert.match(html, />Ready<\/span>/);
+	assert.match(html, />task_0002<\/span>/);
+	assert.ok(html.indexOf('data-task-group="in_progress"') < html.indexOf('data-task-group="ready"'));
+});
+
+test('Web Console v2 inspector excludes Background and exposes complete tab semantics', () => {
+	context.document.documentElement = { dataset: { ui: 'aegis-v2' } };
+	vm.runInContext(`
+		state.sessionDetail = {
+			metadata: { id: 'session_v2_tabs' },
+			state: { status: 'paused' },
+			task_board: { todo: [], counters: {}, groups: {} }
+		};
+		inspectorViewState.tab = 'tasks';
+	`, context);
+	const html = vm.runInContext('renderInspectorPanel()', context);
+	delete context.document.documentElement;
+	assert.doesNotMatch(html, /data-inspector-tab="agents"/);
+	assert.doesNotMatch(html, />Background<\/button>/);
+	assert.match(html, /role="tablist"/);
+	assert.match(html, /role="tab"[^>]+aria-selected="true"[^>]+tabindex="0"/);
+	assert.match(html, /role="tabpanel"[^>]+aria-labelledby="inspector-tab-tasks"/);
+});
+
+test('i18n defaults to zh-CN, switches to English, and persists the locale', () => {
+	const values = new Map();
+	const makeContext = () => {
+		const document = {
+			readyState: 'loading',
+			documentElement: { lang: '', dataset: {}, setAttribute() {} },
+			addEventListener() {},
+			dispatchEvent() {},
+			getElementById() { return null; }
+		};
+		const window = {
+			document,
+			localStorage: {
+				getItem(key) { return values.get(key) || null; },
+				setItem(key, value) { values.set(key, value); }
+			}
+		};
+		const i18nContext = { window };
+		vm.createContext(i18nContext);
+		vm.runInContext(i18nSource, i18nContext, { filename: 'i18n.js' });
+		return window.AegisI18n;
+	};
+	const first = makeContext();
+	assert.equal(first.locale(), 'zh-CN');
+	assert.equal(first.t('Settings'), '设置');
+	assert.equal(first.t('2 in progress'), '2 个进行中');
+	assert.equal(first.setLocale('en'), 'en');
+	assert.equal(first.t('Settings'), 'Settings');
+	const restored = makeContext();
+	assert.equal(restored.locale(), 'en');
 });
 
 test('summary panel renders provider attempt ledger facts', () => {

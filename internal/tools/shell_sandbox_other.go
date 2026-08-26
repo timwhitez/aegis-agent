@@ -7,8 +7,10 @@ import (
 	"strings"
 )
 
-func shellSandboxCommand(sandbox, workdir, bindSource, shellPath, shellArg, command string) (string, []string, string, error) {
-	return sandboxCommand(sandbox, workdir, bindSource, []string{shellPath, shellArg, command})
+func shellSandboxCommand(sandbox, workdir, bindSource, shellPath string, shellArgs []string, command string) (string, []string, string, error) {
+	argv := append([]string{shellPath}, shellArgs...)
+	argv = append(argv, command)
+	return sandboxCommand(sandbox, workdir, bindSource, argv)
 }
 
 func sandboxCommand(sandbox, workdir, bindSource string, argv []string) (string, []string, string, error) {

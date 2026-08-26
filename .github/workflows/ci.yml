@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.7
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: ./test.sh
+      - run: go vet ./...
+      - name: Install pinned Go analyzers
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+      - run: staticcheck ./...
+      - run: govulncheck ./...
+      - run: go test -race -count=1 -timeout=5m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webconsole-e2e-${{ github.run_id }}
+          path: validation/runs/webconsole-e2e-*
+          if-no-files-found: warn
+          retention-days: 14

@@ -45,7 +45,8 @@ const runtimeHandles = {
   pendingSessionRefresh: null,
   pendingOverviewRefresh: null,
   layoutObserver: null,
-  inspectorPreviousFocus: null
+	inspectorPreviousFocus: null,
+	inspectorRestoreIsolation: null
 };
 
 const skillsViewState = {
@@ -970,7 +971,14 @@ function pushLiveEvent(event) {
 }
 
 function setupEventListeners() {
-  nodes.navItems.forEach((item) => {
+	document.addEventListener('aegis:localechange', () => {
+		renderCurrentSession();
+		if (currentViewName() === 'history' && currentHistoryData()) {
+			renderHistory();
+		}
+		window.AegisI18n?.apply?.(document.body);
+	});
+	nodes.navItems.forEach((item) => {
     item.addEventListener('click', () => {
       const view = item.getAttribute('data-view');
       switchView(view);
@@ -1179,8 +1187,33 @@ function setupEventListeners() {
 
   document.addEventListener('change', handleSkillUploadChange);
 
-  document.addEventListener('keydown', (event) => {
-    const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+	document.addEventListener('keydown', (event) => {
+		const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
+		const actionableRow = event.target?.closest?.('[data-sub-agent-open][role="button"], [data-sub-agent-toggle][role="button"], [data-todo-float-toggle][role="button"], [data-files-float-toggle][role="button"]');
+		if (actionableRow && (event.key === 'Enter' || event.key === ' ')) {
+			const nestedControl = event.target !== actionableRow && event.target?.closest?.('button, a, input, select, textarea');
+			if (!nestedControl) {
+				event.preventDefault();
+				actionableRow.click?.();
+				return;
+			}
+		}
+		const activeTab = event.target?.closest?.('[role="tab"][data-inspector-tab]');
+		if (activeTab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+			const tabs = Array.from(activeTab.parentElement?.querySelectorAll?.('[role="tab"]') || []);
+			const index = tabs.indexOf(activeTab);
+			let nextIndex = index;
+			if (event.key === 'Home') nextIndex = 0;
+			if (event.key === 'End') nextIndex = tabs.length - 1;
+			if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+			if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+			if (tabs[nextIndex]) {
+				event.preventDefault();
+				tabs[nextIndex].click?.();
+				tabs[nextIndex].focus?.();
+				return;
+			}
+		}
 
     if (event.key === 'Tab' && trapInspectorFocus(event)) {
       return;
@@ -1729,8 +1762,9 @@ function openInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
   const backdrop = nodes.inspectorBackdrop;
   if (!slideOut || !backdrop) return;
-  if (!slideOut.classList.contains('is-open')) {
-    runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
+	if (!slideOut.classList.contains('is-open')) {
+		runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
+		runtimeHandles.inspectorRestoreIsolation = isolateModalElements([slideOut, backdrop]);
   }
   renderCurrentSession();
   slideOut.classList.add('is-open');
@@ -1749,7 +1783,9 @@ function closeInspectorSlideOut(options = {}) {
   nodes.inspectorBackdrop?.classList.remove('is-open');
   nodes.inspectorSlideOut?.setAttribute('aria-hidden', 'true');
   nodes.inspectorBackdrop?.setAttribute('aria-hidden', 'true');
-  nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
+	nodes.inspectorToggleBtn?.setAttribute('aria-expanded', 'false');
+	runtimeHandles.inspectorRestoreIsolation?.();
+	runtimeHandles.inspectorRestoreIsolation = null;
   runtimeHandles.inspectorPreviousFocus = null;
   if (restoreFocus) {
     previousFocus?.focus?.({ preventScroll: true });

@@ -67,6 +67,8 @@ func (s *Service) stopQueueReaper() {
 // runReaperPass performs one reclamation sweep. Errors are swallowed (logged via
 // events where applicable) so a transient store error never kills the loop.
 func (s *Service) runReaperPass() {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	_, _ = s.store.ReapStaleQueueJobs(s.leaseStaleAfter())
 	// Zombie running sessions (status=running with no live owning process) are
 	// reconciled to paused via the existing self-filtering helper, which only

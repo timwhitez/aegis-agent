@@ -1,5 +1,9 @@
 function maybeArray(value) {
-  return Array.isArray(value) ? value : [];
+	return Array.isArray(value) ? value : [];
+}
+
+function isModernWebConsole() {
+  return String(document?.documentElement?.dataset?.ui || '') === 'aegis-v2';
 }
 
 function collectPlanInputAnswers(request, selections) {
@@ -117,21 +121,24 @@ function confirmLocalAction(options = {}) {
     backdrop.appendChild(dialog);
 
     let settled = false;
-    const finish = (value) => {
+		const finish = (value) => {
       if (settled) {
         return;
       }
       settled = true;
-      document.removeEventListener?.('keydown', onKeydown);
+			document.removeEventListener?.('keydown', onKeydown);
+			restoreModalIsolation();
       backdrop.remove();
       previousFocus?.focus?.();
       resolve(Boolean(value));
     };
-    const onKeydown = (event) => {
-      if (event.key === 'Escape') {
+		const onKeydown = (event) => {
+			if (event.key === 'Escape') {
         event.preventDefault?.();
         finish(false);
-      }
+			} else if (event.key === 'Tab') {
+				trapDialogFocus(event, dialog);
+			}
     };
 
     cancel.addEventListener('click', () => finish(false));
@@ -142,7 +149,8 @@ function confirmLocalAction(options = {}) {
       }
     });
 
-    document.body.appendChild(backdrop);
+		document.body.appendChild(backdrop);
+		const restoreModalIsolation = isolateModalBackdrop(backdrop);
     document.addEventListener?.('keydown', onKeydown);
     confirm.focus?.();
   });
@@ -218,21 +226,24 @@ function promptLocalAction(options = {}) {
     backdrop.appendChild(dialog);
 
     let settled = false;
-    const finish = (value) => {
+		const finish = (value) => {
       if (settled) {
         return;
       }
       settled = true;
-      document.removeEventListener?.('keydown', onKeydown);
+			document.removeEventListener?.('keydown', onKeydown);
+			restoreModalIsolation();
       backdrop.remove();
       previousFocus?.focus?.();
       resolve(value);
     };
-    const onKeydown = (event) => {
+		const onKeydown = (event) => {
       if (event.key === 'Escape') {
         event.preventDefault?.();
         finish(null);
-      }
+			} else if (event.key === 'Tab') {
+				trapDialogFocus(event, dialog);
+			}
     };
 
     cancel.addEventListener('click', () => finish(null));
@@ -249,10 +260,68 @@ function promptLocalAction(options = {}) {
       }
     });
 
-    document.body.appendChild(backdrop);
+		document.body.appendChild(backdrop);
+		const restoreModalIsolation = isolateModalBackdrop(backdrop);
     document.addEventListener?.('keydown', onKeydown);
     input.focus?.();
   });
+}
+
+function dialogFocusableElements(dialog) {
+  return Array.from(dialog?.querySelectorAll?.(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  ) || []).filter((element) => {
+    const style = window?.getComputedStyle?.(element);
+    return !style || (style.display !== 'none' && style.visibility !== 'hidden');
+  });
+}
+
+function trapDialogFocus(event, dialog) {
+  const candidates = dialogFocusableElements(dialog);
+  if (!candidates.length) {
+    event.preventDefault?.();
+    dialog?.focus?.();
+    return;
+  }
+  const first = candidates[0];
+  const last = candidates[candidates.length - 1];
+  const active = document.activeElement;
+  const inside = dialog?.contains?.(active) || candidates.includes(active);
+  if (event.shiftKey && (!inside || active === first)) {
+    event.preventDefault?.();
+    last.focus?.();
+  } else if (!event.shiftKey && (!inside || active === last)) {
+    event.preventDefault?.();
+    first.focus?.();
+  }
+}
+
+function isolateModalBackdrop(backdrop) {
+	return isolateModalElements([backdrop]);
+}
+
+function isolateModalElements(exemptElements = []) {
+	const exempt = new Set(exemptElements.filter(Boolean));
+	const siblings = Array.from(document?.body?.children || []).filter((node) => !exempt.has(node));
+  const snapshots = siblings.map((node) => ({
+    node,
+    inert: node.hasAttribute?.('inert') || false,
+    ariaHidden: node.getAttribute?.('aria-hidden')
+  }));
+  for (const { node } of snapshots) {
+    node.setAttribute?.('inert', '');
+    node.setAttribute?.('aria-hidden', 'true');
+  }
+  return () => {
+    for (const snapshot of snapshots) {
+      if (!snapshot.inert) snapshot.node.removeAttribute?.('inert');
+      if (snapshot.ariaHidden === null || snapshot.ariaHidden === undefined) {
+        snapshot.node.removeAttribute?.('aria-hidden');
+      } else {
+        snapshot.node.setAttribute?.('aria-hidden', snapshot.ariaHidden);
+      }
+    }
+  };
 }
 
 function setSkillUploadPending(root, pending) {
@@ -805,12 +874,16 @@ function shortenPath(path) {
   return `…${text.slice(-41)}`;
 }
 
+function currentDisplayLocale() {
+	return window?.AegisI18n?.locale?.() || 'zh-CN';
+}
+
 function formatTimestamp(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return String(value || '');
   }
-  return date.toLocaleString();
+	return date.toLocaleString(currentDisplayLocale());
 }
 
 function formatRelativeTime(value) {
@@ -825,11 +898,18 @@ function formatRelativeTime(value) {
   const diffHr = Math.floor(diffMin / 60);
   const diffDay = Math.floor(diffHr / 24);
 
-  if (diffSec < 60) return 'just now';
-  if (diffMin < 60) return `${diffMin}m ago`;
-  if (diffHr < 24) return `${diffHr}h ago`;
-  if (diffDay < 7) return `${diffDay}d ago`;
-  return date.toLocaleDateString();
+	if (currentDisplayLocale() === 'zh-CN') {
+		if (diffSec < 60) return '刚刚';
+		if (diffMin < 60) return `${diffMin} 分钟前`;
+		if (diffHr < 24) return `${diffHr} 小时前`;
+		if (diffDay < 7) return `${diffDay} 天前`;
+		return date.toLocaleDateString('zh-CN');
+	}
+	if (diffSec < 60) return 'just now';
+	if (diffMin < 60) return `${diffMin}m ago`;
+	if (diffHr < 24) return `${diffHr}h ago`;
+	if (diffDay < 7) return `${diffDay}d ago`;
+	return date.toLocaleDateString('en');
 }
 
 function formatClock(value) {
@@ -837,7 +917,7 @@ function formatClock(value) {
   if (Number.isNaN(date.getTime())) {
     return String(value || '');
   }
-  return date.toLocaleTimeString([], {
+	return date.toLocaleTimeString(currentDisplayLocale(), {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit'

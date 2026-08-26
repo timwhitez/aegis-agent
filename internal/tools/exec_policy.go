@@ -914,10 +914,7 @@ func execPolicyTargetSecretPath(target string) bool {
 			return true
 		}
 	}
-	if deniedWorkspaceWriteFilePathPattern(parts) != "" {
-		return true
-	}
-	return false
+	return deniedWorkspaceWriteFilePathPattern(parts) != ""
 }
 
 func effectiveExecPolicyMode(cfg *config.Config) string {

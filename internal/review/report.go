@@ -235,14 +235,6 @@ func allowsRepeatedFindingField(field string) bool {
 	}
 }
 
-func headingLevel(line string) int {
-	match := headingLinePattern.FindStringSubmatch(line)
-	if len(match) != 2 {
-		return 0
-	}
-	return len(match[1])
-}
-
 func parseFindingField(line string) (string, string, bool) {
 	match := fieldLinePattern.FindStringSubmatch(line)
 	if len(match) != 3 {

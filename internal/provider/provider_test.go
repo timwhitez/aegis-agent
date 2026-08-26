@@ -1186,6 +1186,77 @@ func TestGoogleAdapterGeneratesUniqueFallbackToolCallIDs(t *testing.T) {
 	}
 }
 
+func TestGoogleAdapterFallbackToolCallIDsAreUniqueAcrossRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"responseId":"constant-response","candidates":[{"content":{"parts":[{"functionCall":{"name":"shell","args":{"command":"pwd"}}}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	adapter := NewGoogle(server.URL, "key", server.Client())
+	run := func(requestID string) string {
+		result, err := adapter.RunTurn(context.Background(), TurnRequest{
+			SessionID: "s1", RequestID: requestID, Model: "gemini-2.5-flash", SystemPrompt: "system",
+			Messages: []session.Message{session.NewMessage("user", "hello")},
+			Tools:    []ToolSchema{{Name: "shell", Description: "shell", InputSchema: map[string]any{"type": "object"}}},
+		}, nil)
+		if err != nil || len(result.ToolCalls) != 1 {
+			t.Fatalf("request %s err=%v result=%#v", requestID, err, result)
+		}
+		return result.ToolCalls[0].ID
+	}
+	first := run("s1:1:main:0")
+	second := run("s1:2:main:0")
+	if first == "" || second == "" || first == second {
+		t.Fatalf("fallback ids collided across requests: first=%q second=%q", first, second)
+	}
+}
+
+func TestGoogleAdapterClassifiesEmptySuccessAsParseError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"responseId":"empty-success","candidates":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := NewGoogle(server.URL, "key", server.Client()).RunTurn(context.Background(), TurnRequest{
+		SessionID: "s1", RequestID: "s1:1:main:0", Model: "gemini-2.5-flash",
+		Messages: []session.Message{session.NewMessage("user", "hello")},
+	}, nil)
+	assertProviderParseError(t, err, "google", "did not include candidates")
+}
+
+func TestProviderAdaptersAllowNilEventSink(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		model    string
+		adapter  func(string, *http.Client) Adapter
+	}{
+		{name: "openai", model: "gpt-5.4", response: `{"id":"resp","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`, adapter: func(url string, client *http.Client) Adapter { return NewOpenAI(url, "key", client) }},
+		{name: "anthropic", model: "claude-sonnet-4-6", response: `{"id":"msg","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}`, adapter: func(url string, client *http.Client) Adapter { return NewAnthropic(url, "key", "2023-06-01", client) }},
+		{name: "google", model: "gemini-2.5-flash", response: `{"responseId":"resp","candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`, adapter: func(url string, client *http.Client) Adapter { return NewGoogle(url, "key", client) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.response))
+			}))
+			defer server.Close()
+			result, err := tc.adapter(server.URL, server.Client()).RunTurn(context.Background(), TurnRequest{
+				SessionID: "s1", RequestID: "s1:1:main:0", Model: tc.model,
+				Messages: []session.Message{session.NewMessage("user", "hello")},
+			}, nil)
+			if err != nil || result.Text != "ok" {
+				t.Fatalf("nil event sink err=%v result=%#v", err, result)
+			}
+		})
+	}
+}
+
 func TestGoogleAdapterMapsPromptSafetyBlockWithoutCandidates(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()

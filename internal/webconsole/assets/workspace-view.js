@@ -23,7 +23,8 @@ async function fetchWorkspace() {
     }
     updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
-    nodes.editorFilename.innerText = workspaceDisplayName();
+		nodes.editorFilename.removeAttribute?.('translate');
+		nodes.editorFilename.innerText = workspaceDisplayName();
     nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
     renderWorkspaceActions();
     await loadWorkspaceDirectoryWithFallback(currentWorkspacePath());
@@ -31,7 +32,8 @@ async function fetchWorkspace() {
     console.error('workspace error', err);
     const message = workspaceErrorMessage(err);
     nodes.fileTree.innerHTML = '<div class="empty-panel">Failed to load workspace.</div>';
-    nodes.editorFilename.innerText = 'Workspace';
+		nodes.editorFilename.removeAttribute?.('translate');
+		nodes.editorFilename.innerText = 'Workspace';
     nodes.editorContent.innerText = message;
     renderWorkspaceActions();
     showToast(message, 'error');
@@ -153,6 +155,13 @@ function updateWorkspaceMeta() {
   if (nodes.workspaceRootChip) {
     const root = String(state.meta?.workspace_root || '').trim();
     const selected = selectedWorkspaceWorkdir();
+    if (selected || root) {
+      nodes.workspaceRootChip.setAttribute('translate', 'no');
+      nodes.workspaceRootChip.setAttribute('data-i18n-skip', '');
+    } else {
+      nodes.workspaceRootChip.removeAttribute('translate');
+      nodes.workspaceRootChip.removeAttribute('data-i18n-skip');
+    }
     nodes.workspaceRootChip.textContent = selected || root || 'current cwd';
     nodes.workspaceRootChip.title = selected || root || 'current cwd';
   }
@@ -183,7 +192,8 @@ async function loadWorkspaceDirectory(path = '') {
   renderFileTree(tree);
   updateWorkspaceMeta();
   renderWorkspaceActions();
-  nodes.editorFilename.innerText = workspaceDisplayName();
+	nodes.editorFilename.removeAttribute?.('translate');
+	nodes.editorFilename.innerText = workspaceDisplayName();
   nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
 }
 
@@ -508,7 +518,12 @@ async function handleCreateWorkspaceFolder() {
   }
   const parentPath = currentWorkspacePath();
   const parentLabel = parentPath || 'workspace root';
-  const name = window.prompt(`New folder in ${parentLabel}`, '');
+	const name = await promptLocalAction({
+		title: 'New folder',
+		message: `Create a new folder in ${parentLabel}.`,
+		inputLabel: 'Folder name',
+		confirmLabel: 'Create folder'
+	});
   if (name === null) {
     return;
   }
@@ -629,7 +644,13 @@ async function handleRenameSelectedWorkspaceFile() {
     return;
   }
   const currentName = preview.path.split('/').pop() || preview.path;
-  const nextName = window.prompt(`Rename ${currentName}`, currentName);
+	const nextName = await promptLocalAction({
+		title: 'Rename file',
+		message: `Choose a new name for ${currentName}.`,
+		inputLabel: 'File name',
+		initialValue: currentName,
+		confirmLabel: 'Rename'
+	});
   if (nextName === null) {
     return;
   }
@@ -771,6 +792,8 @@ function renderFileTree(tree, container = nodes.fileTree, level = 0) {
     }
     const button = document.createElement('button');
     button.className = 'tree-node';
+    button.setAttribute('translate', 'no');
+    button.setAttribute('data-i18n-skip', '');
     button.dataset.path = node.path || '';
     button.dataset.type = node.type || '';
     button.dataset.navigation = node.navigation || '';
@@ -901,7 +924,8 @@ async function activateFileTreeNode(button) {
       button.setAttribute('aria-expanded', 'true');
     } catch (err) {
       const message = workspaceErrorMessage(err, `Failed to load directory: ${path}`);
-      nodes.editorFilename.innerText = path;
+			nodes.editorFilename.innerText = path;
+			nodes.editorFilename.setAttribute?.('translate', 'no');
       nodes.editorContent.innerText = message;
       showToast(message, 'error');
     } finally {
@@ -965,7 +989,8 @@ function cssEscape(value) {
 
 async function loadFile(path) {
   const requestSeq = nextWorkspaceRequestSeq();
-  nodes.editorFilename.innerText = path;
+	nodes.editorFilename.innerText = path;
+	nodes.editorFilename.setAttribute?.('translate', 'no');
   nodes.editorContent.innerText = 'Loading...';
   setWorkspaceFilePreview(null);
   renderWorkspaceActions();
@@ -1021,8 +1046,13 @@ function normalizePreviewNumber(value, fallback) {
 }
 
 function renderWorkspaceFilePreview(preview, errorMessage = '') {
-  if (typeof nodes.editorContent.replaceChildren === 'function' && document.createTextNode) {
-    nodes.editorContent.replaceChildren(document.createTextNode(preview.content));
+	if (typeof nodes.editorContent.replaceChildren === 'function' && document.createTextNode) {
+		const content = document.createElement('pre');
+		content.className = 'workspace-preview-content';
+		content.setAttribute('translate', 'no');
+		content.textContent = preview.content;
+		content.innerText = preview.content;
+		nodes.editorContent.replaceChildren(content);
   } else {
     nodes.editorContent.innerText = preview.content;
     nodes.editorContent.textContent = preview.content;

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2430,6 +2431,45 @@ func TestShellRejectsBlankCommand(t *testing.T) {
 	}
 }
 
+func TestShellDoesNotLoadLoginOrInteractiveStartupFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash startup-file contract is Unix-specific")
+	}
+	cfg := config.Default()
+	cfg.Runtime.ShellEnvAllowlist = []string{"PATH", "HOME", "LANG", "TERM"}
+	store := session.NewStore(t.TempDir())
+	workdir := t.TempDir()
+	profileHome := t.TempDir()
+	sentinel := filepath.Join(profileHome, "startup-side-effect")
+	startup := "export AUDIT_PROFILE_SECRET=profile-leak\nprintf loaded > " + strconv.Quote(sentinel) + "\n"
+	for _, name := range []string{".bash_profile", ".profile", ".bashrc"} {
+		if err := os.WriteFile(filepath.Join(profileHome, name), []byte(startup), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", profileHome)
+	t.Setenv("AUDIT_PROFILE_SECRET", "parent-leak")
+	t.Setenv("BASH_ENV", filepath.Join(profileHome, ".bashrc"))
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: workdir, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "shell", ExecContext{SessionID: meta.ID, Workdir: workdir, Store: store, Config: cfg}, json.RawMessage(`{"command":"printf '%s' \"${AUDIT_PROFILE_SECRET-unset}\""}`))
+	if err != nil || result.IsError {
+		t.Fatalf("shell err=%v result=%#v", err, result)
+	}
+	if strings.TrimSpace(result.DisplayOutput) != "unset" {
+		t.Fatalf("startup or parent environment bypassed allowlist: %q", result.DisplayOutput)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("startup file executed side effect, stat err=%v", err)
+	}
+}
+
 func TestWriteAndEditToolsApplyWorkspaceWriteDenylist(t *testing.T) {
 	cfg := config.Default()
 	store := session.NewStore(t.TempDir())
@@ -3742,11 +3782,11 @@ func TestCoreToolDescriptionsGuideSelection(t *testing.T) {
 	}
 	checks := map[string][]string{
 		"shell":       {"build, test, package, git", "Prefer dedicated tools", "workdir parameter"},
-		"read_file":   {"known text file", "Registered skill bundle", "capped at 120 lines", "use grep_files or grep first"},
+		"read_file":   {"known text file", "Registered skill bundle", "capped at 120 lines", "owning path is unknown"},
 		"write_file":  {"Create or overwrite", "prefer edit_file"},
 		"edit_file":   {"Replace exact text", "after reading"},
 		"grep":        {"matching lines", "single file or directory", "use include"},
-		"grep_files":  {"default discovery step", "return only files"},
+		"grep_files":  {"owning path is unknown", "return only files"},
 		"finish":      {"required artifacts", "unrun/failed validation"},
 		"todo_write":  {"progress ledger", "preserved", "does not perform or verify"},
 		"task_create": {"durable task-graph node", "do not use it for trivial"},
@@ -6504,12 +6544,10 @@ func TestTodoWriteNoopDoesNotLookLikeProgress(t *testing.T) {
 	}
 	execCtx := ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}
 	originalUpdatedAt := "2026-05-28T00:00:00Z"
-	firstPayload := fmt.Sprintf(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high","updated_at":%q}]}`, originalUpdatedAt)
-	first, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(firstPayload))
-	if err != nil || first.IsError {
-		t.Fatalf("first todo_write err=%v result=%#v", err, first)
+	if err := store.SaveTodo(meta.ID, []session.TodoItem{{Content: "Do work", Status: "in_progress", Priority: "high", UpdatedAt: originalUpdatedAt}}); err != nil {
+		t.Fatalf("seed todo: %v", err)
 	}
-	second, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high"}]}`))
+	second, err := registry.Execute(context.Background(), "todo_write", execCtx, json.RawMessage(`{"todos":[{"content":"Do work","status":"in_progress","priority":"high","updated_at":"2020-01-01T00:00:00Z"}]}`))
 	if err != nil || second.IsError {
 		t.Fatalf("second todo_write err=%v result=%#v", err, second)
 	}
@@ -6683,6 +6721,50 @@ func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
 	}
 	if len(todo) != 3 || todo[1].Status != "in_progress" || todo[2].Content != "Run focused tests" || todo[2].Status != "in_progress" {
 		t.Fatalf("unexpected accepted todo snapshot: %#v", todo)
+	}
+	if todo[0].UpdatedAt != initial[0].UpdatedAt {
+		t.Fatalf("unchanged item timestamp refreshed: %#v", todo[0])
+	}
+	if todo[1].UpdatedAt == initial[1].UpdatedAt || todo[1].UpdatedAt == "" {
+		t.Fatalf("advanced item timestamp was not refreshed: %#v", todo[1])
+	}
+	if todo[2].UpdatedAt == "" {
+		t.Fatalf("new item timestamp was not assigned: %#v", todo[2])
+	}
+}
+
+func TestTodoWriteOverridesStaleCallerTimestampOnStatusAdvance(t *testing.T) {
+	cfg := config.Default()
+	root := t.TempDir()
+	store := session.NewStore(filepath.Join(root, "sessions"))
+	meta := session.SessionMetadata{
+		SchemaVersion: 1, ID: session.NewSessionID(), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir: root, Mode: session.ModeRun, Provider: "fake", Model: "fake", CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	stale := "2020-01-01T00:00:00Z"
+	if err := store.SaveTodo(meta.ID, []session.TodoItem{{Content: "Advance me", Status: "pending", Priority: "high", UpdatedAt: stale}}); err != nil {
+		t.Fatalf("seed todo: %v", err)
+	}
+	registry, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	result, err := registry.Execute(context.Background(), "todo_write", ExecContext{SessionID: meta.ID, Workdir: root, Store: store, Config: cfg}, json.RawMessage(`{"todos":[{"content":"Advance me","status":"in_progress","priority":"high","updated_at":"2020-01-01T00:00:00Z"}]}`))
+	if err != nil || result.IsError {
+		t.Fatalf("advance todo err=%v result=%#v", err, result)
+	}
+	todo, err := store.LoadTodo(meta.ID)
+	if err != nil {
+		t.Fatalf("load todo: %v", err)
+	}
+	if len(todo) != 1 || todo[0].UpdatedAt == stale {
+		t.Fatalf("stale caller timestamp survived status advance: %#v", todo)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, todo[0].UpdatedAt); err != nil {
+		t.Fatalf("runtime timestamp is invalid: %q: %v", todo[0].UpdatedAt, err)
 	}
 }
 

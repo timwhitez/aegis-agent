@@ -20,14 +20,6 @@ func validateAuditLogAndBatch(file *os.File, events []webAuditEvent) error {
 	return err
 }
 
-func scanExistingAuditLog(file *os.File) (map[string]struct{}, error) {
-	scan, err := scanWebAuditLog(file, nil, true)
-	if err != nil {
-		return nil, err
-	}
-	return scan.seenIDs, nil
-}
-
 func validateAuditBatchIDs(seenIDs map[string]struct{}, events []webAuditEvent) error {
 	if seenIDs == nil {
 		seenIDs = map[string]struct{}{}
@@ -45,13 +37,6 @@ func validateAuditBatchIDs(seenIDs map[string]struct{}, events []webAuditEvent) 
 func validateExistingAuditLog(file *os.File) error {
 	_, err := scanWebAuditLog(file, nil, false)
 	return err
-}
-
-func validateAuditBatchUnique(file *os.File, events []webAuditEvent) error {
-	if len(events) == 0 {
-		return nil
-	}
-	return validateAuditLogAndBatch(file, events)
 }
 
 func validateAuditEvent(event webAuditEvent) error {

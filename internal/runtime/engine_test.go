@@ -84,7 +84,7 @@ func TestEngineRunModeDoesNotEmitAwaitingInputForPlainDoneCandidate(t *testing.T
 }
 
 func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	engine, meta, state, _, hookManager, catalog := newTestEngine(t, session.ModeRun)
 	engine.cfg.Runtime.Queue.PollIntervalMS = 1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "delegate and wait")); err != nil {
 		t.Fatalf("append: %v", err)
@@ -2378,7 +2378,7 @@ func TestEngineAwaitInputParksActiveGoalWithoutCompletingIt(t *testing.T) {
 func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
-	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	engine, meta, state, registry, _, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
 	tokenBudget := int64(1)
 	if _, err := engine.store.CreateGoal(meta.ID, session.GoalDraft{
 		Enabled:      true,
@@ -2404,7 +2404,7 @@ func TestEngineBudgetWrapUpAwaitsReportsCorruptGoalSnapshot(t *testing.T) {
 			Command: []string{"/bin/sh", "-c", "printf '{' > '" + escapedSessionRoot + "'/\"$SESSION_ID\"/goal.json"},
 		},
 	}
-	hookManager = hooks.New(cfg.Hooks, meta.Workdir)
+	hookManager := hooks.New(cfg.Hooks, meta.Workdir)
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
 			ToolCalls: []provider.ToolCall{
@@ -4401,12 +4401,12 @@ func TestEngineSteerAcceptanceRollsBackWhenContractRefreshFails(t *testing.T) {
 }
 
 func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	steerLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "steer.lock")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-steer-update",
 			Inject: &config.HookInject{
@@ -4461,12 +4461,12 @@ func TestEngineSteerAcceptanceRollsBackMessageWhenStatusUpdateFails(t *testing.T
 }
 
 func TestEngineSteerAcceptanceRollsBackMessageWhenPendingCountRefreshFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("focus on tests", false)); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
 	stateLockPath := filepath.Join(engine.store.SessionDir(meta.ID), "state.lock")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-state-update",
 			Inject: &config.HookInject{
@@ -5093,7 +5093,7 @@ func TestEngineBackgroundAcceptanceKeepsNotificationPendingWhenAcceptedEventFail
 }
 
 func TestEngineBackgroundAcceptanceRollsBackMessageWhenNotificationUpdateFails(t *testing.T) {
-	engine, meta, _, _, hookManager, _ := newTestEngine(t, session.ModeRun)
+	engine, meta, _, _, _, _ := newTestEngine(t, session.ModeRun)
 	notification := session.NewBackgroundNotification(session.QueueJob{
 		ID:            "job_1",
 		Status:        session.QueueStatusCompleted,
@@ -5105,7 +5105,7 @@ func TestEngineBackgroundAcceptanceRollsBackMessageWhenNotificationUpdateFails(t
 		t.Fatalf("append background notification: %v", err)
 	}
 	backgroundPath := filepath.Join(engine.store.SessionDir(meta.ID), "control", "background.jsonl")
-	hookManager = hooks.New(config.HooksConfig{
+	hookManager := hooks.New(config.HooksConfig{
 		UserMessage: []config.HookDefinition{{
 			Name: "block-background-update",
 			Inject: &config.HookInject{

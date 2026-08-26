@@ -212,8 +212,7 @@ func renameAtNoSymlink(oldPath, newPath string, opts renameAtNoSymlinkOptions) (
 		_ = unix.Close(newParentFD)
 	}()
 
-	sourceStat, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
-	if err != nil {
+	if _, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts); err != nil {
 		return zero, err
 	}
 	if err := validateRenameTargetAtNoSymlink(newParentFD, newBase, newPath, opts); err != nil {
@@ -230,7 +229,7 @@ func renameAtNoSymlink(oldPath, newPath string, opts renameAtNoSymlinkOptions) (
 	if err := ensureDirFDStillAtPath(newParentFD, newParent); err != nil {
 		return zero, err
 	}
-	sourceStat, err = validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
+	sourceStat, err := validateRenameSourceAtNoSymlink(oldParentFD, oldBase, oldPath, opts)
 	if err != nil {
 		return zero, err
 	}

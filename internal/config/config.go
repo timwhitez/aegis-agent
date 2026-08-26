@@ -903,10 +903,6 @@ func WriteFile(path string, cfg *Config) error {
 	return fileutil.AtomicWriteFileNoSymlink(path, data, 0o600)
 }
 
-func sameCleanPath(a, b string) bool {
-	return filepath.Clean(a) == filepath.Clean(b)
-}
-
 func workspaceConfigTrusted(_ string) bool {
 	value := strings.TrimSpace(os.Getenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG"))
 	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true")

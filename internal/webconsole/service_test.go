@@ -9893,7 +9893,7 @@ func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected conflict while running queue job exists, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "queue jobs are still running") {
+	if !strings.Contains(recorder.Body.String(), "queue jobs are still unsettled") {
 		t.Fatalf("unexpected response body: %s", recorder.Body.String())
 	}
 }
@@ -9936,8 +9936,31 @@ func TestServiceClearSessionsRejectsRunningQueueJobsBeyondDefaultListLimit(t *te
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected conflict while older running queue job exists, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if !strings.Contains(recorder.Body.String(), "queue jobs are still running") {
+	if !strings.Contains(recorder.Body.String(), "queue jobs are still unsettled") {
 		t.Fatalf("unexpected response body: %s", recorder.Body.String())
+	}
+}
+
+func TestServiceClearSessionsRejectsQueuedAndBlockedQueueJobs(t *testing.T) {
+	for _, status := range []string{session.QueueStatusQueued, session.QueueStatusBlocked} {
+		t.Run(status, func(t *testing.T) {
+			cfg := testConfig(t, "")
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+			if err := svc.store.SaveJob(session.QueueJob{SchemaVersion: 1, ID: "job_" + status + "_clear_block", Status: status, Prompt: "unsettled", Mode: session.ModeExec}); err != nil {
+				t.Fatalf("save %s job: %v", status, err)
+			}
+			recorder := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+			req.Header.Set(webMutationHeader, "1")
+			svc.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "queue jobs are still unsettled") {
+				t.Fatalf("expected conflict for %s job, got %d body=%s", status, recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -14359,20 +14382,6 @@ func newSleepToolServer() *httptest.Server {
 			"status":"completed",
 			"output":[
 				{"type":"function_call","call_id":"call_shell_1","name":"shell","arguments":"{\"command\":\"sleep 10\"}"}
-			],
-			"usage":{"input_tokens":10,"output_tokens":5}
-		}`))
-	}))
-}
-
-func newTextReplyServer(reply string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"id":"resp_1",
-			"status":"completed",
-			"output":[
-				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"` + reply + `"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))

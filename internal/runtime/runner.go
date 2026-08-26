@@ -2702,12 +2702,6 @@ func (r *Runner) transformUserMessage(ctx context.Context, meta session.SessionM
 	return text, nil
 }
 
-func (r *Runner) emit(sessionID, eventType, phase string, data map[string]any) {
-	evt := events.New(sessionID, eventType, phase, data)
-	_ = r.store.AppendEvent(sessionID, evt)
-	r.bus.Publish(evt)
-}
-
 func (r *Runner) failBeforeRun(sessionID string, state session.State, phase string, err error) (RunResult, error) {
 	state.Status = session.StatusFailed
 	state.Phase = phase
@@ -2749,6 +2743,7 @@ func (r *Runner) appendEvents(sessionID string, items []events.Event) error {
 	return nil
 }
 
+//lint:ignore U1000 adapter is exercised by in-package provider selection tests.
 func (r *Runner) adapter(name string) (provider.Adapter, error) {
 	cfg, err := r.cfg.ProviderConfig(name)
 	if err != nil {

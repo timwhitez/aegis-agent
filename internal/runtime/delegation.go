@@ -306,34 +306,6 @@ func containsStringValue(items []string, target string) bool {
 	return false
 }
 
-func (r *Runner) activeChildCount(parentSessionID string) (int, error) {
-	children, err := r.store.ListChildren(parentSessionID, -1)
-	if err != nil {
-		return 0, err
-	}
-	runningSessions := map[string]struct{}{}
-	for _, child := range children {
-		if child.Status == session.StatusRunning {
-			runningSessions[child.ID] = struct{}{}
-		}
-	}
-	jobs, err := r.store.ListJobsByParent(parentSessionID, -1)
-	if err != nil {
-		return 0, err
-	}
-	count := len(runningSessions)
-	for _, job := range jobs {
-		if job.Status != session.QueueStatusRunning {
-			continue
-		}
-		if _, exists := runningSessions[strings.TrimSpace(job.SessionID)]; exists && strings.TrimSpace(job.SessionID) != "" {
-			continue
-		}
-		count++
-	}
-	return count, nil
-}
-
 func (r *Runner) restoreDirectChildParentFacts(parentSessionID string, coordinationSnapshot session.ParentCoordinationSnapshot, eventsSnapshot []events.Event) error {
 	var restoreErrs []error
 	if err := r.store.RestoreParentCoordination(parentSessionID, coordinationSnapshot); err != nil {

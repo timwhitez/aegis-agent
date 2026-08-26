@@ -144,7 +144,7 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			if httpErr != nil && httpErr.StatusCode > 0 {
 				data["status_code"] = httpErr.StatusCode
 			}
-			emit("provider.capability_fallback", data)
+			emitEvent(emit, "provider.capability_fallback", data)
 		}
 		err = a.client.DoJSON(ctx, http.MethodPost, "/responses", map[string]string{
 			"Authorization": "Bearer " + a.apiKey,
@@ -218,7 +218,7 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	text := strings.Join(textParts, "\n")
 	thinking := strings.Join(thinkingParts, "\n")
 	if text != "" {
-		emit("assistant.delta", map[string]any{"text": text})
+		emitEvent(emit, "assistant.delta", map[string]any{"text": text})
 	}
 	stopReason := "done_candidate"
 	switch {

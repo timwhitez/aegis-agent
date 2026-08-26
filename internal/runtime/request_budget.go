@@ -271,6 +271,11 @@ func fitProviderRequestToBudget(adapter provider.Adapter, req provider.TurnReque
 	if cfg == nil {
 		cfg = config.Default()
 	}
+	requestContext.RequestKind = normalizedRequestKind(requestContext.RequestKind)
+	if strings.TrimSpace(requestContext.SessionID) == "" {
+		requestContext.SessionID = strings.TrimSpace(req.SessionID)
+	}
+	req.RequestID = requestBudgetID(requestContext)
 	fit := providerRequestFit{Request: cloneProviderRequestForBudget(req)}
 	snapshot, exceeded, err := requestBudgetSnapshotForFit(adapter, fit.Request, policy, requestContext)
 	fit.InitialSnapshot = snapshot

@@ -605,7 +605,7 @@ func todoItemSchema() map[string]any {
 				"enum":        []string{"high", "medium", "low"},
 				"description": "Relative importance for this session.",
 			},
-			"updated_at": map[string]any{"type": "string", "description": "Optional RFC3339 timestamp; omitted values are filled by the runtime."},
+			"updated_at": map[string]any{"type": "string", "description": "Optional RFC3339 compatibility field. The runtime preserves it for unchanged items and replaces it for new or advanced items."},
 		},
 		"required":             []string{"content", "status"},
 		"additionalProperties": false,
@@ -826,7 +826,7 @@ func defShell() Definition {
 				callCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 				defer cancel()
 			}
-			command, shellArg := shellCommand()
+			command, shellArgs := shellCommand()
 			shellSandbox := ""
 			if execCtx.Config != nil {
 				shellSandbox = execCtx.Config.Runtime.Shell.Sandbox
@@ -839,7 +839,7 @@ func defShell() Definition {
 				_ = stableDir.Close()
 			}()
 			sandboxSource, sandboxExtraFiles := commandWorkdirSandboxSource(stableDir, workdir)
-			commandPath, commandArgs, sandboxStatus, sandboxErr := shellSandboxCommand(shellSandbox, workdir, sandboxSource, command, shellArg, input.Command)
+			commandPath, commandArgs, sandboxStatus, sandboxErr := shellSandboxCommand(shellSandbox, workdir, sandboxSource, command, shellArgs, input.Command)
 			policyMode := effectiveExecPolicyMode(execCtx.Config)
 			policyViolations := DetectExecPolicyViolations(input.Command)
 			policyMetadata := execPolicyMetadata(policyMode, policyViolations)
@@ -963,7 +963,7 @@ func commandWorkdirSandboxSource(dir *os.File, fallback string) (string, []*os.F
 func defReadFile() Definition {
 	return Definition{
 		Name:        "read_file",
-		Description: "Read a known text file as UTF-8; use grep_files or grep first for workspace discovery, then read the owning file slices. The default line mode uses 1-based offset/limit and is capped at 120 lines. For minified files, long records, or exact tool-output artifacts, use the mutually exclusive 0-based byte_offset/byte_limit mode and continue with next_byte_offset; byte_limit is capped at 24 KiB and every page contains complete UTF-8 runes. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. A current-session ephemeral tool-output artifact path shown by a prior tool result is readable explicitly, but discovery tools skip those artifacts. This reads files only, not directories, and rejects internal generated artifacts.",
+		Description: "Read a known text file as UTF-8. Use grep_files, grep, or glob when the owning path is unknown; read a known or user-supplied path directly. The default line mode uses 1-based offset/limit and is capped at 120 lines. For minified files, long records, or exact tool-output artifacts, use the mutually exclusive 0-based byte_offset/byte_limit mode and continue with next_byte_offset; byte_limit is capped at 24 KiB and every page contains complete UTF-8 runes. Paths normally resolve inside the workspace. Registered skill bundle files are also readable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. A current-session ephemeral tool-output artifact path shown by a prior tool result is readable explicitly, but discovery tools skip those artifacts. This reads files only, not directories, and rejects internal generated artifacts.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -1571,7 +1571,7 @@ func defGrep() Definition {
 func defGrepFiles() Definition {
 	return Definition{
 		Name:            "grep_files",
-		Description:     "Search workspace UTF-8 text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this as the default discovery step before read_file. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results use both a path count limit and a model-visible byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Cursor pages are current-view best effort.",
+		Description:     "Search workspace UTF-8 text recursively and return only files that contain the pattern. Registered skill bundle files are also searchable by exact skill path such as skills/<skill-name>/references/file.md, by the absolute path returned from load_skill, or by an unambiguous skill-relative link such as references/file.md. Use this for content-based discovery when the owning path is unknown; known paths can be read directly. Session artifacts/tool-outputs paths are not searchable by discovery tools; use read_file with the exact artifact path returned by the producing tool. The path parameter is a single file or directory; use include for a file filter. Results use both a path count limit and a model-visible byte_limit. When has_more is true, continue with the opaque next_cursor and the same pattern/path/include; page sizes may change. Cursor pages are current-view best effort.",
 		Ephemeral:       true,
 		EphemeralWindow: 3,
 		InputSchema: map[string]any{
@@ -2000,7 +2000,7 @@ func resolveRegisteredSkillPath(catalog *skills.Catalog, input string, requireDi
 			names = append(names, match.skillName)
 		}
 		sort.Strings(names)
-		return resolvedSkillPath{}, fmt.Errorf("ambiguous skill-relative path %q matches multiple registered skills: %s; use skills/<skill-name>/...", input, strings.Join(names, ", "))
+		return resolvedSkillPath{}, fmt.Errorf("ambiguous skill-relative path %q matches multiple registered skills: %s; use a skills/<skill-name>/... path", input, strings.Join(names, ", "))
 	}
 	return matches[0], nil
 }
@@ -3303,12 +3303,6 @@ func defTodoWrite() Definition {
 			if err := json.Unmarshal(raw, &input); err != nil {
 				return errorResult("todo_write", err), nil
 			}
-			now := time.Now().UTC().Format(time.RFC3339Nano)
-			for i := range input.Todos {
-				if input.Todos[i].UpdatedAt == "" {
-					input.Todos[i].UpdatedAt = now
-				}
-			}
 			if err := validateTodoSnapshot(input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
@@ -3344,6 +3338,7 @@ func defTodoWrite() Definition {
 					},
 				}, nil
 			}
+			applyTodoUpdatedAt(existing, input.Todos, time.Now().UTC().Format(time.RFC3339Nano))
 			if err := execCtx.Store.SaveTodo(execCtx.SessionID, input.Todos); err != nil {
 				return errorResult("todo_write", err), nil
 			}
@@ -3406,42 +3401,6 @@ func defTodoRead() Definition {
 	}
 }
 
-type readRepeatObservation struct {
-	Count       int
-	FirstSeenAt string
-	LastSeenAt  string
-}
-
-func readFileRepeatObservation(execCtx ExecContext, path string, offset, end int) readRepeatObservation {
-	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
-		return readRepeatObservation{Count: 1}
-	}
-	messages, err := execCtx.Store.LoadMessages(execCtx.SessionID)
-	if err != nil {
-		return readRepeatObservation{Count: 1}
-	}
-	obs := readRepeatObservation{Count: 1}
-	for _, msg := range messages {
-		for _, result := range msg.ToolResults {
-			if result.Name != "read_file" {
-				continue
-			}
-			if strings.TrimSpace(metadataString(result.Metadata, "path")) != strings.TrimSpace(path) {
-				continue
-			}
-			if metadataInt(result.Metadata, "offset") != offset || metadataInt(result.Metadata, "end") != end {
-				continue
-			}
-			obs.Count++
-			if obs.FirstSeenAt == "" {
-				obs.FirstSeenAt = msg.CreatedAt
-			}
-			obs.LastSeenAt = msg.CreatedAt
-		}
-	}
-	return obs
-}
-
 func skillLoaded(execCtx ExecContext, name string) bool {
 	if execCtx.Store == nil || strings.TrimSpace(execCtx.SessionID) == "" {
 		return false
@@ -3494,7 +3453,7 @@ func validateTodoSnapshot(todos []session.TodoItem) error {
 			return fmt.Errorf("invalid todo priority: %s", item.Priority)
 		}
 		if strings.TrimSpace(item.UpdatedAt) == "" {
-			return fmt.Errorf("todo item %d updated_at is required", i+1)
+			continue
 		}
 		if _, err := time.Parse(time.RFC3339Nano, item.UpdatedAt); err != nil {
 			return fmt.Errorf("todo item %d updated_at must be RFC3339Nano: %w", i+1, err)
@@ -3555,22 +3514,22 @@ func normalizedTodosEqual(a, b []session.TodoItem) bool {
 	return true
 }
 
+func applyTodoUpdatedAt(existing, updated []session.TodoItem, now string) {
+	for i := range updated {
+		if i < len(existing) &&
+			existing[i].Content == updated[i].Content &&
+			existing[i].Status == updated[i].Status &&
+			existing[i].Priority == updated[i].Priority {
+			updated[i].UpdatedAt = existing[i].UpdatedAt
+			continue
+		}
+		updated[i].UpdatedAt = now
+	}
+}
+
 func metadataString(metadata map[string]any, key string) string {
 	value, _ := metadata[key].(string)
 	return value
-}
-
-func metadataInt(metadata map[string]any, key string) int {
-	switch value := metadata[key].(type) {
-	case int:
-		return value
-	case int64:
-		return int(value)
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
 }
 
 func defTaskCreate() Definition {
@@ -4789,11 +4748,11 @@ func filteredEnv(allowlist []string) []string {
 	return out
 }
 
-func shellCommand() (string, string) {
+func shellCommand() (string, []string) {
 	if strings.Contains(strings.ToLower(os.Getenv("COMSPEC")), "cmd.exe") {
-		return "cmd", "/C"
+		return "cmd", []string{"/D", "/S", "/C"}
 	}
-	return "/bin/bash", "-lc"
+	return "/bin/bash", []string{"--noprofile", "--norc", "-c"}
 }
 
 func effectiveToolTimeout(defaultTimeout, requestedTimeout int) int {
@@ -4962,11 +4921,4 @@ func pendingPlanInputErrorResult(err error, request session.PlanModeInputRequest
 			"plan_mode_id":             planMode.PlanModeID,
 		},
 	}
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
