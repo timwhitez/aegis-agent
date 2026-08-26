@@ -6625,7 +6625,10 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	if !strings.Contains(indexBody, `id="v2-new-session-btn" type="button" aria-label="New session"`) {
 		t.Fatalf("expected compact new-session control to keep an accessible name: %s", indexBody)
 	}
-	if !strings.Contains(indexBody, `id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true"`) {
+	if !strings.Contains(indexBody, `<meta name="color-scheme" content="light">`) || strings.Contains(indexBody, `<meta name="color-scheme" content="dark">`) {
+		t.Fatalf("expected Web Console v2 to declare a light browser color scheme by default: %s", indexBody)
+	}
+	if !strings.Contains(indexBody, `id="inspector-slide-out" role="dialog" aria-modal="true" aria-label="Session inspector" aria-hidden="true" tabindex="-1"`) {
 		t.Fatalf("expected inspector slide-out to expose modal dialog semantics: %s", indexBody)
 	}
 	if strings.Contains(indexBody, "workspace-delete-selected-action") || strings.Contains(indexBody, "workspace-delete-selected-btn") || strings.Contains(indexBody, "<span>Delete selected</span>") {
@@ -6665,8 +6668,11 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
 	v2StylesBody := checkBody(server.URL + "/v2-assets/aegis.css")
-	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--accent: #b6f542") {
+	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--background: #f3f5f7") || !strings.Contains(v2StylesBody, "--surface: #ffffff") || !strings.Contains(v2StylesBody, "--accent-fill: #b6e858") {
 		t.Fatalf("unexpected Web Console v2 stylesheet: %s", v2StylesBody)
+	}
+	if strings.Contains(v2StylesBody, "prefers-color-scheme: dark") || strings.Contains(v2StylesBody, "--background: #090b10") {
+		t.Fatalf("expected Web Console v2 to keep its default palette light regardless of OS preference: %s", v2StylesBody)
 	}
 	if !strings.Contains(v2StylesBody, "@media (max-width: 620px)") || !strings.Contains(v2StylesBody, "position: fixed") || !strings.Contains(v2StylesBody, "bottom: 0") || !strings.Contains(v2StylesBody, "height: calc(100dvh - 58px)") {
 		t.Fatalf("expected Web Console v2 mobile layout to collapse into a single column with bottom navigation: %s", v2StylesBody)

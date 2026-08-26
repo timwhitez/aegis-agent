@@ -487,11 +487,15 @@ test('context endpoint is called only after opening Context or requesting Refres
   const delegatedClick = (selector, attributes = {}) => {
     const button = {
       disabled: false,
+      focused: false,
       getAttribute(name) {
         return Object.prototype.hasOwnProperty.call(attributes, name) ? attributes[name] : null;
       },
       querySelector() {
         return null;
+      },
+      focus() {
+        this.focused = true;
       }
     };
     return {
@@ -511,16 +515,43 @@ test('context endpoint is called only after opening Context or requesting Refres
   assert.equal(appContext.pendingRequests.length, 0);
 
   const planFocusClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-focus-inspector-tab': 'plan' });
+  appContext.document.activeElement = planFocusClick.button;
   await appContext.document.listeners.click(planFocusClick.event);
   assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), true);
   assert.equal(vm.runInContext(`nodes.inspectorSlideOut.getAttribute('aria-hidden')`, appContext), 'false');
   assert.equal(vm.runInContext(`nodes.inspectorToggleBtn.getAttribute('aria-expanded')`, appContext), 'true');
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.focused`, appContext), true);
+
+  let tabPrevented = false;
+  appContext.document.listeners.keydown({
+    key: 'Tab',
+    shiftKey: false,
+    target: { tagName: 'DIV' },
+    preventDefault() { tabPrevented = true; }
+  });
+  assert.equal(tabPrevented, true);
+
+  let escapePrevented = false;
+  appContext.document.listeners.keydown({
+    key: 'Escape',
+    target: { tagName: 'DIV' },
+    preventDefault() { escapePrevented = true; }
+  });
+  assert.equal(escapePrevented, true);
+  assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), false);
+  assert.equal(appContext.pendingRequests.length, 0);
+  assert.equal(planFocusClick.button.focused, true);
+
+  planFocusClick.button.focused = false;
+  appContext.document.activeElement = planFocusClick.button;
+  await appContext.document.listeners.click(planFocusClick.event);
 
   const inspectorCloseClick = delegatedClick('[data-close-inspector]');
   await appContext.document.listeners.click(inspectorCloseClick.event);
   assert.equal(vm.runInContext(`nodes.inspectorSlideOut.classList.contains('is-open')`, appContext), false);
   assert.equal(vm.runInContext(`nodes.inspectorSlideOut.getAttribute('aria-hidden')`, appContext), 'true');
   assert.equal(vm.runInContext(`nodes.inspectorToggleBtn.getAttribute('aria-expanded')`, appContext), 'false');
+  assert.equal(planFocusClick.button.focused, true);
 
   const contextClick = delegatedClick('[data-inspector-tab], [data-focus-inspector-tab]', { 'data-inspector-tab': 'context' });
   const firstLoad = appContext.document.listeners.click(contextClick.event);
@@ -782,7 +813,8 @@ test('runtime handles are isolated from durable app state', () => {
       'wsReconnectTimer',
       'pendingSessionRefresh',
       'pendingOverviewRefresh',
-      'layoutObserver'
+      'layoutObserver',
+      'inspectorPreviousFocus'
     ];
     runtimeHandles.pendingSessionRefresh = 101;
     runtimeHandles.pendingOverviewRefresh = 102;
@@ -797,6 +829,7 @@ test('runtime handles are isolated from durable app state', () => {
 
   assert.deepEqual(sameRealm(result.stateHandleKeys), []);
   assert.deepEqual(sameRealm(result.runtimeHandleKeys), [
+    'inspectorPreviousFocus',
     'layoutObserver',
     'pendingOverviewRefresh',
     'pendingSessionRefresh',
