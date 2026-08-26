@@ -174,6 +174,7 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 - local preference 只保存在浏览器中；用户消息、tool/provider 原文、文件内容、路径和 durable session facts 保持原样
 - 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
 - modal 与移动 inspector 必须 trap focus、Esc 关闭、恢复触发焦点，并让背景不可交互
+- 移动 inspector 每次从关闭状态重新打开时必须把 slide-out 滚动容器复位到顶部，使标题、状态和关闭按钮立即可见；已经打开时的普通 re-render 不得重置用户正在查看的位置
 - 清空历史在任何 queued/running/blocked queue work 或 running session 未收敛时返回 conflict；reaper 状态迁移不能产生允许清理的窗口
 
 #### Children

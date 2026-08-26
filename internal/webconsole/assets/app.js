@@ -1764,11 +1764,13 @@ function openInspectorSlideOut() {
   const slideOut = nodes.inspectorSlideOut;
   const backdrop = nodes.inspectorBackdrop;
   if (!slideOut || !backdrop) return;
-	if (!slideOut.classList.contains('is-open')) {
+	const isOpening = !slideOut.classList.contains('is-open');
+	if (isOpening) {
 		runtimeHandles.inspectorPreviousFocus = document.activeElement || null;
 		runtimeHandles.inspectorRestoreIsolation = isolateModalElements([slideOut, backdrop]);
   }
   renderCurrentSession();
+	if (isOpening) slideOut.scrollTop = 0;
   slideOut.classList.add('is-open');
   backdrop.classList.add('is-open');
   slideOut.setAttribute('aria-hidden', 'false');

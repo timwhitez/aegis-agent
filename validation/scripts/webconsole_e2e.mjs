@@ -132,7 +132,7 @@ try {
 	  const selected = document.querySelector('[data-inspector-tab="context"][aria-selected="true"]');
 	  const panel = document.querySelector('.inspector-content');
 	  return selected && !String(panel?.textContent || '').includes('Loading context');
-	});
+  });
 	await page.locator('[data-inspector-tab="context"][aria-selected="true"]').press('End');
     const timelineTab = page.locator('[data-inspector-tab="timeline"][aria-selected="true"]');
     await timelineTab.waitFor();
@@ -448,8 +448,10 @@ try {
     assert.equal(await page.locator('[data-inspector-tab="agents"]').count(), 0);
     assert.equal(await page.locator('#app').getAttribute('inert'), '');
 	  await assertText(page.locator('[data-task-group="in_progress"] .task-group-heading span').first(), 'In progress');
-  });
+	});
 	await capture(page, '13b-inspector-open-en-mobile.png');
+	await slide.evaluate((element) => { element.scrollTop = Math.min(240, element.scrollHeight - element.clientHeight); });
+	assert.ok(await slide.evaluate((element) => element.scrollTop > 0));
 	await page.keyboard.press('Escape');
 	assert.equal(await slide.getAttribute('aria-hidden'), 'true');
 	assert.equal(await page.locator('#inspector-toggle-btn').evaluate((node) => document.activeElement === node), true);
@@ -459,6 +461,8 @@ try {
 	await check('mobile inspector traps focus, inerts the background, and restores its opener', async () => {
 	  assert.equal(await slide.getAttribute('aria-hidden'), 'false');
 	  assert.equal(await page.locator('#app').getAttribute('inert'), '');
+	  assert.equal(await slide.evaluate((element) => element.scrollTop), 0);
+	  assert.ok((await slide.locator('.inspector-header').boundingBox())?.y >= 0);
 	});
   await capture(page, '13-inspector-open-zh-mobile.png');
   await page.keyboard.press('Escape');
@@ -546,8 +550,11 @@ async function openInspectorTab(page, tab) {
   if ((await page.locator('#inspector-slide-out').getAttribute('aria-hidden')) !== 'false') {
     await page.locator('#inspector-toggle-btn').click();
   }
-  await page.locator(`[data-inspector-tab="${tab}"]`).click();
-  await page.locator(`[data-inspector-tab="${tab}"][aria-selected="true"]`).waitFor();
+  const selectedTab = page.locator(`[data-inspector-tab="${tab}"][aria-selected="true"]`);
+  if (await selectedTab.count() === 0) {
+    await page.locator(`[data-inspector-tab="${tab}"]`).click();
+  }
+  await selectedTab.waitFor();
 }
 
 async function confirmDialog(page, restoreSelector = '') {

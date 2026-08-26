@@ -766,6 +766,24 @@ test('desktop and compact inspectors use independent render cache slots', () => 
   });
 });
 
+test('compact inspector patches preserve the current scroll position', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+  const result = vm.runInContext(`(() => {
+    const compact = { scrollTop: 180, innerHTML: '', querySelectorAll() { return []; } };
+    const first = patchScrollableAuxSlot(compact, 'inspectorSlideOut', '<section>Tasks</section>');
+    compact.scrollTop = 240;
+    const second = patchScrollableAuxSlot(compact, 'inspectorSlideOut', '<section>Updated tasks</section>');
+    return { first, second, scrollTop: compact.scrollTop };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    first: true,
+    second: true,
+    scrollTop: 240
+  });
+});
+
 test('Plan Mode input actions reuse cached markup and hide after the gate clears', () => {
   const appContext = createAppHarnessContext();
   const result = vm.runInContext(`(() => {
@@ -3690,6 +3708,21 @@ test('Plan Mode revision action closes modal inspector and focuses the composer'
     composerFocused: true
   });
   assert.equal(appContext.pendingRequests.length, 0);
+});
+
+test('modal inspector resets scroll only when reopening from closed state', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(`
+    renderCurrentSession = function() {};
+    nodes.inspectorSlideOut.scrollTop = 240;
+    openInspectorSlideOut();
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.inspectorSlideOut.scrollTop', appContext), 0);
+  vm.runInContext(`
+    nodes.inspectorSlideOut.scrollTop = 180;
+    openInspectorSlideOut();
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.inspectorSlideOut.scrollTop', appContext), 180);
 });
 
 test('Plan Mode approval override ignores stale confirmation after session changes', async () => {

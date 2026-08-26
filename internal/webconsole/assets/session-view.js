@@ -84,7 +84,7 @@ function renderCurrentSession() {
       mutated = patchAuxSlot(nodes.inspectorPanel, 'inspector', inspectorHTML) || mutated;
     }
     if (slideOutInspectorAvailable) {
-      patchAuxSlot(nodes.inspectorSlideOut, 'inspectorSlideOut', inspectorHTML);
+      patchScrollableAuxSlot(nodes.inspectorSlideOut, 'inspectorSlideOut', inspectorHTML);
     }
   }
   if (nodes.todoFloatPanel) {
@@ -112,6 +112,15 @@ function renderCurrentSession() {
 
 function patchAuxSlot(node, key, html) {
   return patchCachedMarkup(node, key, html);
+}
+
+function patchScrollableAuxSlot(node, key, html) {
+  const previousScrollTop = Number(node?.scrollTop || 0);
+  const mutated = patchAuxSlot(node, key, html);
+  if (mutated && node) {
+    node.scrollTop = previousScrollTop;
+  }
+  return mutated;
 }
 
 function prefersReducedMotion() {
