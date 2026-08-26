@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+if [[ ! -x ./build.sh ]]; then
+	printf 'build.sh must be executable because README documents ./build.sh\n' >&2
+	exit 1
+fi
+
 UNFORMATTED="$(gofmt -l cmd internal pkg validation/cmd)"
 if [[ -n "$UNFORMATTED" ]]; then
   printf 'gofmt needed for:\n%s\n' "$UNFORMATTED" >&2
