@@ -6668,7 +6668,7 @@ func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 		t.Fatalf("expected shell to use local assets only, got shell body: %s", indexBody)
 	}
 	v2StylesBody := checkBody(server.URL + "/v2-assets/aegis.css")
-	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--background: #f3f5f7") || !strings.Contains(v2StylesBody, "--surface: #ffffff") || !strings.Contains(v2StylesBody, "--accent-fill: #b6e858") {
+	if !strings.Contains(v2StylesBody, "@import url('/shared-assets/styles.css')") || !strings.Contains(v2StylesBody, "--background: #f3f5f7") || !strings.Contains(v2StylesBody, "--surface: #ffffff") || !strings.Contains(v2StylesBody, "--accent-fill: #b6e858") || !strings.Contains(v2StylesBody, "--text-soft: #68727e") {
 		t.Fatalf("unexpected Web Console v2 stylesheet: %s", v2StylesBody)
 	}
 	if strings.Contains(v2StylesBody, "prefers-color-scheme: dark") || strings.Contains(v2StylesBody, "--background: #090b10") {
