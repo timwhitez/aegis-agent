@@ -133,6 +133,52 @@ func TestOpenAIAdapterParsesRefusalWithoutEventSink(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapterRefusalPrecedesMalformedFunctionCalls(t *testing.T) {
+	tests := []struct {
+		name         string
+		functionCall string
+	}{
+		{
+			name:         "missing_call_id",
+			functionCall: `{"type":"function_call","name":"shell","arguments":"{\"command\":\"pwd\"}"}`,
+		},
+		{
+			name:         "malformed_arguments",
+			functionCall: `{"type":"function_call","call_id":"call_bad","name":"shell","arguments":"{\"command\":"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{
+					"id":"resp_refusal_malformed_call",
+					"status":"completed",
+					"output":[
+						%s,
+						{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"blocked explanation"}]}
+					]
+				}`, tc.functionCall)
+			}))
+			defer server.Close()
+
+			result, err := NewOpenAI(server.URL, "key", server.Client()).RunTurn(context.Background(), TurnRequest{
+				SessionID:    "s1",
+				Model:        "gpt-5.4",
+				SystemPrompt: "system",
+				Messages:     []session.Message{session.NewMessage("user", "hello")},
+				Tools:        []ToolSchema{{Name: "shell", InputSchema: map[string]any{"type": "object"}}},
+			}, nil)
+			if err != nil {
+				t.Fatalf("refusal must suppress malformed co-returned call: %v", err)
+			}
+			if result.StopReason != "blocked" || result.Text != "blocked explanation" || len(result.ToolCalls) != 0 {
+				t.Fatalf("refusal did not dominate malformed co-returned call: %#v", result)
+			}
+		})
+	}
+}
+
 func TestOpenAIAdapterEmitsBoundedRefusalDelta(t *testing.T) {
 	const refusalLimit = 8 << 10
 	refusal := strings.Repeat("拒绝说明", 3000)

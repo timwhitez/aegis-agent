@@ -156,7 +156,6 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	}
 	status := strings.TrimSpace(resp.Status)
 	incompleteReason := strings.TrimSpace(resp.IncompleteDetails.Reason)
-	allowFunctionCalls := status == "completed" && incompleteReason != "max_output_tokens"
 	var textParts []string
 	var refusalParts []string
 	var thinkingParts []string
@@ -166,6 +165,30 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	reasoningTextCount := 0
 	reasoningEncryptedCount := 0
 	refusalBlockCount := 0
+	// Refusal is a response-level safety boundary. Detect it before touching any
+	// co-returned function call so even a malformed call cannot turn a refusal
+	// into an adapter parse error or expose an executable action.
+	for _, item := range resp.Output {
+		if item.Type != "message" {
+			continue
+		}
+		for _, content := range item.Content {
+			if content.Type != "refusal" {
+				continue
+			}
+			refusalBlockCount++
+			refusal := strings.TrimSpace(content.Refusal)
+			if refusal == "" {
+				// Some Responses-compatible gateways use the generic text member
+				// while retaining the refusal content type.
+				refusal = strings.TrimSpace(content.Text)
+			}
+			if refusal != "" {
+				refusalParts = append(refusalParts, refusal)
+			}
+		}
+	}
+	allowFunctionCalls := status == "completed" && incompleteReason != "max_output_tokens" && refusalBlockCount == 0
 	for index, item := range resp.Output {
 		switch item.Type {
 		case "message":
@@ -173,17 +196,6 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 				switch content.Type {
 				case "output_text":
 					textParts = append(textParts, content.Text)
-				case "refusal":
-					refusalBlockCount++
-					refusal := strings.TrimSpace(content.Refusal)
-					if refusal == "" {
-						// Some Responses-compatible gateways use the generic text
-						// member while retaining the refusal content type.
-						refusal = strings.TrimSpace(content.Text)
-					}
-					if refusal != "" {
-						refusalParts = append(refusalParts, refusal)
-					}
 				}
 			}
 		case "function_call":
