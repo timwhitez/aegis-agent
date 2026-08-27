@@ -639,6 +639,7 @@ completed(root) -> running
 - 捕获 `Esc` 后调用 `Runner.Interrupt(sessionID)`
 - Plan Mode `request_user_input` 开始前先取得 dispatcher 的输入 lease，回答完成或取消后释放；lease 存续期间 `Esc` watcher 不得读取或丢弃 prompt 字节
 - lease 释放后 dispatcher 继续监听 `Esc`，不能因一次交互问答永久丢失中断能力
+- dispatcher shutdown 必须用独立 wakeup 机制取消并 join TTY reader，覆盖成功、错误、取消与 EOF；不得通过关闭 caller-owned stdin 解除阻塞，也不得让旧 reader 残留到下一次 `run`
 
 ### 9.2 interrupt 效果
 

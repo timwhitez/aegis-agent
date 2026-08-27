@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,6 +86,12 @@ func (f *planInputPTYFixture) serveHTTP(w http.ResponseWriter, r *http.Request) 
 	call := int(f.calls.Add(1))
 	switch call {
 	case 1:
+		if f.mode == "provider-error" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"deterministic provider failure"}}`))
+			return
+		}
 		if f.mode == "interrupt-before" {
 			f.blockedCall <- struct{}{}
 			<-r.Context().Done()
@@ -139,6 +147,80 @@ func writePTYToolCall(w http.ResponseWriter, responseID, callID, name string, ar
 		}},
 		"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
 	})
+}
+
+func TestCLITTYInputCloseJoinsReaderLifecycle(t *testing.T) {
+	for _, cancelParent := range []bool{false, true} {
+		name := "success"
+		if cancelParent {
+			name = "cancel"
+		}
+		t.Run(name, func(t *testing.T) {
+			for attempt := 0; attempt < 20; attempt++ {
+				master, slave := openLinuxPTY(t)
+				ctx, cancel := context.WithCancel(context.Background())
+				input, err := startCLITTYInput(ctx, slave, func() {})
+				if err != nil {
+					master.Close()
+					slave.Close()
+					t.Fatalf("start TTY input: %v", err)
+				}
+				if cancelParent {
+					cancel()
+				}
+				closeDone := make(chan struct{})
+				go func() {
+					input.close()
+					close(closeDone)
+				}()
+				select {
+				case <-closeDone:
+				case <-time.After(250 * time.Millisecond):
+					master.Close()
+					slave.Close()
+					select {
+					case <-closeDone:
+					case <-time.After(time.Second):
+					}
+					t.Fatal("TTY input close did not join the idle reader within 250ms")
+				}
+				cancel()
+				assertTTYInputReaderJoined(t, input)
+				assertPTYInputAvailable(t, master, slave)
+				master.Close()
+				slave.Close()
+			}
+		})
+	}
+}
+
+func TestCancelableTTYReaderReportsEOFAndPreservesCallerFile(t *testing.T) {
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create EOF pipe: %v", err)
+	}
+	defer input.Close()
+	reader, err := newCancelableTTYReader(input)
+	if err != nil {
+		writer.Close()
+		t.Fatalf("create cancelable reader: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 1)
+		_, err := reader.Read(buffer)
+		result <- err
+	}()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close EOF writer: %v", err)
+	}
+	if err := waitPTYValue(t, result, "TTY reader EOF"); !errors.Is(err, io.EOF) {
+		t.Fatalf("TTY reader error=%v want EOF", err)
+	}
+	reader.Close()
+	if _, err := input.Stat(); err != nil {
+		t.Fatalf("cancelable reader closed caller-owned input: %v", err)
+	}
 }
 
 func TestRunPlanInputUsesSinglePTYReaderAndSettles(t *testing.T) {
@@ -199,6 +281,15 @@ func TestRunEscInterruptWorksAfterPlanPromptLease(t *testing.T) {
 		t.Fatal("interrupted run unexpectedly returned success")
 	}
 	assertPTYSessionState(t, fixture.sessionRoot, sessionID, session.StatusPaused, "interrupt")
+	assertNoPTYFixtureErrors(t, fixture)
+}
+
+func TestRunProviderErrorClosesPTYReader(t *testing.T) {
+	fixture := newPlanInputPTYFixture(t, "provider-error")
+	_, _, _, result := runPlanInputPTY(t, fixture, func(*os.File, *synchronizedBuffer) {})
+	if result == nil {
+		t.Fatal("provider error run unexpectedly returned success")
+	}
 	assertNoPTYFixtureErrors(t, fixture)
 }
 
@@ -285,6 +376,7 @@ runtime:
 	case <-ctx.Done():
 		t.Fatalf("PTY run did not settle: %v\nstdout=%s\nstderr=%s", ctx.Err(), stdout.String(), stderr.String())
 	}
+	assertPTYInputAvailable(t, master, slave)
 	return sessionID, stdout.String(), stderr.String(), result
 }
 
@@ -323,6 +415,47 @@ func waitForPTYText(t *testing.T, output *synchronizedBuffer, text string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("PTY output never contained %q: %s", text, output.String())
+}
+
+func assertTTYInputReaderJoined(t *testing.T, input *cliTTYInput) {
+	t.Helper()
+	select {
+	case <-input.readerDone:
+	default:
+		t.Fatal("TTY reader goroutine remains active after close")
+	}
+	select {
+	case _, ok := <-input.rawBytes:
+		if ok {
+			t.Fatal("unexpected byte after TTY input close")
+		}
+	default:
+		t.Fatal("TTY reader byte channel remains open after close")
+	}
+}
+
+func assertPTYInputAvailable(t *testing.T, master, slave *os.File) {
+	t.Helper()
+	const marker = "reader-released\n"
+	if _, err := master.Write([]byte(marker)); err != nil {
+		t.Fatalf("write caller-owned PTY after dispatcher close: %v", err)
+	}
+	pollFDs := []unix.PollFd{{Fd: int32(slave.Fd()), Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR}}
+	ready, err := unix.Poll(pollFDs, 500)
+	if err != nil {
+		t.Fatalf("poll caller-owned PTY after dispatcher close: %v", err)
+	}
+	if ready != 1 || pollFDs[0].Revents&unix.POLLIN == 0 {
+		t.Fatalf("caller-owned PTY was closed or consumed after dispatcher close: ready=%d revents=%#x", ready, pollFDs[0].Revents)
+	}
+	buffer := make([]byte, 64)
+	n, err := unix.Read(int(slave.Fd()), buffer)
+	if err != nil {
+		t.Fatalf("read caller-owned PTY after dispatcher close: %v", err)
+	}
+	if !strings.Contains(string(buffer[:n]), strings.TrimSpace(marker)) {
+		t.Fatalf("caller-owned PTY marker missing after dispatcher close: %q", buffer[:n])
+	}
 }
 
 func waitPTYValue[T any](t *testing.T, values <-chan T, label string) T {

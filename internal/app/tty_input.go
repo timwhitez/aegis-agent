@@ -17,13 +17,15 @@ import (
 // takes an explicit lease, so every byte read while that lease is active is
 // delivered to the prompt instead of being discarded by the Esc watcher.
 type cliTTYInput struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stdin    *os.File
-	rawBytes chan byte
-	acquire  chan cliTTYAcquireRequest
-	release  chan cliTTYReleaseRequest
-	done     chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
+	stdin      *os.File
+	reader     *cancelableTTYReader
+	rawBytes   chan byte
+	acquire    chan cliTTYAcquireRequest
+	release    chan cliTTYReleaseRequest
+	done       chan struct{}
+	readerDone chan struct{}
 }
 
 type cliTTYPromptLease struct {
@@ -43,20 +45,27 @@ type cliTTYReleaseRequest struct {
 }
 
 func startCLITTYInput(parent context.Context, stdin *os.File, onInterrupt func()) (*cliTTYInput, error) {
+	reader, err := newCancelableTTYReader(stdin)
+	if err != nil {
+		return nil, err
+	}
 	fd := int(stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
+		reader.Close()
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
 	input := &cliTTYInput{
-		ctx:      ctx,
-		cancel:   cancel,
-		stdin:    stdin,
-		rawBytes: make(chan byte),
-		acquire:  make(chan cliTTYAcquireRequest),
-		release:  make(chan cliTTYReleaseRequest),
-		done:     make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
+		stdin:      stdin,
+		reader:     reader,
+		rawBytes:   make(chan byte),
+		acquire:    make(chan cliTTYAcquireRequest),
+		release:    make(chan cliTTYReleaseRequest),
+		done:       make(chan struct{}),
+		readerDone: make(chan struct{}),
 	}
 	go input.read()
 	go input.dispatch(oldState, onInterrupt)
@@ -65,9 +74,11 @@ func startCLITTYInput(parent context.Context, stdin *os.File, onInterrupt func()
 
 func (c *cliTTYInput) read() {
 	buffer := make([]byte, 64)
+	defer close(c.readerDone)
 	defer close(c.rawBytes)
+	defer c.reader.Close()
 	for {
-		n, err := c.stdin.Read(buffer)
+		n, err := c.reader.Read(buffer)
 		for _, value := range buffer[:n] {
 			select {
 			case c.rawBytes <- value:
@@ -138,7 +149,9 @@ func (c *cliTTYInput) dispatch(oldState *term.State, onInterrupt func()) {
 
 func (c *cliTTYInput) close() {
 	c.cancel()
+	c.reader.Cancel()
 	<-c.done
+	<-c.readerDone
 }
 
 func (c *cliTTYInput) acquirePrompt(ctx context.Context) (*cliTTYPromptLease, error) {
