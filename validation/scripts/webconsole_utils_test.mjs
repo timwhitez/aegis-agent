@@ -482,6 +482,8 @@ test('session inspector exposes a lazy Context tab and renders bounded lineage t
   assert.match(rendered.ordinary, /data-inspector-tab="context"/);
   assert.match(rendered.lazy, /loaded only when this inspector tab is opened/);
   assert.match(rendered.loaded, /Root peak/);
+  assert.match(rendered.loaded, /<span>Context report<\/span> v<span translate="no" data-i18n-skip>1<\/span>/);
+  assert.match(rendered.loaded, /<h4 translate="no" data-i18n-skip>contex…sion<\/h4>/);
   assert.match(rendered.loaded, />900</);
   assert.match(rendered.loaded, /Child aggregate/);
   assert.match(rendered.loaded, />1,400</);
@@ -490,6 +492,7 @@ test('session inspector exposes a lazy Context tab and renders bounded lineage t
   assert.match(rendered.loaded, /Unknown usage/);
   assert.match(rendered.loaded, />2</);
   assert.match(rendered.loaded, /Bounded view: 1 sessions and 7 requests omitted\. Aggregate totals are complete\./);
+  assert.match(rendered.loaded, /<span translate="no" data-i18n-skip>explorer<\/span>/);
   assert.doesNotMatch(rendered.loaded, /WEB_CONTEXT_(PROMPT|TOOL)_SENTINEL/);
 });
 
@@ -2707,6 +2710,32 @@ test('background notification cards prefer errors over final text for failed fac
   assert.doesNotMatch(full, /child reported success before handoff failed/);
   assert.match(preview, /messages\.jsonl/);
   assert.doesNotMatch(preview, /child reported success before handoff failed/);
+});
+
+test('background notification renderer localizes fallbacks without rewriting durable facts', () => {
+  const fallback = context.renderNotificationCard({
+    id: 'notification_fallback',
+    queue_job_id: 'job_fallback',
+    agent_name: 'Settings',
+    agent_role: 'evaluator',
+    status: 'completed',
+    session_status: 'completed',
+    delivery_status: 'accepted'
+  });
+  const raw = context.renderNotificationCard({
+    id: 'notification_raw',
+    queue_job_id: 'job_raw',
+    status: 'completed',
+    session_status: 'completed',
+    delivery_status: 'accepted',
+    final_text: 'Settings'
+  });
+
+  assert.match(fallback, /class="job-card-title"><span translate="no" data-i18n-skip>Settings · evaluator<\/span>/);
+  assert.match(fallback, /class="notification-copy">No final text recorded\.<\/div>/);
+  assert.match(fallback, /<span translate="no" data-i18n-skip>job_fallback<\/span> · <span translate="no" data-i18n-skip>accepted<\/span> · <span>session<\/span> <span>Completed<\/span>/);
+  assert.doesNotMatch(fallback, /class="notification-copy"[^>]+translate="no"/);
+  assert.match(raw, /class="notification-copy" translate="no" data-i18n-skip>Settings<\/div>/);
 });
 
 test('queue job renderers prefer queue failure over completed child status', () => {
@@ -5378,6 +5407,25 @@ test('renderSkills shows disabled reasons for read-only local skills', () => {
   assert.match(html, /Disabled/);
 });
 
+test('renderSkills isolates the author fact from its localizable prefix', () => {
+  const appContext = createAppHarnessContext();
+
+  vm.runInContext(`
+    renderSkills([{
+      id: 'collision-skill',
+      name: 'Settings',
+      author: 'Local',
+      description: 'Settings',
+      installed: true
+    }]);
+  `, appContext);
+
+  const html = vm.runInContext('nodes.skillsGrid.innerHTML', appContext);
+  assert.match(html, /class="skill-name" translate="no" data-i18n-skip>Settings<\/h3>/);
+  assert.match(html, /class="skill-author"><span>by<\/span> <span translate="no" data-i18n-skip>Local<\/span><\/p>/);
+  assert.match(html, /class="skill-desc" translate="no" data-i18n-skip>Settings<\/p>/);
+});
+
 test('plan revision completion does not mark a newly selected session as generating', async () => {
   const appContext = createAppHarnessContext();
   installChatActionAPITestWrappers(appContext);
@@ -6835,6 +6883,23 @@ test('task panel counts Todo progress independently and renders derived task gro
 	assert.ok(html.indexOf('data-task-group="in_progress"') < html.indexOf('data-task-group="ready"'));
 });
 
+test('Task and Todo renderers isolate durable facts from localizable fallbacks', () => {
+	const task = context.renderTaskItem({
+		id: 'task_collision',
+		subject: 'Settings',
+		status: 'ready',
+		priority: 'Settings',
+		owner: 'Settings'
+	}, 'ready');
+	const todo = context.renderTodoItem({ status: 'pending' });
+
+	assert.match(task, /class="task-card-title"><span translate="no" data-i18n-skip>Settings<\/span>/);
+	assert.match(task, /class="task-card-copy">No description\.<\/div>/);
+	assert.doesNotMatch(task, /class="task-card-copy"[^>]+translate="no"/);
+	assert.equal((task.match(/class="task-chip" translate="no" data-i18n-skip>Settings<\/span>/g) || []).length, 2);
+	assert.match(todo, /class="todo-card-title">Untitled todo<\/div>/);
+});
+
 test('Web Console v2 inspector excludes Background and exposes complete tab semantics', () => {
 	context.document.documentElement = { dataset: { ui: 'aegis-v2' } };
 	vm.runInContext(`
@@ -6880,8 +6945,21 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(first.locale(), 'zh-CN');
 	assert.equal(first.t('Settings'), '设置');
 	assert.equal(first.t('2 in progress'), '2 个进行中');
+	assert.equal(first.t('Root peak'), '根会话峰值');
+	assert.equal(first.t('Provider usage'), '提供商用量');
+	assert.equal(first.t('Lineage'), '会话链路');
+	assert.equal(first.t('Turns'), '轮次');
+	assert.equal(first.t('Tool calls'), '工具调用');
+	assert.equal(first.t('Bounded view: 1 sessions and 7 requests omitted. Aggregate totals are complete.'), '有界视图：省略 1 个会话和 7 个请求；汇总总数完整。');
+	assert.equal(first.t('by'), '作者');
+	assert.equal(first.t('session'), '会话');
+	assert.equal(first.t('No description.'), '无描述。');
+	assert.equal(first.t('No final text recorded.'), '未记录最终文本。');
 	assert.equal(first.setLocale('en'), 'en');
 	assert.equal(first.t('Settings'), 'Settings');
+	assert.equal(first.t('Root peak'), 'Root peak');
+	assert.equal(first.t('by'), 'by');
+	assert.equal(first.t('No final text recorded.'), 'No final text recorded.');
 	const restored = makeContext();
 	assert.equal(restored.locale(), 'en');
 });

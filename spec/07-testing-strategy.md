@@ -98,6 +98,8 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
 - browser smoke 必须是 repo-owned、无 provider credential 的可重放入口；每次运行记录 commit SHA、浏览器版本、viewport、console/page/network error、截图路径与 SHA-256 manifest，并在 CI 上传桌面/移动截图 artifact
 - 默认 `zh-CN` 与持久化 `en` 都要覆盖静态和动态文案、ARIA/placeholder/title、日期/数字 locale；截图确认浅色主题不随系统深色偏好漂移
+- browser localization acceptance 必须在两个 locale 截取 populated Context inspector 并断言 operator label，同时保持 report ID/role 原文
+- raw-fact collision fixture 至少覆盖匹配 UI 词汇的 Task owner、缺失 Task description、Skill author prefix 与空 background-notification fallback；text audit 只跳过显式 raw descendant，不能跳过整个 Task/Skill/notification card
 - 键盘验收覆盖 tab 语义、Enter/Space 激活、dialog focus trap/restore、Esc 关闭和移动端 inspector；所有高频交互 target 的可点击尺寸至少为 44×44 CSS px
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件

@@ -285,7 +285,7 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 				{"content": "Capture screenshot evidence", "status": "pending", "priority": "medium"},
 			}}}, nil
 		case 2:
-			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Implement UI contract", "description": "Persistent E2E task", "priority": "high"}}, nil
+			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Implement UI contract", "priority": "high"}}, nil
 		case 3:
 			return scriptedToolCall{Name: "task_create", Arguments: map[string]any{"subject": "Verify UI contract", "description": "Blocked until implementation", "priority": "high", "blocked_by": []string{"task_0001"}}}, nil
 		case 4:
@@ -299,7 +299,7 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 		case 8:
 			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0005", "status": "cancelled"}}, nil
 		case 9:
-			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0001", "status": "in_progress"}}, nil
+			return scriptedToolCall{Name: "task_update", Arguments: map[string]any{"task_id": "task_0001", "status": "in_progress", "owner": "Settings"}}, nil
 		case 10:
 			return scriptedToolCall{Name: "shell", Arguments: map[string]any{"command": "printf 'e2e workspace artifact\\n' > e2e-created.txt"}}, nil
 		default:

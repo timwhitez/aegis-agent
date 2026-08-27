@@ -1427,7 +1427,7 @@ function renderRecoveryFactsSection(parentFacts, checkpointFacts) {
           <div class="job-card-title">Parent coordination</div>
           <span class="status-badge ${toneForStatus(parentFacts.waitState)}">${escapeHTML(humanizeStatus(parentFacts.waitState))}</span>
         </div>
-        <div class="notification-copy">${escapeHTML(parentFacts.summary)}</div>
+        <div class="notification-copy" translate="no" data-i18n-skip>${escapeHTML(parentFacts.summary)}</div>
         <div class="path-pill-row">
           ${chips.map((chip) => `<span class="surface-chip">${escapeHTML(chip)}</span>`).join('')}
         </div>
@@ -1443,7 +1443,7 @@ function renderRecoveryFactsSection(parentFacts, checkpointFacts) {
           <div class="job-card-title">Long-run checkpoint</div>
           ${checkpointFacts.waitState ? `<span class="status-badge ${toneForStatus(checkpointFacts.waitState)}">${escapeHTML(humanizeStatus(checkpointFacts.waitState))}</span>` : ''}
         </div>
-        <div class="notification-copy">${escapeHTML(checkpointFacts.summary)}</div>
+        <div class="notification-copy" translate="no" data-i18n-skip>${escapeHTML(checkpointFacts.summary)}</div>
         ${renderFactIdList('Checkpoint children', checkpointFacts.unresolvedChildren)}
         ${renderFactIdList('Checkpoint jobs', checkpointFacts.unresolvedJobs)}
         ${checkpointFacts.hints.length ? `<div class="goal-meta-line">${escapeHTML(checkpointFacts.hints.join(' · '))}</div>` : ''}
@@ -1542,7 +1542,7 @@ function renderProviderAttemptCard(attempt) {
         <div class="job-card-title">${escapeHTML(providerAttemptTitle(attempt))}</div>
         <span class="status-badge ${providerAttemptTone(outcome)}">${escapeHTML(humanizeStatus(outcome))}</span>
       </div>
-			<div class="notification-copy" translate="no">${escapeHTML(copy)}</div>
+			<div class="notification-copy" translate="no" data-i18n-skip>${escapeHTML(copy)}</div>
       <div class="job-card-meta">${escapeHTML(metaParts.join(' · '))}</div>
     </div>
   `;
@@ -1643,6 +1643,7 @@ function renderSelectedQueueJobPanel() {
   const job = selectedQueueJobDetail() || queueJobByID(jobID) || { id: jobID };
   const status = queueJobDisplayStatus(job);
   const detailCopy = job.last_error || job.final_text || job.prompt || 'Job detail is loading.';
+  const detailCopyIsRaw = Boolean(job.last_error || job.final_text || job.prompt);
   const created = job.created_at ? formatTimestamp(job.created_at) : '';
   const updated = job.updated_at ? formatTimestamp(job.updated_at) : '';
   const isUnavailable = status === 'unavailable';
@@ -1655,7 +1656,7 @@ function renderSelectedQueueJobPanel() {
         </div>
         <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
-      <div class="${job.last_error ? 'notification-copy danger' : 'job-card-copy'}">${escapeHTML(truncateText(detailCopy, 260))}</div>
+      <div class="${job.last_error ? 'notification-copy danger' : 'job-card-copy'}"${detailCopyIsRaw ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(truncateText(detailCopy, 260))}</div>
       <div class="path-pill-row">
         ${job.session_id ? `<span class="surface-chip">child ${escapeHTML(shortId(job.session_id))}</span>` : ''}
         ${job.parent_session_id ? `<span class="surface-chip">parent ${escapeHTML(shortId(job.parent_session_id))}</span>` : ''}
@@ -2159,7 +2160,7 @@ function renderContextPanel(detail) {
   }
   if (error && !report) {
     return `
-      <div class="empty-panel">${escapeHTML(error)}</div>
+      <div class="empty-panel" translate="no" data-i18n-skip>${escapeHTML(error)}</div>
       <button class="mini-link-btn" type="button" data-context-report-refresh>Retry</button>
     `;
   }
@@ -2177,8 +2178,8 @@ function renderContextPanel(detail) {
     <div class="goal-panel context-panel">
       <div class="goal-panel-head">
         <div>
-          <div class="inspector-eyebrow">Context report v${escapeHTML(String(report.schema_version || 1))}</div>
-          <h4>${escapeHTML(shortId(report.root_session_id || sessionID))}</h4>
+          <div class="inspector-eyebrow"><span>Context report</span> v<span translate="no" data-i18n-skip>${escapeHTML(String(report.schema_version || 1))}</span></div>
+          <h4 translate="no" data-i18n-skip>${escapeHTML(shortId(report.root_session_id || sessionID))}</h4>
         </div>
         <button class="mini-link-btn" type="button" data-context-report-refresh ${loading ? 'disabled' : ''}>Refresh</button>
       </div>
@@ -2217,10 +2218,10 @@ function renderContextPanel(detail) {
           ${sessions.map((item) => `
             <div class="goal-item">
               <div class="goal-item-top">
-                <span>${escapeHTML(shortId(item.session_id || 'session'))}</span>
-                <span class="status-badge ${item.session_id === report.root_session_id ? 'completed' : 'queued'}">${item.session_id === report.root_session_id ? 'root' : escapeHTML(item.agent_role || 'child')}</span>
+                <span translate="no" data-i18n-skip>${escapeHTML(shortId(item.session_id || 'session'))}</span>
+                <span class="status-badge ${item.session_id === report.root_session_id ? 'completed' : 'queued'}">${renderContextSessionRole(item, report.root_session_id)}</span>
               </div>
-              <div class="goal-meta-line">peak ${contextMetric(item.metrics?.peak_estimated_input_tokens)} · aggregate ${contextMetric(item.metrics?.aggregate_estimated_input_tokens)} · requests ${contextMetric(item.metrics?.request_count)}</div>
+              <div class="goal-meta-line"><span>peak</span> <span translate="no" data-i18n-skip>${contextMetric(item.metrics?.peak_estimated_input_tokens)}</span> · <span>aggregate</span> <span translate="no" data-i18n-skip>${contextMetric(item.metrics?.aggregate_estimated_input_tokens)}</span> · <span>requests</span> <span translate="no" data-i18n-skip>${contextMetric(item.metrics?.request_count)}</span></div>
             </div>
           `).join('') || '<div class="empty-panel compact">No request snapshots recorded.</div>'}
         </div>
@@ -2228,6 +2229,16 @@ function renderContextPanel(detail) {
       ${truncation?.truncated ? `<div class="goal-meta-line">Bounded view: ${contextMetric(truncation.omitted_session_count)} sessions and ${contextMetric(truncation.omitted_request_count)} requests omitted. Aggregate totals are complete.</div>` : ''}
     </div>
   `;
+}
+
+function renderContextSessionRole(item, rootSessionID) {
+  if (item?.session_id === rootSessionID) {
+    return 'root';
+  }
+  if (item?.agent_role) {
+    return `<span translate="no" data-i18n-skip>${escapeHTML(item.agent_role)}</span>`;
+  }
+  return 'child';
 }
 
 function contextMetric(value) {
@@ -2686,7 +2697,7 @@ function renderLiveToolEntry(entry) {
         <div class="live-tool-title">${escapeHTML(entry.name)}</div>
         <span class="status-badge ${entry.kind === 'result' ? (entry.is_error ? 'danger' : 'live') : 'neutral'}">${escapeHTML(entry.kind === 'result' ? 'Result' : 'Call')}</span>
       </div>
-      <div class="task-card-copy">${escapeHTML(entry.kind === 'result' ? truncateText(entry.display_output || '(no output)', 160) : truncateText(prettyJSON(entry.arguments), 160))}</div>
+      <div class="task-card-copy" translate="no" data-i18n-skip>${escapeHTML(entry.kind === 'result' ? truncateText(entry.display_output || '(no output)', 160) : truncateText(prettyJSON(entry.arguments), 160))}</div>
       <div class="job-card-meta">${escapeHTML(formatTimestamp(entry.created_at))}</div>
     </div>
   `;
@@ -2703,7 +2714,7 @@ function renderSteerQueue(items) {
         <div class="job-card-title">Steer ${escapeHTML(shortId(item.id))}</div>
         <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(truncateText(item.text, 180))}</div>
+      <div class="notification-copy" translate="no" data-i18n-skip>${escapeHTML(truncateText(item.text, 180))}</div>
       <div class="job-card-meta">${escapeHTML(formatTimestamp(item.created_at))}${item.interrupt ? ' · interrupt' : ''}</div>
     </div>
   `).join('');
@@ -2716,17 +2727,18 @@ function renderBackgroundNotificationsPreview(items) {
   }
   return notifications.map((item) => {
     const pendingHint = backgroundNotificationPendingHint(item);
+    const label = agentLabel(item.agent_name, item.agent_role);
     return `
       <div class="notification-card">
         <div class="job-card-top">
-          <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background result')}</div>
+          <div class="job-card-title">${label ? `<span translate="no" data-i18n-skip>${escapeHTML(label)}</span>` : 'Background result'}</div>
           <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
         </div>
-        <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 180))}</div>
+        <div class="notification-copy"${backgroundNotificationCopyIsRaw(item) ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(truncateText(backgroundNotificationCopy(item), 180))}</div>
         ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
         ${maybeArray(item.available_actions).length ? `<div class="goal-meta-line">Parent actions: ${escapeHTML(maybeArray(item.available_actions).map(humanizeStatus).join(' · '))}</div>` : ''}
         ${item.effective_budget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(item.effective_budget, item.effective_budget.last_reason))}</div>` : ''}
-        <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
+        <div class="job-card-meta">${renderBackgroundNotificationMeta(item)}</div>
         ${item.session_id ? `
           <div class="card-actions">
             <button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>
@@ -2778,7 +2790,7 @@ function renderSubAgentCard(row) {
         <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
       <div class="agent-card-copy">${escapeHTML(model)} · ${escapeHTML(phase)}</div>
-      ${error ? `<div class="notification-copy danger">${escapeHTML(truncateText(error, 180))}</div>` : ''}
+      ${error ? `<div class="notification-copy danger" translate="no" data-i18n-skip>${escapeHTML(truncateText(error, 180))}</div>` : ''}
       ${!error && finalText ? `<div class="agent-card-copy">${escapeHTML(truncateText(finalText, 180))}</div>` : ''}
       ${effectiveBudget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(effectiveBudget, budgetReason))}</div>` : ''}
       <div class="agent-card-meta">${sessionId ? escapeHTML(shortId(sessionId)) : ''}${jobId ? `${sessionId ? ' · ' : ''}job ${escapeHTML(shortId(jobId))}` : ''}</div>
@@ -2920,17 +2932,18 @@ function renderSessionStopButton(sessionID, status, label = 'Stop') {
 
 function renderNotificationCard(item) {
   const pendingHint = backgroundNotificationPendingHint(item);
+  const label = agentLabel(item.agent_name, item.agent_role);
   return `
     <div class="notification-card">
       <div class="job-card-top">
-        <div class="job-card-title">${escapeHTML(agentLabel(item.agent_name, item.agent_role) || 'Background notification')}</div>
+        <div class="job-card-title">${label ? `<span translate="no" data-i18n-skip>${escapeHTML(label)}</span>` : 'Background notification'}</div>
         <span class="status-badge ${toneForStatus(item.status || item.session_status)}">${escapeHTML(humanizeStatus(item.status || item.session_status || 'unknown'))}</span>
       </div>
-      <div class="notification-copy">${escapeHTML(truncateText(backgroundNotificationCopy(item), 200))}</div>
+      <div class="notification-copy"${backgroundNotificationCopyIsRaw(item) ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(truncateText(backgroundNotificationCopy(item), 200))}</div>
       ${pendingHint ? `<div class="job-card-meta">${escapeHTML(pendingHint)}</div>` : ''}
       ${maybeArray(item.available_actions).length ? `<div class="goal-meta-line">Parent actions: ${escapeHTML(maybeArray(item.available_actions).map(humanizeStatus).join(' · '))}</div>` : ''}
       ${item.effective_budget ? `<div class="goal-meta-line">Budget ${escapeHTML(effectiveBudgetSummary(item.effective_budget, item.effective_budget.last_reason))}</div>` : ''}
-      <div class="job-card-meta">${escapeHTML(backgroundNotificationMeta(item))}</div>
+      <div class="job-card-meta">${renderBackgroundNotificationMeta(item)}</div>
       ${renderVisiblePaths(item.visible_paths)}
       <div class="card-actions">
         ${item.session_id ? `<button class="mini-link-btn" type="button" data-open-session="${escapeAttr(item.session_id)}">Open child session</button>` : ''}
@@ -2952,6 +2965,10 @@ function backgroundNotificationCopy(item) {
   return 'No final text recorded.';
 }
 
+function backgroundNotificationCopyIsRaw(item) {
+  return Boolean(item?.last_error || item?.final_text);
+}
+
 function backgroundNotificationPendingHint(item) {
   if (!isPendingBackgroundNotification(item)) {
     return '';
@@ -2959,13 +2976,13 @@ function backgroundNotificationPendingHint(item) {
   return 'Pending delivery means the child/job result is recorded, but the parent run has not continued to accept it.';
 }
 
-function backgroundNotificationMeta(item) {
-  const parts = [shortId(item?.queue_job_id || item?.session_id || item?.id)];
+function renderBackgroundNotificationMeta(item) {
+  const parts = [`<span translate="no" data-i18n-skip>${escapeHTML(shortId(item?.queue_job_id || item?.session_id || item?.id))}</span>`];
   if (item?.delivery_status) {
-    parts.push(item.delivery_status);
+    parts.push(`<span translate="no" data-i18n-skip>${escapeHTML(item.delivery_status)}</span>`);
   }
   if (item?.session_status) {
-    parts.push(`session ${humanizeStatus(item.session_status)}`);
+    parts.push(`<span>session</span> <span>${escapeHTML(humanizeStatus(item.session_status))}</span>`);
   }
   return parts.filter(Boolean).join(' · ');
 }
@@ -2975,14 +2992,15 @@ function isPendingBackgroundNotification(item) {
 }
 
 function renderTodoItem(item) {
+  const content = item.content || '';
   return `
     <div class="todo-card">
       <div class="job-card-top">
-				<div class="todo-card-title" translate="no">${escapeHTML(item.content || 'Untitled todo')}</div>
+				<div class="todo-card-title">${content ? `<span translate="no" data-i18n-skip>${escapeHTML(content)}</span>` : 'Untitled todo'}</div>
         <span class="status-badge ${toneForStatus(item.status)}">${escapeHTML(humanizeStatus(item.status))}</span>
       </div>
       <div class="todo-pill-row">
-        ${item.priority ? `<span class="task-chip">${escapeHTML(item.priority)}</span>` : ''}
+        ${item.priority ? `<span class="task-chip" translate="no" data-i18n-skip>${escapeHTML(item.priority)}</span>` : ''}
         ${item.updated_at ? `<span class="task-chip">${escapeHTML(formatTimestamp(item.updated_at))}</span>` : ''}
       </div>
     </div>
@@ -2991,17 +3009,18 @@ function renderTodoItem(item) {
 
 function renderTaskItem(task, derivedStatus = '') {
 	const displayStatus = derivedStatus || task.status;
+	const title = task.subject || task.id || '';
 	return `
 		<div class="task-card" data-task-id="${escapeAttr(task.id || '')}" data-derived-status="${escapeAttr(displayStatus || '')}">
 			<div class="job-card-top">
-				<div class="task-card-title" translate="no">${escapeHTML(task.subject || task.id || 'Task')}</div>
+				<div class="task-card-title">${title ? `<span translate="no" data-i18n-skip>${escapeHTML(title)}</span>` : 'Task'}</div>
 				<span class="status-badge ${toneForStatus(displayStatus)}">${escapeHTML(humanizeStatus(displayStatus))}</span>
       </div>
-			<div class="task-card-copy" translate="no">${escapeHTML(task.description || 'No description.')}</div>
+			<div class="task-card-copy">${task.description ? `<span translate="no" data-i18n-skip>${escapeHTML(task.description)}</span>` : 'No description.'}</div>
 			<div class="task-pill-row">
-				${task.id ? `<span class="task-chip">${escapeHTML(task.id)}</span>` : ''}
-        ${task.priority ? `<span class="task-chip">${escapeHTML(task.priority)}</span>` : ''}
-        ${task.owner ? `<span class="task-chip">${escapeHTML(task.owner)}</span>` : ''}
+				${task.id ? `<span class="task-chip" translate="no" data-i18n-skip>${escapeHTML(task.id)}</span>` : ''}
+        ${task.priority ? `<span class="task-chip" translate="no" data-i18n-skip>${escapeHTML(task.priority)}</span>` : ''}
+        ${task.owner ? `<span class="task-chip" translate="no" data-i18n-skip>${escapeHTML(task.owner)}</span>` : ''}
         ${maybeArray(task.blocked_by).length ? `<span class="task-chip">blocked by ${escapeHTML(String(task.blocked_by.length))}</span>` : ''}
         ${maybeArray(task.blocks).length ? `<span class="task-chip">blocks ${escapeHTML(String(task.blocks.length))}</span>` : ''}
       </div>

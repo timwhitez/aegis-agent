@@ -173,6 +173,8 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 - operator-owned 静态/动态文案、toast/dialog、ARIA、placeholder/title、日期和数字必须覆盖 `zh-CN` 与 `en`；默认 `zh-CN`
 - local preference 只保存在浏览器中；用户消息、tool/provider 原文、文件内容、路径和 durable session facts 保持原样
 - operator-owned fallback label 必须随 locale 翻译，但自定义 agent name/role 等 durable facts 必须保持原文；不能用整块 raw-content 排除规则掩盖同一节点中的 fallback
+- Context inspector 的 heading、metric label、bounded-view copy 与 empty/loading state 属于 operator-owned 文案；deterministic browser acceptance 必须让 populated Context panel 分别保持可见并产出一张 `zh-CN` 和一张 `en` 截图
+- Task/Todo fallback、Skill author prefix 与 background-notification fallback 必须和 durable value 分离成独立 DOM text node；i18n audit 只能跳过显式标记的 raw descendant，不能排除整个 Task/Skill/notification container
 - 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
 - modal 与移动 inspector 必须 trap focus、Esc 关闭、恢复触发焦点，并让背景不可交互
 - 移动 inspector 每次从关闭状态重新打开时必须把 slide-out 滚动容器复位到顶部，使标题、状态和关闭按钮立即可见；已经打开时的普通 re-render 不得重置用户正在查看的位置
