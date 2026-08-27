@@ -299,6 +299,8 @@ func (a *Adapter) convert(evt events.Event) *StreamOutputMessage {
 - `accumulateUsage` 必须兼容 `int`、`int64`、`float64`、`json.Number`。
 - `WriteResult(sessionID, finalText, status, lastError string, exitCode int)` 写最后一行，`is_error = exitCode != 0`。
 - `result` 文本优先用 `finalText`；若失败且 `finalText` 为空，可用 `lastError`。
+- adapter 必须跟踪已经成功写出的 `tool_use.id` 与 `tool_result.tool_use_id`。空 id、重复 use/result、result-before-use 或成功 result 前仍有 pending call 都属于 protocol integrity error；错误发生后不能再写成功 result。
+- 收到 `events.dropped` 表示 transcript completeness 已不可证明：可以先输出 diagnostic `log`，但随后必须 fail closed，不能只记录 warning 后继续输出成功 result。
 
 ## 4. 新增 `internal/streamjson/input.go`
 
@@ -502,7 +504,9 @@ if *inputFormat == "stream-json" && len(fs.Args()) > 0 {
 
 文本/旧 JSON 模式继续使用 `output.Renderer`。stream-json 模式使用 `streamjson.Adapter`。
 
-关键点：不要在 `runner.Start/Continue` 返回后立即取消 renderer，可能丢掉 buffered events。stream-json 模式应等到 terminal event 或短暂 drain 完成后再写 result。
+关键点：不要在 `runner.Start/Continue` 返回后立即取消 renderer，也不要用固定时长等待 buffered events。stream-json 必须使用 event bus 的显式 lossless 订阅；该订阅的有界 channel 满时允许把 stdout backpressure 传播给当前 producer。普通文本/JSON/Web observer 继续使用原有 lossy、drop-aware 订阅。
+
+runtime 返回后，由 CLI 向同一 lossless subscription 发布一个只存在于进程内、不落 session store 的 drain barrier。renderer 处理 barrier 前的全部 event 后退出，CLI 等待 barrier ack，再调用 `WriteResult`。barrier 不进入 stream-json 输出；这样即使 runtime error 没有 terminal event，也能证明此前发布内容已排空。
 
 推荐 helper：
 
@@ -514,14 +518,7 @@ type eventRenderer interface {
 func renderEventsUntilDone(ctx context.Context, sub <-chan events.Event, render func(events.Event), terminal func(events.Event) bool) <-chan struct{}
 ```
 
-terminal event 包括：
-
-- `session.completed`
-- `session.failed`
-- `session.paused`
-- `session.awaiting_input`
-
-如果 run 返回了 error 且没有 terminal event，仍必须写 result envelope，`is_error=true`。
+stream-json renderer 的 terminal predicate 只识别 drain barrier，不能在 `session.completed` 后提前退出；runtime 可能在 terminal state event 后、返回前继续发布收敛/诊断事件。普通 renderer 仍可使用 session terminal event。stdout writer error 必须传播为非零 CLI error；如果完整 transcript 无法写出，不能补写成功 result。
 
 ### 9.5 Start / Continue 分支
 

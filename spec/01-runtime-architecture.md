@@ -165,6 +165,7 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 
 - 进程内发布订阅事件
 - 服务于 CLI 渲染、hooks、未来 SDK / API 订阅
+- 默认观测订阅保持有界、非阻塞并显式报告 drop；`gocli-stream-json` 这类把事件转换为外部 transcript 协议的调用方必须使用显式 lossless 订阅。lossless 订阅允许 stdout backpressure 反向限制 producer，但不得改变 Web / 普通 CLI 观测订阅的 lossy/non-blocking 行为
 
 ### 2.11 Compactor
 

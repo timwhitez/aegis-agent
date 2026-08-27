@@ -92,6 +92,88 @@ func TestAdapterHandlesInvalidToolArgumentsAndFailureResult(t *testing.T) {
 	}
 }
 
+func TestAdapterRejectsSuccessfulResultWithDanglingToolUse(t *testing.T) {
+	var out bytes.Buffer
+	adapter := NewAdapter(&out)
+	adapter.Handle(events.New("s1", "tool.before", "tool_execute", map[string]any{
+		"call_id":   "call_dangling",
+		"tool_name": "read_file",
+		"arguments": `{"path":"main.go"}`,
+	}))
+	if err := adapter.WriteResult("s1", "done", "completed", "", 0); err == nil || !strings.Contains(err.Error(), "dangling") {
+		t.Fatalf("expected dangling tool_use to block successful result, got %v", err)
+	}
+	if strings.Contains(out.String(), `"type":"result"`) {
+		t.Fatalf("successful result was written after dangling tool_use: %s", out.String())
+	}
+}
+
+func TestAdapterFailsClosedOnTranscriptIntegrityErrors(t *testing.T) {
+	cases := []struct {
+		name   string
+		events []events.Event
+		want   string
+	}{
+		{
+			name: "empty tool use id",
+			events: []events.Event{events.New("s1", "tool.before", "tool_execute", map[string]any{
+				"tool_name": "read_file",
+			})},
+			want: "empty tool_use id",
+		},
+		{
+			name: "result before use",
+			events: []events.Event{events.New("s1", "tool.after", "tool_execute", map[string]any{
+				"call_id": "call_missing",
+			})},
+			want: "without a pending tool_use",
+		},
+		{
+			name: "duplicate use",
+			events: []events.Event{
+				events.New("s1", "tool.before", "tool_execute", map[string]any{"call_id": "call_dup", "tool_name": "read_file"}),
+				events.New("s1", "tool.before", "tool_execute", map[string]any{"call_id": "call_dup", "tool_name": "read_file"}),
+			},
+			want: "duplicate tool_use id",
+		},
+		{
+			name: "duplicate result",
+			events: []events.Event{
+				events.New("s1", "tool.before", "tool_execute", map[string]any{"call_id": "call_dup_result", "tool_name": "read_file"}),
+				events.New("s1", "tool.after", "tool_execute", map[string]any{"call_id": "call_dup_result"}),
+				events.New("s1", "tool.after", "tool_execute", map[string]any{"call_id": "call_dup_result"}),
+			},
+			want: "without a pending tool_use",
+		},
+		{
+			name: "known event loss",
+			events: []events.Event{events.New("s1", events.EventEventsDropped, "tool_execute", map[string]any{
+				"dropped": int64(2),
+			})},
+			want: "events dropped",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			adapter := NewAdapter(&out)
+			for _, evt := range tc.events {
+				adapter.Handle(evt)
+			}
+			if err := adapter.Err(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("adapter error=%v, want substring %q", err, tc.want)
+			}
+			if err := adapter.WriteResult("s1", "done", "completed", "", 0); err == nil {
+				t.Fatal("transcript integrity error allowed a successful result")
+			}
+			if strings.Contains(out.String(), `"type":"result"`) {
+				t.Fatalf("successful result was written after integrity error: %s", out.String())
+			}
+		})
+	}
+}
+
 func TestMarshalLineRoundTripsMissionCompatibleFields(t *testing.T) {
 	line, err := MarshalLine(&StreamOutputMessage{
 		Type:    "result",

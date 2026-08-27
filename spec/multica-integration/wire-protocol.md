@@ -15,6 +15,13 @@
 
 MVP 不定义长连接 control/cancel stdin 消息。Multica 的取消、超时和中断沿用现有 backend 模式：取消 Go context，必要时由 `exec.CommandContext` 终止子进程。
 
+stdout transcript 是协议交付面，不是 best-effort 日志：
+
+- `system`、`assistant`、`user`、usage accumulation 和最终 `result` 所依赖的 runtime events 必须按发布顺序 lossless 交付。producer 可以让 stdout backpressure 反向限制当前 run，不能从普通 lossy 观测订阅静默丢弃协议事件
+- runtime 返回后，producer 必须排空此前已发布的协议事件，再写最终 `result`；固定毫秒级 drain timeout 不是完成证明
+- stdout write/encode 失败、已知 event drop、空或重复 tool call id、无先行 `tool_use` 的 `tool_result`、或成功结束前仍有 dangling `tool_use` 时必须 fail closed。不得在这些情况下输出 `status=completed` / `is_error=false`
+- 普通 Web / CLI event observers 可以继续使用有界、drop-aware 的非阻塞订阅；本约束不把 core event bus 的所有消费者改成阻塞 transcript
+
 ## 2. stdout 消息
 
 ### 2.1 Envelope
@@ -222,8 +229,10 @@ MVP 不定义长连接 control/cancel stdin 消息。Multica 的取消、超时�
 约束：
 
 - `tool_use.id` 必须非空。
-- `tool_result.tool_use_id` 必须引用同一 run 内已输出的 `tool_use.id`。
+- `tool_result.tool_use_id` 必须引用同一 run 内已输出且尚未结算的 `tool_use.id`；同一个 id 只能出现一次 `tool_use` 和一次 `tool_result`。
+- `status=completed` / `is_error=false` 前，每个已输出 `tool_use` 必须恰好有一个对应 `tool_result`。
 - `result` 必须是最后一条协议消息。
+- `result` 只能在此前 protocol-significant event 已经写入 stdout 后输出；stdout backpressure 只允许延迟结果，不能允许结果越过或取代积压 transcript。
 - `usage` 是整个 run 的累计 usage，不是最后一 turn 的 usage。
 - consumer 必须忽略未知字段。
 - producer 不应输出空 text/thinking block；没有内容时省略 block。
