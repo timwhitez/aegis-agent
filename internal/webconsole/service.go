@@ -5225,7 +5225,7 @@ func effectiveWebSettingsAPIProvider(providerName string, provider config.Provid
 func providerReasoningModes(providerName string, provider config.Provider) []string {
 	switch providerReasoningFamily(providerName, provider) {
 	case "openai":
-		return []string{"default", "low", "medium", "high", "xhigh"}
+		return []string{"default", "low", "medium", "high", "xhigh", "max"}
 	case "thinking":
 		return []string{"default", "standard", "max", "off"}
 	default:
@@ -5237,7 +5237,7 @@ func providerReasoningMode(providerName string, provider config.Provider) string
 	switch providerReasoningFamily(providerName, provider) {
 	case "openai":
 		switch strings.ToLower(strings.TrimSpace(provider.ReasoningEffort)) {
-		case "low", "medium", "high", "xhigh":
+		case "low", "medium", "high", "xhigh", "max":
 			return strings.ToLower(strings.TrimSpace(provider.ReasoningEffort))
 		default:
 			return "default"
@@ -5268,7 +5268,7 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 		switch normalized {
 		case "default", "off":
 			provider.ReasoningEffort = ""
-		case "low", "medium", "high", "xhigh":
+		case "low", "medium", "high", "xhigh", "max":
 			provider.ReasoningEffort = normalized
 		default:
 			return fmt.Errorf("unsupported reasoning mode for %s: %s", providerName, mode)

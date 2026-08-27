@@ -169,7 +169,12 @@ func checkRuntimeEnvironment(ctx context.Context, workdir string) doctorCheck {
 func doctorCommandVersion(ctx context.Context, name string) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	out, err := doctorRuntimeCommandOutput(cmdCtx, name, "--version")
+	args := []string{"--version"}
+	base := strings.TrimSuffix(strings.ToLower(filepath.Base(name)), strings.ToLower(filepath.Ext(name)))
+	if base == "go" {
+		args = []string{"version"}
+	}
+	out, err := doctorRuntimeCommandOutput(cmdCtx, name, args...)
 	if err != nil {
 		return "", err
 	}

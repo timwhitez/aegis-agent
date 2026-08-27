@@ -23,26 +23,50 @@ func TestModelsFromConfigUsesProviderRouteIDs(t *testing.T) {
 			if !model.Default || model.Provider != "anthropic" {
 				t.Fatalf("unexpected anthropic model: %#v", model)
 			}
-			if model.Thinking == nil || len(model.Thinking.SupportedLevels) != 4 || model.Thinking.DefaultLevel != "medium" {
+			if model.Thinking == nil || len(model.Thinking.SupportedLevels) != 5 || model.Thinking.DefaultLevel != "medium" {
 				t.Fatalf("expected thinking catalog, got %#v", model.Thinking)
 			}
 			if model.ContextWindow != config.DefaultContextWindowTokens {
 				t.Fatalf("expected default context window, got %#v", model)
 			}
-			var hasXHigh bool
+			var hasXHigh, hasMax bool
 			for _, level := range model.Thinking.SupportedLevels {
 				if level.Value == "xhigh" {
 					hasXHigh = true
 				}
+				if level.Value == "max" {
+					hasMax = true
+				}
 			}
-			if !hasXHigh {
-				t.Fatalf("expected xhigh thinking level, got %#v", model.Thinking.SupportedLevels)
+			if !hasXHigh || !hasMax {
+				t.Fatalf("expected xhigh and max thinking levels, got %#v", model.Thinking.SupportedLevels)
 			}
 		}
 	}
 	if !foundDefault {
 		t.Fatalf("expected default anthropic route in %#v", models)
 	}
+}
+
+func TestModelsFromConfigPreservesConfiguredMaxThinkingDefault(t *testing.T) {
+	cfg := config.Default()
+	openai := cfg.Providers["openai"]
+	openai.ReasoningEffort = "max"
+	cfg.Providers["openai"] = openai
+
+	models, err := ModelsFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	for _, model := range models {
+		if model.ID == "openai/gpt-5.4" {
+			if model.Thinking == nil || model.Thinking.DefaultLevel != "max" {
+				t.Fatalf("expected configured max default, got %#v", model.Thinking)
+			}
+			return
+		}
+	}
+	t.Fatalf("openai model not found in %#v", models)
 }
 
 func TestModelsFromConfigUsesConfiguredThinkingDefault(t *testing.T) {

@@ -14,7 +14,7 @@
 - `engine.go` 已在 `turn.stopped.data.usage` 暴露 usage，不能再设计一个重复的 `turn.usage` 事实源。
 - `tool.before` / `tool.after` event data 当前没有 `call_id`，需要补齐。
 - `assistant.message` event data 当前没有 `thinking`，如果不补，Multica 无法展示 `MessageThinking`。
-- `runtime.StartRequest` 已有 `ProviderOptions session.ProviderOptions`；`ContinueRequest` 当前没有，本 SPEC 锁定为新增 `ProviderOptions`，使 `--resume --thinking-level` 与首次 start 行为一致。
+- `runtime.StartRequest` 已有 `ProviderOptions session.ProviderOptions`；`ContinueRequest` 当前没有，本 SPEC 锁定为新增 `ProviderOptions`，使 `--resume --thinking-level` 与首次 start 行为一致。thinking level 枚举为 `low|medium|high|xhigh|max`。
 
 ## 改动范围
 

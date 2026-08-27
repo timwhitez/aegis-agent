@@ -86,7 +86,8 @@ func supportedThinkingLevels(apiProvider string) []ThinkingLevel {
 			{Value: "low", Label: "Low", Description: "Use a small reasoning or thinking budget."},
 			{Value: "medium", Label: "Medium", Description: "Use the default reasoning or thinking budget."},
 			{Value: "high", Label: "High", Description: "Use a larger reasoning or thinking budget."},
-			{Value: "xhigh", Label: "XHigh", Description: "Use the largest gocli reasoning or thinking budget."},
+			{Value: "xhigh", Label: "XHigh", Description: "Use a very large reasoning or thinking budget."},
+			{Value: "max", Label: "Max", Description: "Use the maximum configured reasoning or thinking budget."},
 		}
 	default:
 		return nil
@@ -101,6 +102,8 @@ func defaultThinkingLevel(apiProvider string, providerCfg config.Provider) strin
 		}
 	case "anthropic-compatible", "google":
 		switch {
+		case providerCfg.ThinkingBudget >= 32000:
+			return "max"
 		case providerCfg.ThinkingBudget > 8192:
 			return "xhigh"
 		case providerCfg.ThinkingBudget > 4096:
@@ -116,7 +119,7 @@ func defaultThinkingLevel(apiProvider string, providerCfg config.Provider) strin
 
 func normalizeThinkingLevel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "low", "medium", "high", "xhigh":
+	case "low", "medium", "high", "xhigh", "max":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return ""

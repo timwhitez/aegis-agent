@@ -537,7 +537,10 @@ func TestRealHTTPProviderTimeoutBeforeChildDeadlineRemainsFailure(t *testing.T) 
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
 	cfg.Runtime.ProviderAutoResume.Enabled = false
-	cfg.Runtime.ChildBudget.MaxElapsedSec = 1
+	// This test verifies timeout ownership, not a close-deadline race. Keep the
+	// child deadline far enough away that shared-host scheduling cannot let it
+	// overtake the provider's 20ms request timeout before the request starts.
+	cfg.Runtime.ChildBudget.MaxElapsedSec = 30
 	engine, meta, state, reg, hooks, catalog := childEngineWithConfig(t, cfg)
 	engine.cfg.Runtime.MaxTurnsHard = -1
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "provider timeout first")); err != nil {

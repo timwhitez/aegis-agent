@@ -485,14 +485,25 @@ func TestRunCommandResumeThinkingLevelProviderOptions(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "--thinking-level", "xhigh", "resume"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"exec", "--resume", "s1", "--thinking-level", "max", "resume"}, &stdout, &stderr); err != nil {
 		t.Fatalf("resume: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
 	if len(fake.continueCalls) != 1 {
 		t.Fatalf("expected one continue call, got %d", len(fake.continueCalls))
 	}
-	if fake.continueCalls[0].ProviderOptions.ReasoningEffort != "xhigh" {
+	if fake.continueCalls[0].ProviderOptions.ReasoningEffort != "max" {
 		t.Fatalf("expected resume thinking level provider options, got %#v", fake.continueCalls[0].ProviderOptions)
+	}
+}
+
+func TestProviderOptionsForThinkingLevelMapsMaxThinkingBudget(t *testing.T) {
+	cfg := config.Default()
+	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic")
+	if err != nil {
+		t.Fatalf("provider options: %v", err)
+	}
+	if options.IncludeThoughts == nil || !*options.IncludeThoughts || options.ThinkingBudget != 32000 {
+		t.Fatalf("expected max thinking budget, got %#v", options)
 	}
 }
 
@@ -2179,6 +2190,25 @@ func TestDoctorRuntimeEnvironmentProbeReportsPythonModules(t *testing.T) {
 	missing, ok := python["missing_modules"].([]string)
 	if !ok || len(missing) != 1 || missing[0] != "torch" {
 		t.Fatalf("expected missing torch, got %#v", python["missing_modules"])
+	}
+}
+
+func TestDoctorCommandVersionUsesGoVersionSyntax(t *testing.T) {
+	restoreCommandOutput := doctorRuntimeCommandOutput
+	doctorRuntimeCommandOutput = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "/usr/local/go/bin/go" || len(args) != 1 || args[0] != "version" {
+			t.Fatalf("unexpected Go version command: %s %#v", name, args)
+		}
+		return []byte("go version go1.25.0 linux/amd64\n"), nil
+	}
+	defer func() { doctorRuntimeCommandOutput = restoreCommandOutput }()
+
+	version, err := doctorCommandVersion(context.Background(), "/usr/local/go/bin/go")
+	if err != nil {
+		t.Fatalf("doctor command version: %v", err)
+	}
+	if version != "go version go1.25.0 linux/amd64" {
+		t.Fatalf("unexpected Go version: %q", version)
 	}
 }
 

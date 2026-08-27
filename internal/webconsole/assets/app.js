@@ -995,6 +995,7 @@ function setupEventListeners() {
   nodes.newSessionBtn?.addEventListener('click', () => {
     const wasGenerating = isGenerating();
     resetChatSession();
+    switchView('chat');
     showToast(
       wasGenerating
         ? 'Started a new session. The previous run may still settle in the background.'

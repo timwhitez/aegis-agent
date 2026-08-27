@@ -120,6 +120,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `finish` 设置 `final`
 - `await_input` 返回结构化等待 metadata 且不设置 `final`
 - `shell` 仅继承 allowlist 环境变量，且临时 HOME 中的 login/profile/rc 脚本不能注入变量或产生副作用；trusted command 走同一语义
+- exec policy 的 adversarial expansion gate 必须用 fail-closed verdict、深度/工作量耗尽原因和分配/派生字节预算等确定性不变量阻断回归；wall-clock 只记录为性能观测，不能用依赖共享主机负载或异构 CPU 调度的固定秒数让 correctness gate 随机失败
 - Linux 且 bwrap namespace 可用时，必须真实执行位于 `/tmp` 或其他非系统根下的 workspace：验证 namespace 内 bind target 创建顺序、稳定 descriptor cwd、命令成功，以及 profile/rc 仍不能注入变量或产生副作用；仅检查 argv 不构成该验收
 - background-wait 测试必须以持久化 `awaiting_input/background_wait` 状态同步结果注入，传播 resolver/notification 写入错误，并使用测试级有界 context；不能用固定 sleep 加无界 `context.Background()` 把失败拖到 package timeout
 - `todo_write` 仅刷新新增或发生状态推进的条目时间，未变化条目保留时间，调用方旧 timestamp 不能覆盖 runtime 时间
@@ -201,6 +202,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - command tool cancel 后写入的中断错误结果保留 collector 的 raw/persisted/omitted、artifact path/completeness 与 command execution metadata；同 batch 后续调用仍得到 synthetic interrupted result
 - `steer --interrupt` 对不可取消工具退化为 deferred
 - child active-runtime/absolute deadline 能取消 provider、tool 与 shell，不等待 operation timeout
+- provider/tool operation timeout 与 child deadline 的归属优先级测试必须把两个真实计时器分开足够大的调度余量；若测试目标不是临界竞态，不得用几十毫秒对一秒这类会被共享主机停顿反转的 fixture 制造随机状态
 - parent 按 session/job 取消 running foreground/background child，cross-parent 请求被拒绝，重复 cancel 幂等
 
 ### 4.4.1 Budget matrix
@@ -369,10 +371,13 @@ fixture 内容：
 
 - Web 控制台能启动并加载静态资源
 - Web Session 工作区能新建 session
+- 从 Settings 等非 Session 页面点击全局新建会话后，必须切回 Session、显示并聚焦 composer；真实浏览器 smoke 覆盖该导航链路
 - Web 运行中 steer 能入队并在 timeline 可见
 - Web awaiting_input / paused / failed session 与 completed root session 能 continue；completed child 返回 parent `agent_prompt` / queue requeue 恢复提示
 - Web Goal / Plan Mode 控制能按文件事实展示和执行
 - Settings provider/model 配置能保存并驱动后续 Web session start / continue；Session composer 不再暴露 per-session Advanced provider 面板
+- OpenAI-compatible `reasoning_effort: max` 必须在 config、Web Settings、`/api/config/test`、models catalog 和 `--thinking-level` 间保持一致，并用真实 Responses provider probe 证明 wire request 未被降级
+- doctor runtime probe 必须使用各 CLI 的有效版本参数（Go 为 `go version`），不能把已安装 Go 误报为 `version_error`
 - `init` 是否生成正确配置
 - `run` 是否能进入 loop 并自然停在 `awaiting_input`
 - `steer` 是否能在运行中被接纳

@@ -92,7 +92,7 @@ aegis-agent exec \
   [--timeout <seconds>] \
   [--provider <aegis-agent-provider>] \
   [--model <model-id>] \
-  [--thinking-level <low|medium|high|xhigh>]
+  [--thinking-level <low|medium|high|xhigh|max>]
 ```
 
 `--timeout` 只在 Multica runtime profile 配置了正数 `Timeout` 时传递。Long-horizon

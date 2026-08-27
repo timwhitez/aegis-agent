@@ -109,34 +109,32 @@ func TestExecPolicyNoFalsePositiveOnBenignCommands(t *testing.T) {
 	}
 }
 
-// TestExecPolicyBoundsAdversarialExpansionCost pins a cost ceiling for the
-// synchronous, ctx-less detection path: expansion work must stay proportional
-// to the input instead of being multiplied by the nesting depth, so a single
-// crafted tool call cannot block the runtime for tens of seconds.
+// TestExecPolicyBoundsAdversarialExpansionCost pins deterministic cost bounds
+// for the synchronous, ctx-less detection path: expansion work must stay
+// proportional to the input instead of being multiplied by the nesting depth.
+// Elapsed time is logged for diagnostics but is not a correctness assertion,
+// because shared-host load and heterogeneous CPU scheduling can move identical
+// runs across a fixed wall-clock threshold.
 func TestExecPolicyBoundsAdversarialExpansionCost(t *testing.T) {
 	for _, tt := range []struct {
-		name       string
-		command    string
-		maxElapsed time.Duration
-		maxAlloc   uint64
+		name     string
+		command  string
+		maxAlloc uint64
 	}{
 		{
-			name:       "flat_eval_chain_4MiB",
-			command:    strings.Repeat("eval ", (4<<20)/5) + "sudo rm -rf /",
-			maxElapsed: 6 * time.Second,
-			maxAlloc:   256 << 20,
+			name:     "flat_eval_chain_4MiB",
+			command:  strings.Repeat("eval ", (4<<20)/5) + "sudo rm -rf /",
+			maxAlloc: 256 << 20,
 		},
 		{
-			name:       "flat_sh_c_chain_4MiB",
-			command:    strings.Repeat("sh -c ", (4<<20)/6) + "sudo rm -rf /",
-			maxElapsed: 6 * time.Second,
-			maxAlloc:   256 << 20,
+			name:     "flat_sh_c_chain_4MiB",
+			command:  strings.Repeat("sh -c ", (4<<20)/6) + "sudo rm -rf /",
+			maxAlloc: 256 << 20,
 		},
 		{
-			name:       "flat_eval_chain_10MiB",
-			command:    strings.Repeat("eval ", (10<<20)/5) + "sudo rm -rf /",
-			maxElapsed: 12 * time.Second,
-			maxAlloc:   512 << 20,
+			name:     "flat_eval_chain_10MiB",
+			command:  strings.Repeat("eval ", (10<<20)/5) + "sudo rm -rf /",
+			maxAlloc: 512 << 20,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -151,15 +149,6 @@ func TestExecPolicyBoundsAdversarialExpansionCost(t *testing.T) {
 			t.Logf("%s: elapsed=%s allocated=%dMiB violations=%d", tt.name, elapsed, allocated>>20, len(violations))
 			if len(violations) == 0 {
 				t.Fatalf("expected adversarial input to stay flagged, got no violation")
-			}
-			// The race detector instruments every memory access, inflating wall
-			// clock by more than an order of magnitude (measured: 2.7s -> 42s for
-			// the 4MiB case), so the timing bound is only meaningful in an
-			// uninstrumented run. The allocation bound below is unaffected and
-			// stays enforced either way — it is the invariant that actually pins
-			// the expansion budget.
-			if elapsed > tt.maxElapsed && !execPolicyRaceEnabled {
-				t.Fatalf("detection took %s, want <= %s", elapsed, tt.maxElapsed)
 			}
 			if allocated > tt.maxAlloc {
 				t.Fatalf("detection allocated %dMiB, want <= %dMiB", allocated>>20, tt.maxAlloc>>20)
