@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a focused change consistent with the product boundaries
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Aegis is a Web-first local agent harness, not a hosted SaaS, browser IDE, or fixed workflow engine.
+        Do not include credentials, private prompts, provider transcripts, or session data.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and specifications for this request.
+          required: true
+        - label: This request preserves the model-as-agent and local-facts authority boundaries.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem without prescribing a large implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest observable behavior that would solve the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: input
+    id: specification
+    attributes:
+      label: Related specification or phase
+      description: Link the most relevant file under spec/ when known.
+      placeholder: spec/17-web-console.md or Phase 15
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance evidence
+      description: State the tests, browser flows, screenshots, or provider contract evidence that should prove completion.
+    validations:
+      required: true

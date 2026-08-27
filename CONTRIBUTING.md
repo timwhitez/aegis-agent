@@ -11,3 +11,5 @@ Keep changes focused, tested, and consistent with the contracts in `spec/`.
    protocol behavior inside provider adapters.
 
 For substantial changes, update the matching specification in the same commit.
+Report suspected vulnerabilities privately by following [`SECURITY.md`](./SECURITY.md);
+do not include vulnerability details or sensitive evidence in a public issue.
