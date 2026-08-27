@@ -263,6 +263,8 @@ Plan Mode 行为：
 - 对当前 provider 配置做一次真实探活
 - 默认验证“是否能返回一个 `finish` tool call”
 - 非成功 HTTP probe 必须输出 adapter 的 `error_class`、status code 与对应修复建议；例如 `413` 属于 `invalid_request`，CLI 不得给出 network/TLS 的 `upstream_unavailable` 误导
+- 默认 probe 只有在 stop reason 为 `tool_use`、恰好返回一个 `finish`，且其 arguments 能通过 runtime `finish` 的同一份必填非空 `message` parser 时成功；thinking-observation probe 只有在 stop reason 为 `done_candidate` 且不含 tool call 时成功
+- `error` / `cancelled` / `blocked` / `max_tokens`、空或不匹配 stop reason，以及 malformed tool payload 都必须 fail closed；CLI text/JSON 返回失败且非零退出，不能仅因 HTTP transport/JSON decode 成功就声称 provider 可用
 
 高频参数：
 

@@ -2287,23 +2287,34 @@ func defFinish() Definition {
 			"required": []string{"message"},
 		},
 		Execute: func(_ context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Message string `json:"message"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			message, err := ParseFinishArguments(raw)
+			if err != nil {
 				return errorResult("finish", err), nil
-			}
-			if strings.TrimSpace(input.Message) == "" {
-				return errorResult("finish", errors.New("message is required")), nil
 			}
 			return session.ToolResult{
 				Name:          "finish",
-				LLMOutput:     input.Message,
-				DisplayOutput: input.Message,
+				LLMOutput:     message,
+				DisplayOutput: message,
 				Final:         true,
 			}, nil
 		},
 	}
+}
+
+// ParseFinishArguments is the single required-payload parser shared by normal
+// tool execution and protocol probes. Keeping the parser here prevents a probe
+// from reporting success for a finish call the runtime itself would reject.
+func ParseFinishArguments(raw json.RawMessage) (string, error) {
+	var input struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(input.Message) == "" {
+		return "", errors.New("message is required")
+	}
+	return input.Message, nil
 }
 
 func defAwaitInput() Definition {

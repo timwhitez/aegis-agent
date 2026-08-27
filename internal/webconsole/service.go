@@ -5170,7 +5170,12 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := runtime.NewRunner(testCfg).Probe(ctx, probeReq)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeError(w, http.StatusBadGateway, newWebError(
+			errorCodeProviderProbeFailed,
+			err.Error(),
+			"The provider test did not produce a protocol-valid success result.",
+			"Check the provider profile, adapter family, model, request options, and upstream response shape.",
+		))
 		return
 	}
 	writeJSON(w, http.StatusOK, TestConfigResponse{

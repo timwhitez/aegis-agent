@@ -1992,6 +1992,51 @@ func TestProbeProviderCommandRendersJSONErrorAndExitStatus(t *testing.T) {
 	}
 }
 
+func TestProbeProviderCommandRejectsMalformedFinishPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_empty_finish",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{}"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "probe-empty-finish"
+	cfg.Providers["probe-empty-finish"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "PROBE_EMPTY_FINISH_CLI_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "probe-model",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("PROBE_EMPTY_FINISH_CLI_API_KEY", "test-key")
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return runtime.NewCoreRunner(cfg), cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider", "--json", "--provider", "probe-empty-finish"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1 for malformed finish, err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var payload probeProviderJSON
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal probe JSON: %v output=%s", err, stdout.String())
+	}
+	if payload.ErrorClass != "response_parse_error" || !strings.Contains(payload.Error, "message is required") || payload.FinishMessage != "" {
+		t.Fatalf("malformed finish was not exposed as failed JSON probe: %#v", payload)
+	}
+}
+
 func TestProbeProviderCommandJSONIncludesProviderErrorClassification(t *testing.T) {
 	fake := newFakeRunner()
 	fake.probeErr = runtime.WrapProviderError(&provider.HTTPError{

@@ -20,6 +20,7 @@ import (
 
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
+	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
 )
 
@@ -269,6 +270,73 @@ func TestProbeRequestBudgetRejectsBeforeHTTPCall(t *testing.T) {
 	}
 	if budgetErr.RequestKind != requestKindProbe || budgetErr.Snapshot.RequestKind != requestKindProbe || calls != 0 {
 		t.Fatalf("probe preflight did not fail before HTTP: snapshot=%#v calls=%d", budgetErr.Snapshot, calls)
+	}
+}
+
+func TestProbeRejectsErrorStopReasonForThinkingProbe(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_failed",
+			"status":"failed",
+			"error":{"message":"upstream rejected the response"},
+			"output":[]
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "probe-error-stop"
+	cfg.Providers["probe-error-stop"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "PROBE_ERROR_STOP_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "probe-model",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("PROBE_ERROR_STOP_API_KEY", "test-key")
+
+	result, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "probe-error-stop", ThinkingProbe: true})
+	if err == nil {
+		t.Fatalf("thinking probe accepted error stop reason: %#v", result)
+	}
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Class != "response_parse_error" || result.StopReason != "error" {
+		t.Fatalf("expected classified protocol-invalid probe failure, result=%#v err=%v", result, err)
+	}
+}
+
+func TestProbeRejectsMalformedFinishPayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_empty_finish",
+			"status":"completed",
+			"output":[
+				{"type":"function_call","call_id":"call_finish","name":"finish","arguments":"{}"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "probe-empty-finish"
+	cfg.Providers["probe-empty-finish"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "PROBE_EMPTY_FINISH_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "probe-model",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("PROBE_EMPTY_FINISH_API_KEY", "test-key")
+
+	result, err := NewRunner(cfg).Probe(context.Background(), ProbeRequest{Provider: "probe-empty-finish"})
+	if err == nil {
+		t.Fatalf("ordinary probe accepted malformed finish payload: %#v", result)
+	}
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Class != "response_parse_error" || !strings.Contains(err.Error(), "message is required") {
+		t.Fatalf("expected classified finish payload failure, result=%#v err=%v", result, err)
 	}
 }
 

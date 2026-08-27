@@ -11259,6 +11259,40 @@ func TestServiceConfigTestClassifiesHTTP413AsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestRejectsProviderErrorStopReason(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_failed",
+			"status":"failed",
+			"error":{"message":"upstream rejected the response"},
+			"output":[]
+		}`))
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider": "openai",
+		"base_url": providerServer.URL,
+	}, http.StatusBadGateway)
+	if !strings.Contains(errResp.Error, "stop_reason") || !strings.Contains(errResp.Error, "error") {
+		t.Fatalf("expected actionable protocol-invalid probe error, got %#v", errResp)
+	}
+	if errResp.Code != errorCodeProviderProbeFailed || errResp.Detail == "" || errResp.Action == "" {
+		t.Fatalf("expected classified Web probe failure guidance, got %#v", errResp)
+	}
+}
+
 func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
 	var probeCalled bool
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -11268,7 +11302,7 @@ func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
 			"id":"resp_probe_1",
 			"status":"completed",
 			"output":[
-				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider probe ok"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
@@ -11345,7 +11379,7 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 			"id":"resp_probe_1",
 			"status":"completed",
 			"output":[
-				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider probe ok"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))

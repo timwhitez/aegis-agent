@@ -1580,6 +1580,8 @@ func providerProbeFailureAdvice(err error) string {
 		return "Check provider availability, request timeout settings, and network or proxy stability."
 	case "upstream_unavailable":
 		return "Check network connectivity, TLS/proxy settings, and provider endpoint availability before changing model options."
+	case "response_parse_error":
+		return "Check the provider adapter family, wire API, model compatibility, and upstream response shape."
 	default:
 		return ""
 	}
