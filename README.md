@@ -10,7 +10,8 @@ imposing a fixed workflow engine.
 
 [Quick start](#quick-start) · [Provider configuration](#provider-configuration) ·
 [Runtime architecture](./spec/01-runtime-architecture.md) ·
-[Web console spec](./spec/17-web-console.md) · [Contributing](./CONTRIBUTING.md)
+[Web console spec](./spec/17-web-console.md) · [Security](./SECURITY.md) ·
+[Contributing](./CONTRIBUTING.md)
 
 > **Status:** active development (`v0.1.0-dev`). The Web-first v1 surface is
 > usable; advanced orchestration and isolation remain explicit/experimental.
@@ -141,6 +142,7 @@ repository.
 The product and architectural contracts live in [`spec/`](./spec). Start with
 [`spec/00-product.md`](./spec/00-product.md) and
 [`spec/09-phase-plan.md`](./spec/09-phase-plan.md). Contributor expectations
-are in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+are in [`CONTRIBUTING.md`](./CONTRIBUTING.md). Report suspected
+vulnerabilities privately by following [`SECURITY.md`](./SECURITY.md).
 
 This project is distributed under the [MIT License](./LICENSE).

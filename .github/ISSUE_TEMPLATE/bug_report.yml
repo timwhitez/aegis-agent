@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a reproducible Aegis Agent defect
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a defect. Never include API keys, credentials, live-provider transcripts, personal prompts, or unredacted session data.
+        Security vulnerabilities must be reported privately by following SECURITY.md.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and did not find the same defect.
+          required: true
+        - label: This report does not disclose a security vulnerability or sensitive data.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use a release version or full Git commit when possible.
+      placeholder: v0.1.0-dev or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      options:
+        - Web console
+        - CLI
+        - Runtime or tools
+        - Provider adapter
+        - SDK facade
+        - Build or CI
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, architecture, Go or browser version, and relevant launch mode.
+      placeholder: Ubuntu 24.04, amd64, Go 1.26.7, Web console
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest deterministic steps, fixture, or command that reproduces the defect.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Include only minimal logs, screenshots, or test output after removing sensitive data.
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Note regressions, relevant specifications, or safe workarounds.
