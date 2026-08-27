@@ -31,6 +31,7 @@ import (
 	"aegis-agent/internal/extensions"
 	"aegis-agent/internal/filechanges"
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/provider"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/skills"
@@ -8856,8 +8857,38 @@ func writeError(w http.ResponseWriter, status int, err error) {
 		resp.Code = coded.code
 		resp.Detail = coded.detail
 		resp.Action = coded.action
+	} else {
+		var httpErr *provider.HTTPError
+		if errors.As(err, &httpErr) && strings.TrimSpace(httpErr.Class) != "" {
+			resp.Code = "PROVIDER_" + strings.ToUpper(strings.TrimSpace(httpErr.Class))
+			resp.Detail = fmt.Sprintf("Provider request failed with error_class=%s", strings.TrimSpace(httpErr.Class))
+			if httpErr.StatusCode > 0 {
+				resp.Detail += fmt.Sprintf(" and HTTP status %d", httpErr.StatusCode)
+			}
+			resp.Detail += "."
+			resp.Action = webProviderErrorAction(httpErr.Class)
+		}
 	}
 	writeJSON(w, status, resp)
+}
+
+func webProviderErrorAction(class string) string {
+	switch strings.TrimSpace(class) {
+	case "auth_error":
+		return "Check the API key and provider account access."
+	case "invalid_request":
+		return "Check the provider profile, base URL, wire API, model, and request options."
+	case "rate_limit":
+		return "Retry later or adjust the provider quota."
+	case "upstream_timeout":
+		return "Check provider availability, timeout settings, and network or proxy stability."
+	case "upstream_unavailable":
+		return "Check network connectivity, TLS or proxy settings, and provider endpoint availability."
+	case "response_parse_error":
+		return "Check the provider adapter family, wire API, model compatibility, and upstream response shape."
+	default:
+		return ""
+	}
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

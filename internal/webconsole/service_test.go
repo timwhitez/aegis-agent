@@ -11231,6 +11231,34 @@ func TestServiceConfigTestRejectsInvalidAPIKeyBeforeProbe(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestClassifiesHTTP413AsInvalidRequest(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider": "openai",
+		"base_url": providerServer.URL,
+	}, http.StatusBadGateway)
+	if errResp.Code != "PROVIDER_INVALID_REQUEST" || !strings.Contains(errResp.Detail, "413") || !strings.Contains(errResp.Action, "provider profile") {
+		t.Fatalf("HTTP 413 produced misleading Web diagnostics: %#v", errResp)
+	}
+	if strings.Contains(errResp.Action, "network") || strings.Contains(errResp.Action, "TLS") {
+		t.Fatalf("HTTP 413 retained upstream-unavailable remediation: %#v", errResp)
+	}
+}
+
 func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
 	var probeCalled bool
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

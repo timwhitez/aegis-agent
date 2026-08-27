@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -2346,6 +2347,36 @@ func TestAdaptersClassifyNon2xxAndPropagateCancel(t *testing.T) {
 			}, func(string, map[string]any) {})
 			if err == nil {
 				t.Fatal("expected cancellation error")
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPErrorStatusMatrix(t *testing.T) {
+	tests := []struct {
+		status int
+		class  string
+	}{
+		{status: http.StatusBadRequest, class: "invalid_request"},
+		{status: http.StatusUnauthorized, class: "auth_error"},
+		{status: http.StatusForbidden, class: "auth_error"},
+		{status: http.StatusNotFound, class: "invalid_request"},
+		{status: http.StatusRequestTimeout, class: "invalid_request"},
+		{status: http.StatusRequestEntityTooLarge, class: "invalid_request"},
+		{status: http.StatusUnprocessableEntity, class: "invalid_request"},
+		{status: http.StatusTooManyRequests, class: "rate_limit"},
+		{status: http.StatusUnavailableForLegalReasons, class: "invalid_request"},
+		{status: http.StatusInternalServerError, class: "upstream_unavailable"},
+		{status: http.StatusGatewayTimeout, class: "upstream_unavailable"},
+		{status: 599, class: "upstream_unavailable"},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("status_%d", tc.status), func(t *testing.T) {
+			var httpErr *HTTPError
+			if err := classifyHTTPError("fixture", tc.status, "fixture failure"); !errors.As(err, &httpErr) {
+				t.Fatalf("expected HTTPError, got %T", err)
+			} else if httpErr.Class != tc.class || httpErr.StatusCode != tc.status {
+				t.Fatalf("status %d classified as %#v, want class %q", tc.status, httpErr, tc.class)
 			}
 		})
 	}

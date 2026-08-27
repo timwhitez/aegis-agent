@@ -429,6 +429,14 @@ adapter 至少要把 provider 错误归类为：
 - `response_parse_error`
 - `cancelled`
 
+HTTP status 映射必须满足：
+
+- `401` / `403` -> `auth_error`
+- `429` -> `rate_limit`
+- 其余 `4xx`（包括 `408`、`413`、`422`）-> `invalid_request`
+- `5xx` -> `upstream_unavailable`
+- caller 仍存活时发生的 provider-owned request/stream/transport timeout -> `upstream_timeout`；不能仅因 HTTP status 名称含 timeout 就覆盖上述 4xx/5xx 分层
+
 错误对象至少包含：
 
 - `provider`
