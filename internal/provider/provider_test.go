@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"aegis-agent/internal/session"
 )
@@ -89,6 +90,137 @@ func TestOpenAIAdapterSerializesAndParses(t *testing.T) {
 	}
 	if result.Usage.CacheReadInputTokens != 7 || result.Usage.CacheCreationInputTokens != 3 {
 		t.Fatalf("expected openai cache usage telemetry, got %#v", result.Usage)
+	}
+}
+
+func TestOpenAIAdapterParsesRefusalWithoutEventSink(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_refusal_1",
+			"status":"completed",
+			"output":[
+				{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I cannot help with that request."}]},
+				{"type":"function_call","call_id":"call_must_not_run","name":"shell","arguments":"{\"command\":\"pwd\"}"}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	result, err := NewOpenAI(server.URL, "key", server.Client()).RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+		Tools:        []ToolSchema{{Name: "shell", InputSchema: map[string]any{"type": "object"}}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("run refusal response: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("refusal must use one provider request, got %d", requests.Load())
+	}
+	if result.StopReason != "blocked" || result.Text != "I cannot help with that request." || len(result.ToolCalls) != 0 {
+		t.Fatalf("unexpected refusal result: %#v", result)
+	}
+	if result.RawProvider["refusal_block_count"] != 1 || result.RawProvider["refusal_text_truncated"] != false {
+		t.Fatalf("expected bounded refusal telemetry without raw text, got %#v", result.RawProvider)
+	}
+	if strings.Contains(fmt.Sprint(result.RawProvider), "I cannot help") {
+		t.Fatalf("raw provider telemetry copied refusal text: %#v", result.RawProvider)
+	}
+}
+
+func TestOpenAIAdapterRefusalPrecedesMalformedFunctionCalls(t *testing.T) {
+	tests := []struct {
+		name         string
+		functionCall string
+	}{
+		{
+			name:         "missing_call_id",
+			functionCall: `{"type":"function_call","name":"shell","arguments":"{\"command\":\"pwd\"}"}`,
+		},
+		{
+			name:         "malformed_arguments",
+			functionCall: `{"type":"function_call","call_id":"call_bad","name":"shell","arguments":"{\"command\":"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{
+					"id":"resp_refusal_malformed_call",
+					"status":"completed",
+					"output":[
+						%s,
+						{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"blocked explanation"}]}
+					]
+				}`, tc.functionCall)
+			}))
+			defer server.Close()
+
+			result, err := NewOpenAI(server.URL, "key", server.Client()).RunTurn(context.Background(), TurnRequest{
+				SessionID:    "s1",
+				Model:        "gpt-5.4",
+				SystemPrompt: "system",
+				Messages:     []session.Message{session.NewMessage("user", "hello")},
+				Tools:        []ToolSchema{{Name: "shell", InputSchema: map[string]any{"type": "object"}}},
+			}, nil)
+			if err != nil {
+				t.Fatalf("refusal must suppress malformed co-returned call: %v", err)
+			}
+			if result.StopReason != "blocked" || result.Text != "blocked explanation" || len(result.ToolCalls) != 0 {
+				t.Fatalf("refusal did not dominate malformed co-returned call: %#v", result)
+			}
+		})
+	}
+}
+
+func TestOpenAIAdapterEmitsBoundedRefusalDelta(t *testing.T) {
+	const refusalLimit = 8 << 10
+	refusal := strings.Repeat("拒绝说明", 3000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "resp_refusal_large",
+			"status": "completed",
+			"output": []any{map[string]any{
+				"type": "message",
+				"role": "assistant",
+				"content": []any{map[string]any{
+					"type":    "refusal",
+					"refusal": refusal,
+				}},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	var deltas []string
+	result, err := NewOpenAI(server.URL, "key", server.Client()).RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "gpt-5.4",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(eventType string, data map[string]any) {
+		if eventType == "assistant.delta" {
+			deltas = append(deltas, fmt.Sprint(data["text"]))
+		}
+	})
+	if err != nil {
+		t.Fatalf("run oversized refusal response: %v", err)
+	}
+	if result.StopReason != "blocked" || len(result.Text) > refusalLimit || !utf8.ValidString(result.Text) || !strings.Contains(result.Text, "[refusal truncated]") {
+		t.Fatalf("refusal was not bounded safely: bytes=%d valid_utf8=%t result=%#v", len(result.Text), utf8.ValidString(result.Text), result)
+	}
+	if len(deltas) != 1 || deltas[0] != result.Text {
+		t.Fatalf("event replay did not expose the same bounded refusal: deltas=%#v result=%q", deltas, result.Text)
+	}
+	if result.RawProvider["refusal_text_truncated"] != true || result.RawProvider["refusal_text_original_bytes"] != len(refusal) || result.RawProvider["refusal_text_retained_bytes"] != len(result.Text) {
+		t.Fatalf("unexpected bounded refusal telemetry: %#v", result.RawProvider)
 	}
 }
 

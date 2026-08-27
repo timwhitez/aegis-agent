@@ -261,6 +261,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 ### 4.6 Providers
 
 - OpenAI 文本输出
+- OpenAI refusal 在 nil event sink 与事件回放路径都保留有界说明、映射为 `blocked`，且 runtime 只调用 provider 一次，不进入 done-candidate degeneration retry
 - OpenAI function call
 - OpenAI `function_call_output` 回放
 - Anthropic text + `tool_use`

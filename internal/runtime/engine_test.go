@@ -1825,6 +1825,65 @@ func TestEngineProviderStopReasonFailuresAreResumable(t *testing.T) {
 	}
 }
 
+func TestEngineProviderRefusalStopsWithoutDegenerationRetry(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "request refused by provider")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	var calls int
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		calls++
+		return provider.TurnResult{
+			Text:       "I cannot help with that request.",
+			StopReason: "blocked",
+			RawProvider: map[string]any{
+				"provider_stop_reason": "completed",
+				"refusal_block_count":  1,
+			},
+		}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if calls != 1 || result.Status != session.StatusFailed {
+		t.Fatalf("refusal must fail closed after one provider call: calls=%d result=%#v", calls, result)
+	}
+	loaded, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if loaded.IncompleteReason != "provider_blocked" {
+		t.Fatalf("expected provider_blocked state, got %#v", loaded)
+	}
+	messages, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var refusalMessage *session.Message
+	for i := range messages {
+		if messages[i].Role == "assistant" && messages[i].Text == "I cannot help with that request." {
+			refusalMessage = &messages[i]
+		}
+	}
+	if refusalMessage == nil || fmt.Sprint(refusalMessage.Meta["provider_stop_reason"]) != "blocked" {
+		t.Fatalf("bounded refusal was not preserved as a durable assistant fact: %#v", messages)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if hasEventType(events, "session.idle_parked") {
+		t.Fatalf("refusal entered degeneration parking: %#v", events)
+	}
+	for _, event := range events {
+		if event.Type == "harness.reminder" && fmt.Sprint(event.Data["kind"]) == "degeneration_recovery_required" {
+			t.Fatalf("refusal entered degeneration retry: %#v", events)
+		}
+	}
+}
+
 func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
