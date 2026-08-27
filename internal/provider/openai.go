@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"aegis-agent/internal/session"
 )
@@ -18,6 +19,8 @@ type OpenAIAdapter struct {
 	apiKey              string
 	metadataUnsupported atomic.Bool
 }
+
+const maxOpenAIRefusalTextBytes = 8 << 10
 
 func NewOpenAI(baseURL, apiKey string, httpClient *http.Client) *OpenAIAdapter {
 	return NewOpenAIWithRetry(baseURL, apiKey, httpClient, RetryConfig{})
@@ -155,18 +158,32 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 	incompleteReason := strings.TrimSpace(resp.IncompleteDetails.Reason)
 	allowFunctionCalls := status == "completed" && incompleteReason != "max_output_tokens"
 	var textParts []string
+	var refusalParts []string
 	var thinkingParts []string
 	var providerBlocks []session.ProviderContentBlock
 	var calls []ToolCall
 	reasoningSummaryCount := 0
 	reasoningTextCount := 0
 	reasoningEncryptedCount := 0
+	refusalBlockCount := 0
 	for index, item := range resp.Output {
 		switch item.Type {
 		case "message":
 			for _, content := range item.Content {
-				if content.Type == "output_text" {
+				switch content.Type {
+				case "output_text":
 					textParts = append(textParts, content.Text)
+				case "refusal":
+					refusalBlockCount++
+					refusal := strings.TrimSpace(content.Refusal)
+					if refusal == "" {
+						// Some Responses-compatible gateways use the generic text
+						// member while retaining the refusal content type.
+						refusal = strings.TrimSpace(content.Text)
+					}
+					if refusal != "" {
+						refusalParts = append(refusalParts, refusal)
+					}
 				}
 			}
 		case "function_call":
@@ -213,6 +230,10 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			}
 		}
 	}
+	refusalText, refusalOriginalBytes, refusalTruncated := boundedOpenAIRefusalText(refusalParts)
+	if refusalText != "" {
+		textParts = append(textParts, refusalText)
+	}
 	text := strings.Join(textParts, "\n")
 	thinking := strings.Join(thinkingParts, "\n")
 	if text != "" {
@@ -225,6 +246,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		calls = nil
 	case providerStopReasonIsCancelled(status):
 		stopReason = "cancelled"
+		calls = nil
+	case status == "completed" && refusalBlockCount > 0:
+		stopReason = "blocked"
 		calls = nil
 	case status == "completed" && len(calls) > 0:
 		stopReason = "tool_use"
@@ -255,6 +279,10 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		"reasoning_summary_count":      reasoningSummaryCount,
 		"reasoning_text_count":         reasoningTextCount,
 		"reasoning_encrypted_count":    reasoningEncryptedCount,
+		"refusal_block_count":          refusalBlockCount,
+		"refusal_text_original_bytes":  refusalOriginalBytes,
+		"refusal_text_retained_bytes":  len(refusalText),
+		"refusal_text_truncated":       refusalTruncated,
 		"reasoning_tokens":             0,
 		"cache_creation_input_tokens":  usage.CacheCreationInputTokens,
 		"cache_read_input_tokens":      usage.CacheReadInputTokens,
@@ -343,8 +371,23 @@ func normalizeOpenAIReasoningSummary(value string) string {
 }
 
 type openAIReasoningText struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Refusal string `json:"refusal"`
+}
+
+func boundedOpenAIRefusalText(parts []string) (string, int, bool) {
+	joined := strings.Join(parts, "\n")
+	originalBytes := len(joined)
+	if originalBytes <= maxOpenAIRefusalTextBytes {
+		return joined, originalBytes, false
+	}
+	const notice = "\n...[refusal truncated]"
+	prefixBytes := maxOpenAIRefusalTextBytes - len(notice)
+	for prefixBytes > 0 && !utf8.RuneStart(joined[prefixBytes]) {
+		prefixBytes--
+	}
+	return joined[:prefixBytes] + notice, originalBytes, true
 }
 
 func reasoningSummaryTexts(parts []openAIReasoningText) []string {

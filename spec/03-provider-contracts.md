@@ -252,6 +252,7 @@ role capability 约束在进入 adapter 之前完成：
 从 Responses 输出中提取：
 
 - `output` 中的 message 文本
+- `output` message content 中的 `refusal`；任何 refusal block 都必须作为拒绝事实保留，面向 session / CLI / Web 的说明按 UTF-8 边界限制为 8 KiB，raw provider telemetry 只记录 block 数、原始/保留字节数和是否截断，不复制拒绝正文
 - `output` 中的 `function_call`
 - `output` 中的 `reasoning.summary[]` 与兼容 readable reasoning content，进入 `TurnResult.thinking`
 - `output` 中的 `reasoning.encrypted_content`，进入 OpenAI 专用 `provider_content_blocks`，并和同一 reasoning id 的 summary parts、provider output sequence 绑定，供后续 Responses replay 使用
@@ -261,6 +262,7 @@ role capability 约束在进入 adapter 之前完成：
 
 ### 6.4 stop_reason 映射
 
+- `status=completed` 且含 `refusal` -> `blocked`；同一响应中的 `function_call` 不得暴露为可执行调用，也不得把拒绝当成空 `done_candidate` 重试
 - `status=completed` 且有 `function_call` -> `tool_use`
 - `status=completed` 且无工具调用 -> `done_candidate`
 - `incomplete_details.reason=max_output_tokens` -> `max_tokens`
