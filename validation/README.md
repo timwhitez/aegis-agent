@@ -35,5 +35,8 @@ targets, keyboard/modal semantics, session start/continue/steer/interrupt/stop,
 Goal and Plan Mode, Todo/task grouping, workspace CRUD/download, skill package
 install/removal, provider settings probe, legacy rollback enablement, history
 deletion/clear, desktop/mobile layouts, and console/request errors. It writes
+populated Context screenshots in both locales and exercises Task, Skill, and
+notification raw-fact collisions so fallbacks translate without rewriting
+durable values. The suite writes
 PNG screenshots plus `manifest.json` with hashes and check results below the
 ignored `validation/runs/` directory.

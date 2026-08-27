@@ -108,6 +108,11 @@ try {
 
   const mainID = await startSession(page, 'E2E_UI_MAIN raw user text: Settings must remain unchanged.');
   await waitForSession(baseURL, mainID, (detail) => detail?.state?.status === 'completed', 30_000);
+  await writeEmptyBackgroundNotification(mainID);
+  await check('empty background notification is loaded from the durable session store', async () => {
+    const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(mainID)}`);
+    assert.equal(detail.background_notifications?.some((item) => item.id === 'notification_e2e_empty'), true);
+  });
   await openSession(page, mainID);
   await check('raw user content is not translated', async () => {
     await page.locator('.message.user .message-bubble').filter({ hasText: 'Settings must remain unchanged' }).waitFor();
@@ -140,9 +145,28 @@ try {
     await page.locator('[data-inspector-tab="summary"][aria-selected="true"]').waitFor();
     await tasksTab.click();
   });
+	await openInspectorTab(page, 'context');
+	await check('Chinese Context inspector localizes operator copy and preserves durable IDs', async () => {
+	  const panel = page.locator('.context-panel');
+	  await panel.getByText('根会话峰值', { exact: true }).waitFor();
+	  await panel.getByText('提供商用量', { exact: true }).waitFor();
+	  await panel.getByText('会话链路', { exact: true }).waitFor();
+	  assert.equal(await panel.getByText('Root peak', { exact: true }).count(), 0);
+	  assert.equal(await panel.locator('h4').getAttribute('translate'), 'no');
+	});
+	await capture(page, '03c-session-context-zh-desktop.png');
 	await page.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await openInspectorTab(page, 'context');
+	await check('English Context inspector restores every operator label', async () => {
+	  const panel = page.locator('.context-panel');
+	  await panel.getByText('Root peak', { exact: true }).waitFor();
+	  await panel.getByText('Provider usage', { exact: true }).waitFor();
+	  await panel.getByText('Lineage', { exact: true }).waitFor();
+	  assert.equal(await panel.getByText('根会话峰值', { exact: true }).count(), 0);
+	});
+	await capture(page, '03d-session-context-en-desktop.png');
 	await openInspectorTab(page, 'tasks');
 	await check('English translates dynamic Todo and all task groups without changing durable data', async () => {
 	  await assertText(page.locator('[data-view="settings"] span'), 'Settings');
@@ -153,12 +177,24 @@ try {
 	  await assertText(page.locator('[data-task-group="completed"] .task-group-heading span').first(), 'Completed');
 	  await assertText(page.locator('[data-task-group="cancelled"] .task-group-heading span').first(), 'Cancelled');
 	  await page.locator('.todo-card-title').filter({ hasText: 'Inspect bilingual Web Console' }).waitFor();
+	  const collisionTask = page.locator('[data-task-id="task_0001"]');
+	  await assertText(collisionTask.locator('.task-card-copy'), 'No description.');
+	  const owner = collisionTask.locator('.task-chip').filter({ hasText: /^Settings$/ });
+	  await assertText(owner, 'Settings');
+	  assert.equal(await owner.getAttribute('translate'), 'no');
 	});
 	await capture(page, '03b-session-task-todo-en-desktop.png');
 	await page.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 	await openInspectorTab(page, 'tasks');
+  await check('Chinese Task fallbacks localize without translating owner facts', async () => {
+    const collisionTask = page.locator('[data-task-id="task_0001"]');
+    await assertText(collisionTask.locator('.task-card-copy'), '无描述。');
+    const owner = collisionTask.locator('.task-chip').filter({ hasText: /^Settings$/ });
+    await assertText(owner, 'Settings');
+    assert.equal(await owner.getAttribute('translate'), 'no');
+  });
   await capture(page, '03-session-task-todo-zh-desktop.png');
   await openInspectorTab(page, 'timeline');
   await check('timeline and tool lanes are visible', async () => {
@@ -356,14 +392,21 @@ try {
   await page.locator('#skills-view:not(.is-hidden)').waitFor();
   await page.locator('#skill-upload').setInputFiles(skillZipPath);
   await page.locator('.skill-card').filter({ hasText: 'e2e-skill' }).waitFor();
-  await capture(page, '08-skills-installed-zh-desktop.png');
   const skillCard = page.locator('.skill-card').filter({ hasText: 'e2e-skill' });
+	await check('Chinese Skill author prefix localizes while the author fact stays verbatim', async () => {
+	  await assertText(skillCard.locator('.skill-author').first(), '作者 Local');
+	  const author = skillCard.locator('.skill-author [data-i18n-skip]').first();
+	  await assertText(author, 'Local');
+	  assert.equal(await author.getAttribute('translate'), 'no');
+	});
+  await capture(page, '08-skills-installed-zh-desktop.png');
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
 	await check('Skills switches existing controls to English', async () => {
 	  await assertText(page.locator('#skills-view .view-title'), 'Skills');
 	  await assertText(page.locator('#skill-upload-btn'), 'Upload .zip');
 	  await assertText(skillCard.locator('[data-skill-action]'), 'Uninstall');
+	  await assertText(skillCard.locator('.skill-author').first(), 'by Local');
 	});
 	await capture(page, '08b-skills-installed-en-desktop.png');
 	await page.locator('#language-toggle-btn').click();
@@ -400,7 +443,32 @@ try {
     await legacyPage.locator('#new-session-btn').waitFor();
     await legacyPage.locator('[data-view="chat"]').click();
     await legacyPage.locator('#chat-input').waitFor();
-  });
+	});
+	await openSession(legacyPage, mainID);
+	await openInspectorTab(legacyPage, 'summary');
+	const emptyNotificationCard = legacyPage.locator('.notification-card').filter({ hasText: 'Settings · evaluator' }).first();
+	await check('Chinese empty notification fallback localizes and preserves agent identity', async () => {
+	  await assertText(emptyNotificationCard.locator('.notification-copy'), '未记录最终文本。');
+	  await assertText(emptyNotificationCard.locator('.job-card-title'), 'Settings · evaluator');
+	  await assertText(emptyNotificationCard.locator('.job-card-meta'), 'job_e2e_empty · accepted · 会话 已完成');
+	  assert.equal(await emptyNotificationCard.locator('.job-card-title [data-i18n-skip]').getAttribute('translate'), 'no');
+	});
+	await captureElement(legacyPage, emptyNotificationCard, '11a-legacy-notification-zh-desktop.png');
+	await legacyPage.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
+	await legacyPage.locator('#language-toggle-btn').click();
+	await legacyPage.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await openInspectorTab(legacyPage, 'summary');
+	await check('English empty notification fallback restores without rewriting durable facts', async () => {
+	  await assertText(emptyNotificationCard.locator('.notification-copy'), 'No final text recorded.');
+	  await assertText(emptyNotificationCard.locator('.job-card-title'), 'Settings · evaluator');
+	  await assertText(emptyNotificationCard.locator('.job-card-meta'), 'job_e2e_empty · accepted · session Completed');
+	});
+	await captureElement(legacyPage, emptyNotificationCard, '11b-legacy-notification-en-desktop.png');
+	await legacyPage.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
+	await legacyPage.locator('#language-toggle-btn').click();
+	await legacyPage.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
+	await legacyPage.locator('#new-session-btn').click();
+	await legacyPage.locator('#chat-input').waitFor();
   await capture(legacyPage, '11-legacy-rollback-zh-desktop.png');
   await legacyPage.close();
   await page.locator('#settings-enable-legacy-ui').uncheck();
@@ -530,6 +598,27 @@ async function check(name, fn) {
   checks.push({ name, ok: true });
 }
 
+async function writeEmptyBackgroundNotification(sessionID) {
+  const controlDir = path.join(sessionRoot, sessionID, 'control');
+  await mkdir(controlDir, { recursive: true, mode: 0o700 });
+  const notification = {
+    id: 'notification_e2e_empty',
+    created_at: new Date().toISOString(),
+    source: 'queue',
+    queue_job_id: 'job_e2e_empty',
+    agent_name: 'Settings',
+    agent_role: 'evaluator',
+    status: 'completed',
+    session_status: 'completed',
+    delivery_status: 'accepted'
+  };
+  await writeFile(
+    path.join(controlDir, 'background.jsonl'),
+    `${JSON.stringify(notification)}\n`,
+    { mode: 0o600 }
+  );
+}
+
 async function startSession(page, prompt, options = {}) {
   if ((await page.locator('#inspector-slide-out').getAttribute('aria-hidden')) === 'false') {
     await page.evaluate(() => closeInspectorSlideOut({ restoreFocus: false }));
@@ -608,7 +697,7 @@ async function assertMinimumTargets(page) {
 
 async function collectUntranslatedOperatorText(page) {
   return page.evaluate(() => {
-	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .path-pill, .tiny-code-chip';
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     const values = new Set();
     const allowedTechnicalText = (value) => ['Aegis', 'Google Gemini', 'Token'].includes(value)
@@ -639,7 +728,7 @@ async function collectUntranslatedOperatorText(page) {
 
 async function collectUnexpectedChineseOperatorText(page) {
   return page.evaluate(() => {
-	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .notification-copy, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .task-card-title, .task-card-copy, .todo-card-title, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .skill-name, .skill-author, .skill-desc, .path-pill, .tiny-code-chip';
+	const skip = '[translate="no"], [data-i18n-skip], [data-i18n-control], pre, code, .message-bubble, .thinking-body, .tool-output-block, .tool-json-block, .tl-name, .tl-id-chip, .tl-body, .timeline-card-data, .agent-result-copy, .agent-card-title, .agent-card-copy, .agent-card-meta, .sa-tree-label, .sa-tree-meta, .session-rail-meta, .session-rail-id, .tf-row-label, .tf-file-path, .goal-objective, .goal-raw, .workspace-preview-content, .path-pill, .tiny-code-chip';
     const values = new Set();
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;
@@ -695,6 +784,20 @@ async function capture(page, name) {
   await page.screenshot({ path: target, fullPage: true });
   const data = await readFile(target);
   screenshots.push({ name, viewport: page.viewportSize(), locale: await page.evaluate(() => document.documentElement.lang), sha256: createHash('sha256').update(data).digest('hex'), bytes: data.length });
+}
+
+async function captureElement(page, locator, name) {
+  await locator.waitFor();
+  const target = path.join(outputDir, name);
+  await locator.screenshot({ path: target });
+  const data = await readFile(target);
+  screenshots.push({
+    name,
+    viewport: page.viewportSize(),
+    locale: await page.evaluate(() => document.documentElement.lang),
+    sha256: createHash('sha256').update(data).digest('hex'),
+    bytes: data.length
+  });
 }
 
 async function assertNoHorizontalOverflow(page) {
