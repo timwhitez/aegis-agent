@@ -380,6 +380,7 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 - 单个 session tree 删除必须先完成 active handle、stale running owner、running session/job 与 audit writability 检查；审计事件写入成功后直接调用 session store 删除目标 session tree 和 linked queue jobs。不要在请求路径上先把整棵 session tree 搬到历史备份目录再删除，因为大型 master/child 会话会让删除响应被大目录 I/O 阻塞。全量 clear history 仍可使用 history mutation transaction 提供 audit 失败回滚。
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh | max` 和 summary `default | auto | concise | detailed | off`；OpenAI-compatible 的非默认 reasoning 值原样进入 `reasoning_effort`。Anthropic-compatible / Google 支持 `default | standard | max | off`，其 `max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；该接口不得持久化 config 或 `.env`。
+- Settings probe 的 provider HTTP failure 必须在现有 error envelope 中返回稳定 class code、status/class detail 与修复 action；`invalid_request` 应提示检查 profile/base URL/wire API/model/request options，不能提示 network/TLS。
 
 Settings API：
 

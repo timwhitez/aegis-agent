@@ -262,6 +262,7 @@ Plan Mode 行为：
 
 - 对当前 provider 配置做一次真实探活
 - 默认验证“是否能返回一个 `finish` tool call”
+- 非成功 HTTP probe 必须输出 adapter 的 `error_class`、status code 与对应修复建议；例如 `413` 属于 `invalid_request`，CLI 不得给出 network/TLS 的 `upstream_unavailable` 误导
 
 高频参数：
 

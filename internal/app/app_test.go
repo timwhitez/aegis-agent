@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2024,6 +2026,47 @@ func TestProbeProviderCommandJSONIncludesProviderErrorClassification(t *testing.
 	}
 	if payload.Provider != "openai" || payload.Model == "" || payload.BaseURL == "" {
 		t.Fatalf("expected provider config fallback fields, got %#v", payload)
+	}
+}
+
+func TestProbeProviderCommandClassifiesHTTP413AsInvalidRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.DefaultProvider = "probe-413"
+	cfg.Providers["probe-413"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "PROBE_413_CLI_API_KEY",
+		BaseURL:           server.URL,
+		Model:             "probe-model",
+		RequestTimeoutSec: 3,
+	}
+	t.Setenv("PROBE_413_CLI_API_KEY", "test-key")
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return runtime.NewCoreRunner(cfg), cfg, nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run(context.Background(), []string{"probe-provider", "--json", "--provider", "probe-413"}, &stdout, &stderr)
+	var exitErr ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit code 1, err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	var payload probeProviderJSON
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal probe JSON: %v output=%s", err, stdout.String())
+	}
+	if payload.ErrorClass != "invalid_request" || payload.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(payload.Advice, "provider profile") {
+		t.Fatalf("HTTP 413 produced misleading CLI diagnostics: %#v", payload)
+	}
+	if strings.Contains(payload.Advice, "network") || strings.Contains(payload.Advice, "TLS") {
+		t.Fatalf("HTTP 413 retained upstream-unavailable remediation: %#v", payload)
 	}
 }
 

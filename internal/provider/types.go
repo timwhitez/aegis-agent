@@ -229,26 +229,20 @@ func truncateErrorMessage(message string) string {
 
 func classifyHTTPError(provider string, status int, message string) error {
 	class := "upstream_unavailable"
-	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		class = "auth_error"
-	case http.StatusTooManyRequests:
+	case status == http.StatusTooManyRequests:
 		class = "rate_limit"
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+	case status >= http.StatusBadRequest && status < http.StatusInternalServerError:
 		class = "invalid_request"
-	case http.StatusGatewayTimeout, http.StatusRequestTimeout:
-		class = "upstream_timeout"
 	}
-	out := &HTTPError{
+	return &HTTPError{
 		Provider:   provider,
 		Class:      class,
 		Message:    truncateErrorMessage(strings.TrimSpace(message)),
 		StatusCode: status,
 	}
-	if class == "upstream_timeout" {
-		out.TimeoutKind = "http_timeout_status"
-	}
-	return out
 }
 
 func classifyTransportError(ctx context.Context, provider string, err error) error {

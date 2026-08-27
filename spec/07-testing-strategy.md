@@ -266,6 +266,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - Google text + `functionCall`
 - Google `functionResponse` 回放
 - OpenAI / Anthropic / Google adapter 各自的非 2xx 错误映射
+- provider HTTP status table 永久覆盖 auth 4xx、普通 4xx（含 413）、429 与 5xx，并验证 CLI/Web 对 corrected class 使用对应 remediation
 - OpenAI / Anthropic / Google adapter 各自的 context cancel 传播
 - OpenAI / Anthropic / Google estimator 与实际 HTTP body 的字段和序列化字节数一致；fake estimator 对相同请求返回确定结果
 - system、messages、tools、metadata、provider envelope、output reserve 与 safety headroom 的边界 fixture 分别可把请求推过 hard-fit
