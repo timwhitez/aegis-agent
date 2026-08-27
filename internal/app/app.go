@@ -206,6 +206,8 @@ var stdinIsTerminal = func() bool {
 
 const maxPromptStdinBytes int64 = 4 << 20
 
+const streamJSONDrainBarrierEvent = "cli.stream_json.drain_barrier"
+
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
 	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
@@ -292,10 +294,23 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if streamMode {
 		sjAdapter = streamjson.NewAdapter(stdout)
 	}
-	sub := runner.Bus().Subscribe(128)
+	var sub <-chan events.Event
+	if streamMode {
+		sub = runner.Bus().SubscribeLossless(128)
+	} else {
+		sub = runner.Bus().Subscribe(128)
+	}
 	var sessionID string
 	var sessionMu sync.RWMutex
-	renderCtx, cancelRender := context.WithCancel(ctx)
+	renderParent := ctx
+	terminalEvent := isTerminalSessionEvent
+	if streamMode {
+		// Protocol delivery must survive run-context cancellation long enough to
+		// drain every event published before the explicit barrier below.
+		renderParent = context.Background()
+		terminalEvent = isStreamJSONDrainBarrier
+	}
+	renderCtx, cancelRender := context.WithCancel(renderParent)
 	done := renderEventsUntilDone(renderCtx, sub, func(evt events.Event) {
 		if evt.Type == "session.started" {
 			sessionMu.Lock()
@@ -307,7 +322,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 			return
 		}
 		renderer.Handle(evt)
-	}, isTerminalSessionEvent)
+	}, terminalEvent)
 
 	runCtx := ctx
 	var cancel context.CancelFunc
@@ -359,6 +374,12 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		})
 	}
 	cancel()
+	if streamMode {
+		// This process-local event is not appended to the session store. A
+		// lossless subscription preserves publication order, so observing the
+		// barrier proves every earlier event has reached the renderer.
+		runner.Bus().Publish(events.New(result.SessionID, streamJSONDrainBarrierEvent, "cli", nil))
+	}
 	waitForRenderer(done, cancelRender, streamMode)
 	if err != nil {
 		if streamMode && result.SessionID != "" {
@@ -2324,15 +2345,16 @@ func renderEventsUntilDone(ctx context.Context, sub <-chan events.Event, render 
 
 func waitForRenderer(done <-chan struct{}, cancel context.CancelFunc, drain bool) {
 	if drain {
-		select {
-		case <-done:
-			cancel()
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
+		<-done
+		cancel()
+		return
 	}
 	cancel()
 	<-done
+}
+
+func isStreamJSONDrainBarrier(evt events.Event) bool {
+	return evt.Type == streamJSONDrainBarrierEvent
 }
 
 func isTerminalSessionEvent(evt events.Event) bool {

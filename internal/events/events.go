@@ -48,7 +48,8 @@ type Bus struct {
 }
 
 type subscriber struct {
-	ch chan Event
+	ch       chan Event
+	lossless bool
 	// pending counts events dropped for this subscriber that have not been
 	// reported to it yet; total is the cumulative drop count for observability.
 	pending atomic.Int64
@@ -61,17 +62,31 @@ func NewBus() *Bus {
 
 func (b *Bus) Subscribe(buffer int) <-chan Event {
 	sub := &subscriber{ch: make(chan Event, buffer)}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.subs = append(b.subs, sub)
+	b.addSubscriber(sub)
 	return sub.ch
 }
 
-// Publish fans an event out to every subscriber and never blocks the producer.
-// A subscriber that cannot keep up still loses events, but the loss is counted
-// and surfaced to that subscriber as an EventEventsDropped event once its buffer
-// has room again, so downstream protocols can tell "nothing happened" apart from
-// "events were lost". Aggregate counts are readable via Dropped.
+// SubscribeLossless registers an ordered subscriber that propagates
+// backpressure to publishers instead of dropping events. It is intended for
+// protocol delivery paths such as gocli-stream-json; ordinary observers should
+// use Subscribe so a slow consumer cannot stall the runtime.
+func (b *Bus) SubscribeLossless(buffer int) <-chan Event {
+	sub := &subscriber{ch: make(chan Event, buffer), lossless: true}
+	b.addSubscriber(sub)
+	return sub.ch
+}
+
+func (b *Bus) addSubscriber(sub *subscriber) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.subs = append(b.subs, sub)
+}
+
+// Publish fans an event out to every subscriber. Default subscribers never
+// block the producer: a subscriber that cannot keep up loses events, with the
+// loss counted and surfaced as EventEventsDropped once its buffer has room.
+// An explicit lossless subscriber instead backpressures Publish until it can
+// accept the event. Aggregate lossy-subscriber counts are readable via Dropped.
 func (b *Bus) Publish(evt Event) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -93,6 +108,10 @@ func (b *Bus) Dropped() int64 {
 }
 
 func (s *subscriber) send(evt Event) {
+	if s.lossless {
+		s.ch <- evt
+		return
+	}
 	if s.pending.Load() > 0 {
 		// Claim the outstanding count with a single atomic swap: a Load followed
 		// by Add(-pending) lets concurrent publishers (Publish only holds

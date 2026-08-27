@@ -298,9 +298,9 @@ func TestSubscriberDropAccountingHoldsUnderSlowConsumer(t *testing.T) {
 	}
 }
 
-// TestPublishNeverBlocksOnFullSubscriberBuffer guards the documented contract
-// that Publish never blocks the producer, including for a subscriber that never
-// reads at all.
+// TestPublishNeverBlocksOnFullSubscriberBuffer guards the default observer
+// contract that Publish never blocks the producer, including for a subscriber
+// that never reads at all.
 func TestPublishNeverBlocksOnFullSubscriberBuffer(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -329,5 +329,39 @@ func TestPublishNeverBlocksOnFullSubscriberBuffer(t *testing.T) {
 				t.Fatalf("Bus.Dropped is %d, want > 0 for a subscriber that never reads", got)
 			}
 		})
+	}
+}
+
+func TestLosslessSubscriberBackpressuresPublisherWithoutDropping(t *testing.T) {
+	bus := NewBus()
+	sub := bus.SubscribeLossless(1)
+	first := New("sess-lossless", "first", "test", nil)
+	second := New("sess-lossless", "second", "test", nil)
+	bus.Publish(first)
+
+	published := make(chan struct{})
+	go func() {
+		bus.Publish(second)
+		close(published)
+	}()
+
+	select {
+	case <-published:
+		t.Fatal("lossless publisher completed while its subscriber buffer was full")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := bus.Dropped(); got != 0 {
+		t.Fatalf("lossless subscription reported %d dropped events, want 0", got)
+	}
+	if got := <-sub; got.ID != first.ID {
+		t.Fatalf("first delivery ID=%q, want %q", got.ID, first.ID)
+	}
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("lossless publisher did not resume after subscriber drained")
+	}
+	if got := <-sub; got.ID != second.ID {
+		t.Fatalf("second delivery ID=%q, want %q", got.ID, second.ID)
 	}
 }

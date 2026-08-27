@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
+	"aegis-agent/internal/streamjson"
 )
 
 func TestCancelledSessionEventIsTerminalForRenderer(t *testing.T) {
@@ -383,6 +385,163 @@ func TestRunCommandStreamJSONOutputWritesResult(t *testing.T) {
 	if strings.Contains(stdout.String(), "== assistant ==") || strings.Contains(stdout.String(), "== completed ==") {
 		t.Fatalf("stream-json output must not include human renderer text:\n%s", stdout.String())
 	}
+}
+
+type backpressureRunner struct {
+	*fakeRunner
+	events      []events.Event
+	publishDone chan struct{}
+}
+
+func (r *backpressureRunner) Start(_ context.Context, req runtime.StartRequest) (runtime.RunResult, error) {
+	r.startCalls = append(r.startCalls, req)
+	defer close(r.publishDone)
+	for _, evt := range r.events {
+		r.bus.Publish(evt)
+	}
+	return r.startResult, r.startErr
+}
+
+type gatedWriter struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func newGatedWriter() *gatedWriter {
+	return &gatedWriter{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (w *gatedWriter) Write(data []byte) (int, error) {
+	w.once.Do(func() {
+		close(w.started)
+		<-w.release
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(data)
+}
+
+func (w *gatedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func TestRunCommandStreamJSONIsLosslessUnderStdoutBackpressure(t *testing.T) {
+	const toolCount = 600
+	base := newFakeRunner()
+	runner := &backpressureRunner{
+		fakeRunner:  base,
+		publishDone: make(chan struct{}),
+	}
+	runner.startResult = runtime.RunResult{SessionID: "s-backpressure", Status: session.StatusCompleted, FinalText: "done"}
+	runner.events = append(runner.events, events.New("s-backpressure", "session.started", "prepare", nil))
+	for i := 0; i < toolCount; i++ {
+		callID := fmt.Sprintf("call_%03d", i)
+		runner.events = append(runner.events,
+			events.New("s-backpressure", "tool.before", "tool_execute", map[string]any{
+				"call_id": callID, "tool_name": "todo_read", "arguments": `{}`,
+			}),
+			events.New("s-backpressure", "tool.after", "tool_execute", map[string]any{
+				"call_id": callID, "display_output": `[]`, "is_error": false,
+			}),
+		)
+	}
+	runner.events = append(runner.events, events.New("s-backpressure", "session.completed", "turn_decide", nil))
+
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) {
+		return runner, config.Default(), nil
+	}
+	defer func() { runnerLoader = restore }()
+
+	stdout := newGatedWriter()
+	var stderr bytes.Buffer
+	withStdin(t, `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"exercise backpressure"}]}}`, func() {
+		runDone := make(chan error, 1)
+		go func() {
+			runDone <- Run(context.Background(), []string{"exec", "--output-format", "stream-json", "--input-format", "stream-json"}, stdout, &stderr)
+		}()
+
+		select {
+		case <-stdout.started:
+		case <-time.After(time.Second):
+			t.Fatal("stream renderer never reached the gated stdout writer")
+		}
+		select {
+		case <-runner.publishDone:
+			close(stdout.release)
+			<-runDone
+			t.Fatal("runtime publisher completed instead of honoring stdout backpressure")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(stdout.release)
+		select {
+		case err := <-runDone:
+			if err != nil {
+				t.Fatalf("stream-json run failed: %v stderr=%s", err, stderr.String())
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("stream-json run did not finish after stdout resumed")
+		}
+	})
+
+	lines := decodeStreamJSONLines(t, stdout.String())
+	toolUses := make([]string, 0, toolCount)
+	toolResults := make([]string, 0, toolCount)
+	for index, line := range lines {
+		if line.Type == "result" && index != len(lines)-1 {
+			t.Fatalf("result line index=%d, want final index=%d", index, len(lines)-1)
+		}
+		if line.Type == "log" && line.Log != nil && strings.Contains(line.Log.Message, "dropped") {
+			t.Fatalf("lossless stream reported a dropped event: %#v", line)
+		}
+		if line.Message == nil {
+			continue
+		}
+		for _, block := range line.Message.Content {
+			switch block.Type {
+			case "tool_use":
+				toolUses = append(toolUses, block.ID)
+			case "tool_result":
+				toolResults = append(toolResults, block.ToolUseID)
+			}
+		}
+	}
+	if len(toolUses) != toolCount || len(toolResults) != toolCount {
+		t.Fatalf("tool transcript uses=%d results=%d, want %d each", len(toolUses), len(toolResults), toolCount)
+	}
+	for i := range toolUses {
+		if toolUses[i] != toolResults[i] {
+			t.Fatalf("tool pair %d use=%q result=%q", i, toolUses[i], toolResults[i])
+		}
+	}
+	if lines[len(lines)-1].Type != "result" || lines[len(lines)-1].Status != session.StatusCompleted {
+		t.Fatalf("final line=%#v, want completed result", lines[len(lines)-1])
+	}
+}
+
+func decodeStreamJSONLines(t *testing.T, raw string) []streamjson.StreamOutputMessage {
+	t.Helper()
+	var lines []streamjson.StreamOutputMessage
+	for _, rawLine := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if strings.TrimSpace(rawLine) == "" {
+			continue
+		}
+		var line streamjson.StreamOutputMessage
+		if err := json.Unmarshal([]byte(rawLine), &line); err != nil {
+			t.Fatalf("decode stream-json line %q: %v", rawLine, err)
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		t.Fatal("stream-json output is empty")
+	}
+	return lines
 }
 
 func TestRunCommandStreamJSONFailureWritesResultBeforeExit(t *testing.T) {

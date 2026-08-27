@@ -42,6 +42,7 @@ if usage["input_tokens"] == nil || usage["output_tokens"] == nil {
 - `tool.after` -> `user/tool_result`，`tool_use_id` 来自 `call_id`。
 - 多个 `turn.stopped.data.usage` 累计到最终 result。
 - `WriteResult(..., exitCode=6)` 输出 `is_error=true` 且调用方返回 `ExitError{Code: 6}`。
+- 空/重复 `tool_use.id`、result-before-use、重复 result 与 completed result 前 dangling use 都 fail closed；`events.dropped` 不能只输出 warning 后继续成功。
 - `MarshalLine` 保留可选 `run_role`、`metadata`、`handoff` 字段；字段为空时不输出。
 - stream-json adapter 在未实现 mission profile 时不需要伪造 `handoff`。
 
@@ -71,6 +72,7 @@ if usage["input_tokens"] == nil || usage["output_tokens"] == nil {
 - `run --resume <id>` 报错；Multica 恢复只使用 `exec --resume`。
 - `exec --resume <id> --thinking-level max` 传入 `ContinueRequest.ProviderOptions`，OpenAI-compatible 保留原生 `max`；Anthropic/Google 映射为 32000 thinking budget。
 - stream-json 模式最终写 result envelope。
+- 用 gated slow writer 在第一行阻塞 stdout，同时由 fake runner 发布超过 subscriber buffer 的至少 600 组 `tool.before` / `tool.after`。释放 writer 后必须得到 600 个 `tool_use`、600 个顺序配对的 `tool_result`，零 `events.dropped`，且 `result` 严格最后；释放前 publisher 应停在 backpressure，而不是完成并丢 event。
 - 非 stream-json 的 `--json` 行为不变。
 
 ## 2. 冒烟脚本
@@ -181,5 +183,7 @@ rg 'StreamOutputMessage|ProtocolName|gocli-stream-json' internal/streamjson inte
 - 所有 stdout 行可被 `jq` 解析。
 - stderr 中可有诊断，但不得含协议 JSON。
 - result 行总是最后一条协议消息。
+- stdout backpressure 下 protocol-significant records lossless、ordered；固定 drain timeout 不得截断 transcript。
+- 成功 result 前所有 tool call/result 一一配对；已知 drop、write error 或 pairing error 必须阻止成功 result。
 - failed / incomplete_no_finish 时仍输出 result，然后进程以非零 code 退出。
 - `--json` 老模式测试继续通过。

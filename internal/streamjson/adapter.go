@@ -16,10 +16,24 @@ type Adapter struct {
 	w      io.Writer
 	usage  StreamUsage
 	writeE error
+
+	transcriptMu sync.Mutex
+	protocolE    error
+	toolUses     map[transcriptToolKey]struct{}
+	pendingTools map[transcriptToolKey]struct{}
+}
+
+type transcriptToolKey struct {
+	sessionID string
+	callID    string
 }
 
 func NewAdapter(w io.Writer) *Adapter {
-	return &Adapter{w: w}
+	return &Adapter{
+		w:            w,
+		toolUses:     make(map[transcriptToolKey]struct{}),
+		pendingTools: make(map[transcriptToolKey]struct{}),
+	}
 }
 
 func (a *Adapter) Handle(evt events.Event) {
@@ -27,19 +41,19 @@ func (a *Adapter) Handle(evt events.Event) {
 	if msg == nil {
 		return
 	}
-	if err := a.writeLine(msg); err != nil {
-		a.mu.Lock()
-		if a.writeE == nil {
-			a.writeE = err
-		}
-		a.mu.Unlock()
-	}
+	_ = a.writeEvent(evt, msg)
 }
 
 func (a *Adapter) Err() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.writeE
+	writeErr := a.writeE
+	a.mu.Unlock()
+	if writeErr != nil {
+		return writeErr
+	}
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	return a.protocolE
 }
 
 func (a *Adapter) Usage() StreamUsage {
@@ -72,7 +86,72 @@ func (a *Adapter) WriteResult(sessionID, finalText, status, lastError string, ex
 		IsError:   &isError,
 		Usage:     &usage,
 	}
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	if exitCode == 0 {
+		if a.protocolE != nil {
+			return a.protocolE
+		}
+		if len(a.pendingTools) != 0 {
+			a.protocolE = fmt.Errorf("stream-json transcript integrity: %d dangling tool_use call(s) before successful result", len(a.pendingTools))
+			return a.protocolE
+		}
+	}
 	return a.writeLine(msg)
+}
+
+func (a *Adapter) writeEvent(evt events.Event, msg *StreamOutputMessage) error {
+	a.transcriptMu.Lock()
+	defer a.transcriptMu.Unlock()
+	if a.protocolE != nil {
+		return a.protocolE
+	}
+
+	switch evt.Type {
+	case "tool.before":
+		callID := strings.TrimSpace(stringValue(evt.Data["call_id"]))
+		if callID == "" {
+			return a.recordProtocolError(fmt.Errorf("stream-json transcript integrity: empty tool_use id"))
+		}
+		key := transcriptToolKey{sessionID: evt.SessionID, callID: callID}
+		if _, exists := a.toolUses[key]; exists {
+			return a.recordProtocolError(fmt.Errorf("stream-json transcript integrity: duplicate tool_use id %q", callID))
+		}
+		if err := a.writeLine(msg); err != nil {
+			return err
+		}
+		a.toolUses[key] = struct{}{}
+		a.pendingTools[key] = struct{}{}
+		return nil
+	case "tool.after":
+		callID := strings.TrimSpace(stringValue(evt.Data["call_id"]))
+		if callID == "" {
+			return a.recordProtocolError(fmt.Errorf("stream-json transcript integrity: empty tool_result id"))
+		}
+		key := transcriptToolKey{sessionID: evt.SessionID, callID: callID}
+		if _, pending := a.pendingTools[key]; !pending {
+			return a.recordProtocolError(fmt.Errorf("stream-json transcript integrity: tool_result %q without a pending tool_use", callID))
+		}
+		if err := a.writeLine(msg); err != nil {
+			return err
+		}
+		delete(a.pendingTools, key)
+		return nil
+	case events.EventEventsDropped:
+		if err := a.writeLine(msg); err != nil {
+			return err
+		}
+		return a.recordProtocolError(fmt.Errorf("stream-json transcript integrity: events dropped before delivery"))
+	default:
+		return a.writeLine(msg)
+	}
+}
+
+func (a *Adapter) recordProtocolError(err error) error {
+	if a.protocolE == nil {
+		a.protocolE = err
+	}
+	return a.protocolE
 }
 
 func (a *Adapter) convert(evt events.Event) *StreamOutputMessage {
@@ -226,6 +305,11 @@ func intValue(value any) int {
 	default:
 		return 0
 	}
+}
+
+func stringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func logMessage(evt events.Event, level, text string) *StreamOutputMessage {
