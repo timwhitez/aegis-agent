@@ -225,7 +225,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
 - goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
 - Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI
-- Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection
+- Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection；CLI `run` 还需用真实 PTY 证明回答不会被 `Esc` 监听抢读，并证明 prompt lease 释放后 `Esc` 中断恢复
 
 ## 15. Extension Phases
 

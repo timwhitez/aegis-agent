@@ -332,8 +332,10 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		runCtx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
+	planInputHandler := cliPlanInputHandler(os.Stdin, stderr)
+	var ttyInput *cliTTYInput
 	if mode == "run" && term.IsTerminal(int(os.Stdin.Fd())) {
-		go watchEsc(runCtx, func() {
+		ttyInput, _ = startCLITTYInput(runCtx, os.Stdin, func() {
 			sessionMu.RLock()
 			id := sessionID
 			sessionMu.RUnlock()
@@ -341,6 +343,10 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 				_ = runner.Interrupt(id)
 			}
 		})
+		if ttyInput != nil {
+			defer ttyInput.close()
+			planInputHandler = ttyInput.planInputHandler(stderr)
+		}
 	}
 	actualMode := mode
 	if *initMode {
@@ -354,7 +360,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 			Provider:         *providerName,
 			Model:            *model,
 			SystemOverride:   *system,
-			PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+			PlanInputHandler: planInputHandler,
 			ProviderOptions:  providerOptions,
 		})
 	} else {
@@ -368,7 +374,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 			SystemOverride:   *system,
 			Goal:             goalDraft,
 			PlanMode:         planDraft,
-			PlanInputHandler: cliPlanInputHandler(os.Stdin, stderr),
+			PlanInputHandler: planInputHandler,
 			IsolationMode:    *isolationMode,
 			IsolationRoot:    *isolationRoot,
 		})
@@ -467,40 +473,52 @@ func cliPlanInputHandler(stdin io.Reader, stderr io.Writer) runtime.PlanInputHan
 	}
 	return func(ctx context.Context, request session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
 		reader := bufio.NewReader(stdin)
-		answers := make([]session.PlanModeInputAnswer, 0, len(request.Questions))
-		for _, question := range request.Questions {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
-			}
-			_, _ = fmt.Fprintf(stderr, "\n%s\n%s\n", question.Header, question.Question)
-			for i, option := range question.Options {
-				_, _ = fmt.Fprintf(stderr, "  %d. %s - %s\n", i+1, option.Label, option.Description)
-			}
-			_, _ = fmt.Fprintf(stderr, "  other. Enter custom answer\n")
-			_, _ = fmt.Fprint(stderr, "Select [1]: ")
+		return collectCLIPlanInput(ctx, request, stderr, func(context.Context) (string, error) {
 			line, err := reader.ReadString('\n')
 			if err != nil && !errors.Is(err, io.EOF) {
-				return nil, err
+				return "", err
 			}
-			value := strings.TrimSpace(line)
-			if value == "" {
-				value = "1"
-			}
-			answer := session.PlanModeInputAnswer{QuestionID: question.ID}
-			if len(value) == 1 && value[0] >= '1' && int(value[0]-'1') < len(question.Options) {
-				option := question.Options[int(value[0]-'1')]
-				answer.Label = option.Label
-				answer.Value = option.Label
-			} else {
-				answer.Value = value
-				answer.IsOther = true
-			}
-			answers = append(answers, answer)
-		}
-		return answers, nil
+			return line, nil
+		})
 	}
+}
+
+type cliPlanInputLineReader func(context.Context) (string, error)
+
+func collectCLIPlanInput(ctx context.Context, request session.PlanModeInputRequest, stderr io.Writer, readLine cliPlanInputLineReader) ([]session.PlanModeInputAnswer, error) {
+	answers := make([]session.PlanModeInputAnswer, 0, len(request.Questions))
+	for _, question := range request.Questions {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		_, _ = fmt.Fprintf(stderr, "\n%s\n%s\n", question.Header, question.Question)
+		for i, option := range question.Options {
+			_, _ = fmt.Fprintf(stderr, "  %d. %s - %s\n", i+1, option.Label, option.Description)
+		}
+		_, _ = fmt.Fprintln(stderr, "  other. Enter custom answer")
+		_, _ = fmt.Fprint(stderr, "Select [1]: ")
+		line, err := readLine(ctx)
+		if err != nil {
+			return nil, err
+		}
+		value := strings.TrimSpace(line)
+		if value == "" {
+			value = "1"
+		}
+		answer := session.PlanModeInputAnswer{QuestionID: question.ID}
+		if len(value) == 1 && value[0] >= '1' && int(value[0]-'1') < len(question.Options) {
+			option := question.Options[int(value[0]-'1')]
+			answer.Label = option.Label
+			answer.Value = option.Label
+		} else {
+			answer.Value = value
+			answer.IsOther = true
+		}
+		answers = append(answers, answer)
+	}
+	return answers, nil
 }
 
 func parseGoalDurationSeconds(value string) (int64, error) {
@@ -2363,43 +2381,6 @@ func isTerminalSessionEvent(evt events.Event) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func watchEsc(ctx context.Context, onInterrupt func()) {
-	fd := int(os.Stdin.Fd())
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return
-	}
-	defer term.Restore(fd, oldState)
-
-	input := make(chan byte, 1)
-	go func() {
-		buffer := make([]byte, 1)
-		for {
-			n, err := os.Stdin.Read(buffer)
-			if err != nil || n == 0 {
-				close(input)
-				return
-			}
-			input <- buffer[0]
-		}
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case value, ok := <-input:
-			if !ok {
-				continue
-			}
-			if value == 27 {
-				onInterrupt()
-				return
-			}
-		}
 	}
 }
 
