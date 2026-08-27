@@ -2375,19 +2375,13 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 			prompt = "Return exactly one finish tool call with message: provider probe ok"
 		}
 	}
-	tools := []provider.ToolSchema(nil)
+	toolSchemas := []provider.ToolSchema(nil)
 	if !req.ThinkingProbe {
-		tools = []provider.ToolSchema{
+		toolSchemas = []provider.ToolSchema{
 			{
 				Name:        "finish",
 				Description: "Explicitly mark the current task as complete.",
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"message": map[string]any{"type": "string"},
-					},
-					"required": []string{"message"},
-				},
+				InputSchema: tools.FinishInputSchema(),
 			},
 		}
 	}
@@ -2400,7 +2394,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Messages: []session.Message{
 			session.NewMessage("user", prompt),
 		},
-		Tools:            tools,
+		Tools:            toolSchemas,
 		Temperature:      providerCfg.Temperature,
 		TopP:             providerCfg.TopP,
 		MaxOutputTokens:  providerCfg.MaxOutputTokens,

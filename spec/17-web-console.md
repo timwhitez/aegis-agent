@@ -381,6 +381,7 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 - Settings 必须用 provider-specific 下拉选择暴露 Provider Profile、API Provider / Adapter Family、reasoning / thinking mode 与 reasoning summary：OpenAI / `openai-compatible` 支持 `default | low | medium | high | xhigh | max` 和 summary `default | auto | concise | detailed | off`；OpenAI-compatible 的非默认 reasoning 值原样进入 `reasoning_effort`。Anthropic-compatible / Google 支持 `default | standard | max | off`，其 `max` 映射到 thinking budget profile，不能要求用户手写 token budget。
 - `POST /api/config/test` 使用当前 Settings 表单值执行一次 thinking-observation probe，用于确认 provider、model、base URL、API key、API Provider 与 reasoning / thinking 配置能被上游接受，并区分“请求成功”和“本次实际返回可读 thinking / summary”；只有协议有效的非错误 stop reason 才可返回 `success=true`，error/cancelled/blocked/incomplete stop 或意外 tool call 必须返回带可操作诊断的失败响应；该接口不得持久化 config 或 `.env`。
 - Settings probe 的 provider HTTP failure 必须在现有 error envelope 中返回稳定 class code、status/class detail 与修复 action；`invalid_request` 应提示检查 profile/base URL/wire API/model/request options，不能提示 network/TLS。
+- protocol-invalid probe 使用 `PROVIDER_RESPONSE_PARSE_ERROR`；HTTP `401` / `413` / `429` 必须继续保留 `PROVIDER_AUTH_ERROR` / `PROVIDER_INVALID_REQUEST` / `PROVIDER_RATE_LIMIT`，handler 不得用不保留 cause 的 generic Web error 覆盖 typed provider class。
 
 Settings API：
 

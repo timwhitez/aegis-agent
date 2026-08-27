@@ -11259,6 +11259,43 @@ func TestServiceConfigTestClassifiesHTTP413AsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestPreservesTypedAuthAndRateLimitErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		expectedCode string
+		actionMarker string
+	}{
+		{name: "auth", status: http.StatusUnauthorized, expectedCode: "PROVIDER_AUTH_ERROR", actionMarker: "API key"},
+		{name: "rate_limit", status: http.StatusTooManyRequests, expectedCode: "PROVIDER_RATE_LIMIT", actionMarker: "Retry later"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "provider rejected probe", tc.status)
+			}))
+			defer providerServer.Close()
+
+			cfg := testConfig(t, providerServer.URL)
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+			ts := httptest.NewServer(svc)
+			defer ts.Close()
+
+			errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+				"provider": "openai",
+				"base_url": providerServer.URL,
+			}, http.StatusBadGateway)
+			if errResp.Code != tc.expectedCode || !strings.Contains(errResp.Detail, strconv.Itoa(tc.status)) || !strings.Contains(errResp.Action, tc.actionMarker) {
+				t.Fatalf("typed provider error was masked: %#v", errResp)
+			}
+		})
+	}
+}
+
 func TestServiceConfigTestRejectsProviderErrorStopReason(t *testing.T) {
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -11288,7 +11325,7 @@ func TestServiceConfigTestRejectsProviderErrorStopReason(t *testing.T) {
 	if !strings.Contains(errResp.Error, "stop_reason") || !strings.Contains(errResp.Error, "error") {
 		t.Fatalf("expected actionable protocol-invalid probe error, got %#v", errResp)
 	}
-	if errResp.Code != errorCodeProviderProbeFailed || errResp.Detail == "" || errResp.Action == "" {
+	if errResp.Code != "PROVIDER_RESPONSE_PARSE_ERROR" || !strings.Contains(errResp.Detail, "response_parse_error") || errResp.Action == "" {
 		t.Fatalf("expected classified Web probe failure guidance, got %#v", errResp)
 	}
 }

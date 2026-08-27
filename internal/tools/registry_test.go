@@ -412,6 +412,36 @@ func TestFinishRejectsBlankMessage(t *testing.T) {
 	}
 }
 
+func TestFinishSharedParserMatchesClosedRuntimeSchema(t *testing.T) {
+	cfg := config.Default()
+	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	tests := []struct {
+		name   string
+		raw    json.RawMessage
+		marker string
+	}{
+		{name: "extra_field", raw: json.RawMessage(`{"message":"ok","unexpected":true}`), marker: `unexpected field "unexpected"`},
+		{name: "trailing_json", raw: json.RawMessage(`{"message":"ok"} {}`), marker: "single JSON value"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if message, err := ParseFinishArguments(tc.raw); err == nil {
+				t.Fatalf("shared finish parser accepted runtime-invalid arguments: message=%q", message)
+			}
+			result, err := registry.Execute(context.Background(), "finish", ExecContext{}, tc.raw)
+			if err != nil {
+				t.Fatalf("execute finish: %v", err)
+			}
+			if !result.IsError || result.Final || !strings.Contains(result.DisplayOutput, tc.marker) || result.Metadata[MetadataFailureClass] != FailureClassSchemaReject {
+				t.Fatalf("runtime and shared finish validation diverged: %#v", result)
+			}
+		})
+	}
+}
+
 func TestAwaitInputReturnsStructuredParkingMetadata(t *testing.T) {
 	cfg := config.Default()
 	registry, err := NewRegistry(cfg, nil, session.NewStore(t.TempDir()), nil)

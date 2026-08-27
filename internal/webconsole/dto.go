@@ -4,7 +4,6 @@ import "aegis-agent/internal/session"
 
 const (
 	errorCodeUnknownProvider            = "UNKNOWN_PROVIDER"
-	errorCodeProviderProbeFailed        = "PROVIDER_PROBE_FAILED"
 	errorCodeActiveHandleNotOwned       = "ACTIVE_HANDLE_NOT_OWNED"
 	errorCodeSessionNotResumable        = "SESSION_NOT_RESUMABLE"
 	errorCodeWebSocketControlDeprecated = "WEBSOCKET_CONTROL_DEPRECATED"

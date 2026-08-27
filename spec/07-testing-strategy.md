@@ -268,7 +268,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - OpenAI / Anthropic / Google adapter 各自的非 2xx 错误映射
 - provider HTTP status table 永久覆盖 auth 4xx、普通 4xx（含 413）、429 与 5xx，并验证 CLI/Web 对 corrected class 使用对应 remediation
 - OpenAI / Anthropic / Google adapter 各自的 context cancel 传播
-- provider ordinary/thinking probe 对 error stop reason、stop/tool mismatch 与 malformed `finish` payload fail closed，并由 runtime、CLI JSON 退出码和 Web Settings test 三层回归覆盖
+- provider ordinary/thinking probe 对 error stop reason、stop/tool mismatch 与 malformed/unknown-field/trailing `finish` payload fail closed，advertised schema 与 runtime closed-schema validator 保持同源，并由 runtime、CLI JSON 退出码和 Web Settings test 三层回归覆盖；Web 同时保留 typed HTTP 401/413/429 分类
 - OpenAI / Anthropic / Google estimator 与实际 HTTP body 的字段和序列化字节数一致；fake estimator 对相同请求返回确定结果
 - system、messages、tools、metadata、provider envelope、output reserve 与 safety headroom 的边界 fixture 分别可把请求推过 hard-fit
 - estimator 缺失、未知/零/负 context window、零/负 max output 与显式 config override 都有确定的 fail-closed 或兼容默认语义
