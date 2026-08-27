@@ -1,13 +1,21 @@
 # Aegis Agent
 
-`aegis-agent` is a Web-first local agent harness written in Go. The default
-operator surface is a local Web console; the CLI remains available for
-automation, CI, recovery, and advanced operations.
+`aegis-agent` is a Web-first local agent harness written in Go. Its default
+interface is a bilingual local Web console; the CLI remains available for
+automation, recovery, CI, and advanced use.
 
-It provides a minimal agent loop, provider adapters, built-in tools, skills,
-hooks, durable sessions, task state, compaction, and live steering. The model
-decides how to use those capabilities; the harness records facts and enforces
-the safety boundary.
+The model remains the agent. Aegis supplies provider adapters, tools, skills,
+durable session facts, compaction, live steering, and safety boundaries without
+imposing a fixed workflow engine.
+
+[Quick start](#quick-start) · [Provider configuration](#provider-configuration) ·
+[Runtime architecture](./spec/01-runtime-architecture.md) ·
+[Web console spec](./spec/17-web-console.md) · [Contributing](./CONTRIBUTING.md)
+
+> **Status:** active development (`v0.1.0-dev`). The Web-first v1 surface is
+> usable; advanced orchestration and isolation remain explicit/experimental.
+
+![Aegis Agent Web Console showing durable Todo and Task state](./docs/assets/web-console.png)
 
 ## What it supports
 
@@ -26,11 +34,10 @@ IDE features, remote terminals, or a fixed workflow engine.
 
 ## Quick start
 
-Requirements: Go 1.26.7+ and Node.js (for the embedded Web console checks).
+Requirements: Go 1.26.7+ on Linux, macOS, or WSL.
 
 ```sh
 ./build.sh
-./test.sh
 
 ./bin/aegis-agent init --force
 ./bin/aegis-agent web --listen 127.0.0.1:3940
@@ -38,6 +45,10 @@ Requirements: Go 1.26.7+ and Node.js (for the embedded Web console checks).
 
 Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
 `workspace/` directory, which is intentionally ignored by Git.
+
+Keep the Web console on loopback unless the network is trusted. A non-loopback
+console can run agents, manage provider settings and skills, mutate workspace
+files, and delete session history.
 
 Web Console v2 is the default UI. The original page remains packaged but is
 disabled by default; its temporary `/legacy/` rollback route can be enabled in
@@ -79,6 +90,8 @@ The default configuration keeps provider-side storage disabled where supported
 so that local session files remain the source of truth.
 
 ## Development
+
+Repository validation requires Go 1.26.7+ and Node.js 22+.
 
 ```sh
 ./test.sh
