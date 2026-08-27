@@ -134,6 +134,7 @@
 - 将 planning / input / approval / revision / cancellation / execution transition 写入 `planmode.json` 与 `artifacts/planmode-history.jsonl`
 - 通过 `submit_plan` 保存完整 Markdown plan，并派生写入 `artifacts/planmode-plan.md`
 - 通过 `request_user_input` 持久化 pending request、`tool_call_id` 和回答，使 active Web runner 与 crash/restart fallback 都能补齐 provider replay 所需 tool result
+- CLI `run` 中的 `request_user_input` 与 `Esc` 中断必须复用同一个 TTY reader dispatcher：interactive prompt 持有显式输入 lease 时，全部字节只交给 prompt；lease 释放后恢复 `Esc` 检测。禁止 watcher 与 prompt handler 并发读取同一终端
 - 在 approve 时追加 `meta.source=planmode_approval` 的 user message；Plan Mode 不是 Goal/Mission/Todo/Task 的别名
 
 ### 2.8.3 Canonical History Reference
@@ -634,8 +635,10 @@ completed(root) -> running
 
 ### 9.1 `run` 模式
 
-- CLI 在单独 goroutine 中监听键盘输入
+- CLI 使用单一 TTY reader dispatcher 读取键盘输入；没有 interactive prompt owner 时由 dispatcher 监听 `Esc`
 - 捕获 `Esc` 后调用 `Runner.Interrupt(sessionID)`
+- Plan Mode `request_user_input` 开始前先取得 dispatcher 的输入 lease，回答完成或取消后释放；lease 存续期间 `Esc` watcher 不得读取或丢弃 prompt 字节
+- lease 释放后 dispatcher 继续监听 `Esc`，不能因一次交互问答永久丢失中断能力
 
 ### 9.2 interrupt 效果
 
