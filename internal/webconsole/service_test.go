@@ -11259,6 +11259,77 @@ func TestServiceConfigTestClassifiesHTTP413AsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestServiceConfigTestPreservesTypedAuthAndRateLimitErrors(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		expectedCode string
+		actionMarker string
+	}{
+		{name: "auth", status: http.StatusUnauthorized, expectedCode: "PROVIDER_AUTH_ERROR", actionMarker: "API key"},
+		{name: "rate_limit", status: http.StatusTooManyRequests, expectedCode: "PROVIDER_RATE_LIMIT", actionMarker: "Retry later"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "provider rejected probe", tc.status)
+			}))
+			defer providerServer.Close()
+
+			cfg := testConfig(t, providerServer.URL)
+			svc, err := New(cfg, Options{WorkerCount: 0})
+			if err != nil {
+				t.Fatalf("new service: %v", err)
+			}
+			defer svc.Close()
+			ts := httptest.NewServer(svc)
+			defer ts.Close()
+
+			errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+				"provider": "openai",
+				"base_url": providerServer.URL,
+			}, http.StatusBadGateway)
+			if errResp.Code != tc.expectedCode || !strings.Contains(errResp.Detail, strconv.Itoa(tc.status)) || !strings.Contains(errResp.Action, tc.actionMarker) {
+				t.Fatalf("typed provider error was masked: %#v", errResp)
+			}
+		})
+	}
+}
+
+func TestServiceConfigTestRejectsProviderErrorStopReason(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_probe_failed",
+			"status":"failed",
+			"error":{"message":"upstream rejected the response"},
+			"output":[]
+		}`))
+	}))
+	defer providerServer.Close()
+
+	cfg := testConfig(t, providerServer.URL)
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/config/test", map[string]any{
+		"provider": "openai",
+		"base_url": providerServer.URL,
+	}, http.StatusBadGateway)
+	if !strings.Contains(errResp.Error, "stop_reason") || !strings.Contains(errResp.Error, "error") {
+		t.Fatalf("expected actionable protocol-invalid probe error, got %#v", errResp)
+	}
+	if errResp.Code != "PROVIDER_RESPONSE_PARSE_ERROR" || !strings.Contains(errResp.Detail, "response_parse_error") || errResp.Action == "" {
+		t.Fatalf("expected classified Web probe failure guidance, got %#v", errResp)
+	}
+}
+
 func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
 	var probeCalled bool
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -11268,7 +11339,7 @@ func TestServiceConfigTestRejectsSaveOnlyFieldsBeforeProbe(t *testing.T) {
 			"id":"resp_probe_1",
 			"status":"completed",
 			"output":[
-				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider probe ok"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
@@ -11345,7 +11416,7 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 			"id":"resp_probe_1",
 			"status":"completed",
 			"output":[
-				{"type":"function_call","call_id":"call_finish_1","name":"finish","arguments":"{\"message\":\"provider probe ok\"}"}
+				{"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider probe ok"}]}
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))

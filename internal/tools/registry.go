@@ -2276,34 +2276,53 @@ func defFinish() Definition {
 	return Definition{
 		Name:        "finish",
 		Description: "Signal that the current task is complete and provide the final concise result for the user. Use only after requested work, required artifacts, and necessary validation are complete. If work is unfinished because an external prerequisite, missing user decision, or external wait prevents progress, use await_input instead and state the blocker/resume condition there. Report any unrun/failed validation honestly, but do not call finish merely because the model has no more ideas.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"message": map[string]any{
-					"type":        "string",
-					"description": "Concise final user-facing summary, including validation status or blockers when relevant.",
-				},
-			},
-			"required": []string{"message"},
-		},
+		InputSchema: FinishInputSchema(),
 		Execute: func(_ context.Context, _ ExecContext, raw json.RawMessage) (session.ToolResult, error) {
-			var input struct {
-				Message string `json:"message"`
-			}
-			if err := json.Unmarshal(raw, &input); err != nil {
+			message, err := ParseFinishArguments(raw)
+			if err != nil {
 				return errorResult("finish", err), nil
-			}
-			if strings.TrimSpace(input.Message) == "" {
-				return errorResult("finish", errors.New("message is required")), nil
 			}
 			return session.ToolResult{
 				Name:          "finish",
-				LLMOutput:     input.Message,
-				DisplayOutput: input.Message,
+				LLMOutput:     message,
+				DisplayOutput: message,
 				Final:         true,
 			}, nil
 		},
 	}
+}
+
+// FinishInputSchema returns the closed input contract advertised to providers
+// and enforced by ParseFinishArguments during probes and real execution.
+func FinishInputSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{
+				"type":        "string",
+				"description": "Concise final user-facing summary, including validation status or blockers when relevant.",
+			},
+		},
+		"required":             []string{"message"},
+		"additionalProperties": false,
+	}
+}
+
+// ParseFinishArguments is the canonical closed-schema and semantic validator
+// shared by normal tool execution and protocol probes.
+func ParseFinishArguments(raw json.RawMessage) (string, error) {
+	args, err := decodeClosedToolArgs(raw, FinishInputSchema())
+	if err != nil {
+		return "", err
+	}
+	var message string
+	if err := json.Unmarshal(args["message"], &message); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(message) == "" {
+		return "", errors.New("message is required")
+	}
+	return message, nil
 }
 
 func defAwaitInput() Definition {

@@ -2375,19 +2375,13 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 			prompt = "Return exactly one finish tool call with message: provider probe ok"
 		}
 	}
-	tools := []provider.ToolSchema(nil)
+	toolSchemas := []provider.ToolSchema(nil)
 	if !req.ThinkingProbe {
-		tools = []provider.ToolSchema{
+		toolSchemas = []provider.ToolSchema{
 			{
 				Name:        "finish",
 				Description: "Explicitly mark the current task as complete.",
-				InputSchema: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"message": map[string]any{"type": "string"},
-					},
-					"required": []string{"message"},
-				},
+				InputSchema: tools.FinishInputSchema(),
 			},
 		}
 	}
@@ -2400,7 +2394,7 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Messages: []session.Message{
 			session.NewMessage("user", prompt),
 		},
-		Tools:            tools,
+		Tools:            toolSchemas,
 		Temperature:      providerCfg.Temperature,
 		TopP:             providerCfg.TopP,
 		MaxOutputTokens:  providerCfg.MaxOutputTokens,
@@ -2440,24 +2434,52 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Usage:            result.Usage,
 	}
 	annotateThinkingProbeResult(&out, result)
-	if req.ThinkingProbe {
-		return out, nil
-	}
 	for _, call := range result.ToolCalls {
 		out.ToolCallNames = append(out.ToolCallNames, call.Name)
-		if call.Name == "finish" {
-			var payload struct {
-				Message string `json:"message"`
-			}
-			if err := json.Unmarshal(call.Arguments, &payload); err == nil {
-				out.FinishMessage = payload.Message
-			}
-		}
 	}
-	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "finish" {
-		return out, errors.New("probe failed: provider did not return exactly one finish tool call")
+	if err := validateProbeResult(providerName, req.ThinkingProbe, result, &out); err != nil {
+		return out, err
 	}
 	return out, nil
+}
+
+func validateProbeResult(providerName string, thinkingProbe bool, result provider.TurnResult, out *ProbeResult) error {
+	stopReason := strings.TrimSpace(result.StopReason)
+	if thinkingProbe {
+		if stopReason != "done_candidate" {
+			return invalidProbeResult(providerName, stopReason, fmt.Sprintf("thinking probe returned stop_reason=%q; expected done_candidate", stopReason))
+		}
+		if len(result.ToolCalls) != 0 {
+			return invalidProbeResult(providerName, stopReason, "thinking probe returned an unexpected tool call")
+		}
+		return nil
+	}
+	if stopReason != "tool_use" {
+		return invalidProbeResult(providerName, stopReason, fmt.Sprintf("finish probe returned stop_reason=%q; expected tool_use", stopReason))
+	}
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].Name != "finish" {
+		return invalidProbeResult(providerName, stopReason, "finish probe did not return exactly one finish tool call")
+	}
+	message, err := tools.ParseFinishArguments(result.ToolCalls[0].Arguments)
+	if err != nil {
+		return invalidProbeResult(providerName, stopReason, "finish probe returned invalid arguments: "+err.Error())
+	}
+	if out != nil {
+		out.FinishMessage = message
+	}
+	return nil
+}
+
+func invalidProbeResult(providerName, stopReason, detail string) error {
+	message := "probe protocol validation failed: " + strings.TrimSpace(detail)
+	if strings.TrimSpace(stopReason) == "" {
+		message += "; provider stop reason was empty"
+	}
+	return WrapProviderError(&provider.HTTPError{
+		Provider: strings.TrimSpace(providerName),
+		Class:    "response_parse_error",
+		Message:  message,
+	})
 }
 
 func annotateThinkingProbeResult(out *ProbeResult, result provider.TurnResult) {
