@@ -599,6 +599,7 @@ var MinVersions = map[string]string{
     "medium": true,
     "high":   true,
     "xhigh":  true,
+    "max":    true,
 },
 ```
 

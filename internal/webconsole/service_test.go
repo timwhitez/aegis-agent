@@ -10292,13 +10292,19 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if beforeChildBudget["disabled"] != true || beforeChildBudget["max_active_runtime_sec"] != float64(0) || beforeChildBudget["max_elapsed_sec"] != float64(0) || beforeChildBudget["max_turns_per_attempt"] != float64(0) || beforeChildBudget["active_runtime_checkpoint_ms"] != float64(config.DefaultChildBudgetActiveRuntimeCheckpointMS) {
 		t.Fatalf("expected default child budget disabled, got %#v", beforeChildBudget)
 	}
+	beforeProviders, _ := before["providers"].(map[string]any)
+	beforeOpenAI, _ := beforeProviders["openai"].(map[string]any)
+	beforeModes, _ := beforeOpenAI["reasoning_modes"].([]any)
+	if got := strings.Join(anySliceStrings(beforeModes), ","); got != "default,low,medium,high,xhigh,max" {
+		t.Fatalf("expected OpenAI max reasoning mode, got %#v", beforeOpenAI)
+	}
 
 	postJSON(t, ts.URL+"/api/config", map[string]any{
 		"provider":                "openai",
 		"base_url":                "http://example.invalid/v1",
 		"model":                   "gpt-test",
 		"context_window_tokens":   272000,
-		"reasoning_mode":          "xhigh",
+		"reasoning_mode":          "max",
 		"api_key":                 "secret-key",
 		"guardrails_mode":         "standard",
 		"max_turns_soft":          32,
@@ -10341,8 +10347,8 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if openaiProvider["context_window_tokens"] != float64(272000) || openaiProvider["effective_context_window_tokens"] != float64(272000) {
 		t.Fatalf("expected updated context window, got %#v", openaiProvider)
 	}
-	if openaiProvider["reasoning_mode"] != "xhigh" || openaiProvider["reasoning_effort"] != "xhigh" {
-		t.Fatalf("expected xhigh reasoning mode, got %#v", openaiProvider)
+	if openaiProvider["reasoning_mode"] != "max" || openaiProvider["reasoning_effort"] != "max" {
+		t.Fatalf("expected max reasoning mode, got %#v", openaiProvider)
 	}
 	if got := os.Getenv("OPENAI_API_KEY"); got != "secret-key" {
 		t.Fatalf("expected OPENAI_API_KEY to update, got %q", got)
@@ -10364,7 +10370,7 @@ func TestServiceConfigRoutesUpdateActiveConfig(t *testing.T) {
 	if !strings.Contains(string(configBytes), "guardrails_mode: standard") {
 		t.Fatalf("expected updated guardrails mode to persist to config, got %q", string(configBytes))
 	}
-	if !strings.Contains(string(configBytes), "reasoning_effort: xhigh") {
+	if !strings.Contains(string(configBytes), "reasoning_effort: max") {
 		t.Fatalf("expected updated reasoning effort to persist to config, got %q", string(configBytes))
 	}
 	if !strings.Contains(string(configBytes), "context_window_tokens: 272000") {
@@ -11334,11 +11340,11 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 		"provider":          "openai",
 		"base_url":          providerServer.URL,
 		"model":             "gpt-test",
-		"reasoning_mode":    "xhigh",
+		"reasoning_mode":    "max",
 		"reasoning_summary": "auto",
 	}, http.StatusOK, &result)
 
-	if !result.Success || result.Provider != "openai" || result.EffectiveAPIProvider != "openai-compatible" || result.Model != "gpt-test" || result.ReasoningMode != "xhigh" || result.ReasoningEffort != "xhigh" || result.ReasoningSummary != "auto" || result.ThinkingStrategy != "responses_reasoning_summary" {
+	if !result.Success || result.Provider != "openai" || result.EffectiveAPIProvider != "openai-compatible" || result.Model != "gpt-test" || result.ReasoningMode != "max" || result.ReasoningEffort != "max" || result.ReasoningSummary != "auto" || result.ThinkingStrategy != "responses_reasoning_summary" {
 		t.Fatalf("unexpected test config response: %#v", result)
 	}
 	seen := <-seenRequest
@@ -11346,8 +11352,8 @@ func TestServiceConfigTestAppliesReasoningModeWithoutPersisting(t *testing.T) {
 		t.Fatalf("expected provider probe model override, got %#v", seen)
 	}
 	reasoning, _ := seen["reasoning"].(map[string]any)
-	if reasoning["effort"] != "xhigh" {
-		t.Fatalf("expected provider probe to send reasoning effort xhigh, got %#v", seen)
+	if reasoning["effort"] != "max" {
+		t.Fatalf("expected provider probe to send reasoning effort max, got %#v", seen)
 	}
 	if reasoning["summary"] != "auto" {
 		t.Fatalf("expected provider probe to send reasoning summary auto, got %#v", seen)

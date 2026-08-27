@@ -409,6 +409,28 @@ function createAppHarnessContext(initialStorage = {}) {
   return appContext;
 }
 
+test('global new session navigates from Settings to the visible chat composer', () => {
+  const appContext = createAppHarnessContext();
+  const result = vm.runInContext(`(() => {
+    setupEventListeners();
+    applyViewVisibility('settings');
+    nodes.newSessionBtn.listeners.click();
+    return {
+      view: currentViewName(),
+      chatHidden: nodes.views.chat.classList.contains('is-hidden'),
+      settingsHidden: nodes.views.settings.classList.contains('is-hidden'),
+      composerFocused: nodes.chatInput.focused === true
+    };
+  })()`, appContext);
+
+  assert.deepEqual(sameRealm(result), {
+    view: 'chat',
+    chatHidden: false,
+    settingsHidden: true,
+    composerFocused: true
+  });
+});
+
 test('session inspector exposes a lazy Context tab and renders bounded lineage telemetry without raw content', () => {
   const rendered = vm.runInContext(`(() => {
     state.sessionId = 'context_session';
@@ -7375,7 +7397,7 @@ function fakeRendererElement(initial = {}) {
   };
 }
 
-function settingsConfig({ model, hasKey }) {
+function settingsConfig({ model, hasKey, reasoningMode = 'default' }) {
   return {
     default_provider: 'openai',
     guardrails_mode: 'standard',
@@ -7397,14 +7419,14 @@ function settingsConfig({ model, hasKey }) {
         effective_api_provider: 'openai-compatible',
         base_url: 'https://example.invalid/v1',
         model,
-        reasoning_mode: 'default',
+        reasoning_mode: reasoningMode,
         reasoning_summary: 'default'
       }
     }
   };
 }
 
-async function renderSettingsHarness({ hasKey }) {
+async function renderSettingsHarness({ hasKey, reasoningMode = 'default' }) {
   const previousNodes = context.nodes;
   const previousDocument = context.document;
   const previousRequestJSON = context.requestJSON;
@@ -7460,7 +7482,7 @@ async function renderSettingsHarness({ hasKey }) {
       }
     }
   };
-  context.requestJSON = async () => settingsConfig({ model: 'gpt-test', hasKey });
+  context.requestJSON = async () => settingsConfig({ model: 'gpt-test', hasKey, reasoningMode });
   context.saveConfig = async (payload) => {
     savedPayloads.push(payload);
     return { success: true };
@@ -7502,3 +7524,14 @@ async function renderSettingsHarness({ hasKey }) {
     }
   };
 }
+
+test('settings preserves configured max reasoning for OpenAI-compatible providers', async () => {
+  const harness = await renderSettingsHarness({ hasKey: true, reasoningMode: 'max' });
+  try {
+    assert.equal(harness.elements['settings-reasoning-mode'].value, 'max');
+    assert.match(harness.elements['settings-reasoning-mode'].innerHTML, /value="max"/);
+    assert.match(harness.container.innerHTML, /data-role-field="reasoning_effort"[\s\S]*value="max"/);
+  } finally {
+    harness.restore();
+  }
+});

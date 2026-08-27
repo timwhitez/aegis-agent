@@ -511,7 +511,7 @@ hooks:
 - `temperature`
 - `top_p`
 - `max_output_tokens`
-- `reasoning_effort`：Settings mode `default | low | medium | high | xhigh`，其中 `xhigh` 持久化为 `reasoning_effort: xhigh`
+- `reasoning_effort`：Settings mode `default | low | medium | high | xhigh | max`；非 `default` 值按原文持久化并交给 OpenAI-compatible Responses adapter，`max` 不能被 UI 或 CLI catalog 折叠成 `default`
 - `reasoning_summary`：Settings summary `Provider default | Auto | Concise | Detailed | Off`，其中 `auto|concise|detailed` 映射到 Responses `reasoning.summary`，`off` 持久化为 `none`
 - `text_verbosity`
 - `store`

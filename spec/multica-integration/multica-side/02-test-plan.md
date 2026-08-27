@@ -102,7 +102,7 @@ Modify existing tests:
 - `TestListModels...` includes `gocli` with fake executable
 - `TestListModels...` with a failing fake executable returns an empty model list rather than failing the model-list request
 - `TestCheckMinVersion` includes `gocli`
-- `TestIsKnownThinkingValue` includes `gocli low|medium|high|xhigh`
+- `TestIsKnownThinkingValue` includes `gocli low|medium|high|xhigh|max`
 - `ValidateThinkingLevel` with fake `aegis-agent models --json`
 
 ## 3. daemon config tests
@@ -147,7 +147,7 @@ case "${1:-}" in
     exit 0
     ;;
   models)
-    echo '[{"id":"openai/fake-model","label":"openai: fake-model","provider":"openai","default":true,"thinking":{"supported_levels":[{"value":"low","label":"Low"},{"value":"medium","label":"Medium"},{"value":"high","label":"High"},{"value":"xhigh","label":"XHigh"}],"default_level":"medium"}}]'
+    echo '[{"id":"openai/fake-model","label":"openai: fake-model","provider":"openai","default":true,"thinking":{"supported_levels":[{"value":"low","label":"Low"},{"value":"medium","label":"Medium"},{"value":"high","label":"High"},{"value":"xhigh","label":"XHigh"},{"value":"max","label":"Max"}],"default_level":"medium"}}]'
     exit 0
     ;;
   exec)

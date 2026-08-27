@@ -69,7 +69,7 @@ if usage["input_tokens"] == nil || usage["output_tokens"] == nil {
 - `exec --input-format stream-json` 从 stdin envelope 读取 prompt。
 - `exec --resume <id>` 调用 fake runner 的 `Continue`，不是 `Start`。
 - `run --resume <id>` 报错；Multica 恢复只使用 `exec --resume`。
-- `exec --resume <id> --thinking-level xhigh` 传入 `ContinueRequest.ProviderOptions`。
+- `exec --resume <id> --thinking-level max` 传入 `ContinueRequest.ProviderOptions`，OpenAI-compatible 保留原生 `max`；Anthropic/Google 映射为 32000 thinking budget。
 - stream-json 模式最终写 result envelope。
 - 非 stream-json 的 `--json` 行为不变。
 

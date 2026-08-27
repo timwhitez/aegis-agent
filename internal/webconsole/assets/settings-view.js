@@ -123,6 +123,7 @@ async function renderSettings() {
                 <option value="medium">Medium</option>
                 <option value="high">High</option>
                 <option value="xhigh">XHigh</option>
+                <option value="max">Max</option>
               </select>
             </label>
             <label class="field">
@@ -369,7 +370,7 @@ async function renderSettings() {
     const reasoningModesForAPIProvider = (value) => {
       switch (reasoningFamilyForAPIProvider(value)) {
         case 'openai':
-          return ['default', 'low', 'medium', 'high', 'xhigh'];
+          return ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
         case 'thinking':
           return ['default', 'standard', 'max', 'off'];
         default:

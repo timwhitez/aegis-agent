@@ -37,7 +37,7 @@
 | 协议类型 | `internal/streamjson.StreamOutputMessage` | `server/pkg/agent.gocliOutputMessage` |
 | 模型发现 | `aegis-agent models --json` 输出 `<provider>/<model>` route ID | `discoverGocliModels()` shell out；执行时拆成 `--provider` + `--model` |
 | 版本发现 | `aegis-agent --version` | 复用 `DetectVersion()` |
-| thinking level | `low|medium|high|xhigh`，由 gocli 映射到 provider options | `IsKnownThinkingValue("gocli", value)` 只做粗粒度枚举校验 |
+| thinking level | `low|medium|high|xhigh|max`，由 gocli 映射到 provider options | `IsKnownThinkingValue("gocli", value)` 只做粗粒度枚举校验 |
 | prompt 输入 | stdin 一条 user JSON envelope | `json.NewEncoder(stdin).Encode(...)` 后关闭 stdin |
 | cancellation | context/process cancellation | 不发送 stdin control |
 | session resume | `exec --resume <id>` 内部 runtime Continue | `opts.ResumeSessionID` 映射到 `--resume` |

@@ -339,12 +339,12 @@ thinking catalog：
 
 | effective API provider | supported levels |
 | --- | --- |
-| `openai-compatible` | `low`, `medium`, `high`, `xhigh` |
-| `anthropic-compatible` | `low`, `medium`, `high`, `xhigh` |
-| `google` | `low`, `medium`, `high`, `xhigh` |
+| `openai-compatible` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `anthropic-compatible` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `google` | `low`, `medium`, `high`, `xhigh`, `max` |
 | 其他 | nil |
 
-`thinking.default_level` 应从当前 provider config 派生：OpenAI-compatible 优先使用 `ReasoningEffort` 中的 `low|medium|high|xhigh`；Anthropic/Google 可按 `ThinkingBudget` 映射；没有显式配置时回退到 `medium`。不要在部署默认已经设为 `xhigh` 时仍向 Multica 报 `medium`。
+`thinking.default_level` 应从当前 provider config 派生：OpenAI-compatible 优先使用 `ReasoningEffort` 中的 `low|medium|high|xhigh|max`；Anthropic/Google 可按 `ThinkingBudget` 映射；没有显式配置时回退到 `medium`。不要在部署默认已经设为 `xhigh` 或 `max` 时仍向 Multica 报 `medium`。
 
 `--thinking-level` 是 gocli runtime-native 抽象值，不是 provider 原生值。映射见第 8 节。
 
@@ -397,7 +397,7 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 行为：
 
 - 空 level 返回零值 `session.ProviderOptions{}`。
-- 只接受 `low|medium|high|xhigh`；其他值返回错误。
+- 只接受 `low|medium|high|xhigh|max`；其他值返回错误。
 - 如果 providerName 为空，使用 `cfg.DefaultProvider`。
 - 读取 provider config 并计算 `EffectiveAPIProvider`。
 
@@ -406,8 +406,8 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 | effective API provider | level -> options |
 | --- | --- |
 | `openai-compatible` | `ReasoningEffort = level` |
-| `anthropic-compatible` | `IncludeThoughts=true`; `ThinkingBudget`: low=1024, medium=4096, high=8192, xhigh=16384 |
-| `google` | `IncludeThoughts=true`; `ThinkingBudget`: low=1024, medium=4096, high=8192, xhigh=16384 |
+| `anthropic-compatible` | `IncludeThoughts=true`; `ThinkingBudget`: low=1024, medium=4096, high=8192, xhigh=16384, max=32000 |
+| `google` | `IncludeThoughts=true`; `ThinkingBudget`: low=1024, medium=4096, high=8192, xhigh=16384, max=32000 |
 
 这些值必须通过 `runtime.StartRequest.ProviderOptions` 写入 session metadata，而不是只作为一次性 CLI flag 停留在 app 层。
 
@@ -419,7 +419,7 @@ Resume 行为锁定：本 SPEC 要求给 `runtime.ContinueRequest` 增加 `Provi
 2. provider override 分支继续用新 provider config 重新计算完整 `meta.ProviderOptions`。
 3. provider 未切换、但 `req.ProviderOptions` 非零时，把 `req.ProviderOptions` 作为 additive override merge 到当前 durable `meta.ProviderOptions`；只覆盖非零/非 nil 字段，不清空已有 timeout/retry/store/prompt-cache 等持久字段。
 4. 随后继续调用现有 `mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)`，保留当前代码对 legacy / partial provider options 的 backfill 行为。
-5. 新增测试证明 `--resume --thinking-level xhigh` 会更新 durable `meta.ProviderOptions` 并影响后续 adapter config。
+5. 新增测试证明 `--resume --thinking-level max` 会更新 durable `meta.ProviderOptions` 并影响后续 adapter config。
 
 ## 9. 修改 `internal/app/app.go`
 

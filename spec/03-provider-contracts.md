@@ -240,6 +240,7 @@ role capability 约束在进入 adapter 之前完成：
 当前实现决策：
 
 - OpenAI / `openai-compatible` 默认 `store: false`
+- `reasoning_effort` 是 provider profile 的原生 Responses 值；adapter 必须原样传递显式配置。控制面至少支持 `low | medium | high | xhigh | max`，但上游是否接受某一级别仍由真实 probe/request 判定，不能在 Web 或 CLI catalog 中把已配置的 `max` 静默降为 `default`。
 - 原因是 session / messages / events 的唯一事实源必须是本地文件，而不是服务端存储
 - OpenAI-compatible 网关并不保证实现 Responses 的 `metadata` 参数。已知不支持时应配置 `send_metadata: false`；若兼容端点以 `400` / `422` 明确返回 metadata argument/parameter unsupported，OpenAI adapter 可在尚未获得成功响应、也没有工具副作用的前提下仅重试一次并移除 `metadata`，同时写 `provider.capability_fallback` 事件和 raw-provider 诊断字段。其他 metadata 校验错误不得触发该降级。
 - provider HTTP 层允许按配置做有限 retry，默认面向 `5xx` 和 transport timeout；认证错误与请求错误直接失败

@@ -372,7 +372,7 @@ MVP 允许只返回当前 config 中可执行 provider 的配置模型；不要�
 | `exec --workdir <path>` | 是 | 设置工作目录；Multica 同时设置 `cmd.Dir` |
 | `exec --timeout <seconds>` | 可选 | aegis-agent 自身 run timeout；仅在 Multica `Timeout > 0` 时传递，long-horizon profile 可省略 |
 | `exec --system <text>` | 可选 | system prompt override |
-| `exec --thinking-level <value>` | 可选 | gocli runtime-native thinking level。MVP 为 `low|medium|high|xhigh` |
+| `exec --thinking-level <value>` | 可选 | gocli runtime-native thinking level。MVP 为 `low|medium|high|xhigh|max` |
 
 `--json` 与 `--output-format stream-json` 互斥。
 

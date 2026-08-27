@@ -129,7 +129,7 @@
 - Anthropic adapter
 - Google adapter
 - `openai-compatible` Responses 模式
-- generation / reasoning 选项全链路传递
+- generation / reasoning 选项全链路传递，包括 OpenAI-compatible provider 原生 `max` effort 在 config、Web、gocli catalog 与 session metadata 中的无损传递
 
 ## 10. Phase 8 - Interrupt, Continue And Steer
 
