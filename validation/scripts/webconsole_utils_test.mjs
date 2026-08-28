@@ -432,6 +432,12 @@ test('global new session navigates from Settings to the visible chat composer', 
   });
 });
 
+test('turn_decide uses an operator-readable phase headline', () => {
+  const appContext = createAppHarnessContext();
+  assert.equal(vm.runInContext(`phaseHeadline('turn_decide')`, appContext), 'Awaiting model decision');
+  assert.equal(vm.runInContext(`phaseHeadline('provider_call')`, appContext), 'Provider call');
+});
+
 test('session inspector exposes a lazy Context tab and renders bounded lineage telemetry without raw content', () => {
   const rendered = vm.runInContext(`(() => {
     state.sessionId = 'context_session';
@@ -7042,6 +7048,8 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(first.t('No final text recorded.'), '未记录最终文本。');
 	assert.equal(first.t('Off, or 30m / 2h'), '如 30m / 2h');
 	assert.equal(first.t('Off, or 2h / 1d'), '如 2h / 1d');
+	assert.equal(first.t('Awaiting model decision'), '等待模型决策');
+	assert.equal(first.t('gpt-test · Awaiting model decision'), 'gpt-test · 等待模型决策');
 	assert.equal(first.setLocale('en'), 'en');
 	assert.equal(first.t('Settings'), 'Settings');
 	assert.equal(first.t('Root peak'), 'Root peak');
@@ -7049,6 +7057,8 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(first.t('No final text recorded.'), 'No final text recorded.');
 	assert.equal(first.t('Off, or 30m / 2h'), 'Off, or 30m / 2h');
 	assert.equal(first.t('Off, or 2h / 1d'), 'Off, or 2h / 1d');
+	assert.equal(first.t('Awaiting model decision'), 'Awaiting model decision');
+	assert.equal(first.t('gpt-test · Awaiting model decision'), 'gpt-test · Awaiting model decision');
 	const restored = makeContext();
 	assert.equal(restored.locale(), 'en');
 });

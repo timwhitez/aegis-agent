@@ -3447,6 +3447,9 @@ function collectRecentToolEntries(messages) {
 }
 
 function phaseHeadline(phase) {
+  if (String(phase || '').toLowerCase() === 'turn_decide') {
+    return 'Awaiting model decision';
+  }
   const normalized = humanizeToken(phase || 'prepare');
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
