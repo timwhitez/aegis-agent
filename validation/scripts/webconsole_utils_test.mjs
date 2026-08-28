@@ -6996,7 +6996,21 @@ test('i18n covers dynamic composer, toast, and local action copy without rewriti
 		['Delete workspace file docs/report.txt? This cannot be undone from the web console.', '删除工作区文件 docs/report.txt？此操作无法在 Web 控制台中撤销。'],
 		['Delete 2 selected workspace items? Folders will be removed with all of their contents. This cannot be undone from the web console.', '删除 2 个所选工作区项目？文件夹及其全部内容都会被删除。此操作无法在 Web 控制台中撤销。'],
 		['Failed to load directory: docs/api', '加载目录失败：docs/api'],
-		['Failed to load file: docs/report.txt', '加载文件失败：docs/report.txt']
+		['Failed to load file: docs/report.txt', '加载文件失败：docs/report.txt'],
+		['Continue Awaiting input session: next send resumes this durable session.', '继续等待输入的会话：下次发送将恢复此持久化会话。'],
+		['Continue Failed session: next send resumes this durable session.', '继续失败的会话：下次发送将恢复此持久化会话。'],
+		['Goal objective is required.', '请输入目标说明。'],
+		['Delete selected item', '删除所选项目'],
+		['Delete selected items', '删除所选项目'],
+		['Delete 1 selected item', '删除 1 个所选项目'],
+		['Delete 2 selected items', '删除 2 个所选项目'],
+		['Delete folder', '删除文件夹'],
+		['Delete folder docs', '删除文件夹 docs'],
+		['File name', '文件名'],
+		['Provider test passed: openai / gpt-5.5 / high. readable thinking returned. Strategy: summary.', '提供商测试通过：openai / gpt-5.5 / high。已返回可读思考内容。策略：summary。'],
+		['Provider test passed: openai / gpt-5.5 / high. replay-only thinking returned. Strategy: replay.', '提供商测试通过：openai / gpt-5.5 / high。已返回仅用于回放的思考内容。策略：replay。'],
+		['Provider test passed: openai / gpt-5.5 / high. provider accepted request but returned no readable thinking in this probe. Strategy: none.', '提供商测试通过：openai / gpt-5.5 / high。此探测中提供商已接受请求，但未返回可读思考内容。策略：none。'],
+		['Provider test passed: openai / gpt-5.5 / high.', '提供商测试通过：openai / gpt-5.5 / high。']
 	];
 	for (const [source, expected] of exactCases) {
 		assert.equal(i18n.t(source), expected, source);
