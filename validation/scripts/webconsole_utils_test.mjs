@@ -595,6 +595,48 @@ test('context endpoint is called only after opening Context or requesting Refres
   await refresh;
 });
 
+test('inspector keyboard navigation focuses the tab created by rerendering', async () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+  const renderedTimelineTab = fakeAppElement();
+  appContext.renderedTimelineTab = renderedTimelineTab;
+  vm.runInContext(`
+    setupEventListeners();
+    renderCurrentSession = function() {};
+    nodes.inspectorSlideOut.querySelector = function() { return renderedTimelineTab; };
+  `, appContext);
+
+  const tabs = ['summary', 'context', 'timeline'].map((name) => ({
+    getAttribute(attribute) {
+      return attribute === 'data-inspector-tab' ? name : null;
+    }
+  }));
+  for (const tab of tabs) {
+    tab.parentElement = {
+      querySelectorAll() {
+        return tabs;
+      }
+    };
+  }
+  let prevented = false;
+  await appContext.document.listeners.keydown({
+    key: 'End',
+    target: {
+      tagName: 'BUTTON',
+      closest(selector) {
+        return selector === '[role="tab"][data-inspector-tab]' ? tabs[1] : null;
+      }
+    },
+    preventDefault() {
+      prevented = true;
+    }
+  });
+
+  assert.equal(prevented, true);
+  assert.equal(vm.runInContext('activeInspectorTab()', appContext), 'timeline');
+  assert.equal(renderedTimelineTab.focused, true);
+});
+
 test('confirmLocalAction resolves from local dialog controls without native confirm', async () => {
   const previousDocument = context.document;
   const previousConfirm = context.window.confirm;
