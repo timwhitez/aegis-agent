@@ -431,6 +431,28 @@ try {
   await page.locator('[data-view="settings"]').click();
   await page.locator('#settings-save-btn').waitFor();
   await check('Settings save primary action uses the v2 lime palette', () => assertV2PrimaryAction(page.locator('#settings-save-btn')));
+	await check('Chinese duration placeholders fit inside their Settings inputs', async () => {
+	  const cases = [
+		['#settings-child-budget-active-runtime', '如 30m / 2h'],
+		['#settings-child-budget-elapsed', '如 2h / 1d']
+	  ];
+	  for (const [selector, expected] of cases) {
+		const input = page.locator(selector);
+		assert.equal(await input.getAttribute('placeholder'), expected);
+		const metrics = await input.evaluate((element) => {
+		  const style = getComputedStyle(element);
+		  const canvas = document.createElement('canvas');
+		  const context = canvas.getContext('2d');
+		  context.font = style.font;
+		  return {
+			textWidth: context.measureText(element.placeholder).width,
+			availableWidth: element.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+		  };
+		});
+		assert.ok(metrics.textWidth <= metrics.availableWidth, `${selector} placeholder clipped: ${JSON.stringify(metrics)}`);
+	  }
+	});
+	await captureElement(page, page.locator('.settings-child-budget-card'), '09-settings-duration-placeholders-zh-desktop.png');
   const probeResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/config/test'));
   await page.locator('#settings-test-btn').click();
   assert.equal((await probeResponse).status(), 200);

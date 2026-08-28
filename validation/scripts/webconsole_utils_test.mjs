@@ -6997,11 +6997,15 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(first.t('session'), '会话');
 	assert.equal(first.t('No description.'), '无描述。');
 	assert.equal(first.t('No final text recorded.'), '未记录最终文本。');
+	assert.equal(first.t('Off, or 30m / 2h'), '如 30m / 2h');
+	assert.equal(first.t('Off, or 2h / 1d'), '如 2h / 1d');
 	assert.equal(first.setLocale('en'), 'en');
 	assert.equal(first.t('Settings'), 'Settings');
 	assert.equal(first.t('Root peak'), 'Root peak');
 	assert.equal(first.t('by'), 'by');
 	assert.equal(first.t('No final text recorded.'), 'No final text recorded.');
+	assert.equal(first.t('Off, or 30m / 2h'), 'Off, or 30m / 2h');
+	assert.equal(first.t('Off, or 2h / 1d'), 'Off, or 2h / 1d');
 	const restored = makeContext();
 	assert.equal(restored.locale(), 'en');
 });
