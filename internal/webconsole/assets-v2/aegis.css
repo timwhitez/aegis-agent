@@ -270,6 +270,20 @@ header {
 .settings-save-btn:hover { background: var(--accent-strong); }
 .settings-test-btn { border-color: rgba(32,36,42,.11); background: rgba(32,36,42,.035); color: #3e4650; }
 
+html[data-ui="aegis-v2"] .skill-btn.install,
+html[data-ui="aegis-v2"] .plan-action-btn.primary,
+html[data-ui="aegis-v2"] .settings-save-btn {
+  background: var(--accent-fill);
+  color: #10130b;
+}
+
+html[data-ui="aegis-v2"] .skill-btn.install:hover,
+html[data-ui="aegis-v2"] .plan-action-btn.primary:hover,
+html[data-ui="aegis-v2"] .settings-save-btn:hover {
+  background: var(--accent-strong);
+  color: #10130b;
+}
+
 .inspector-slide-out { background: #ffffff; border-color: rgba(32,36,42,.1); box-shadow: -25px 0 60px rgba(24,32,42,.16); }
 .modal-card, .dialog-card { border-color: rgba(32,36,42,.1); background: #ffffff; box-shadow: var(--shadow-float); }
 .toast { border-color: rgba(32,36,42,.1); background: rgba(255,255,255,.97); color: #20242a; box-shadow: var(--shadow-float); }

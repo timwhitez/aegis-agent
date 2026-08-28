@@ -218,6 +218,9 @@ try {
   await openInspectorTab(page, 'plan');
   const approvePlanButton = page.locator('#inspector-slide-out [data-plan-action="approve"]');
   await approvePlanButton.waitFor();
+  const composerApprovePlanButton = page.locator('.plan-action-btn.primary[data-plan-action="approve"]');
+  await composerApprovePlanButton.waitFor();
+  await check('Plan primary action uses the v2 lime palette', () => assertV2PrimaryAction(composerApprovePlanButton));
   await capture(page, '05-plan-awaiting-approval-zh-desktop.png');
   await approvePlanButton.click();
   await waitForSession(baseURL, planID, (detail) => detail?.state?.status === 'completed', 25_000);
@@ -390,6 +393,7 @@ try {
 
   await page.locator('[data-view="skills"]').click();
   await page.locator('#skills-view:not(.is-hidden)').waitFor();
+  await check('Skill upload primary action uses the v2 lime palette', () => assertV2PrimaryAction(page.locator('#skill-upload-btn')));
   await page.locator('#skill-upload').setInputFiles(skillZipPath);
   await page.locator('.skill-card').filter({ hasText: 'e2e-skill' }).waitFor();
   const skillCard = page.locator('.skill-card').filter({ hasText: 'e2e-skill' });
@@ -421,6 +425,7 @@ try {
 
   await page.locator('[data-view="settings"]').click();
   await page.locator('#settings-save-btn').waitFor();
+  await check('Settings save primary action uses the v2 lime palette', () => assertV2PrimaryAction(page.locator('#settings-save-btn')));
   const probeResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/api/config/test'));
   await page.locator('#settings-test-btn').click();
   assert.equal((await probeResponse).status(), 200);
@@ -693,6 +698,15 @@ async function assertMinimumTargets(page) {
     })
     .filter((item) => item.width < 43.5 || item.height < 43.5));
   assert.deepEqual(tooSmall, []);
+}
+
+async function assertV2PrimaryAction(locator) {
+  const style = await locator.evaluate((element) => ({
+    backgroundColor: getComputedStyle(element).backgroundColor,
+    color: getComputedStyle(element).color
+  }));
+  assert.equal(style.backgroundColor, 'rgb(182, 232, 88)');
+  assert.equal(style.color, 'rgb(16, 19, 11)');
 }
 
 async function collectUntranslatedOperatorText(page) {
