@@ -485,6 +485,24 @@ function setInspectorTab(tab) {
   inspectorViewState.tab = String(tab || 'tasks');
 }
 
+async function activateInspectorTab(tab, options = {}) {
+  const nextTab = String(tab || 'tasks');
+  setInspectorTab(nextTab);
+  if (options.open) {
+    openInspectorSlideOut();
+  } else {
+    renderCurrentSession();
+  }
+  if (nextTab === 'context') {
+    await loadSessionContextReport();
+  }
+  if (options.focus) {
+    const renderedTab = nodes.inspectorSlideOut?.querySelector?.(`[role="tab"][data-inspector-tab="${nextTab}"]`);
+    renderedTab?.focus?.({ preventScroll: true });
+    renderedTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+}
+
 function resetSessionContextReportState() {
   contextReportViewState.sessionID = '';
   contextReportViewState.report = null;
@@ -1120,15 +1138,7 @@ function setupEventListeners() {
     { selector: '[data-inspector-tab], [data-focus-inspector-tab]', handler: async (el) => {
       const focusTab = el.getAttribute('data-focus-inspector-tab') || '';
       const tab = el.getAttribute('data-inspector-tab') || focusTab || 'tasks';
-      setInspectorTab(tab);
-      if (focusTab) {
-        openInspectorSlideOut();
-      } else {
-        renderCurrentSession();
-      }
-      if (tab === 'context') {
-        await loadSessionContextReport();
-      }
+		  await activateInspectorTab(tab, { open: Boolean(focusTab) });
     }},
     { selector: '[data-close-inspector]', handler: () => { closeInspectorSlideOut(); } },
     { selector: '[data-context-report-refresh]', handler: async (el) => {
@@ -1188,7 +1198,7 @@ function setupEventListeners() {
 
   document.addEventListener('change', handleSkillUploadChange);
 
-	document.addEventListener('keydown', (event) => {
+	document.addEventListener('keydown', async (event) => {
 		const isInput = ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
 		const actionableRow = event.target?.closest?.('[data-sub-agent-open][role="button"], [data-sub-agent-toggle][role="button"], [data-todo-float-toggle][role="button"], [data-files-float-toggle][role="button"]');
 		if (actionableRow && (event.key === 'Enter' || event.key === ' ')) {
@@ -1210,8 +1220,8 @@ function setupEventListeners() {
 			if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
 			if (tabs[nextIndex]) {
 				event.preventDefault();
-				tabs[nextIndex].click?.();
-				tabs[nextIndex].focus?.();
+				const nextTab = tabs[nextIndex].getAttribute?.('data-inspector-tab') || 'tasks';
+				await activateInspectorTab(nextTab, { focus: true });
 				return;
 			}
 		}

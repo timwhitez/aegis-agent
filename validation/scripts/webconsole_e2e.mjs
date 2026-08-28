@@ -128,21 +128,26 @@ try {
     assert.match(await page.locator('.metric-card').filter({ hasText: '待办' }).innerText(), /2 个进行中/);
     assert.equal(await page.locator('[data-inspector-tab="agents"]').count(), 0);
   });
+  await check('desktop inspector tabs stay in one horizontal row', () => assertSingleRowInspectorTabs(page));
   await check('inspector tabs support Arrow, Home, and End keyboard navigation', async () => {
     const tasksTab = page.locator('[data-inspector-tab="tasks"]');
-	await tasksTab.press('ArrowRight');
+		await tasksTab.focus();
+		await page.keyboard.press('ArrowRight');
     const contextTab = page.locator('[data-inspector-tab="context"][aria-selected="true"]');
     await contextTab.waitFor();
-	await page.waitForFunction(() => {
-	  const selected = document.querySelector('[data-inspector-tab="context"][aria-selected="true"]');
-	  const panel = document.querySelector('.inspector-content');
-	  return selected && !String(panel?.textContent || '').includes('Loading context');
-  });
-	await page.locator('[data-inspector-tab="context"][aria-selected="true"]').press('End');
+		await page.waitForFunction(() => {
+		  const selected = document.querySelector('[data-inspector-tab="context"][aria-selected="true"]');
+		  const panel = document.querySelector('.inspector-content');
+		  return selected && document.activeElement === selected && !String(panel?.textContent || '').includes('Loading context');
+	  });
+		await page.keyboard.press('End');
     const timelineTab = page.locator('[data-inspector-tab="timeline"][aria-selected="true"]');
     await timelineTab.waitFor();
-	await timelineTab.press('Home');
-    await page.locator('[data-inspector-tab="summary"][aria-selected="true"]').waitFor();
+		assert.equal(await timelineTab.evaluate((node) => document.activeElement === node), true);
+		await page.keyboard.press('Home');
+		const summaryTab = page.locator('[data-inspector-tab="summary"][aria-selected="true"]');
+		await summaryTab.waitFor();
+		assert.equal(await summaryTab.evaluate((node) => document.activeElement === node), true);
     await tasksTab.click();
   });
 	await openInspectorTab(page, 'context');
@@ -529,6 +534,7 @@ try {
     assert.equal(await page.locator('#app').getAttribute('inert'), '');
 	  await assertText(page.locator('[data-task-group="in_progress"] .task-group-heading span').first(), 'In progress');
 	});
+	await check('mobile inspector tabs stay in one horizontally scrollable row', () => assertSingleRowInspectorTabs(page));
 	await capture(page, '13b-inspector-open-en-mobile.png');
 	await slide.evaluate((element) => { element.scrollTop = Math.min(240, element.scrollHeight - element.clientHeight); });
 	assert.ok(await slide.evaluate((element) => element.scrollTop > 0));
@@ -707,6 +713,27 @@ async function assertV2PrimaryAction(locator) {
   }));
   assert.equal(style.backgroundColor, 'rgb(182, 232, 88)');
   assert.equal(style.color, 'rgb(16, 19, 11)');
+}
+
+async function assertSingleRowInspectorTabs(page) {
+  const layout = await page.locator('.inspector-tabs').evaluate((tablist) => {
+    const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+    const style = getComputedStyle(tablist);
+    return {
+      count: tabs.length,
+      display: style.display,
+      flexWrap: style.flexWrap,
+      overflowX: style.overflowX,
+      tops: tabs.map((tab) => Math.round(tab.getBoundingClientRect().top)),
+      heights: tabs.map((tab) => tab.getBoundingClientRect().height)
+    };
+  });
+  assert.equal(layout.count, 6);
+  assert.equal(layout.display, 'flex');
+  assert.equal(layout.flexWrap, 'nowrap');
+  assert.equal(layout.overflowX, 'auto');
+  assert.equal(new Set(layout.tops).size, 1);
+  assert.equal(layout.heights.every((height) => height >= 43.5), true);
 }
 
 async function collectUntranslatedOperatorText(page) {

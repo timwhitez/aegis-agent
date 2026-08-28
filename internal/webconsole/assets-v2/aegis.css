@@ -298,8 +298,24 @@ html[data-ui="aegis-v2"] .inspector-close-btn,
 html[data-ui="aegis-v2"] .tf-chevron { min-width: 44px; width: 44px; height: 44px; }
 html[data-ui="aegis-v2"] .nav-item,
 html[data-ui="aegis-v2"] .new-chat-primary { min-height: 44px; }
-html[data-ui="aegis-v2"] .inspector-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-html[data-ui="aegis-v2"] .inspector-tab { min-height: 44px; }
+html[data-ui="aegis-v2"] .inspector-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+html[data-ui="aegis-v2"] .inspector-tab {
+  flex: 1 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  white-space: nowrap;
+}
+html[data-ui="aegis-v2"] .inspector-tab.active {
+  background: var(--accent-soft);
+  color: #28310f;
+  box-shadow: inset 0 -2px var(--accent);
+}
 html[data-ui="aegis-v2"] .check-row { min-height: 44px; }
 
 @media (max-width: 900px) {
