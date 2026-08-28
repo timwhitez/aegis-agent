@@ -9,6 +9,7 @@ const sessionViewSource = readFileSync(new URL('../../internal/webconsole/assets
 const settingsViewSource = readFileSync(new URL('../../internal/webconsole/assets/settings-view.js', import.meta.url), 'utf8');
 const workspaceViewSource = readFileSync(new URL('../../internal/webconsole/assets/workspace-view.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../internal/webconsole/assets/app.js', import.meta.url), 'utf8');
+const stylesSource = readFileSync(new URL('../../internal/webconsole/assets/styles.css', import.meta.url), 'utf8');
 const context = {
   console: {
     warn() {}
@@ -5788,6 +5789,19 @@ test('top-level stop stays available but interrupt hides for running sessions no
     stopDisabled: false,
     interruptDisabled: true
   });
+});
+
+test('inactive stop and interrupt controls remain visibly disabled in the header', () => {
+	const baseRule = stylesSource.match(/#stop-session-btn,\s*#interrupt-session-btn\s*\{([^}]*)\}/);
+	assert.ok(baseRule, 'missing base stop/interrupt control rule');
+	assert.match(baseRule[1], /opacity:\s*0\.52\s*;/);
+	assert.doesNotMatch(baseRule[1], /opacity:\s*0\s*;/);
+	assert.match(baseRule[1], /pointer-events:\s*none\s*;/);
+
+	const activeRule = stylesSource.match(/#stop-session-btn\.is-visible,\s*#interrupt-session-btn\.is-visible\s*\{([^}]*)\}/);
+	assert.ok(activeRule, 'missing actionable stop/interrupt control rule');
+	assert.match(activeRule[1], /opacity:\s*1\s*;/);
+	assert.match(activeRule[1], /pointer-events:\s*auto\s*;/);
 });
 
 test('child stop completion refreshes selected parent session', async () => {
