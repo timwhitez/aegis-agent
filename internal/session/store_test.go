@@ -3263,6 +3263,51 @@ func TestStoreListChildrenToleratesTransientStateCreationWindow(t *testing.T) {
 	}
 }
 
+func TestStoreListAvailableSkipsMissingStateButRejectsCorruption(t *testing.T) {
+	store := NewStore(t.TempDir())
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyInteractive,
+	}
+	meta.RootSessionID = meta.ID
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("publish session metadata: %v", err)
+	}
+
+	items, err := store.ListAvailable(10)
+	if err != nil {
+		t.Fatalf("list available sessions during state publication: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("session without state must be omitted, got %#v", items)
+	}
+
+	if err := store.SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"}); err != nil {
+		t.Fatalf("publish state: %v", err)
+	}
+	items, err = store.ListAvailable(10)
+	if err != nil {
+		t.Fatalf("list available sessions after state publication: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != meta.ID || items[0].Status != StatusRunning {
+		t.Fatalf("published session missing from available list: %#v", items)
+	}
+
+	if err := os.WriteFile(filepath.Join(store.SessionDir(meta.ID), "state.json"), []byte("{not-json}\n"), 0o600); err != nil {
+		t.Fatalf("corrupt state: %v", err)
+	}
+	if _, err := store.ListAvailable(10); err == nil || !strings.Contains(err.Error(), "state.json") {
+		t.Fatalf("malformed state must remain visible, got %v", err)
+	}
+}
+
 func TestStoreListReportsCorruptMetadataSnapshot(t *testing.T) {
 	store := NewStore(t.TempDir())
 	meta := SessionMetadata{
