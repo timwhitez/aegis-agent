@@ -93,6 +93,19 @@ try {
     assert.match(theme.surface, /rgba?\(/);
   });
   await check('all visible v2 button targets are at least 44px', () => assertMinimumTargets(page));
+  await check('inactive stop and interrupt controls remain visible and disabled', async () => {
+    for (const selector of ['#stop-session-btn', '#interrupt-session-btn']) {
+      const control = page.locator(selector);
+      assert.equal(await control.isVisible(), true);
+      assert.equal(await control.isDisabled(), true);
+      const style = await control.evaluate((element) => ({
+        opacity: getComputedStyle(element).opacity,
+        pointerEvents: getComputedStyle(element).pointerEvents
+      }));
+      assert.equal(style.opacity, '0.52');
+      assert.equal(style.pointerEvents, 'none');
+    }
+  });
   await capture(page, '01-session-default-zh-desktop.png');
 
   await page.locator('#language-toggle-btn').click();
