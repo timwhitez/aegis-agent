@@ -117,6 +117,10 @@ try {
   await check('raw user content is not translated', async () => {
     await page.locator('.message.user .message-bubble').filter({ hasText: 'Settings must remain unchanged' }).waitFor();
   });
+	await check('turn_decide is readable in the Chinese session surface', async () => {
+	  await page.getByText('等待模型决策', { exact: true }).first().waitFor();
+	  assert.equal(await page.getByText('轮次决策', { exact: true }).count(), 0);
+	});
   await openInspectorTab(page, 'tasks');
   await check('Todo and derived task groups render from durable facts', async () => {
 	for (const group of ['in_progress', 'ready', 'blocked', 'completed', 'cancelled']) {
@@ -169,8 +173,10 @@ try {
 	  await panel.getByText('Root peak', { exact: true }).waitFor();
 	  await panel.getByText('Provider usage', { exact: true }).waitFor();
 	  await panel.getByText('Lineage', { exact: true }).waitFor();
-	  assert.equal(await panel.getByText('根会话峰值', { exact: true }).count(), 0);
-	});
+		  assert.equal(await panel.getByText('根会话峰值', { exact: true }).count(), 0);
+		  await page.getByText('Awaiting model decision', { exact: true }).first().waitFor();
+		  assert.equal(await page.getByText('Turn decide', { exact: true }).count(), 0);
+		});
 	await capture(page, '03d-session-context-en-desktop.png');
 	await openInspectorTab(page, 'tasks');
 	await check('English translates dynamic Todo and all task groups without changing durable data', async () => {
@@ -542,6 +548,10 @@ try {
     const customAgent = page.locator('#history-view .history-session-agent-label').filter({ hasText: 'e2e-child · evaluator' }).first();
     assert.equal((await customAgent.textContent())?.trim(), 'e2e-child · evaluator');
     assert.equal(await customAgent.getAttribute('translate'), 'no');
+		const phaseMeta = page.locator('#history-view .history-session-meta').filter({ hasText: /等待模型决策$/ }).first();
+		await phaseMeta.waitFor();
+		assert.match(await phaseMeta.innerText(), / · 等待模型决策$/);
+		assert.equal(await page.getByText('轮次决策', { exact: true }).count(), 0);
   });
   await capture(page, '12-sessions-zh-desktop.png');
 	await page.locator('#language-toggle-btn').click();
@@ -550,8 +560,12 @@ try {
 	  await assertText(page.locator('#history-view .view-header .view-title'), 'Sessions');
 	  await assertText(page.locator('#history-view .history-session-fallback').first(), 'Master session');
 	  assert.match(await page.locator('#history-view .history-session-time').first().innerText(), /^(?:just now|\d+m ago)$/);
-	  assert.equal(await page.locator('#history-view').getByText('刚刚', { exact: true }).count(), 0);
-	});
+		  assert.equal(await page.locator('#history-view').getByText('刚刚', { exact: true }).count(), 0);
+		  const phaseMeta = page.locator('#history-view .history-session-meta').filter({ hasText: /Awaiting model decision$/ }).first();
+		  await phaseMeta.waitFor();
+		  assert.match(await phaseMeta.innerText(), / · Awaiting model decision$/);
+		  assert.equal(await page.getByText('Turn decide', { exact: true }).count(), 0);
+		});
 	await capture(page, '12b-sessions-en-desktop.png');
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
