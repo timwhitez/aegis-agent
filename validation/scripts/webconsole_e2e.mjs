@@ -373,6 +373,19 @@ try {
 
   await page.locator('[data-view="workspace"]').click();
   await page.locator('#workspace-view:not(.is-hidden) .file-tree').waitFor();
+  await check('workspace empty preview uses an actionable localized header', async () => {
+    await assertText(page.locator('#editor-filename'), '选择文件以查看内容');
+    assert.notEqual(
+      (await page.locator('#editor-filename').innerText()).trim(),
+      (await page.locator('#workspace-view .view-title').innerText()).trim()
+    );
+    await page.locator('#language-toggle-btn').click();
+    await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+    await assertText(page.locator('#editor-filename'), 'Select a file to view');
+    await page.locator('#language-toggle-btn').click();
+    await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
+  });
+  await captureElement(page, page.locator('#workspace-view:not(.is-hidden)'), '05b-workspace-empty-zh-desktop.png');
   await page.locator('.tree-node[data-path="e2e-created.txt"]').click();
   await check('workspace preview preserves exact file content', async () => {
     await page.locator('.workspace-preview-content').waitFor();
