@@ -228,6 +228,17 @@ try {
     const detail = await getJSON(`${baseURL}/api/sessions/${encodeURIComponent(planID)}`);
     assert.equal(detail.plan_mode.status, 'executing');
   });
+	await openSession(page, planID);
+	await check('Harness resume reminder has its own actor and non-user bubble', async () => {
+	  const reminder = page.locator('.message.assistant.harness-reminder').filter({ hasText: 'Harness resume note:' });
+	  await reminder.waitFor();
+	  await assertText(reminder.locator('.message-header-name'), '运行框架');
+	  assert.equal(await reminder.locator('.message-bubble').getAttribute('translate'), 'no');
+	  assert.equal(await reminder.locator('.message-bubble').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 248, 232)');
+	  assert.equal(await page.locator('.message.user').filter({ hasText: 'E2E_UI_PLAN exercise real approval.' }).count(), 1);
+	});
+	await page.locator('[data-close-inspector]').click();
+	await captureElement(page, page.locator('.message.assistant.harness-reminder').filter({ hasText: 'Harness resume note:' }), '05a-plan-approved-harness-reminder-zh-desktop.png');
 
 	const revisedPlanID = await startSession(page, 'E2E_UI_PLAN_REVISE exercise a real browser revision.', { plan: true });
 	await waitForSession(baseURL, revisedPlanID, (detail) => detail?.plan_mode?.status === 'awaiting_approval' && detail?.plan_mode?.plan_version === 1, 25_000);

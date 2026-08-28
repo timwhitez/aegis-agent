@@ -550,9 +550,10 @@ function renderFlowLane() {
 function renderMessage(message) {
   const role = message.role || 'assistant';
   const backgroundResults = isBackgroundResultsMessage(message);
-  const visualRole = backgroundResults ? 'assistant background-results' : role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
+  const harnessReminder = messageSource(message) === 'harness_reminder';
+  const visualRole = backgroundResults ? 'assistant background-results' : harnessReminder ? 'assistant harness-reminder' : role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
   const actor = actorNameForMessage(message);
-  const icon = backgroundResults ? 'git-branch' : iconForRole(role);
+  const icon = backgroundResults ? 'git-branch' : harnessReminder ? 'bell-ring' : iconForRole(role);
   const hasThinking = String(message.thinking || '').trim().length > 0;
   const hasText = String(message.text || '').trim().length > 0;
   const thinkingHTML = hasThinking ? renderThinkingBlock(message.thinking) : '';

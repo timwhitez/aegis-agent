@@ -1903,6 +1903,35 @@ test('assistant tool-only messages do not render blank text bubbles', () => {
   });
 });
 
+test('harness reminders keep raw copy but use a distinct non-user message identity', () => {
+  const appContext = createAppHarnessContext();
+  vm.runInContext(sessionViewSource, appContext, { filename: 'session-view.js' });
+
+  const result = vm.runInContext(`(() => {
+    state.sessionDetail = { metadata: {} };
+    const rawText = 'Harness resume note: <checkpoint> **keep literal**';
+    const reminder = { role: 'user', text: rawText, meta: { source: 'harness_reminder' } };
+    const ordinary = { role: 'user', text: 'ordinary operator prompt', meta: { source: 'user' } };
+    const steer = { role: 'user', text: 'steer prompt', meta: { source: 'steer' } };
+    return {
+      reminderActor: actorNameForMessage(reminder),
+      reminderHTML: renderMessage(reminder),
+      ordinaryActor: actorNameForMessage(ordinary),
+      ordinaryHTML: renderMessage(ordinary),
+      steerActor: actorNameForMessage(steer)
+    };
+  })()`, appContext);
+
+  assert.equal(result.reminderActor, 'Harness');
+  assert.match(result.reminderHTML, /class="message assistant harness-reminder /);
+  assert.match(result.reminderHTML, /data-lucide="bell-ring"/);
+  assert.match(result.reminderHTML, /translate="no">Harness resume note: &lt;checkpoint&gt; \*\*keep literal\*\*<\/div>/);
+  assert.doesNotMatch(result.reminderHTML, />You</);
+  assert.equal(result.ordinaryActor, 'You');
+  assert.match(result.ordinaryHTML, /class="message user /);
+  assert.equal(result.steerActor, 'You · steer');
+});
+
 test('live event relay buffer is isolated from durable app state', () => {
   const appContext = createAppHarnessContext();
 
