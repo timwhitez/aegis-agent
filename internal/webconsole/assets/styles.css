@@ -448,7 +448,7 @@ header {
 
 .message.harness-reminder .message-header-icon,
 .message.harness-reminder .message-header-name {
-  color: var(--warning);
+  color: #9a4f00;
 }
 
 .message.harness-reminder .message-bubble {

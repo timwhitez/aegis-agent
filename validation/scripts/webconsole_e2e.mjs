@@ -233,6 +233,8 @@ try {
 	  const reminder = page.locator('.message.assistant.harness-reminder').filter({ hasText: 'Harness resume note:' });
 	  await reminder.waitFor();
 	  await assertText(reminder.locator('.message-header-name'), '运行框架');
+	  assert.match(await reminder.locator('.message-header-icon svg path').getAttribute('d'), /^M18 8a6 6/);
+	  assert.equal(await reminder.locator('.message-header-name').evaluate((node) => getComputedStyle(node).color), 'rgb(148, 98, 0)');
 	  assert.equal(await reminder.locator('.message-bubble').getAttribute('translate'), 'no');
 	  assert.equal(await reminder.locator('.message-bubble').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 248, 232)');
 	  assert.equal(await page.locator('.message.user').filter({ hasText: 'E2E_UI_PLAN exercise real approval.' }).count(), 1);
