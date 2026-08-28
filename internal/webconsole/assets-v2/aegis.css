@@ -181,6 +181,13 @@ header {
   border: 1px solid rgba(86,124,12,.14);
   border-radius: 14px 4px 14px 14px;
 }
+.message.assistant.harness-reminder .message-bubble {
+  background: #fff8e8;
+  border-color: rgba(148,98,0,.2);
+  color: #3b321d;
+}
+.message.harness-reminder .message-header-icon,
+.message.harness-reminder .message-header-name { color: var(--warning); }
 .message.system .message-bubble { background: var(--warning-soft); border-color: rgba(148,98,0,.16); }
 .message-meta-chip, .tool-chip, .surface-chip { border-color: rgba(32,36,42,.09); background: rgba(32,36,42,.03); color: #68727e; }
 .tool-call-card, .tool-result-card, .timeline-card, .activity-card { border-color: rgba(32,36,42,.08); background: rgba(255,255,255,.76); box-shadow: none; }

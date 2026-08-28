@@ -3509,6 +3509,9 @@ function actorNameForMessage(message) {
     return 'Background agents';
   }
   const source = messageSource(message);
+  if (source === 'harness_reminder') {
+    return 'Harness';
+  }
   if (message.role === 'user') {
     return source === 'steer' ? 'You · steer' : 'You';
   }
@@ -3517,9 +3520,6 @@ function actorNameForMessage(message) {
   }
   if (message.role === 'tool') {
     return 'Tool lane';
-  }
-  if (source === 'harness_reminder') {
-    return 'Harness';
   }
   return agentLabel(state.sessionDetail?.metadata?.agent_name, state.sessionDetail?.metadata?.agent_role) || 'Agent';
 }

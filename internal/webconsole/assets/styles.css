@@ -446,6 +446,17 @@ header {
   border-top-left-radius: var(--radius-sm);
 }
 
+.message.harness-reminder .message-header-icon,
+.message.harness-reminder .message-header-name {
+  color: #9a4f00;
+}
+
+.message.harness-reminder .message-bubble {
+  background: var(--warning-soft);
+  border: 1px solid rgba(148, 98, 0, 0.18);
+  color: var(--text-main);
+}
+
 .message.system .message-bubble {
   background: #fef2f2;
   border: 1px solid #fee2e2;
