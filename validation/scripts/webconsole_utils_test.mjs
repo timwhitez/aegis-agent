@@ -6964,6 +6964,155 @@ test('i18n defaults to zh-CN, switches to English, and persists the locale', () 
 	assert.equal(restored.locale(), 'en');
 });
 
+test('i18n covers dynamic composer, toast, and local action copy without rewriting durable values', () => {
+	const document = {
+		readyState: 'loading',
+		documentElement: { lang: '', setAttribute() {} },
+		addEventListener() {},
+		dispatchEvent() {},
+		getElementById() { return null; },
+		querySelectorAll() { return []; }
+	};
+	const window = { document, localStorage: { getItem() { return null; }, setItem() {} } };
+	const i18nContext = { window };
+	vm.createContext(i18nContext);
+	vm.runInContext(i18nSource, i18nContext, { filename: 'i18n.js' });
+	const i18n = window.AegisI18n;
+
+	const exactCases = [
+		['Workspace path docs/api is unavailable. Showing workspace root instead.', '工作区路径 docs/api 不可用，已改为显示工作区根目录。'],
+		['Workspace path docs/api is unavailable. Showing docs instead.', '工作区路径 docs/api 不可用，已改为显示 docs。'],
+		['Created folder docs.', '已创建文件夹 docs。'],
+		['Uploaded docs/report.txt.', '已上传 docs/report.txt。'],
+		['Download started for docs/report.txt.', '已开始下载 docs/report.txt。'],
+		['Renamed file to report-final.txt.', '文件已重命名为 report-final.txt。'],
+		['Deleted 2 selected items.', '已删除 2 个所选项目。'],
+		['Open child session "worker-a"?', '打开子会话“worker-a”？'],
+		['Uninstall skill local-audit from the local catalog?', '从本地目录卸载技能 local-audit？'],
+		['Delete session sess_123?', '删除会话 sess_123？'],
+		['Create a new folder in docs.', '在 docs 中创建新文件夹。'],
+		['Choose a new name for report.txt.', '为 report.txt 选择新名称。'],
+		['Delete workspace folder docs and all of its contents? This cannot be undone from the web console.', '删除工作区文件夹 docs 及其全部内容？此操作无法在 Web 控制台中撤销。'],
+		['Delete workspace file docs/report.txt? This cannot be undone from the web console.', '删除工作区文件 docs/report.txt？此操作无法在 Web 控制台中撤销。'],
+		['Delete 2 selected workspace items? Folders will be removed with all of their contents. This cannot be undone from the web console.', '删除 2 个所选工作区项目？文件夹及其全部内容都会被删除。此操作无法在 Web 控制台中撤销。'],
+		['Failed to load directory: docs/api', '加载目录失败：docs/api'],
+		['Failed to load file: docs/report.txt', '加载文件失败：docs/report.txt'],
+		['Continue Awaiting input session: next send resumes this durable session.', '继续等待输入的会话：下次发送将恢复此持久化会话。'],
+		['Continue Failed session: next send resumes this durable session.', '继续失败的会话：下次发送将恢复此持久化会话。'],
+		['Goal objective is required.', '请输入目标说明。'],
+		['Delete selected item', '删除所选项目'],
+		['Delete selected items', '删除所选项目'],
+		['Delete 1 selected item', '删除 1 个所选项目'],
+		['Delete 2 selected items', '删除 2 个所选项目'],
+		['Delete folder', '删除文件夹'],
+		['Delete folder docs', '删除文件夹 docs'],
+		['File name', '文件名'],
+		['Provider test passed: openai / gpt-5.5 / high. readable thinking returned. Strategy: summary.', '提供商测试通过：openai / gpt-5.5 / high。已返回可读思考内容。策略：summary。'],
+		['Provider test passed: openai / gpt-5.5 / high. replay-only thinking returned. Strategy: replay.', '提供商测试通过：openai / gpt-5.5 / high。已返回仅用于回放的思考内容。策略：replay。'],
+		['Provider test passed: openai / gpt-5.5 / high. provider accepted request but returned no readable thinking in this probe. Strategy: none.', '提供商测试通过：openai / gpt-5.5 / high。此探测中提供商已接受请求，但未返回可读思考内容。策略：none。'],
+		['Provider test passed: openai / gpt-5.5 / high.', '提供商测试通过：openai / gpt-5.5 / high。']
+	];
+	for (const [source, expected] of exactCases) {
+		assert.equal(i18n.t(source), expected, source);
+	}
+
+	const operatorCopy = [
+		'Ignored malformed websocket payload from local server.',
+		'The session failed.',
+		'Session launch is already in progress.',
+		'Interrupt steer sent.',
+		'Steer queued for the running session.',
+		'Failed to queue steer input.',
+		'Plan revision sent.',
+		'Plan Mode started.',
+		'Failed to start session.',
+		'This session is not ready to continue. Refresh the session state and try again.',
+		'No running session is available for interrupt.',
+		'Interrupt requested.',
+		'Failed to request interrupt.',
+		'No running session is available to stop.',
+		'No session is available to stop.',
+		'Stop already requested for this session.',
+		'Failed to stop the session.',
+		'No durable session is loaded.',
+		'Plan approval was not overridden.',
+		'Plan approved and execution started.',
+		'Plan Mode cancelled.',
+		'Type the requested plan change and send it.',
+		'Plan Mode action failed.',
+		'Plan input request is no longer pending.',
+		'Answer every Plan Mode question before submitting.',
+		'Plan input answered.',
+		'Failed to answer Plan Mode input.',
+		'Previously selected session is no longer available.',
+		'Failed to delete session.',
+		'Failed to clear sessions.',
+		'Failed to uninstall skill.',
+		'Provider test failed.',
+		'Settings save cancelled.',
+		'Failed to save configuration.',
+		'Folder name is required.',
+		'Folder name must not contain path separators.',
+		'Failed to create folder.',
+		'Failed to upload file.',
+		'Workspace refreshed.',
+		'Failed to refresh workspace.',
+		'Failed to delete folder.',
+		'File name is required.',
+		'Choose a different file name.',
+		'File name must not contain path separators.',
+		'Failed to rename file.',
+		'Failed to delete file.',
+		'Deleted 1 selected item.',
+		'Failed to delete selected items.',
+		'Send an interrupt steer message to the running session...',
+		'Describe the objective to plan before execution...',
+		'Live event relay reconnecting; REST session actions remain available.',
+		'Plan Mode enabled: next send starts a planning gate before execution.',
+		'Interrupt armed: next send requests preemption, then merges your steer prompt.',
+		'Steer running session: next send queues guidance into the current run.',
+		'Open child session?',
+		'Override validation coverage',
+		'Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.',
+		'Override',
+		'Clear the durable goal for this local session? This removes goal state and history links from the current session view.',
+		'Uninstall skill',
+		'Custom Plan Mode Answer',
+		'Enter a custom answer for this Plan Mode question.',
+		'Answer',
+		'Use Answer',
+		'Clear saved sessions',
+		'Clear all saved sessions? This will remove sessions and queue history.',
+		'Clear all',
+		'Save settings',
+		'Save settings and write the entered API key to the local env file?',
+		'Save settings to the local configuration files?',
+		'Save',
+		'Sub-agent active runtime must be a duration such as 30m, 2h, 1h30m, or seconds.',
+		'Sub-agent absolute elapsed deadline must be a duration such as 30m, 2h, 1h30m, or seconds.',
+		'Context window tokens must be a non-negative integer.',
+		'Sub-agent turns per attempt must be a non-negative integer.',
+		'Enable at least one positive sub-agent budget limit.',
+		'Soft checkpoint turns must be a positive integer.',
+		'Hard max turns must be a positive integer, or disable the hard limit.',
+		'Plan Mode objective is required.',
+		'Job detail is unavailable.',
+		'Failed to load parent directory.',
+		'Failed to load session overview.',
+		'Failed to load recent activity.',
+		'Failed to load backend settings.'
+	];
+	for (const source of operatorCopy) {
+		const translated = i18n.t(source);
+		assert.notEqual(translated, source, source);
+		assert.match(translated, /\p{Script=Han}/u, source);
+	}
+
+	i18n.setLocale('en', { persist: false });
+	for (const [source] of exactCases) assert.equal(i18n.t(source), source);
+	for (const source of operatorCopy) assert.equal(i18n.t(source), source);
+});
+
 test('i18n restores existing translated text and attributes when switching to English', () => {
 	const document = {
 		readyState: 'loading',
