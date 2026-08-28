@@ -585,8 +585,22 @@ try {
 
   await openSession(page, mainID);
   await page.setViewportSize({ width: 390, height: 844 });
+	await check('Chinese mobile composer placeholder fits at 390px and 320px', async () => {
+	  for (const width of [390, 320]) {
+		await assertComposerPlaceholderFits(page, width, '添加后续消息以继续此已完成会话…');
+	  }
+	});
+	await captureElement(page, page.locator('.input-container'), '12c-composer-placeholder-zh-320.png');
+	await page.setViewportSize({ width: 390, height: 844 });
 	await page.locator('#language-toggle-btn').click();
 	await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'en');
+	await check('English mobile composer placeholder fits at 390px and 320px', async () => {
+	  for (const width of [390, 320]) {
+		await assertComposerPlaceholderFits(page, width, 'Add a follow-up to continue this completed session...');
+	  }
+	});
+	await captureElement(page, page.locator('.input-container'), '12d-composer-placeholder-en-320.png');
+	await page.setViewportSize({ width: 390, height: 844 });
   await openInspectorTab(page, 'tasks');
   const slide = page.locator('#inspector-slide-out');
 	await check('English mobile dynamic inspector stays translated and exposes no Background tab', async () => {
@@ -796,6 +810,39 @@ async function assertSingleRowInspectorTabs(page) {
   assert.equal(layout.overflowX, 'auto');
   assert.equal(new Set(layout.tops).size, 1);
   assert.equal(layout.heights.every((height) => height >= 43.5), true);
+}
+
+async function assertComposerPlaceholderFits(page, width, expectedPlaceholder) {
+  await page.setViewportSize({ width, height: 844 });
+  const metrics = await page.locator('#chat-input').evaluate((element) => {
+    const style = getComputedStyle(element);
+    const probe = document.createElement('div');
+    Object.assign(probe.style, {
+      position: 'fixed',
+      visibility: 'hidden',
+      boxSizing: 'border-box',
+      width: `${element.clientWidth}px`,
+      padding: style.padding,
+      font: style.font,
+      letterSpacing: style.letterSpacing,
+      lineHeight: style.lineHeight,
+      whiteSpace: 'pre-wrap',
+      overflowWrap: 'break-word'
+    });
+    probe.textContent = element.placeholder;
+    document.body.appendChild(probe);
+    const requiredHeight = probe.getBoundingClientRect().height;
+    probe.remove();
+    return {
+      placeholder: element.placeholder,
+      clientHeight: element.clientHeight,
+      requiredHeight,
+      minHeight: style.minHeight
+    };
+  });
+  assert.equal(metrics.placeholder, expectedPlaceholder);
+  assert.equal(metrics.minHeight, '68px');
+  assert.ok(metrics.requiredHeight <= metrics.clientHeight + 1, `placeholder clipped at ${width}px: ${JSON.stringify(metrics)}`);
 }
 
 async function collectUntranslatedOperatorText(page) {
