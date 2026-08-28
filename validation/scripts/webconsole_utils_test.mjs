@@ -6209,7 +6209,7 @@ test('loadWorkspaceDirectory ignores stale directory responses after navigation 
     stateHasFileTree: false,
     stateHasRequestSeq: false,
     renderedNames: ['current.txt'],
-    filename: 'Workspace / fast',
+    filename: 'Select a file to view',
     content: 'Choose a file or directory to inspect inside the current server workspace.'
   });
 
@@ -6226,7 +6226,7 @@ test('loadWorkspaceDirectory ignores stale directory responses after navigation 
   })`, workspaceContext)), {
     path: 'fast',
     renderedNames: ['current.txt'],
-    filename: 'Workspace / fast',
+    filename: 'Select a file to view',
     content: 'Choose a file or directory to inspect inside the current server workspace.'
   });
 });
@@ -6690,7 +6690,7 @@ test('workspace file responses do not overwrite later directory navigation', asy
   })`, workspaceContext)), {
     path: 'next',
     renderedNames: ['next.txt'],
-    filename: 'Workspace / next',
+    filename: 'Select a file to view',
     content: 'Choose a file or directory to inspect inside the current server workspace.'
   });
 });
@@ -7079,6 +7079,7 @@ test('i18n covers dynamic composer, toast, and local action copy without rewriti
 	const i18n = window.AegisI18n;
 
 	const exactCases = [
+		['Select a file to view', '选择文件以查看内容'],
 		['Workspace path docs/api is unavailable. Showing workspace root instead.', '工作区路径 docs/api 不可用，已改为显示工作区根目录。'],
 		['Workspace path docs/api is unavailable. Showing docs instead.', '工作区路径 docs/api 不可用，已改为显示 docs。'],
 		['Created folder docs.', '已创建文件夹 docs。'],

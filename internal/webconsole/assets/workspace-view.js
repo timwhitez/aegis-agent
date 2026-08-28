@@ -23,9 +23,7 @@ async function fetchWorkspace() {
     }
     updateWorkspaceMeta();
     nodes.fileTree.innerHTML = '<div class="view-loading">Loading workspace…</div>';
-		nodes.editorFilename.removeAttribute?.('translate');
-		nodes.editorFilename.innerText = workspaceDisplayName();
-    nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
+    renderWorkspaceEmptyPreview();
     renderWorkspaceActions();
     await loadWorkspaceDirectoryWithFallback(currentWorkspacePath());
   } catch (err) {
@@ -192,9 +190,7 @@ async function loadWorkspaceDirectory(path = '') {
   renderFileTree(tree);
   updateWorkspaceMeta();
   renderWorkspaceActions();
-	nodes.editorFilename.removeAttribute?.('translate');
-	nodes.editorFilename.innerText = workspaceDisplayName();
-  nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
+  renderWorkspaceEmptyPreview();
 }
 
 async function loadWorkspaceDirectoryWithFallback(path = '') {
@@ -385,9 +381,10 @@ function normalizeWorkspacePath(path = '') {
   return normalized === '.' ? '' : normalized;
 }
 
-function workspaceDisplayName() {
-  const path = currentWorkspacePath();
-  return path ? `Workspace / ${path}` : 'Workspace';
+function renderWorkspaceEmptyPreview() {
+  nodes.editorFilename.removeAttribute?.('translate');
+  nodes.editorFilename.innerText = 'Select a file to view';
+  nodes.editorContent.innerText = 'Choose a file or directory to inspect inside the current server workspace.';
 }
 
 function selectedWorkspaceWorkdir() {

@@ -86,6 +86,7 @@
     'Refresh': '刷新',
     'Delete current folder': '删除当前文件夹',
     'Select a file': '选择文件',
+    'Select a file to view': '选择文件以查看内容',
     'Download selected file': '下载所选文件',
     'Download file': '下载文件',
     'Rename selected file': '重命名所选文件',
