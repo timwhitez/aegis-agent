@@ -1952,7 +1952,26 @@ func (s *Store) PendingSteerRequests(sessionID string) ([]SteerRequest, error) {
 }
 
 func (s *Store) List(limit int) ([]SessionSummary, error) {
-	result, err := s.listAllSessions()
+	result, err := s.listAllSessions(false)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if len(result) > limit {
+		result = result[:limit]
+	}
+	return s.populateSessionSummarySnapshots(result)
+}
+
+// ListAvailable returns recent sessions whose state snapshot has been
+// published. Session creation writes session.json before state.json, so
+// polling aggregations can use this view without turning that bounded publish
+// window into a request-wide failure. Malformed or otherwise unreadable state
+// snapshots still fail closed.
+func (s *Store) ListAvailable(limit int) ([]SessionSummary, error) {
+	result, err := s.listAllSessions(true)
 	if err != nil {
 		return nil, err
 	}
@@ -1966,7 +1985,7 @@ func (s *Store) List(limit int) ([]SessionSummary, error) {
 }
 
 func (s *Store) ListPage(limit, offset int) ([]SessionSummary, int, error) {
-	result, err := s.listAllSessions()
+	result, err := s.listAllSessions(false)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1992,7 +2011,7 @@ func (s *Store) ListPage(limit, offset int) ([]SessionSummary, int, error) {
 	return page, total, nil
 }
 
-func (s *Store) listAllSessions() ([]SessionSummary, error) {
+func (s *Store) listAllSessions(skipInitializing bool) ([]SessionSummary, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2014,6 +2033,9 @@ func (s *Store) listAllSessions() ([]SessionSummary, error) {
 		}
 		state, err := s.loadSessionSummaryState(entry.Name())
 		if err != nil {
+			if skipInitializing && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return nil, fmt.Errorf("state.json: %w", err)
 		}
 		summary := SessionSummary{
@@ -3302,7 +3324,7 @@ func (s *Store) DeleteSessionTree(sessionID string) error {
 		return err
 	}
 
-	summaries, err := s.listAllSessions()
+	summaries, err := s.listAllSessions(false)
 	if err != nil {
 		return err
 	}

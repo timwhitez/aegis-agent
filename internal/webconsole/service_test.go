@@ -8741,6 +8741,44 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 	}
 }
 
+func TestServiceOverviewSkipsSessionUntilStateIsPublished(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               session.NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		RequestedWorkdir: t.TempDir(),
+		Mode:             session.ModeRun,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: session.CompletionPolicyInteractive,
+	}
+	meta.RootSessionID = meta.ID
+	if err := svc.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("publish session metadata: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/overview", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("overview must tolerate an initializing session: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var overview OverviewResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &overview); err != nil {
+		t.Fatalf("decode overview: %v", err)
+	}
+	if len(overview.RecentSessions) != 0 {
+		t.Fatalf("initializing session must remain hidden until state is published: %#v", overview.RecentSessions)
+	}
+}
+
 func TestServiceStopSessionPausesWithManualStopReason(t *testing.T) {
 	server := newSleepToolServer()
 	defer server.Close()

@@ -660,7 +660,7 @@ func (s *Service) meta() (MetaResponse, error) {
 }
 
 func (s *Service) overview() (OverviewResponse, error) {
-	sessions, err := s.store.List(50)
+	sessions, err := s.store.ListAvailable(50)
 	if err != nil {
 		return OverviewResponse{}, err
 	}
