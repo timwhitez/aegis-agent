@@ -1,204 +1,165 @@
 # Web Audit Log Durability And Checkpoint Contract
 
-## 1. Scope
+## 1. Scope and managed paths
 
-The local Web console records security-sensitive mutations in
-`webconsole-audit.jsonl`. The JSONL file remains the operator-readable source
-of audit facts. A checkpoint and a lock are implementation sidecars; neither is
-a second audit history.
+`webconsole-audit.jsonl` remains the local Web console's operator-readable audit
+fact source. The permanent sidecars are `<log>.checkpoint.json` (validated tail)
+and `<log>.lock` (stable cross-process advisory lock). A temporary
+`<log>.pending.json` is a durable append-outcome barrier, not another audit log.
 
-Managed paths derived from the JSONL path are:
-
-- `<log>.checkpoint.json`: atomically published validated-tail checkpoint.
-- `<log>.lock`: stable cross-process advisory lock for cooperating Web console
-  processes.
-
-All three managed paths must be regular files with owner-only `0600`
-permissions. Existing files are narrowed to that mode before use; symlinks,
-directories, FIFOs, devices, sockets, and other non-regular paths are rejected.
-The parent directory is created owner-only when absent.
+Managed files are owner-only regular files, opened with no-symlink helpers;
+existing permanent files are narrowed to `0600`. A pending barrier is created
+exclusively with `0600`. Any existing pending path, including an empty,
+malformed, symlinked or non-regular one, blocks automatic recovery without being
+parsed or followed. Config and API-key env paths must not alias any of these
+paths. Parent directories are created owner-only when absent.
 
 ## 2. Startup and recovery
 
-The CLI prepares the audit log before constructing the Web service. This order
-is material: `webconsole.New` starts queue workers and the stale-session reaper,
-and those background components may mutate durable state before the HTTP
-listener is opened. Audit validation therefore happens before worker/reaper
-construction as well as before network listening.
+The CLI calls `PrepareAuditLog` before constructing `webconsole.New`, because
+New starts queue workers and the stale-session reaper. Library callers must use
+the same preparation before starting background mutation. Construction alone
+remains lazy for library/handler tests.
 
-Construction through `webconsole.New` remains lazy for library callers and
-handler tests. Production callers that can start background mutation must call
-`webconsole.PrepareAuditLog` first.
+Startup and recovery hold the stable audit lock. An unresolved pending barrier
+is checked before opening or trusting the log and before accepting a checkpoint
+fast path. The barrier requires operator reconciliation; its mere structural
+validity is never treated as evidence that an operation succeeded.
 
-Startup preparation holds the cross-process audit lock and performs a complete
-validation. Full validation must:
+Without a barrier, full validation checks every physical, newline-terminated
+JSONL record, its schema/ID/type/RFC3339Nano timestamp, duplicate IDs, structural
+ID byte offsets and epochs. It verifies a checkpoint's exact prefix boundary,
+record count and hash chain before adopting an uncheckpointed tail. Missing
+checkpoints for structural histories, truncation, file replacement, invalid
+checkpoints, mixed epochs and oversized logs fail closed. Identity, size, mode,
+mtime and available change metadata must remain stable across scan/probe reads.
 
-- read every physical JSONL record with a bounded record size;
-- require newline termination;
-- validate JSON, schema version, ID, event type, and RFC3339Nano time;
-- reject duplicate IDs;
-- validate the exact byte offset and epoch of structural IDs;
-- verify an existing checkpoint's prefix byte boundary, record count, and hash
-  chain before adopting any durable uncheckpointed tail;
-- reject replacement, truncation, malformed checkpoints, mixed structural-ID
-  epochs, and active logs above the retention limit;
-- reject a missing checkpoint when the log already contains structural IDs, so
-  deleting the durable anchor cannot silently re-trust a rewritten v2 history;
-- verify that identity, size, mode, modification time, and any available change
-  timestamp remain stable across the scan and probe capture.
+After validation, **sync the JSONL file before publishing any checkpoint that
+covers it**, then recheck the validated snapshot and path identity. A full
+record readable from page cache after process death is not necessarily durable
+across power loss. A recovery sync failure leaves the previous checkpoint
+unchanged (or absent on first initialization). Checkpoint-file/directory sync
+is not a substitute for JSONL sync.
 
-Legacy event IDs are accepted during migration. After the first validated
-checkpoint is created, new events use structural IDs of the form
-`audit_v2_<128-bit-epoch>_<record-start-byte-offset>` so steady-state collision
-checking does not require an in-memory set of all historical IDs.
+Legacy histories are validated and assigned a random epoch without rewriting
+old events. New IDs are `audit_v2_<128-bit-epoch>_<record-start-byte-offset>`.
+Unmarked tails from older writers or successful new writes whose checkpoint
+publication failed may be recovered after full validation and JSONL sync. New
+writers interrupted while their pending marker exists are never auto-adopted.
 
 ## 3. Hash chain and checkpoint
 
-For each complete physical JSONL record `record`, the chain advances as:
+For each complete physical record, including its newline:
 
 ```text
 SHA256(previous_chain || uint64_be(len(record)) || record)
 ```
 
-The checkpoint records:
+The checkpoint records schema, epoch, validated size/count, chain tail,
+fixed-size head/tail probes, modification time, and available device/inode and
+change-time metadata. It uses strict JSON and rejects unknown fields and
+impossible state: invalid offsets/digests, more records than bytes, or an empty
+log with non-empty count/chain/probes.
 
-- schema version and structural-ID epoch;
-- file identity when the filesystem exposes a stable device/inode identity;
-- validated byte size and record count;
-- tail hash-chain value;
-- fixed-size head and tail content probes;
-- modification time and change timestamp when available.
+Optional metadata is capability-sensitive. Matching absence can use the fast
+path; capability gain/loss forces complete verification and refresh. A present
+but different identity is replacement, not an automatic re-anchor.
 
-Optional host metadata is capability-sensitive. A missing file-identity or
-change-timestamp field is a valid checkpoint state only while the current
-filesystem exposes the same absence. Capability gain or loss forces a complete
-scan and checkpoint refresh instead of permanently disabling the fast path.
+Publication uses an owner-only temporary file, file sync, atomic rename and
+parent-directory sync. New chain state advances from the previously validated
+chain plus the exact newly encoded bytes, never by blessing a freshly computed
+post-append digest of arbitrary disk contents.
 
-The checkpoint is strict JSON with unknown fields rejected. It also rejects
-impossible state, including an invalid tail offset, more records than bytes, or
-an empty file with non-empty chain/count/digest state. Publication uses an
-owner-only temporary file, file sync, atomic rename, and parent-directory sync.
-A checkpoint never derives a new trusted chain by hashing the post-append file.
-It advances the previously validated chain only with the exact bytes the process
-encoded for the new batch.
+## 4. Append, abort and uncertain outcomes
 
-## 4. Append ordering
+Under the service mutex and stable cross-process lock:
 
-A cooperating append holds both the service mutex and the cross-process file
-lock. The order is:
+1. Reject a pending barrier; validate the checkpoint or perform full recovery.
+2. Assign offset IDs, encode/validate the new batch, enforce the 64 MiB limit,
+   and verify the opened log is still the managed path at the expected size.
+3. Exclusively create a pending marker with epoch, prior offset and batch byte
+   count (no payload or credentials). Sync the marker and parent directory
+   **before writing any batch bytes**. Failure leaves the log unchanged.
+4. Write the complete batch and sync JSONL.
+5. On a short/failed write **or failed JSONL sync**, truncate to the prior
+   boundary and sync the rollback. Only a confirmed rollback can remove/sync
+   the marker before returning the original error to the business caller.
+6. If truncate or rollback sync is uncertain, retain the durable barrier and
+   return the error and recovery location. Startup, preflight and further
+   appends refuse to adopt that tail, including in a fresh process. If only
+   marker cleanup fails after a confirmed rollback, report that failure; the
+   marker may remain or reappear after a crash, but the aborted bytes have
+   already been removed durably. A complete record is not a commit decision.
+7. A complete write plus successful JSONL sync is the audit commit point.
+   Remove the barrier and sync its directory; then verify size/path/probes and
+   atomically advance the checkpoint. Post-commit maintenance failure must not
+   return a pre-commit failure that would cause a business rollback after its
+   audit event was already committed. If a marker remains, subsequent calls
+   require reconciliation; if only the checkpoint is stale, recover the
+   confirmed durable tail as described above.
 
-1. Validate the current checkpoint against file identity, size, mode, metadata,
-   and bounded head/tail probes, or fall back to a complete validation.
-2. Assign structural IDs from the checkpoint epoch and exact starting offsets.
-3. Encode and validate the complete new batch in memory.
-4. Enforce the active-log retention limit.
-5. Reconfirm that the opened regular log is still the managed path.
-6. Append the complete batch and sync the JSONL file.
-7. Best-effort verify the exact post-append file and capture probes.
-8. Publish the next checkpoint atomically.
+A crash while the marker is present is deliberately conservative: the caller's
+outcome cannot be inferred from offset IDs. There is no claim of a distributed
+transaction across business files, audit JSONL and arbitrary process death.
+This protocol prevents *automatic* adoption of a returned-failure batch whose
+log rollback could not be confirmed. It does not manufacture a business commit
+or abort decision during recovery.
 
-A failed or short write is truncated back to the old byte boundary and that
-rollback is synced before the write failure is returned.
+## 5. Complexity and verification
 
-A complete write followed by a successful JSONL `fsync` is the audit commit
-point. From that point onward a checkpoint/probe failure must not make the
-caller roll back the business mutation: doing so would leave a durable audit
-event that describes an action the caller subsequently undid. The previous
-checkpoint remains the recovery anchor, and the next startup or append performs
-a complete validation of its prefix plus the structural, newline-terminated
-durable tail before publishing a replacement checkpoint.
+The normal path performs fixed-size checkpoint/metadata checks, 64 KiB head and
+tail probes, a small durable marker transaction, and work proportional to the
+new batch. It does not decode historical JSON or allocate all historical IDs.
+The extra durability barriers add constant I/O latency, not O(N) history work.
 
-This is an explicit atomicity tradeoff. If a non-cooperating process replaces or
-corrupts the managed path after the audit commit point, the current business
-operation is not retroactively rolled back; later audited mutations fail closed
-when recovery cannot validate the old checkpoint and tail.
+Full scans occur during preparation, checkpoint absence/mismatch, or metadata
+capability changes. Full scans retain an ID set and are O(N); they are bounded
+by the 64 MiB active-log cap. No fixed-interval O(N) scan is inserted into every
+fixed number of appends. Operators needing continuous verification can use a
+separate verifier or a controlled restart. A pending marker causes rejection,
+not a scan that silently accepts the pending data.
 
-## 5. Fast path and full verification
+## 6. Reconciliation and archival
 
-After trusted startup or recovery, a steady-state append does not JSON-decode
-historical records and uses bounded working memory independent of retained
-record count. It checks the durable checkpoint, regular-file identity and mode,
-size and metadata, and fixed-size head/tail probes, then advances the hash chain
-from the exact intended new bytes. File metadata is rechecked after probe reads
-so a file changing during the fast-path check cannot be accepted as stable.
+Do not blindly remove a pending marker to restore availability. Stop **every**
+writer sharing the session root, preserve the log/checkpoint/marker together,
+and inspect the marker's prior boundary alongside business state and the
+reported error. Reconcile the operation explicitly. Only after an operator
+has established the outcome and preserved evidence may the barrier be removed
+or the entire generation quarantined. Never discard the only recovery copy.
 
-A complete validation is forced:
-
-- before background Web components and the HTTP server are constructed;
-- when the checkpoint is absent;
-- when file identity capability changes; or
-- when identity, size, mode, metadata, or bounded probes no longer match the
-  checkpoint.
-
-Complete validation is deliberately not scheduled after a fixed number of
-appends: a fixed-interval O(N) scan would preserve O(N²) cumulative work and
-would not satisfy the bounded steady-state append contract. The active JSONL
-file is capped at 64 MiB, so startup and recovery validation have a fixed upper
-bound. Operators that need continuous verification of a running process must
-use an external verifier or restart the Web console to force a complete scan;
-that work must not be hidden inside every fixed number of mutations.
-
-## 6. Retention and archival
-
-The implementation does not silently delete or automatically rotate audit
-records. The active log has a hard 64 MiB limit. At the limit, audited mutations
-fail closed with an operator instruction.
-
-To archive safely:
-
-1. Stop every Web console process using the session root.
-2. Move `webconsole-audit.jsonl` and its `.checkpoint.json` sidecar together to
-   the archival destination.
-3. Preserve owner-only access and the pair's relative association.
-4. The `.lock` file may remain in place or be removed only while every process
-   is stopped.
-5. Restart the Web console; startup creates and fully validates a new empty
-   active log and checkpoint before constructing background workers or
-   listening.
-
-Automatic retention, deletion, compression, or upload is outside this contract.
+Normal retention does not silently delete, rotate, compress or upload audit
+records. At 64 MiB, mutations fail closed. With no unresolved marker, stop all
+writers, archive the JSONL and checkpoint as a pair, preserve owner-only access,
+and restart with a new active generation. The stable `.lock` may remain; only
+remove it while all writers are stopped. When a pending marker exists, perform
+reconciliation first rather than treating routine rotation as its resolution.
 
 ## 7. Trust boundary
 
-The file lock coordinates Aegis processes that use this implementation. It
-cannot stop an unrelated process that deliberately ignores advisory locking.
-Replacement, truncation, size changes, permission changes, ordinary metadata
-changes, and changes in the fixed head/tail probes invalidate the fast path.
+The advisory lock coordinates cooperating Aegis writers, not a process that
+ignores the lock. Owner-only access to the log, checkpoint, marker and parent
+directory is trusted. Structural IDs are collision-resistant names/recovery
+markers, **not MACs**. A same-account actor or administrator able to replace
+trusted files can forge them; this is not protection against that actor.
 
-Structural IDs are collision-resistant names and recovery markers, not message
-authentication codes. The epoch and byte offsets are visible in the log. Tail
-recovery therefore assumes that owner-only write access to the managed JSONL,
-checkpoint, and their parent directory is trusted. Any process that has
-permission to write or replace those files can synthesize a structurally valid
-event or rewrite both log and checkpoint; the design does not claim to defend
-against that actor.
+Identity/size/permission/ordinary metadata changes and altered fixed probes
+invalidate the fast path. A middle-only rewrite preserving all available
+metadata may evade a single bounded check. It is not blessed by a newly
+recomputed chain: a subsequent full prefix-chain check fails. Successful fsync
+and atomic-rename durability still depend on the underlying filesystem/storage
+honoring those operations. Tests inject errors at deterministic seams; they do
+not claim physical power-loss certification.
 
-A non-cooperating writer that can rewrite only the unprobed middle of a file
-while also preserving every available identity and metadata signal may not be
-detected by that single fast-path check. Such a rewrite is not incorporated into
-or blessed by a newly recomputed trusted chain: the next startup or recovery
-validation compares the complete checkpoint prefix chain and fails closed. The
-log is an integrity-checked local audit trail, not a cryptographic defense
-against an administrator or same-account process that can rewrite its trusted
-files.
+## 8. Regression requirements
 
-## 8. Required validation
+Existing tests retain schema/duplicate/offset/epoch validation, truncation,
+replacement, no-symlink/regular-file/permission checks, legacy migration,
+checkpoint integrity and zero history decodes on normal appends.
 
-Regression coverage must include:
-
-- audit preparation rejecting malformed history before Web service background
-  construction;
-- zero historical JSON decodes on a checkpoint fast-path append;
-- durable uncheckpointed-tail recovery after checkpoint publication failure;
-- startup detection of a same-size historical rewrite;
-- truncation and file replacement rejection;
-- checkpoint epoch mismatch against structural history;
-- config and API-key env paths that alias checkpoint or lock sidecars;
-- non-regular log/checkpoint/lock rejection without FIFO blocking;
-- hardening pre-existing managed files to `0600`;
-- optional file-identity/change-stamp capability matching;
-- impossible checkpoint-state rejection;
-- concurrent cooperating writers;
-- legacy-ID migration and structural-ID offset/epoch validation;
-- malformed and oversized checkpoint/log rejection;
-- append benchmarks at 1,000, 10,000, and 100,000 retained records.
+`audit_durability_test.go` additionally covers single/multi-event JSONL sync
+failure, successful rollback and sync ordering, failed truncate/rollback sync,
+persistent rejection in a fresh process, marker creation/cleanup failures,
+malformed pending paths, new/legacy/tail recovery ordering, recovery-sync failure
+without checkpoint advancement, committed-but-uncheckpointed tail recovery,
+and cooperating writes from multiple actual local processes.
