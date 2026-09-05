@@ -30,10 +30,7 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 	if err != nil {
 		return err
 	}
-	client := c.Client
-	if client == nil {
-		client = &http.Client{}
-	}
+	client := providerHTTPClient(c.Client)
 	endpoint := strings.TrimRight(c.BaseURL, "/") + path
 	providerName := c.providerName("")
 	maxAttempts := c.Retry.MaxAttempts
@@ -128,6 +125,17 @@ func (c JSONClient) providerName(fallback string) string {
 
 func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out any, providerName string) error {
 	defer resp.Body.Close()
+	// Never return a redirect body or Location in errors: either can contain
+	// credentials. Returning the original response also prevents net/http from
+	// copying custom API-key headers or replaying POST bodies to a new endpoint.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return &HTTPError{
+			Provider:   providerName,
+			Class:      "invalid_request",
+			Message:    "provider API redirects are disabled; configure the canonical endpoint",
+			StatusCode: resp.StatusCode,
+		}
+	}
 	data, err := readAllWithIdleTimeout(ctx, resp.Body, c.Retry.StreamIdleTimeout)
 	if err != nil {
 		if errors.Is(err, errProviderResponseTooLarge) {
