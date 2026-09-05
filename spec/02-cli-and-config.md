@@ -78,6 +78,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 
 - Web 控制台是默认 operator surface，但仍只复用本地文件事实与 runtime 控制面
 - listen 地址不是 loopback 时必须输出 LAN 安全提示
+- `web` 启动顺序必须是：先 `net.Listen` 绑定成功，再做审计准备（`PrepareAuditLog`）与 WebConsole 服务构造（含 queue workers / stale-session reaper）；绑定失败时不得执行任何带持久副作用的初始化，也不得输出 readiness 日志；绑定后的初始化失败必须关闭已绑定的 listener。`web console listening on` 只能在 listener 已绑定且服务构造完成后打印，并使用 `listener.Addr()` 的实际地址（`--listen 127.0.0.1:0` 报告 OS 分配的真实端口），随后通过 `server.Serve(listener)` 提供服务。launcher（`run.sh`）在每次启动前截断日志文件并以 PID identity 存活检查配合该 marker 判定就绪，marker 本身必须是真实监听的证据。
 - `web.basic_auth` 同时配置 `username` 与 bcrypt `password_hash` 时，WebConsole 的静态页面、REST API 和 WebSocket upgrade 都必须要求 HTTP Basic authentication；空配置保持本地无认证默认。缺少任一字段或 hash 非 bcrypt 时启动必须失败，避免误以为服务已受保护。该密码只能以 bcrypt hash 落盘，公网或不可信网络仍必须在 HTTPS 后使用 Basic Auth。
 - 所有 HTTP 入口（GET/HEAD/OPTIONS、静态资源、REST API、WebSocket 握手）必须先通过统一 Host 校验再读取任何数据或触发认证：默认仅接受 `localhost`、`*.localhost` 和 IPv4/IPv6 字面量 Host；其他 Host（反代域名、LAN 主机名）必须通过 `web.allowed_hosts` 显式配置，条目为 `host`（匹配任意端口）或 `host:port`（IPv6 需括号），拒绝 scheme、路径、userinfo、通配符和非法端口。Host 校验在 Basic Auth 之前执行，且请求自身的 Host 永远不能扩大信任集；这是 read API 的 DNS-rebinding 防线，不替代 Origin / 自定义 header / Content-Type / 请求体上限等写请求防护。
 - unsafe mutation 必须走本地控制台 guard：Origin / 自定义 header / Content-Type / 请求体大小上限
