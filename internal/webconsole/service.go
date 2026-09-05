@@ -41,17 +41,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin == "" {
-			return true
-		}
-		originURL, err := url.Parse(origin)
-		return err == nil && sameOriginRequest(originURL, r)
-	},
-}
-
 var (
 	webconsoleProcessOwner = newProcessOwner()
 	webconsoleProcessAlive = hostProcessAlive
@@ -141,13 +130,15 @@ type Options struct {
 }
 
 type Service struct {
-	cfg        *config.Config
-	configPath string
-	store      *session.Store
-	staticFS   fs.FS
-	modernFS   fs.FS
-	workers    *workerPool
-	basicAuth  *basicAuthenticator
+	cfg           *config.Config
+	configPath    string
+	store         *session.Store
+	staticFS      fs.FS
+	modernFS      fs.FS
+	workers       *workerPool
+	basicAuth     *basicAuthenticator
+	hostAllowlist webHostAllowlist
+	wsUpgrader    websocket.Upgrader
 
 	// beforeAppendAuditEvent is set only by package tests to force deterministic
 	// audit persistence failures between preflight and append.
@@ -378,6 +369,10 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	hostAllowlist, err := parseWebHostAllowlist(serviceCfg.Web.AllowedHosts)
+	if err != nil {
+		return nil, newWebSettingsValidationError("%s", err)
+	}
 	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
 		cfg:             serviceCfg,
@@ -386,14 +381,41 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		staticFS:        staticFS,
 		modernFS:        modernFS,
 		basicAuth:       basicAuth,
+		hostAllowlist:   hostAllowlist,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
 		setProcessEnv:   os.Setenv,
 		unsetProcessEnv: os.Unsetenv,
 	}
+	svc.wsUpgrader = websocket.Upgrader{CheckOrigin: svc.websocketOriginAllowed}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
 	svc.startQueueReaper()
 	return svc, nil
+}
+
+// websocketOriginAllowed applies the same same-origin policy as unsafe REST
+// mutations to the WebSocket handshake. The Host header itself was already
+// validated before ServeHTTP routed the request here.
+func (s *Service) websocketOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	originURL, err := url.Parse(origin)
+	return err == nil && s.sameOriginRequest(originURL, r)
+}
+
+// requestHostAllowed is the DNS-rebinding boundary for every entry point of
+// the console (static UI, REST API and WebSocket handshakes, all methods).
+// Loopback-style Hosts (localhost, *.localhost, IPv4/IPv6 literals) are
+// trusted because a browser cannot be made to send them for an attacker
+// origin; anything else must be explicitly configured in web.allowed_hosts.
+// A request's own Host value never extends this set.
+func (s *Service) requestHostAllowed(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return webConsoleHostAllowed(r.Host) || s.hostAllowlist.matches(r.Host)
 }
 
 func newBasicAuthenticator(cfg config.WebBasicAuthConfig) (*basicAuthenticator, error) {
@@ -459,6 +481,13 @@ func (s *Service) Close() {
 }
 
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Host validation precedes authentication and routing so no data, static
+	// asset, API payload or WebSocket upgrade is reachable with an untrusted
+	// Host, including read-only methods.
+	if !s.requestHostAllowed(r) {
+		writeError(w, http.StatusForbidden, errors.New("untrusted Host header rejected; allowed Hosts are localhost, IP literals, and web.allowed_hosts entries"))
+		return
+	}
 	if !s.requireBasicAuth(w, r) {
 		return
 	}
@@ -470,7 +499,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
-	if err := guardUnsafeAPIRequest(r); err != nil {
+	if err := s.guardUnsafeAPIRequest(r); err != nil {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
@@ -3289,7 +3318,7 @@ func (s *Service) recordLaunchHandleEvent(handle *launchHandle, eventType string
 }
 
 func (s *Service) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := s.wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -8706,7 +8735,7 @@ func jsonBodyIsObject(data []byte) bool {
 	return len(trimmed) > 0 && trimmed[0] == '{'
 }
 
-func guardUnsafeAPIRequest(r *http.Request) error {
+func (s *Service) guardUnsafeAPIRequest(r *http.Request) error {
 	if !isUnsafeMethod(r.Method) {
 		return nil
 	}
@@ -8719,7 +8748,7 @@ func guardUnsafeAPIRequest(r *http.Request) error {
 	}
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 		originURL, err := url.Parse(origin)
-		if err != nil || !sameOriginRequest(originURL, r) {
+		if err != nil || !s.sameOriginRequest(originURL, r) {
 			return errors.New("cross-origin API mutation rejected")
 		}
 	} else if strings.TrimSpace(r.Header.Get(webMutationHeader)) != "1" {
@@ -8737,11 +8766,11 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
-func sameOriginRequest(origin *url.URL, r *http.Request) bool {
+func (s *Service) sameOriginRequest(origin *url.URL, r *http.Request) bool {
 	if origin == nil || r == nil || strings.TrimSpace(origin.Host) == "" || strings.TrimSpace(r.Host) == "" {
 		return false
 	}
-	if !webConsoleHostAllowed(origin.Host) || !webConsoleHostAllowed(r.Host) {
+	if !s.requestHostAllowed(&http.Request{Host: origin.Host}) || !s.requestHostAllowed(r) {
 		return false
 	}
 	if !strings.EqualFold(origin.Host, r.Host) {

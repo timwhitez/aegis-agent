@@ -52,7 +52,7 @@ func TestServiceBasicAuthProtectsUIAndAPI(t *testing.T) {
 
 	for _, path := range []string{"/", "/api/meta", "/ws"} {
 		t.Run(path, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request := newLocalWebRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
 			svc.ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusUnauthorized {
@@ -64,7 +64,7 @@ func TestServiceBasicAuthProtectsUIAndAPI(t *testing.T) {
 		})
 	}
 
-	wrong := httptest.NewRequest(http.MethodGet, "/api/meta", nil)
+	wrong := newLocalWebRequest(http.MethodGet, "/api/meta", nil)
 	wrong.SetBasicAuth("operator", "wrong password")
 	wrongRecorder := httptest.NewRecorder()
 	svc.ServeHTTP(wrongRecorder, wrong)
@@ -72,7 +72,7 @@ func TestServiceBasicAuthProtectsUIAndAPI(t *testing.T) {
 		t.Fatalf("wrong password status=%d want %d", wrongRecorder.Code, http.StatusUnauthorized)
 	}
 
-	valid := httptest.NewRequest(http.MethodGet, "/api/meta", nil)
+	valid := newLocalWebRequest(http.MethodGet, "/api/meta", nil)
 	valid.SetBasicAuth("operator", "correct password")
 	validRecorder := httptest.NewRecorder()
 	svc.ServeHTTP(validRecorder, valid)
@@ -131,7 +131,7 @@ func TestServiceSteerWritesWebSource(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":true}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -182,7 +182,7 @@ func TestServiceSteerReportsStoreAppendFailureAsServerError(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":false}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/steer", bytes.NewBufferString(`{"message":"focus on the failing test","interrupt":false}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -3089,7 +3089,7 @@ func TestServiceQueueSubmitReportsStoreAppendFailureAsServerError(t *testing.T) 
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", bytes.NewBufferString(`{"prompt":"queued child work"}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/queue/jobs", bytes.NewBufferString(`{"prompt":"queued child work"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -7265,7 +7265,7 @@ func TestServiceSessionRouteRejectsEncodedSeparatorInSessionID(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/sessions/"+meta.ID+"%2Fmessages", nil)
+	request := newLocalWebRequest(http.MethodGet, "/api/sessions/"+meta.ID+"%2Fmessages", nil)
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected encoded separator in session id to be rejected, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -7302,7 +7302,7 @@ func TestServiceSessionRouteRejectsEncodedSeparatorWhenPrefixIsEncoded(t *testin
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/%61pi/sessions/"+meta.ID+"%2Fmessages", nil)
+	request := newLocalWebRequest(http.MethodGet, "/%61pi/sessions/"+meta.ID+"%2Fmessages", nil)
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected encoded separator in session id to be rejected, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -7734,7 +7734,7 @@ func TestServiceStopParentBlocksQueuedChildJobForRestart(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+parentMeta.ID+"/stop", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/"+parentMeta.ID+"/stop", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusAccepted {
@@ -7796,7 +7796,7 @@ func TestServiceListJobsStatusSnapshotShowsPausedChildLinkedByMetadata(t *testin
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/queue/jobs?limit=10", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/queue/jobs?limit=10", nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected queue jobs ok, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -7860,7 +7860,7 @@ func TestServiceDeleteSessionReconcilesFreshRunningJobLinkedToPausedChild(t *tes
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+parentMeta.ID, nil)
+	req := newLocalWebRequest(http.MethodDelete, "/api/sessions/"+parentMeta.ID, nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -7934,7 +7934,7 @@ func TestServiceQueueJobDetailRejectsMalformedJobID(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/queue/jobs/bad%2Fjob", nil)
+	request := newLocalWebRequest(http.MethodGet, "/api/queue/jobs/bad%2Fjob", nil)
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d want %d body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
@@ -7944,7 +7944,7 @@ func TestServiceQueueJobDetailRejectsMalformedJobID(t *testing.T) {
 	}
 
 	missing := httptest.NewRecorder()
-	missingReq := httptest.NewRequest(http.MethodGet, "/api/queue/jobs/missing_job_detail", nil)
+	missingReq := newLocalWebRequest(http.MethodGet, "/api/queue/jobs/missing_job_detail", nil)
 	svc.ServeHTTP(missing, missingReq)
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("unexpected missing-job status: %d want %d body=%s", missing.Code, http.StatusNotFound, missing.Body.String())
@@ -8075,7 +8075,7 @@ func TestServiceWorkerScaling(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":2}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":2}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -8103,7 +8103,7 @@ func TestServiceWorkerScalingRejectsExcessiveCount(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":999}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":999}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -8121,7 +8121,7 @@ func TestServiceWorkerScalingRejectsMissingDesiredCount(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, request)
@@ -8142,7 +8142,7 @@ func TestServiceRejectsForeignOriginMutation(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
 	request.Header.Set("Origin", "http://evil.invalid")
 	request.Header.Set("Content-Type", "text/plain")
 	svc.ServeHTTP(recorder, request)
@@ -8160,12 +8160,12 @@ func TestServiceRejectsSameOriginNonLocalHostMutation(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "http://evil.invalid/api/config", bytes.NewBufferString(`{"provider":"openai","model":"should-not-save"}`))
+	request := newLocalWebRequest(http.MethodPost, "http://evil.invalid/api/config", bytes.NewBufferString(`{"provider":"openai","model":"should-not-save"}`))
 	request.Header.Set("Origin", "http://evil.invalid")
 	request.Header.Set("Content-Type", "application/json")
 	svc.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected forbidden same-origin non-local-host mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "untrusted Host") {
+		t.Fatalf("expected forbidden same-origin non-local-host mutation via the host guard, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -8178,7 +8178,7 @@ func TestServiceAllowsSameOriginLoopbackMutation(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
+	request := newLocalWebRequest(http.MethodPost, "http://127.0.0.1/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
 	request.Header.Set("Origin", "http://127.0.0.1")
 	request.Header.Set("Content-Type", "application/json")
 	svc.ServeHTTP(recorder, request)
@@ -8189,6 +8189,9 @@ func TestServiceAllowsSameOriginLoopbackMutation(t *testing.T) {
 
 func TestServiceRejectsCrossSchemeOriginMutation(t *testing.T) {
 	cfg := testConfig(t, "")
+	// The host itself is trusted via the explicit allowlist so this exercises
+	// the same-origin scheme check rather than the host guard.
+	cfg.Web.AllowedHosts = []string{"go-cli.local"}
 	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: filepath.Join(t.TempDir(), "config.yaml")})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -8196,12 +8199,12 @@ func TestServiceRejectsCrossSchemeOriginMutation(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "http://go-cli.local:8080/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
+	request := newLocalWebRequest(http.MethodPost, "http://go-cli.local:8080/api/config", bytes.NewBufferString(`{"provider":"openai"}`))
 	request.Header.Set("Origin", "https://go-cli.local:8080")
 	request.Header.Set("Content-Type", "application/json")
 	svc.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected forbidden cross-scheme mutation, got %d body=%s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "cross-origin") {
+		t.Fatalf("expected forbidden cross-scheme mutation via the origin guard, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -8214,7 +8217,7 @@ func TestServiceRejectsJSONMutationSubtypeContentType(t *testing.T) {
 	defer svc.Close()
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
+	request := newLocalWebRequest(http.MethodPost, "/api/workers", bytes.NewBufferString(`{"desired_count":0}`))
 	request.Header.Set(webMutationHeader, "1")
 	request.Header.Set("Content-Type", "application/json-patch+json")
 	svc.ServeHTTP(recorder, request)
@@ -8233,7 +8236,7 @@ func TestServiceRejectsOversizedJSONMutationBody(t *testing.T) {
 
 	body := `{"prompt":"` + strings.Repeat("x", int(maxWebJSONBodyBytes)+1) + `"}`
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/sessions/start", strings.NewReader(body))
+	request := newLocalWebRequest(http.MethodPost, "/api/sessions/start", strings.NewReader(body))
 	request.Header.Set(webMutationHeader, "1")
 	request.Header.Set("Content-Type", "application/json")
 	svc.ServeHTTP(recorder, request)
@@ -8300,7 +8303,7 @@ func TestServiceOptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentTy
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodPost, tc.path, nil)
+			request := newLocalWebRequest(http.MethodPost, tc.path, nil)
 			request.Body = io.NopCloser(strings.NewReader(""))
 			request.ContentLength = -1
 			request.Header.Set(webMutationHeader, "1")
@@ -8315,7 +8318,7 @@ func TestServiceOptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentTy
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/sessions/"+planMeta.ID+"/planmode/approve", nil)
+	request := newLocalWebRequest(http.MethodPost, "/api/sessions/"+planMeta.ID+"/planmode/approve", nil)
 	request.Body = io.NopCloser(strings.NewReader(`{"override_coverage":true}`))
 	request.ContentLength = -1
 	request.Header.Set(webMutationHeader, "1")
@@ -8559,7 +8562,7 @@ func TestServiceNoInputMutationRoutesRejectNonJSONBodies(t *testing.T) {
 
 			route := tc.setup(t, svc)
 			recorder := httptest.NewRecorder()
-			request := httptest.NewRequest(route.method, route.path, strings.NewReader("not-json"))
+			request := newLocalWebRequest(route.method, route.path, strings.NewReader("not-json"))
 			request.Header.Set(webMutationHeader, "1")
 			request.Header.Set("Content-Type", "text/plain")
 			svc.ServeHTTP(recorder, request)
@@ -8671,7 +8674,7 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 	defer svc.Close()
 
 	overviewRecorder := httptest.NewRecorder()
-	svc.ServeHTTP(overviewRecorder, httptest.NewRequest(http.MethodGet, "/api/overview", nil))
+	svc.ServeHTTP(overviewRecorder, newLocalWebRequest(http.MethodGet, "/api/overview", nil))
 	if overviewRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected overview status: %d body=%s", overviewRecorder.Code, overviewRecorder.Body.String())
 	}
@@ -8690,7 +8693,7 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 	}
 
 	workersRecorder := httptest.NewRecorder()
-	svc.ServeHTTP(workersRecorder, httptest.NewRequest(http.MethodGet, "/api/workers", nil))
+	svc.ServeHTTP(workersRecorder, newLocalWebRequest(http.MethodGet, "/api/workers", nil))
 	if workersRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected workers status: %d body=%s", workersRecorder.Code, workersRecorder.Body.String())
 	}
@@ -8725,7 +8728,7 @@ func TestServiceEmptySlicesEncodeAsArrays(t *testing.T) {
 	}
 
 	detailRecorder := httptest.NewRecorder()
-	svc.ServeHTTP(detailRecorder, httptest.NewRequest(http.MethodGet, "/api/sessions/"+meta.ID, nil))
+	svc.ServeHTTP(detailRecorder, newLocalWebRequest(http.MethodGet, "/api/sessions/"+meta.ID, nil))
 	if detailRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected detail status: %d body=%s", detailRecorder.Code, detailRecorder.Body.String())
 	}
@@ -8766,7 +8769,7 @@ func TestServiceOverviewSkipsSessionUntilStateIsPublished(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/overview", nil))
+	svc.ServeHTTP(recorder, newLocalWebRequest(http.MethodGet, "/api/overview", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("overview must tolerate an initializing session: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -8864,7 +8867,7 @@ func TestServiceHistoryPagination(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/history?page=2&page_size=2", nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/history?page=2&page_size=2", nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -8886,7 +8889,7 @@ func TestServiceHistoryPagination(t *testing.T) {
 
 	maxIntQuery := strconv.Itoa(int(^uint(0) >> 1))
 	recorder = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/history?page=2&page_size="+maxIntQuery, nil)
+	req = newLocalWebRequest(http.MethodGet, "/api/history?page=2&page_size="+maxIntQuery, nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected oversized page_size status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -8903,7 +8906,7 @@ func TestServiceHistoryPagination(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/history?page="+maxIntQuery+"&page_size=2", nil)
+	req = newLocalWebRequest(http.MethodGet, "/api/history?page="+maxIntQuery+"&page_size=2", nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected oversized page status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -8961,7 +8964,7 @@ func TestServiceListLimitsRejectOversizedQueryValues(t *testing.T) {
 	maxIntQuery := strconv.Itoa(int(^uint(0) >> 1))
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions?limit="+maxIntQuery, nil)
+	req := newLocalWebRequest(http.MethodGet, "/api/sessions?limit="+maxIntQuery, nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected sessions status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -8975,7 +8978,7 @@ func TestServiceListLimitsRejectOversizedQueryValues(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/sessions/"+parent.ID+"/children?limit="+maxIntQuery, nil)
+	req = newLocalWebRequest(http.MethodGet, "/api/sessions/"+parent.ID+"/children?limit="+maxIntQuery, nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected children status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -8989,7 +8992,7 @@ func TestServiceListLimitsRejectOversizedQueryValues(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/queue/jobs?limit="+maxIntQuery, nil)
+	req = newLocalWebRequest(http.MethodGet, "/api/queue/jobs?limit="+maxIntQuery, nil)
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected jobs status: %d body=%s", recorder.Code, recorder.Body.String())
@@ -9030,7 +9033,7 @@ func TestServiceSessionListReportsSummarySnapshotLoadErrors(t *testing.T) {
 
 			for _, path := range []string{"/api/sessions", "/api/history"} {
 				recorder := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req := newLocalWebRequest(http.MethodGet, path, nil)
 				svc.ServeHTTP(recorder, req)
 				if recorder.Code != http.StatusInternalServerError {
 					t.Fatalf("expected %s load error from %s, got %d body=%s", tc.file, path, recorder.Code, recorder.Body.String())
@@ -9065,7 +9068,7 @@ func TestServiceTaskBoardReportsCorruptTaskFile(t *testing.T) {
 
 	for _, path := range []string{"/api/sessions/" + meta.ID, "/api/sessions/" + meta.ID + "/tasks"} {
 		recorder := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req := newLocalWebRequest(http.MethodGet, path, nil)
 		svc.ServeHTTP(recorder, req)
 		if recorder.Code != http.StatusInternalServerError {
 			t.Fatalf("expected corrupt task load error from %s, got %d body=%s", path, recorder.Code, recorder.Body.String())
@@ -9147,6 +9150,7 @@ func TestServiceDeleteSessionRouteRemovesSessionTreeAndJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new delete request: %v", err)
 	}
+	req.Host = "127.0.0.1:3940"
 	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
 	svc.ServeHTTP(recorder, req)
@@ -9191,6 +9195,7 @@ func TestServiceDeleteSessionRouteDoesNotStageHistoryBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new delete request: %v", err)
 	}
+	req.Host = "127.0.0.1:3940"
 	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
 	svc.ServeHTTP(recorder, req)
@@ -9248,7 +9253,7 @@ func TestServiceClearSessionsRouteRemovesHistory(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -9315,6 +9320,7 @@ func TestDeleteSessionRollsBackWhenAuditAppendFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new delete request: %v", err)
 	}
+	req.Host = "127.0.0.1:3940"
 	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
 	svc.ServeHTTP(recorder, req)
@@ -9465,7 +9471,7 @@ func TestClearSessionsRollsBackWhenAuditAppendFails(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "blocked sessions clear audit append") {
@@ -9521,7 +9527,7 @@ func TestServiceClearSessionsIgnoresStaleHandles(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -9649,7 +9655,7 @@ func TestServiceClearSessionsRejectsRunningSessionsWithoutLiveOwners(t *testing.
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -9682,7 +9688,7 @@ func TestServiceDeleteSessionRejectsRunningSessionWithoutLiveOwner(t *testing.T)
 		t.Fatalf("create running session: %v", err)
 	}
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req := newLocalWebRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -9733,7 +9739,7 @@ func TestServiceStopSessionReconcilesStaleRunningOwner(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusAccepted {
@@ -9774,7 +9780,7 @@ func TestServiceStopSessionReconcilesStaleRunningOwner(t *testing.T) {
 	}
 	var detail SessionDetailResponse
 	recorder = httptest.NewRecorder()
-	svc.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/sessions/"+meta.ID, nil))
+	svc.ServeHTTP(recorder, newLocalWebRequest(http.MethodGet, "/api/sessions/"+meta.ID, nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("detail status: %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -9811,7 +9817,7 @@ func TestServiceStopSessionClearsPendingFallbackSteersAfterRecoveredStop(t *test
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/"+meta.ID+"/stop", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusAccepted {
@@ -9867,7 +9873,7 @@ func TestServiceDeleteSessionReconcilesStaleRunningOwner(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req := newLocalWebRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -9912,7 +9918,7 @@ func TestServiceDeleteSessionKeepsPossiblyLiveRunningOwnerBlocked(t *testing.T) 
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
+	req := newLocalWebRequest(http.MethodDelete, "/api/sessions/"+meta.ID, nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -10010,7 +10016,7 @@ func TestServiceDeleteSessionRejectsActiveDeepDescendantHandle(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodDelete, "/api/sessions/"+childMeta.ID, nil)
+	req := newLocalWebRequest(http.MethodDelete, "/api/sessions/"+childMeta.ID, nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -10048,7 +10054,7 @@ func TestServiceClearSessionsRejectsRunningQueueJobs(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -10091,7 +10097,7 @@ func TestServiceClearSessionsRejectsRunningQueueJobsBeyondDefaultListLimit(t *te
 	}
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusConflict {
@@ -10115,7 +10121,7 @@ func TestServiceClearSessionsRejectsQueuedAndBlockedQueueJobs(t *testing.T) {
 				t.Fatalf("save %s job: %v", status, err)
 			}
 			recorder := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+			req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 			req.Header.Set(webMutationHeader, "1")
 			svc.ServeHTTP(recorder, req)
 			if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "queue jobs are still unsettled") {
@@ -10158,7 +10164,7 @@ func TestServiceClearSessionsObservesRunningJobRequeuedDuringSerializedReaperPas
 	clearRecorder := httptest.NewRecorder()
 	clearDone := make(chan struct{})
 	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 		req.Header.Set(webMutationHeader, "1")
 		svc.ServeHTTP(clearRecorder, req)
 		close(clearDone)
@@ -10202,7 +10208,7 @@ func TestServiceClearSessionsRejectsJobAcrossConcurrentClaim(t *testing.T) {
 	clearDone := make(chan struct{})
 	go func() {
 		<-start
-		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 		req.Header.Set(webMutationHeader, "1")
 		svc.ServeHTTP(clearRecorder, req)
 		close(clearDone)
@@ -10242,7 +10248,7 @@ func TestServiceClearSessionsSerializesConcurrentQueueSubmitAfterMutation(t *tes
 	clearRecorder := httptest.NewRecorder()
 	clearDone := make(chan struct{})
 	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+		req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 		req.Header.Set(webMutationHeader, "1")
 		svc.ServeHTTP(clearRecorder, req)
 		close(clearDone)
@@ -10251,7 +10257,7 @@ func TestServiceClearSessionsSerializesConcurrentQueueSubmitAfterMutation(t *tes
 	submitRecorder := httptest.NewRecorder()
 	submitDone := make(chan struct{})
 	go func() {
-		req := httptest.NewRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(`{"prompt":"submitted after clear boundary","mode":"exec"}`))
+		req := newLocalWebRequest(http.MethodPost, "/api/queue/jobs", strings.NewReader(`{"prompt":"submitted after clear boundary","mode":"exec"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(webMutationHeader, "1")
 		svc.ServeHTTP(submitRecorder, req)
@@ -10289,7 +10295,7 @@ func TestServiceClearSessionsAcceptsTerminalOnlyQueueHistory(t *testing.T) {
 		}
 	}
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusOK {
@@ -13225,7 +13231,7 @@ func TestServiceSkillUploadRejectsMissingBody(t *testing.T) {
 	}
 	defer svc.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/skills/upload", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/skills/upload", nil)
 	req.Body = nil
 	req.Header.Set("Content-Type", "multipart/form-data; boundary=missing-body")
 	req.Header.Set(webMutationHeader, "1")
@@ -13329,7 +13335,7 @@ func TestServiceSkillUninstallRejectsEncodedSeparatorInSkillID(t *testing.T) {
 	}
 	defer svc.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/api/skills/demo-skill%2Funinstall", strings.NewReader("{}"))
+	req := newLocalWebRequest(http.MethodPost, "/api/skills/demo-skill%2Funinstall", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
@@ -13363,7 +13369,7 @@ func TestServiceSkillUninstallRejectsEncodedSeparatorWhenPrefixIsEncoded(t *test
 	}
 	defer svc.Close()
 
-	req := httptest.NewRequest(http.MethodPost, "/%61pi/%73kills/demo-skill%2Funinstall", strings.NewReader("{}"))
+	req := newLocalWebRequest(http.MethodPost, "/%61pi/%73kills/demo-skill%2Funinstall", strings.NewReader("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(webMutationHeader, "1")
 	recorder := httptest.NewRecorder()
@@ -15159,7 +15165,7 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	req := newLocalWebRequest(http.MethodGet, "/styles.css", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	serveEmbeddedFileRequest(rec, req, assets, "styles.css")
 	resp := rec.Result()
@@ -15186,7 +15192,7 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 
 	// If-None-Match returns 304 with the same ETag.
 	rec304 := httptest.NewRecorder()
-	req304 := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	req304 := newLocalWebRequest(http.MethodGet, "/styles.css", nil)
 	req304.Header.Set("If-None-Match", etag)
 	req304.Header.Set("Accept-Encoding", "gzip")
 	serveEmbeddedFileRequest(rec304, req304, assets, "styles.css")
@@ -15199,7 +15205,7 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 
 	// Without gzip support the original bytes are returned.
 	recPlain := httptest.NewRecorder()
-	reqPlain := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+	reqPlain := newLocalWebRequest(http.MethodGet, "/styles.css", nil)
 	serveEmbeddedFileRequest(recPlain, reqPlain, assets, "styles.css")
 	if recPlain.Code != http.StatusOK {
 		t.Fatalf("plain status = %d, want 200", recPlain.Code)
@@ -15224,7 +15230,7 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/styles.css", nil)
+			req := newLocalWebRequest(http.MethodGet, "/styles.css", nil)
 			req.Header.Set("Accept-Encoding", tc.acceptEncoding)
 			serveEmbeddedFileRequest(rec, req, assets, "styles.css")
 			gotGzip := rec.Header().Get("Content-Encoding") == "gzip"

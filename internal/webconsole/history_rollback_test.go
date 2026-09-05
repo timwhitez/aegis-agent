@@ -272,7 +272,7 @@ func TestClearSessionsAuditFailureWithRestoreConflictRetainsBackup(t *testing.T)
 	defer func() { svc.beforeAppendAuditEvent = nil }()
 
 	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/clear", nil)
+	req := newLocalWebRequest(http.MethodPost, "/api/sessions/clear", nil)
 	req.Header.Set(webMutationHeader, "1")
 	svc.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusInternalServerError {

@@ -102,6 +102,10 @@ type RoleProviderOverride struct {
 type WebConfig struct {
 	BasicAuth       WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
 	LegacyUIEnabled bool               `yaml:"legacy_ui_enabled,omitempty"`
+	// AllowedHosts extends the Host-header allowlist (localhost, *.localhost,
+	// and IP literals are always allowed) with explicit proxy or LAN hostnames
+	// for deployments behind a reverse proxy.
+	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
 }
 
 // WebBasicAuthConfig enables HTTP Basic authentication when both fields are
