@@ -73,7 +73,7 @@ func TestServiceContextReportEndpointIsBoundedAndKeepsAggregate(t *testing.T) {
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID+"/context", nil)
+	request := newLocalWebRequest(http.MethodGet, "/api/sessions/"+sessionID+"/context", nil)
 	svc.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("context endpoint status=%d body=%s", recorder.Code, recorder.Body.String())
