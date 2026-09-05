@@ -45,11 +45,21 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	persistedConfigPath := config.PersistPath(*configPath, cwd)
+	// Bind the listener before anything with durable side effects starts. A
+	// failed bind must exit without running audit preparation, queue workers
+	// or the stale-session reaper, and without ever printing the readiness
+	// marker that run.sh treats as proof of a serving instance.
+	listener, err := net.Listen("tcp", *listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", *listenAddr, err)
+	}
 	// Establish or recover the audit checkpoint before New starts queue workers
 	// and the stale-session reaper. Those background loops may mutate durable
 	// state immediately, so audit validation must precede their construction,
-	// not merely precede the HTTP listener.
+	// not merely precede the HTTP listener. Every failure below must release
+	// the already-bound listener.
 	if err := webconsole.PrepareAuditLog(cfg, persistedConfigPath); err != nil {
+		_ = listener.Close()
 		return fmt.Errorf("initialize web audit log: %w", err)
 	}
 	service, err := webconsole.New(cfg, webconsole.Options{
@@ -57,14 +67,16 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		ConfigPath:  persistedConfigPath,
 	})
 	if err != nil {
+		_ = listener.Close()
 		return err
 	}
 	defer service.Close()
 	serveCtx, stop := context.WithCancel(ctx)
 	defer stop()
 
+	boundAddr := listener.Addr().String()
 	server := &http.Server{
-		Addr:              *listenAddr,
+		Addr:              boundAddr,
 		Handler:           webconsole.SecurityHeaders(service),
 		ReadHeaderTimeout: 10 * time.Second,
 		// IdleTimeout must be set explicitly: with IdleTimeout==0 net/http falls
@@ -84,11 +96,14 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		_ = server.Shutdown(shutdownCtx)
 	}()
 
-	if webListenExposesNetwork(*listenAddr) {
+	if webListenExposesNetwork(boundAddr) {
 		_, _ = fmt.Fprintln(stdout, "WARNING: web console is reachable from non-loopback clients. It can write config and .env API keys, delete sessions, manage skills, read/download/upload/rename workspace files, and create workspace folders or delete one or more workspace files or folders. Use only on trusted local networks.")
 	}
-	_, _ = fmt.Fprintf(stdout, "web console listening on http://%s\n", *listenAddr)
-	err = server.ListenAndServe()
+	// The readiness marker is printed only after the listener is bound and the
+	// service is fully constructed, using the address the OS actually assigned
+	// (so `--listen 127.0.0.1:0` reports the real port instead of the 0 input).
+	_, _ = fmt.Fprintf(stdout, "web console listening on http://%s\n", boundAddr)
+	err = server.Serve(listener)
 	stop()
 	<-shutdownDone
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {

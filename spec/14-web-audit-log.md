@@ -16,10 +16,17 @@ paths. Parent directories are created owner-only when absent.
 
 ## 2. Startup and recovery
 
-The CLI calls `PrepareAuditLog` before constructing `webconsole.New`, because
-New starts queue workers and the stale-session reaper. Library callers must use
-the same preparation before starting background mutation. Construction alone
-remains lazy for library/handler tests.
+The `web` command binds its TCP listener before `PrepareAuditLog`, and calls
+`PrepareAuditLog` before constructing `webconsole.New`, because New starts
+queue workers and the stale-session reaper. A failed bind therefore exits
+without audit preparation or background components; every post-bind
+initialization failure (audit preparation, service construction) must close
+the listener and must not print the `web console listening on` readiness
+marker. The marker is published only after the listener is bound and the
+service is constructed, using `listener.Addr()` so a requested port of 0
+reports the OS-assigned port. Library callers must use the same preparation
+before starting background mutation. Construction alone remains lazy for
+library/handler tests.
 
 Startup and recovery hold the stable audit lock. An unresolved pending barrier
 is checked before opening or trusting the log and before accepting a checkpoint
