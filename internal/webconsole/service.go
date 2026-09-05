@@ -114,6 +114,10 @@ var (
 	// beforeWebHistoryBackupRootCreate is set only by package tests to force a
 	// deterministic filesystem replacement before history backup creation.
 	beforeWebHistoryBackupRootCreate func(parent string) error
+	// afterWebHistoryPrepareMoveFailure is set only by package tests to
+	// simulate a concurrent process reoccupying an original history path
+	// between a prepare-phase move failure and the deferred rollback.
+	afterWebHistoryPrepareMoveFailure func()
 )
 
 type processOwner struct {
@@ -1162,6 +1166,7 @@ func (s *Service) handleClearSessions(w http.ResponseWriter, r *http.Request) {
 type webHistoryMove struct {
 	originalPath string
 	backupPath   string
+	restored     bool
 }
 
 type webHistoryMutationTransaction struct {
@@ -1246,59 +1251,81 @@ func (tx *webHistoryMutationTransaction) Finalize() error {
 	return nil
 }
 
+// Rollback restores every moved entry. A restore failure must never delete the
+// backup root: entries that have not been restored back may exist nowhere else.
+// Unrestored entries stay recorded so a retry skips already-restored targets
+// instead of treating them as fresh conflicts. Only a transaction whose entries
+// are all confirmed restored may remove the backup root.
 func (tx *webHistoryMutationTransaction) Rollback() error {
 	if tx == nil {
 		return nil
 	}
 	var errs []error
+	unrestored := 0
 	for i := len(tx.moves) - 1; i >= 0; i-- {
-		move := tx.moves[i]
+		move := &tx.moves[i]
+		if move.restored {
+			continue
+		}
 		if err := fileutil.MkdirAllNoSymlink(filepath.Dir(move.originalPath), 0o700); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("restore history entry %s: %w", move.originalPath, err))
+			unrestored++
 			continue
 		}
 		if err := fileutil.RenamePathNoSymlink(move.backupPath, move.originalPath); err != nil {
-			errs = append(errs, err)
+			errs = append(errs, fmt.Errorf("restore history entry %s from backup %s: %w", move.originalPath, move.backupPath, err))
+			unrestored++
+			continue
 		}
+		move.restored = true
+	}
+	if unrestored > 0 {
+		errs = append(errs, fmt.Errorf("%d history entries not restored; backup retained at %s; retry the rollback or recover entries manually before removing the backup", unrestored, tx.backupRoot))
+		return errors.Join(errs...)
 	}
 	if tx.backupRoot != "" {
 		if err := fileutil.RemoveDirAllNoSymlink(tx.backupRoot); err != nil {
-			errs = append(errs, err)
+			return fmt.Errorf("remove restored history backup %s: %w", tx.backupRoot, err)
 		}
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
 	}
 	tx.moves = nil
 	tx.backupRoot = ""
 	return nil
 }
 
-func (s *Service) prepareClearHistoryTransaction() (*webHistoryMutationTransaction, error) {
-	if err := s.store.EnsureRoot(); err != nil {
+func (s *Service) prepareClearHistoryTransaction() (_ *webHistoryMutationTransaction, err error) {
+	if err = s.store.EnsureRoot(); err != nil {
 		return nil, err
 	}
-	tx, err := newWebHistoryMutationTransaction(s.store.Root(), "clear")
-	if err != nil {
-		return nil, err
+	tx, txErr := newWebHistoryMutationTransaction(s.store.Root(), "clear")
+	if txErr != nil {
+		return nil, txErr
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback()
+			// A restore failure here must surface: silently dropping it would
+			// report the clear as retriable while moved entries sit in the
+			// retained backup with no operator pointer to it.
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				err = errors.Join(err, rollbackErr)
+			}
 		}
 	}()
-	entries, err := os.ReadDir(s.store.Root())
-	if err != nil {
-		if os.IsNotExist(err) {
+	entries, entriesErr := os.ReadDir(s.store.Root())
+	if entriesErr != nil {
+		if os.IsNotExist(entriesErr) {
 			committed = true
 			return tx, nil
 		}
-		return nil, err
+		return nil, entriesErr
 	}
 	for _, entry := range entries {
-		if err := tx.MovePath(filepath.Join(s.store.Root(), entry.Name())); err != nil {
-			return nil, err
+		if moveErr := tx.MovePath(filepath.Join(s.store.Root(), entry.Name())); moveErr != nil {
+			if afterWebHistoryPrepareMoveFailure != nil {
+				afterWebHistoryPrepareMoveFailure()
+			}
+			return nil, moveErr
 		}
 	}
 	committed = true
