@@ -148,32 +148,28 @@ func appendWebAuditEventsAtPath(path string, events []webAuditEvent) error {
 		if err := ensureWebAuditFileStillAtPath(path, file); err != nil {
 			return err
 		}
+		if err := createWebAuditBarrier(path, state, len(encoded)); err != nil {
+			return err
+		}
 		written, writeErr := io.WriteString(file, encoded)
 		if writeErr == nil && written != len(encoded) {
 			writeErr = io.ErrShortWrite
 		}
 		if writeErr != nil {
-			rollbackErr := file.Truncate(offset)
-			if rollbackErr == nil {
-				rollbackErr = file.Sync()
-			}
-			if rollbackErr != nil {
-				return errors.Join(writeErr, fmt.Errorf("restore and sync audit log after failed batch append: %w", rollbackErr))
-			}
-			return writeErr
+			return abortWebAuditAppend(path, file, offset, writeErr)
 		}
-		if err := file.Sync(); err != nil {
-			return fmt.Errorf("sync appended audit records: %w", err)
+		if err := syncWebAuditFile(file, "append"); err != nil {
+			return abortWebAuditAppend(path, file, offset, fmt.Errorf("sync appended audit records: %w", err))
 		}
 
-		// A complete write followed by a successful file sync is the audit
-		// commit point. From here onward the business mutation must not be told
-		// to roll back merely because acceleration metadata could not be
-		// refreshed: that would leave a durable audit event describing an action
-		// that the caller subsequently undid. Any post-commit verification or
-		// checkpoint failure therefore leaves the previous checkpoint as the
-		// recovery anchor and degrades the next append/startup to a full
-		// validation of the structural tail.
+		// Complete write + JSONL fsync is the audit commit point. Cleanup or
+		// checkpoint failure after this point must not ask the caller to undo
+		// a business mutation whose audit event is already durable. A retained
+		// marker blocks subsequent operations rather than guessing its outcome.
+		if err := removeWebAuditBarrier(path); err != nil {
+			return nil
+		}
+
 		info, err := file.Stat()
 		if err != nil {
 			return nil
@@ -254,16 +250,16 @@ func (s *Service) ensureWebAuditManagedPathsDistinct(logPath string) error {
 		configPath = config.PersistPath("", cwd)
 	}
 	envPath := config.DefaultEnvFilePath(cwd)
-	for _, managedPath := range webAuditManagedPaths(logPath) {
+	for _, managedPath := range append(webAuditManagedPaths(logPath), webAuditBarrierPath(logPath)) {
 		if same, err := sameWebPath(configPath, managedPath); err != nil {
 			return err
 		} else if same {
-			return newWebSettingsValidationError("config file and audit log must be separate (including checkpoint and lock sidecars): %s", configPath)
+			return newWebSettingsValidationError("config file and audit log must be separate (including checkpoint, lock and pending sidecars): %s", configPath)
 		}
 		if same, err := sameWebPath(envPath, managedPath); err != nil {
 			return err
 		} else if same {
-			return newWebSettingsValidationError("API key env file and audit log must be separate (including checkpoint and lock sidecars): %s", envPath)
+			return newWebSettingsValidationError("API key env file and audit log must be separate (including checkpoint, lock and pending sidecars): %s", envPath)
 		}
 	}
 	return nil

@@ -52,6 +52,9 @@ func withWebAuditFileLock(logPath string, fn func() error) error {
 	if _, err := hardenWebAuditRegularFile(lockPath, lock); err != nil {
 		return err
 	}
+	if err := ensureNoWebAuditBarrier(logPath); err != nil {
+		return err
+	}
 	return fn()
 }
 
@@ -97,6 +100,9 @@ func openAuditLogNoSymlink(path string) (*os.File, error) {
 }
 
 func loadWebAuditState(path string, file *os.File, forceFull bool) (webAuditCheckpoint, error) {
+	if err := ensureNoWebAuditBarrier(path); err != nil {
+		return webAuditCheckpoint{}, err
+	}
 	checkpoint, exists, err := readWebAuditCheckpoint(path)
 	if err != nil {
 		return webAuditCheckpoint{}, err
@@ -134,6 +140,18 @@ func loadWebAuditState(path string, file *os.File, forceFull bool) (webAuditChec
 		}
 	}
 	scan.checkpoint.SchemaVersion = webAuditCheckpointSchemaVersion
+	// Reading a complete tail from the page cache is not a durability proof.
+	// Persist the validated JSONL before any checkpoint may cover its bytes.
+	if err := syncWebAuditFile(file, "recovery"); err != nil {
+		return webAuditCheckpoint{}, fmt.Errorf("sync recovered audit log: %w", err)
+	}
+	matches, err := webAuditCheckpointMatches(path, file, scan.checkpoint)
+	if err != nil {
+		return webAuditCheckpoint{}, err
+	}
+	if !matches {
+		return webAuditCheckpoint{}, errors.New("audit log changed before recovery checkpoint publication")
+	}
 	if err := writeWebAuditCheckpoint(path, scan.checkpoint); err != nil {
 		return webAuditCheckpoint{}, err
 	}
