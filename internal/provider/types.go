@@ -192,7 +192,8 @@ type HTTPError struct {
 	// RetryAfter carries the wait requested by the upstream Retry-After
 	// response header (0 when absent or unparseable). It is optional: only
 	// status-bearing responses populate it, and the retry loop in http.go
-	// treats it as a floor for the local backoff.
+	// treats admitted waits as a floor for the local backoff. Unrepresentable
+	// positive waits saturate at the duration maximum and cannot be admitted.
 	RetryAfter time.Duration
 }
 
