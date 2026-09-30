@@ -2,6 +2,7 @@ package provider
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,8 +89,18 @@ func TestRetryAfterDelayWithoutHeaderIsIdentity(t *testing.T) {
 	}
 }
 
-// parseRetryAfter boundary behaviour, pinned so the jitter work above cannot
-// silently move the clamp or the malformed-header handling.
+func TestRetryAfterDelaySaturatesWithoutOverflow(t *testing.T) {
+	const maximum = time.Duration(1<<63 - 1)
+	for _, floor := range []time.Duration{maximum, maximum - time.Second} {
+		for range 100 {
+			if got := retryAfterDelay(floor, maxRetryAfterDelay); got < floor {
+				t.Fatalf("delay overflowed below floor: %v < %v", got, floor)
+			}
+		}
+	}
+}
+
+// Parsing preserves the upstream wait independently of automatic retry admission.
 func TestParseRetryAfterBoundaries(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
@@ -102,14 +113,23 @@ func TestParseRetryAfterBoundaries(t *testing.T) {
 		{"zero", "0", 0},
 		{"negative", "-5", 0},
 		{"delta seconds", "2", 2 * time.Second},
-		{"just above clamp", "31", maxRetryAfterDelay},
-		{"far above clamp", "3600", maxRetryAfterDelay},
-		{"int64 max", "9223372036854775807", maxRetryAfterDelay},
+		{"just above budget", "31", 31 * time.Second},
+		{"far above budget", "3600", time.Hour},
+		{"int64 max", "9223372036854775807", time.Duration(1<<63 - 1)},
 		{"malformed", "abc", 0},
 		{"fractional", "1.5", 0},
+		{"plus sign", "+2", 0},
+		{"leading zeros", "000060", time.Minute},
+		{"long leading zeros", strings.Repeat("0", 100) + "2", 2 * time.Second},
+		{"long zero", strings.Repeat("0", 100), 0},
+		{"huge decimal", strings.Repeat("9", 100), time.Duration(1<<63 - 1)},
+		{"huge malformed", strings.Repeat("9", 100) + "x", 0},
+		{"last whole second", "9223372036", 9223372036 * time.Second},
+		{"duration overflow", "9223372037", time.Duration(1<<63 - 1)},
+		{"http date minute", now.Add(time.Minute).UTC().Format(http.TimeFormat), time.Minute},
 		{"http date future", now.Add(5 * time.Second).UTC().Format(http.TimeFormat), 5 * time.Second},
 		{"http date past", now.Add(-5 * time.Second).UTC().Format(http.TimeFormat), 0},
-		{"http date beyond clamp", now.Add(time.Hour).UTC().Format(http.TimeFormat), maxRetryAfterDelay},
+		{"http date beyond budget", now.Add(time.Hour).UTC().Format(http.TimeFormat), time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

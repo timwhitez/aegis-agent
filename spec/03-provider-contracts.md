@@ -449,6 +449,9 @@ HTTP status 映射必须满足：
 
 ## 10. 超时与取消
 
+- 共享 JSON HTTP transport 保留 `Retry-After` 的真实正等待（delta-seconds / HTTP-date），不再截短为 30 秒。超出 `time.Duration` 可表示范围的合法十进制值饱和为最大 duration，仅用于拒绝自动等待；错误显示必须注明饱和值，不记录未经校验的 header 原文。
+- 只有状态允许重试且仍有 attempts 时才检查等待准入：服务端等待大于 30 秒，或有效 header 的最终计划等待（服务端下限、local backoff 和最多 7.5 秒加性 jitter）无法放入 caller 剩余 deadline，则立即返回可由 `errors.As` 穿透的原始 `HTTPError` 包装，说明等待、预算和未安排自动重试，不发 `provider.retry`。保留原 Provider/Class/StatusCode，不改成 `upstream_timeout` 或触发 runtime auto-resume；已经取消时仍返回真实 `ctx.Err()`。
+- 准入的短等待继续尊重服务端下限并保持 jitter 与可取消 timer；缺失、无效、过去或零等待 header 继续使用原本 local jitter 路径。不新增后台重试或定时恢复；用户以后主动重试是新调用。这是 Phase 7 的有意策略调整，服务端长等待现在会更快返回原错误，而非提前重发；无配置或持久 schema 迁移。
 - 每个 provider 独立 `request_timeout_sec` 与 `stream_idle_timeout_ms`
 - `timeout_sec` 只作为旧配置兼容字段，不能继续作为唯一 provider timeout 模型
 - effective timeout policy 必须写入 session metadata，并在 continue / resume 时恢复

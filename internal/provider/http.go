@@ -76,15 +76,9 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 			return err
 		}
 		delay := retryDelay(c.Retry.BaseDelay, attempt)
-		// An explicit upstream Retry-After outranks the local backoff: re-sending
-		// after the ~0.5s average full-jitter delay while the provider asked for
-		// 60s only burns quota and invites a longer hard limit. Treat the header
-		// as a floor (already bounded by maxRetryAfterDelay when parsed) and keep
-		// jitter on top of it, never replacing the delay with the header's
-		// deterministic value.
-		var delayErr *HTTPError
-		if errors.As(err, &delayErr) && delayErr.RetryAfter > 0 {
-			delay = retryAfterDelay(delayErr.RetryAfter, delay)
+		delay, admissionErr := admitRetryAfter(ctx, err, delay)
+		if admissionErr != nil {
+			return admissionErr
 		}
 		data := map[string]any{
 			"provider":     providerName,
@@ -195,10 +189,8 @@ func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out
 
 var errStreamIdleTimeout = errors.New("stream idle timeout")
 
-// maxRetryAfterDelay bounds how long an upstream Retry-After header can hold a
-// retry. A provider (or a misbehaving proxy) may answer with hours; honouring
-// that verbatim would hang the turn far past any useful timeout, so cap it at
-// the same 30s ceiling the local exponential backoff uses.
+// maxRetryAfterDelay is the automatic wait admission budget. Longer upstream
+// waits stop automatic retry instead of being shortened to this budget.
 const maxRetryAfterDelay = 30 * time.Second
 
 // maxRetryAfterJitter bounds the random spread layered on top of an upstream
@@ -206,16 +198,39 @@ const maxRetryAfterDelay = 30 * time.Second
 // maxRetryAfterDelay + maxRetryAfterJitter window.
 const maxRetryAfterJitter = maxRetryAfterDelay / 4
 
+// admitRetryAfter keeps parsing separate from the local interactive wait policy.
+// It runs only after the status and remaining attempts permit a retry.
+func admitRetryAfter(ctx context.Context, err error, local time.Duration) (time.Duration, error) {
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.RetryAfter <= 0 {
+		return local, nil
+	}
+	wait := httpErr.RetryAfter
+	if wait > maxRetryAfterDelay {
+		label := ""
+		if wait == time.Duration(1<<63-1) {
+			label = " (saturated duration maximum)"
+		}
+		return 0, fmt.Errorf("automatic retry not scheduled: Retry-After wait=%s%s exceeds automatic wait budget=%s: %w", wait, label, maxRetryAfterDelay, err)
+	}
+	delay := retryAfterDelay(wait, local)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if delay >= remaining {
+			return 0, fmt.Errorf("automatic retry not scheduled: Retry-After wait=%s, planned wait=%s exceeds caller deadline budget=%s: %w", wait, delay, remaining, err)
+		}
+	}
+	return delay, nil
+}
+
 // retryAfterDelay combines an upstream Retry-After wait with the locally
-// jittered backoff. RFC 9110 only forbids retrying *before* the requested time,
-// so the header is a floor, not an exact instant. It carries no random
-// component: honouring it verbatim makes every concurrent agent (child / queue
-// profiles) re-send at the same absolute instant, which is precisely the
-// self-synchronised spike retryDelay's full jitter exists to prevent — and it
-// happens exactly when the upstream already signalled overload. Keep the floor,
-// add a bounded random spread on top of it, and never wait less than the local
-// backoff would have. The worst case stays inside maxRetryAfterDelay +
-// maxRetryAfterJitter.
+// jittered backoff. Our policy treats the server wait as a floor and adds a
+// bounded random spread to avoid synchronising concurrent callers. Admitted
+// server waits stay inside maxRetryAfterDelay + maxRetryAfterJitter unless the
+// local backoff is larger.
 func retryAfterDelay(retryAfter, jittered time.Duration) time.Duration {
 	if retryAfter <= 0 {
 		return jittered
@@ -224,7 +239,7 @@ func retryAfterDelay(retryAfter, jittered time.Duration) time.Duration {
 	// min(jittered, maxRetryAfterJitter) collapses to exactly maxRetryAfterJitter
 	// as soon as the local backoff ceiling grows past it (attempt >= 4 at the
 	// default base), which degrades the "bounded random spread" into the constant
-	// retryAfter + maxRetryAfterJitter. Since retryAfter is the same clamped value
+	// retryAfter + maxRetryAfterJitter. Since retryAfter is the same server wait
 	// for every concurrent agent, that constant recreates the self-synchronised
 	// spike this function exists to break up — precisely on the last attempts,
 	// when the upstream overload signal is strongest. Drawing from (0, bound]
@@ -234,27 +249,28 @@ func retryAfterDelay(retryAfter, jittered time.Duration) time.Duration {
 	if bound := min(jittered, maxRetryAfterJitter); bound > 0 {
 		spread = time.Duration(rand.Int63n(int64(bound) + 1))
 	}
+	spread = min(spread, time.Duration(1<<63-1)-retryAfter)
 	return max(retryAfter+spread, jittered)
 }
 
 // parseRetryAfter reads the two RFC 9110 Retry-After forms — delta-seconds and
 // HTTP-date — and returns 0 when the header is absent, malformed or already in
-// the past. The result is clamped to maxRetryAfterDelay.
+// the past. Unrepresentable positive waits saturate at the duration maximum;
+// admission decides whether to wait, without shortening the parsed value.
 func parseRetryAfter(value string, now time.Time) time.Duration {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0
 	}
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if seconds <= 0 {
+	if strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		digits := strings.TrimLeft(value, "0")
+		if digits == "" {
 			return 0
 		}
-		// Clamp in the seconds domain, before the multiplication: delta-seconds
-		// arrives as an unbounded 64-bit value, and time.Duration(seconds) *
-		// time.Second wraps int64 nanoseconds past ~9.2e9s, yielding negative or
-		// tiny waits that a later min() would pass through unchanged.
-		if seconds > int64(maxRetryAfterDelay/time.Second) {
-			return maxRetryAfterDelay
+		seconds, err := strconv.ParseUint(digits, 10, 64)
+		// Check before multiplication, including valid decimals beyond uint64.
+		if err != nil || seconds > uint64(time.Duration(1<<63-1)/time.Second) {
+			return time.Duration(1<<63 - 1)
 		}
 		return time.Duration(seconds) * time.Second
 	}
@@ -266,7 +282,7 @@ func parseRetryAfter(value string, now time.Time) time.Duration {
 	if wait <= 0 {
 		return 0
 	}
-	return min(wait, maxRetryAfterDelay)
+	return wait
 }
 
 func readAllWithIdleTimeout(ctx context.Context, body io.ReadCloser, idle time.Duration) ([]byte, error) {
