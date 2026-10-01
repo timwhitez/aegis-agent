@@ -179,6 +179,7 @@ Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 �
 
 - spec / README / AGENTS 对齐
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
+- 全仓 `test.sh` 对每个 Go package 保留 10 分钟硬时限，与 CI race gate 一致；并发验证时整个 runtime package 可能超过 2 分钟，不能把 package 总时限当成单项测试的耗时证明。
 - `gofmt -l` 无漂移
 - `node --check internal/webconsole/assets/*.js` 通过
 - `node --check internal/webconsole/assets-v2/*.js` 通过（目录存在 JavaScript 时）

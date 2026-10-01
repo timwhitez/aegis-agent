@@ -475,8 +475,15 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	}
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resolverErr := make(chan error, 1)
 	go func() {
-		time.Sleep(30 * time.Millisecond)
+		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
+			resolverErr <- err
+			cancel()
+			return
+		}
 		job := session.QueueJob{
 			ID:              "job_finished_first",
 			Status:          session.QueueStatusCompleted,
@@ -489,7 +496,11 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 			ResumeParent:    true,
 			IsolationMode:   "off",
 		}
-		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		err := engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		resolverErr <- err
+		if err != nil {
+			cancel()
+		}
 	}()
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
@@ -502,7 +513,11 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 		}, nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	cancel()
+	if resolverError := <-resolverErr; resolverError != nil {
+		t.Fatalf("deliver background notification: %v", resolverError)
+	}
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -5506,11 +5521,13 @@ func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
 
 func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	started := make(chan struct{})
 	registry.Register(tools.Definition{
 		Name:        "slow",
 		Description: "slow",
 		InputSchema: map[string]any{"type": "object"},
 		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			close(started)
 			<-ctx.Done()
 			return session.ToolResult{}, ctx.Err()
 		},
@@ -5525,7 +5542,7 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 		}, nil
 	})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-started
 		engine.control.requestPause()
 	}()
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
