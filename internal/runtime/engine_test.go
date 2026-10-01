@@ -475,8 +475,15 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	}
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resolverErr := make(chan error, 1)
 	go func() {
-		time.Sleep(30 * time.Millisecond)
+		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
+			resolverErr <- err
+			cancel()
+			return
+		}
 		job := session.QueueJob{
 			ID:              "job_finished_first",
 			Status:          session.QueueStatusCompleted,
@@ -489,7 +496,11 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 			ResumeParent:    true,
 			IsolationMode:   "off",
 		}
-		_ = engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		err := engine.store.EnsureBackgroundNotification(meta.ID, session.NewBackgroundNotification(job))
+		resolverErr <- err
+		if err != nil {
+			cancel()
+		}
 	}()
 	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
 		return provider.TurnResult{
@@ -502,7 +513,11 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 		}, nil
 	})
 
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	cancel()
+	if resolverError := <-resolverErr; resolverError != nil {
+		t.Fatalf("deliver background notification: %v", resolverError)
+	}
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
