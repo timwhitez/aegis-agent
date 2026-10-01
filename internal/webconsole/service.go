@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
@@ -3474,21 +3475,30 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if paged {
-		content, info, err := fileutil.ReadRegularFileRangeNoSymlink(fullPath, offset, limit)
+		content, info, err := fileutil.ReadRegularFileRangeNoSymlink(fullPath, offset, limit+utf8.UTFMax-1)
 		if err != nil {
 			writeError(w, workspaceBrowserStatStatus(err), err)
 			return
 		}
+		if offset > 0 && len(content) > 0 && !utf8.RuneStart(content[0]) {
+			writeError(w, http.StatusBadRequest, errors.New("preview offset must be at a UTF-8 character boundary"))
+			return
+		}
+		content, err = workspaceTextPage(content, limit)
+		if err != nil {
+			writeError(w, http.StatusUnsupportedMediaType, err)
+			return
+		}
+		offset = min(offset, info.Size())
 		nextOffset := offset + int64(len(content))
 		response := workspaceFilePageResponse{
-			Content:   string(content),
-			Offset:    offset,
-			Limit:     limit,
-			Size:      info.Size(),
-			Truncated: nextOffset < info.Size(),
-		}
-		if response.Truncated {
-			response.NextOffset = nextOffset
+			Content:    string(content),
+			Offset:     offset,
+			Limit:      limit,
+			Size:       info.Size(),
+			Truncated:  nextOffset < info.Size(),
+			NextOffset: nextOffset,
+			EOF:        nextOffset >= info.Size(),
 		}
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -3496,6 +3506,10 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	content, _, err := fileutil.ReadRegularFileNoSymlink(fullPath)
 	if err != nil {
 		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		writeError(w, http.StatusUnsupportedMediaType, errWorkspaceUnsupportedText)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
@@ -4278,13 +4292,30 @@ func workspaceBrowserContext() (string, string, *webFileBrowserReadPolicy, error
 	return root, browseRoot, newWebFileBrowserReadPolicy(root, browseRoot), nil
 }
 
+var errWorkspaceUnsupportedText = errors.New("preview supports UTF-8 text only; download this file to view its original bytes")
+
+// workspaceTextPage uses the range reader's three-byte lookahead to finish a rune.
+// The read_file tool keeps its stricter output budget and explicit adjusted-start contract.
+func workspaceTextPage(data []byte, limit int64) ([]byte, error) {
+	end := 0
+	for int64(end) < limit && end < len(data) {
+		r, size := utf8.DecodeRune(data[end:])
+		if (r == utf8.RuneError && size == 1) || r == 0 {
+			return nil, errWorkspaceUnsupportedText
+		}
+		end += size
+	}
+	return data[:end], nil
+}
+
 type workspaceFilePageResponse struct {
 	Content    string `json:"content"`
 	Offset     int64  `json:"offset"`
 	Limit      int64  `json:"limit"`
 	Size       int64  `json:"size"`
 	Truncated  bool   `json:"truncated"`
-	NextOffset int64  `json:"next_offset,omitempty"`
+	NextOffset int64  `json:"next_offset"`
+	EOF        bool   `json:"eof"`
 }
 
 func parseWorkspaceFileReadPage(r *http.Request) (bool, int64, int64, error) {

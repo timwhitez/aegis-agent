@@ -220,7 +220,7 @@ function fakeAppElement(initial = {}) {
     replaceChildren(...newChildren) {
       children.splice(0, children.length);
       newChildren.forEach((child) => this.appendChild(child));
-      const text = newChildren.map((child) => String(child?.innerText ?? child?.textContent ?? '')).join('');
+      const text = newChildren.map((child) => String(child?.textContent || child?.innerText || '')).join('');
       this.innerText = text;
       this.textContent = text;
     },
@@ -6315,7 +6315,7 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
 
   const otherLoad = vm.runInContext(`loadFile('other.txt')`, workspaceContext);
   assert.equal(workspaceContext.pendingRequests.length, 3);
-  workspaceContext.pendingRequests[2].resolve({ content: 'other body' });
+  workspaceContext.pendingRequests[2].resolve({ content: 'other body', size: 10 });
   await otherLoad;
 
   workspaceContext.pendingRequests[1].resolve({
@@ -6345,6 +6345,33 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
     },
     stateHasWorkspaceFilePreview: false
   });
+});
+
+test('Unicode preview uses server byte cursors including final and legacy pages', async () => {
+  const context = createWorkspaceHarnessContext();
+  let pending = vm.runInContext("loadFile('unicode.txt')", context);
+  context.pendingRequests[0].resolve({ content: 'A中', offset: 0, next_offset: 4, size: 8, truncated: true, eof: false });
+  await pending;
+  pending = vm.runInContext('nodes.editorContent.__children[1].__children[1].listeners.click()', context);
+  assert.match(context.pendingRequests[1].url, /offset=4/);
+  context.pendingRequests[1].resolve({ content: '🙂', offset: 4, next_offset: 8, size: 8, truncated: false, eof: true });
+  await pending;
+  assert.deepEqual(sameRealm(vm.runInContext('workspaceFilePreview()', context)), {
+    path: 'unicode.txt', content: 'A中🙂', offset: 4, nextOffset: 8, size: 8, truncated: false
+  });
+  pending = vm.runInContext("loadFile('legacy.txt')", context);
+  context.pendingRequests[2].resolve({ content: '中🙂', size: 7, truncated: false });
+  await pending;
+  assert.equal(vm.runInContext('workspaceFilePreview().nextOffset', context), 7);
+});
+
+test('legacy truncated preview without a byte cursor fails explicitly', async () => {
+  const context = createWorkspaceHarnessContext();
+  const pending = vm.runInContext("loadFile('legacy.txt')", context);
+  context.pendingRequests[0].resolve({ content: '中', size: 7, truncated: true });
+  await pending;
+  assert.equal(vm.runInContext('workspaceFilePreview()', context), null);
+  assert.match(vm.runInContext('nodes.editorContent.innerText', context), /missing a valid byte cursor/);
 });
 
 test('workspace file click does not activate stale file selection', async () => {

@@ -36,6 +36,9 @@ const browserErrors = { console: [], page: [], request: [], response: [] };
 await mkdir(outputDir, { recursive: true });
 await mkdir(workspaceRoot, { recursive: true });
 await mkdir(skillsRoot, { recursive: true });
+const unicodePreviewContent = 'x'.repeat(262143) + '中🙂ée\u0301\r\nno final newline';
+await mkdir(path.join(workspaceRoot, 'workspace'), { recursive: true });
+await writeFile(path.join(workspaceRoot, 'workspace', 'e2e-unicode.txt'), unicodePreviewContent, { mode: 0o600 });
 await writeFile(uploadPath, 'workspace upload from browser e2e\n', { mode: 0o600 });
 await writeStoredZip(skillZipPath, {
   'e2e-skill/SKILL.md': '---\nname: e2e-skill\ndescription: Browser E2E managed skill\n---\n\nUse this fixture only for browser validation.\n'
@@ -398,6 +401,30 @@ try {
   const downloadPath = path.join(runtimeRoot, 'downloaded-e2e-created.txt');
   await downloaded.saveAs(downloadPath);
   assert.equal((await readFile(downloadPath, 'utf8')).trim(), 'e2e workspace artifact');
+
+  for (const locale of ['zh-CN', 'en']) {
+    if ((await page.locator('html').getAttribute('lang')) !== locale) {
+      await page.locator('#language-toggle-btn').click();
+      await page.waitForFunction((value) => window.AegisI18n?.locale?.() === value, locale);
+    }
+    await page.locator('.tree-node[data-path="e2e-unicode.txt"]').click();
+    const more = page.locator('.workspace-preview-footer button');
+    await more.waitFor();
+    await check(`UTF-8 default byte page and Load more preserve exact source in ${locale}`, async () => {
+      assert.equal(await page.locator('.workspace-preview-content').textContent(), unicodePreviewContent.slice(0, 262144));
+      assert.equal((await more.innerText()).trim(), locale === 'en' ? 'Load more' : '加载更多');
+      await more.click();
+      await more.waitFor({ state: 'detached' });
+      assert.equal(await page.locator('.workspace-preview-content').textContent(), unicodePreviewContent);
+      assert.equal(await page.locator('.workspace-preview-content').getAttribute('translate'), 'no');
+      assert.equal(await page.evaluate(() => workspaceFilePreview().nextOffset), Buffer.byteLength(unicodePreviewContent));
+    });
+    await captureElement(page, page.locator('#workspace-view:not(.is-hidden)'), `06b-unicode-preview-${locale}-desktop.png`);
+    await page.locator('.tree-node[data-path="e2e-created.txt"]').click();
+    await page.locator('.workspace-preview-content').filter({ hasText: 'e2e workspace artifact' }).waitFor();
+  }
+  await page.locator('#language-toggle-btn').click();
+  await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 
 	await page.locator('#workspace-new-folder-btn').focus();
 	await page.locator('#workspace-new-folder-btn').click();

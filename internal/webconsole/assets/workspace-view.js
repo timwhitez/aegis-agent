@@ -1008,10 +1008,13 @@ async function loadFilePreviewPage(path, requestSeq, offset, append) {
     }
     const contentChunk = String(data?.content ?? '');
     const pageOffset = normalizePreviewNumber(data?.offset, offset);
-    const nextOffsetFallback = pageOffset + contentChunk.length;
-    const truncated = Boolean(data?.truncated);
-    const nextOffset = truncated ? normalizePreviewNumber(data?.next_offset, nextOffsetFallback) : nextOffsetFallback;
-    const size = Math.max(normalizePreviewNumber(data?.size, nextOffset), nextOffset);
+    const truncated = data?.eof === undefined ? Boolean(data?.truncated) : !data.eof;
+    // Legacy final pages may use the server's byte size, never UTF-16 text length.
+    const nextOffset = normalizePreviewNumber(data?.next_offset ?? (truncated ? undefined : data?.size), pageOffset);
+    if (truncated && nextOffset <= pageOffset) {
+      throw new Error('Preview response is missing a valid byte cursor.');
+    }
+    const size = normalizePreviewNumber(data?.size, nextOffset);
     const previousPreview = workspaceFilePreview();
     const previousContent = append && previousPreview?.path === path ? previousPreview.content : '';
     const preview = {
@@ -1054,7 +1057,6 @@ function renderWorkspaceFilePreview(preview, errorMessage = '') {
 		content.className = 'workspace-preview-content';
 		content.setAttribute('translate', 'no');
 		content.textContent = preview.content;
-		content.innerText = preview.content;
 		nodes.editorContent.replaceChildren(content);
   } else {
     nodes.editorContent.innerText = preview.content;
