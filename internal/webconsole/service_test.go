@@ -12085,7 +12085,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		NextOffset int64  `json:"next_offset"`
 	}{}
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt")+"&offset=6&limit=32", &pageResp)
-	if pageResp.Content != "workspace" || pageResp.Offset != 6 || pageResp.Limit != 32 || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != 0 {
+	if pageResp.Content != "workspace" || pageResp.Offset != 6 || pageResp.Limit != 32 || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != int64(len("hello workspace")) {
 		t.Fatalf("unexpected second paged read response: %#v", pageResp)
 	}
 	pageResp = struct {
@@ -12097,7 +12097,7 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 		NextOffset int64  `json:"next_offset"`
 	}{}
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt")+"&offset=99&limit=8", &pageResp)
-	if pageResp.Content != "" || pageResp.Offset != 99 || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != 0 {
+	if pageResp.Content != "" || pageResp.Offset != int64(len("hello workspace")) || pageResp.Size != int64(len("hello workspace")) || pageResp.Truncated || pageResp.NextOffset != int64(len("hello workspace")) {
 		t.Fatalf("unexpected past-end paged read response: %#v", pageResp)
 	}
 	pageResp = struct {
@@ -12264,6 +12264,99 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected forbidden for escape list, got %d body=%s", resp.StatusCode, string(body))
+	}
+}
+
+func TestServiceWorkspaceTextPreviewUTF8Pages(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	if err := os.Mkdir(filepath.Join(root, "workspace"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+	contents := []string{"", "ASCII\r\nno newline", "A中B", "é中文🙂e\u0301Z", "\ufffd valid replacement", strings.Repeat("x", workspaceFilePreviewDefaultSize-1) + "中🙂éend"}
+	for index, content := range contents {
+		name := fmt.Sprintf("utf8-%d.txt", index)
+		if err := os.WriteFile(filepath.Join(root, "workspace", name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, limit := range []int{1, 2, 3, 4, workspaceFilePreviewDefaultSize} {
+			// The default-boundary fixture needs only the real UI chunk to avoid 262k tiny HTTP requests.
+			if len(content) > workspaceFilePreviewDefaultSize && limit < workspaceFilePreviewDefaultSize {
+				continue
+			}
+			t.Run(fmt.Sprintf("%d/limit-%d", index, limit), func(t *testing.T) {
+				var rebuilt strings.Builder
+				offset := int64(0)
+				for {
+					var page workspaceFilePageResponse
+					postGetJSON(t, fmt.Sprintf("%s/api/file/read?path=%s&offset=%d&limit=%d", ts.URL, name, offset, limit), &page)
+					if page.Offset != offset || page.NextOffset != offset+int64(len(page.Content)) || page.Size != int64(len(content)) || page.Truncated == page.EOF || len(page.Content) > limit+3 {
+						t.Fatalf("invalid page contract: %#v", page)
+					}
+					rebuilt.WriteString(page.Content)
+					if page.EOF {
+						break
+					}
+					if page.NextOffset <= offset {
+						t.Fatalf("cursor did not progress: %#v", page)
+					}
+					offset = page.NextOffset
+				}
+				if rebuilt.String() != content {
+					t.Fatalf("JSON preview changed source: bytes got=%d want=%d", rebuilt.Len(), len(content))
+				}
+			})
+		}
+	}
+	for _, offset := range []int{5, 99} {
+		var page workspaceFilePageResponse
+		postGetJSON(t, fmt.Sprintf("%s/api/file/read?path=utf8-2.txt&offset=%d&limit=1", ts.URL, offset), &page)
+		if page.Content != "" || page.Offset != 5 || page.NextOffset != 5 || !page.EOF {
+			t.Fatalf("EOF page: %#v", page)
+		}
+	}
+	for _, offset := range []int{2, 3} {
+		resp, err := http.Get(fmt.Sprintf("%s/api/file/read?path=utf8-2.txt&offset=%d&limit=1", ts.URL, offset))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("mid-rune offset=%d: status=%d", offset, resp.StatusCode)
+		}
+	}
+	for name, content := range map[string][]byte{"invalid.bin": {'a', 0xff, 'b'}, "binary.bin": {'a', 0, 'b'}, "incomplete.bin": {'a', 0xe4}, "overlong.bin": {0xc0, 0xaf}} {
+		if err := os.WriteFile(filepath.Join(root, "workspace", name), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, query := range []string{"", "&offset=0&limit=8"} {
+			resp, err := http.Get(ts.URL + "/api/file/read?path=" + name + query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusUnsupportedMediaType || !strings.Contains(string(body), "Download") {
+				t.Fatalf("unsupported %s: status=%d body=%s", name, resp.StatusCode, body)
+			}
+		}
+		resp, err := http.Get(ts.URL + "/api/file/download?path=" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
+			t.Fatalf("raw download changed %s: %v", name, body)
+		}
 	}
 }
 

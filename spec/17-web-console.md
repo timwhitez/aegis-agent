@@ -682,6 +682,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - `DELETE /api/files?path=...`：删除单个文件或目录
 - `POST /api/files/delete`：事务式删除多个文件或目录
 
+文本预览的 `offset`、`limit`、`next_offset` 使用源文件 byte 单位。分页读取最多 `limit + 3` bytes，将结束边界延伸至完整 UTF-8 rune（小 limit 至少返回一个 rune），每页始终返回真实 `next_offset` 与 `eof`，超出 EOF 的 offset 归一到 EOF。落在 continuation byte 的非零 offset 返回 `400`，读到 invalid UTF-8 或 NUL 二进制内容返回 `415` 并提示下载；只验证有界当前页，不扫描整个大文件。未分页的兼容读取也拒绝 unsupported text。下载继续返回原始 bytes，path/symlink 与敏感文件限制不变。浏览器只能使用服务端 byte cursor；旧响应末页可以使用源文件 size，不得从 JavaScript UTF-16 string length 推断位置；旧响应缺少分页 cursor 时明确报错。渲染预览使用 `textContent` 保留 CRLF 原文；切换文件后仍用 request sequence 拒绝旧页。
+
 所有 workspace mutation 都必须限制在默认 `workspace/` 根内，复用敏感路径与 symlink policy，并写入 `web.workspace.*` 审计事件。
 
 ## 8. 交互状态机
