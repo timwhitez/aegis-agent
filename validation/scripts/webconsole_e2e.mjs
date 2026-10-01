@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { runSendRecoveryE2E } from './webconsole_send_recovery_e2e.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
@@ -697,6 +698,10 @@ try {
   assert.deepEqual(unexpectedChinese, [], `Chinese operator text in English locale: ${JSON.stringify(unexpectedChinese)}`);
   checks.push({ name: 'English locale operator text audit', ok: true, detail: unexpectedChinese });
   assertBrowserErrors();
+
+  await check('composer prompt recovery in zh-CN/en (24 scenarios)', () => runSendRecoveryE2E(baseURL, {
+    browser, outputDir: path.join(outputDir, 'send-recovery')
+  }));
 
   const manifest = {
     schema_version: 1,

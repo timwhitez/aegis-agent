@@ -146,6 +146,7 @@ vm.runInContext(`
   function isFloatingPanelExpanded() {
     return true;
   }
+  function currentFailedSendDrafts() { return []; }
   function isNextSendInterruptArmed() {
     return false;
   }
@@ -7888,4 +7889,99 @@ test('settings preserves configured max reasoning for OpenAI-compatible provider
   } finally {
     harness.restore();
   }
+});
+
+for (const route of ['start', 'continue', 'steer', 'plan-revision']) {
+  for (const outcome of ['failed', 'unconfirmed']) {
+    test(`${route} ${outcome} preserves the exact prompt for manual recovery`, async () => {
+      const appContext = createAppHarnessContext();
+      installChatActionAPITestWrappers(appContext);
+      appContext.rawPrompt = '  多行输入 <script>原文</script>\n  第二行  \n';
+      const send = vm.runInContext(`
+        updateDynamicLayoutMetrics = () => {};
+        state.sessionId = 'draft_a';
+        state.sessionBacked = ${route !== 'start'};
+        state.sessionDetail = { state: { status: '${route === 'steer' ? 'running' : 'paused'}' }, messages: [],
+          plan_mode: ${route === 'plan-revision' ? "{status: 'awaiting_approval'}" : 'null'} };
+        setGeneratingViewState(${route === 'steer'});
+        nodes.chatInput.value = rawPrompt;
+        sendMessage();
+      `, appContext);
+      assert.equal(appContext.pendingRequests.length, 1);
+      const request = appContext.pendingRequests[0];
+      assert.equal(request.payload.payload?.prompt || request.payload.payload?.message || request.payload.message, appContext.rawPrompt.trim());
+      const error = new Error('rejected or disconnected');
+      if (outcome === 'failed') error.status = 400;
+      request.reject(error);
+      await send;
+      const draft = sameRealm(vm.runInContext('currentFailedSendDrafts()[0]', appContext));
+      assert.equal(draft.rawText, appContext.rawPrompt);
+      assert.equal(draft.kind, route);
+      assert.equal(draft.status, outcome);
+      appContext.draftID = draft.id;
+      vm.runInContext('restoreSendDraft(draftID)', appContext);
+      assert.equal(vm.runInContext('nodes.chatInput.value', appContext), appContext.rawPrompt);
+      assert.equal(vm.runInContext('isComposerInputEmpty()', appContext), false);
+      assert.equal(vm.runInContext('nodes.chatInput.focused', appContext), true);
+      assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 0);
+      assert.equal(appContext.pendingRequests.length, 1, 'restoring never retries the API');
+      assert.equal(Array.from(appContext.storage.values()).some((value) => value.includes('多行输入')), false);
+    });
+  }
+}
+
+for (const validator of ['collectGoalDraft', 'collectPlanModeDraft']) {
+  test(`${validator} validation preserves composer before creating pending input`, async () => {
+    const appContext = createAppHarnessContext();
+    installChatActionAPITestWrappers(appContext);
+    appContext.rawPrompt = '  校验失败\n 原文  ';
+    await vm.runInContext(`
+      ${validator} = () => ({ error: 'invalid draft' });
+      nodes.chatInput.value = rawPrompt;
+      sendMessage();
+    `, appContext);
+    assert.equal(vm.runInContext('nodes.chatInput.value', appContext), appContext.rawPrompt);
+    assert.equal(vm.runInContext('currentOptimisticMessages().length', appContext), 0);
+    assert.equal(appContext.pendingRequests.length, 0);
+  });
+}
+
+test('failed requests stay bound to their session and request while newer drafts and sends survive', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const oldSend = vm.runInContext(String.raw`
+    state.sessionId = 'draft_a'; state.sessionBacked = true;
+    state.sessionDetail = { state: { status: 'running' }, messages: [] };
+    setGeneratingViewState(true);
+    nodes.chatInput.value = ' old prompt\n ';
+    sendMessage();
+  `, appContext);
+  const newSend = vm.runInContext(`nodes.chatInput.value = 'new pending'; sendMessage();`, appContext);
+  vm.runInContext(`state.sessionId = 'draft_b'; nodes.chatInput.value = 'new editor draft';`, appContext);
+  appContext.pendingRequests[0].reject(Object.assign(new Error('old reject'), { status: 400 }));
+  await oldSend;
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  assert.equal(vm.runInContext('currentFailedSendDrafts()[0].sessionId', appContext), 'draft_a');
+  assert.equal(vm.runInContext('nodes.chatInput.value', appContext), 'new editor draft');
+  assert.equal(vm.runInContext('currentOptimisticMessages()[0].text', appContext), 'new pending');
+  vm.runInContext(`
+    state.sessionId = 'draft_a';
+    restoreSendDraft(currentFailedSendDrafts()[0].id);
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.chatInput.value', appContext), 'new editor draft');
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  // Equal durable text cannot prove delivery of this specific failed request.
+  vm.runInContext(`reconcileOptimisticMessages({messages: [{role: 'user', text: 'old prompt'}]});`, appContext);
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  appContext.pendingRequests[1].resolve({ status: 'queued' });
+  await newSend;
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+});
+
+test('failed draft renderer escapes raw text and exposes manual recovery and unknown-delivery status', () => {
+  const html = vm.runInContext(String.raw`renderFailedSendDraft({id:'request_1', rawText:' <script>alert(1)</script>\n ', status:'unconfirmed'})`, context);
+  assert.match(html, /data-restore-send-draft="request_1"/);
+  assert.match(html, /Delivery unconfirmed/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });

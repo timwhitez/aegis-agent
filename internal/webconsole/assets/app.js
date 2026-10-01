@@ -165,6 +165,9 @@ const optimisticMessagesViewState = {
   messages: []
 };
 
+// UI-only recovery; prompt text is never persisted to browser storage.
+const failedSendDrafts = new Map();
+
 const pageLifecycleViewState = {
   visibilityHidden: false
 };
@@ -1085,6 +1088,7 @@ function setupEventListeners() {
       }
     }},
     { selector: '[data-history-clear]', handler: async () => { await clearHistory(); } },
+    { selector: '[data-restore-send-draft]', handler: (el) => { restoreSendDraft(el.getAttribute('data-restore-send-draft')); } },
     { selector: '[data-load-earlier]', handler: async () => { await loadEarlierMessages(); } },
     { selector: '[data-view-shortcut]', handler: (el) => { switchView(el.getAttribute('data-view-shortcut')); } },
     { selector: '[data-delete-session]', handler: async (el) => {
@@ -1382,7 +1386,8 @@ function switchView(viewName, options = {}) {
 }
 
 async function sendMessage() {
-  const text = nodes.chatInput.value.trim();
+  const rawText = nodes.chatInput.value;
+  const text = rawText.trim();
   if (!text) {
     return;
   }
@@ -1394,11 +1399,29 @@ async function sendMessage() {
 	const routesToContinue = hasDurableSession() && ['awaiting_input', 'paused', 'failed', 'completed'].includes(currentStatus);
 	const routesToSteer = isGenerating() && hasDurableSession() && !routesToContinue;
 
+  const revisingPlan = routesToContinue && currentPlanMode()?.status === 'awaiting_approval';
+  const goalDraft = !hasDurableSession() ? collectGoalDraft(text) : null;
+  const planDraft = !routesToSteer && !revisingPlan ? collectPlanModeDraft(text) : null;
+  const validationError = goalDraft?.error || planDraft?.error;
+  if (validationError) {
+    showToast(validationError, 'error');
+    nodes.chatInput.focus();
+    return;
+  }
+  if (hasDurableSession() && !routesToContinue && !routesToSteer) {
+    showToast('This session is not ready to continue. Refresh the session state and try again.', 'error');
+    return;
+  }
+
   const optimisticID = appendOptimisticMessage('user', text, {
 	source: routesToSteer ? 'steer' : 'user',
 	interrupt: isNextSendInterruptArmed() && routesToSteer
   });
 
+  const sendDraft = {
+    id: optimisticID, sessionId: state.sessionId, rawText, status: 'pending',
+    kind: routesToSteer ? 'steer' : revisingPlan ? 'plan-revision' : routesToContinue ? 'continue' : 'start'
+  };
   nodes.chatInput.value = '';
   nodes.chatInput.style.height = 'auto';
   setComposerInputEmpty(true);
@@ -1429,8 +1452,8 @@ async function sendMessage() {
       queueSessionRefresh(120);
       queueOverviewRefresh(220);
     } catch (err) {
+      failSendDraft(sendDraft, err);
       if (state.sessionId === sessionID && isCurrentSteerActionIdentity(actionSteerIdentity)) {
-        removeOptimisticMessage(optimisticID);
         showToast(err.message || 'Failed to queue steer input.', 'error');
       }
     }
@@ -1457,14 +1480,6 @@ async function sendMessage() {
         }
         showToast('Plan revision sent.', 'success');
       } else {
-        const planDraft = collectPlanModeDraft(text);
-        if (planDraft?.error) {
-          removeOptimisticMessage(optimisticID);
-          showToast(planDraft.error, 'error');
-          updateUI();
-          renderCurrentSession();
-          return;
-        }
         continuingSession = true;
         actionContinueIdentity = currentContinueActionIdentity();
         setGenerating(true, {
@@ -1492,12 +1507,12 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
+      failSendDraft(sendDraft, err);
       if (
         state.sessionId === sessionID &&
         (!revisingPlanMode || isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) &&
         (!continuingSession || isCurrentContinueActionIdentity(actionContinueIdentity))
       ) {
-        removeOptimisticMessage(optimisticID);
         setGeneratingViewState(false);
         showToast(err.message || 'Failed to continue session.', 'error');
         updateUI();
@@ -1508,22 +1523,6 @@ async function sendMessage() {
   }
 
   if (!hasDurableSession()) {
-    const goalDraft = collectGoalDraft(text);
-    if (goalDraft?.error) {
-      removeOptimisticMessage(optimisticID);
-      showToast(goalDraft.error, 'error');
-      updateUI();
-      renderCurrentSession();
-      return;
-    }
-    const planDraft = collectPlanModeDraft(text);
-    if (planDraft?.error) {
-      removeOptimisticMessage(optimisticID);
-      showToast(planDraft.error, 'error');
-      updateUI();
-      renderCurrentSession();
-      return;
-    }
     const launchClientSessionID = state.sessionId;
     try {
       setLaunchInFlight(true);
@@ -1553,10 +1552,10 @@ async function sendMessage() {
       queueSessionRefresh(60);
       queueOverviewRefresh(220);
     } catch (err) {
+      failSendDraft(sendDraft, err);
       if (state.sessionId !== launchClientSessionID || state.sessionBacked) {
         return;
       }
-      removeOptimisticMessage(optimisticID);
       setGeneratingViewState(false);
       setLaunchInFlight(false);
       showToast(err.message || 'Failed to start session.', 'error');
@@ -1565,11 +1564,6 @@ async function sendMessage() {
     }
     return;
   }
-
-  removeOptimisticMessage(optimisticID);
-  showToast('This session is not ready to continue. Refresh the session state and try again.', 'error');
-  updateUI();
-  renderCurrentSession();
 }
 
 function toggleInterruptArm() {
@@ -3549,6 +3543,41 @@ function appendOptimisticMessage(role, text, meta = {}) {
     pending: true
   });
   return id;
+}
+
+function currentFailedSendDrafts() {
+  return Array.from(failedSendDrafts.values());
+}
+
+function failSendDraft(draft, err) {
+  draft.status = err?.status ? 'failed' : 'unconfirmed';
+  failedSendDrafts.set(draft.id, draft);
+  removeOptimisticMessage(draft.id);
+  if (draft.status === 'unconfirmed') {
+    queueOverviewRefresh(220);
+    if (state.sessionId === draft.sessionId && hasDurableSession()) queueSessionRefresh(60);
+  }
+}
+
+function restoreSendDraft(id) {
+  const draft = failedSendDrafts.get(id);
+  if (!draft) return;
+  if (nodes.chatInput.value !== '') {
+    showToast('Keep or clear your current draft before restoring this prompt.', 'info');
+    return;
+  }
+  nodes.chatInput.value = draft.rawText;
+  nodes.chatInput.style.height = 'auto';
+  nodes.chatInput.style.height = `${nodes.chatInput.scrollHeight}px`;
+  syncComposerInputEmpty();
+  updateDynamicLayoutMetrics();
+  updateUI();
+  nodes.chatInput.focus();
+  failedSendDrafts.delete(id);
+  if (draft.status === 'unconfirmed') {
+    showToast('Delivery unconfirmed. Check session history before sending again.', 'info');
+  }
+  renderCurrentSession();
 }
 
 function removeOptimisticMessage(id) {
