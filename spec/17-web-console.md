@@ -607,7 +607,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 `POST /api/sessions/{id}/planmode/input`
 
 - 输入 `{ "request_id": "...", "answers": [...] }`
-- active runner 存在时直接投递回答；active handle 丢失时先 append 对应 `tool_call_id` 的 tool result，再恢复 planning turn
+- active runner 存在时直接投递回答；durable pending request 发布后、同一 runner waiter 尚未注册的窗口内，Web 对原 handle generation/request ID 有界等待（复用 continue settle timeout/poll），只能投递一次；handle 被替换时返回 conflict；尚未注册 waiter 时仅在 durable plan_input state 的旧 generation 等待，晚于该 state 的 handle 仍 conflict。精确 session/request waiter 已注册时可以直接投递，不能因恢复后 handle 晚于旧 request.CreatedAt 而拒绝。active handle 已释放时才走恢复路径，先 append 对应 `tool_call_id` 的 tool result，再恢复 planning turn。
+- Plan approve/revise、linked mission approve 和 recovered input 的 shared continue launcher 必须复用普通 continue 的 durable resumable state + 原 handle generation settling 检查；等待旧 handle 释放后重读并验证 state，再原子 claim 新 handle。running、新 generation、等待中替换、超时或取消仍 fail closed，不清除新 handle、不预先重复修改 plan/input 事实。
 
 `GET /api/config` / `POST /api/config`
 

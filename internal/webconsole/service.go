@@ -2150,11 +2150,7 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
-			if s.hasActiveHandle(sessionID) {
-				writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-				return
-			}
-			if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+			if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 				SessionID:            sessionID,
 				ApprovePlan:          true,
 				OverrideGoalCoverage: req.OverrideCoverage,
@@ -2661,15 +2657,11 @@ func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
-	}
 	if err := s.ensurePlanModeApprovalPreflight(sessionID, req.OverrideCoverage); err != nil {
 		writeError(w, planModeActionStatus(err), err)
 		return
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID:            sessionID,
 		ApprovePlan:          true,
 		OverrideGoalCoverage: req.OverrideCoverage,
@@ -2691,15 +2683,11 @@ func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, s
 		writeError(w, http.StatusBadRequest, errors.New("revision message is required"))
 		return
 	}
-	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
-	}
 	if err := s.ensurePlanModeRevisionPreflight(sessionID); err != nil {
 		writeError(w, planModeActionStatus(err), err)
 		return
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID: sessionID,
 		Message:   strings.TrimSpace(req.Message),
 		Source:    session.PlanModeSourceWeb,
@@ -2782,12 +2770,17 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	if handle, ok := s.handleForSession(sessionID); ok {
-		if handle.runner.AnswerActivePlanInput(sessionID, req.RequestID, req.Answers) {
+		delivered, err := s.waitForActivePlanInput(r.Context(), handle, pendingRequest, req.Answers)
+		if err != nil {
+			writeError(w, planModeActionStatus(err), err)
+			return
+		}
+		if delivered {
 			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
 			return
 		}
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID:          sessionID,
 		PlanInputRequestID: req.RequestID,
 		PlanInputAnswers:   req.Answers,
@@ -2799,7 +2792,49 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
 }
 
-func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueRequest) error {
+// A durable request can become visible before its live runner registers the waiter.
+// Pin the original generation; only a released handle permits recovery via continue.
+func (s *Service) waitForActivePlanInput(ctx context.Context, handle *launchHandle, request session.PlanModeInputRequest, answers []session.PlanModeInputAnswer) (bool, error) {
+	timer := time.NewTimer(continueHandleSettleWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(continueHandleSettlePoll)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false, errSessionAlreadyActive
+		}
+		s.mu.RLock()
+		current, exists := s.handles[handle.sessionID]
+		if current != handle {
+			s.mu.RUnlock()
+			if !exists {
+				return false, nil
+			}
+			return false, errSessionAlreadyActive
+		}
+		delivered := handle.runner.AnswerActivePlanInput(handle.sessionID, request.RequestID, answers)
+		s.mu.RUnlock()
+		if delivered {
+			return true, nil
+		}
+		state, err := s.store.LoadState(handle.sessionID)
+		if err != nil {
+			return false, err
+		}
+		if state.Status != session.StatusAwaitingInput || state.Phase != "plan_input" || !handleStartedNoLaterThanState(handle.startedAt, state.UpdatedAt) {
+			return false, errSessionAlreadyActive
+		}
+		select {
+		case <-ctx.Done():
+			return false, errSessionAlreadyActive
+		case <-timer.C:
+			return false, errSessionAlreadyActive
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, req runtime.ContinueRequest) error {
 	meta, err := s.store.LoadMetadata(sessionID)
 	if err != nil {
 		return err
@@ -2811,9 +2846,24 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
 		return webContinueError(err)
 	}
+	if s.hasActiveHandle(sessionID) {
+		if !s.waitForSettlingActiveHandle(ctx, sessionID, state.UpdatedAt) {
+			return errSessionAlreadyActive
+		}
+		state, err = s.store.LoadState(sessionID)
+		if err != nil {
+			return err
+		}
+		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+			return webContinueError(err)
+		}
+	}
 	cfg, err := s.configSnapshot()
 	if err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return errSessionAlreadyActive
 	}
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
