@@ -700,6 +700,13 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 6. UI 立即切换到该 session 详情页
 7. Timeline 开始轮询刷新
 
+### 8.1.1 Composer 提交恢复
+
+- 本地 Goal/Plan draft 校验和 session 可提交状态检查须在清空 composer 前完成；发送 payload 继续 trim，失败恢复必须保留原始多行/空格文本。
+- start/continue/steer/plan revision 的 pending send 以 client request ID、原 session（包含 ephemeral identity）、发送类型绑定。明确拒绝或网络结果未知时，浏览器只在内存保留可操作的失败草稿卡片；不写 localStorage、不成为 runtime 状态。
+- 失败卡片标注原 session ID，并在切换/新建 session 后仍有独立可见入口；用户显式点击恢复按钮时，只在当前 composer 为空时复制原文并恢复输入状态/高度/焦点；已有新草稿时保留失败卡片，不覆盖草稿。旧请求不得移除新 pending 或污染后来选择的会话。
+- 网络结果未知必须明确显示“未确认是否送达”，触发当前 durable session history/steer receipt 刷新，提醒用户核验后再发送；不自动重发、不以相同文字推断请求身份。失败草稿不参与 optimistic text reconciliation，成功请求不产生失败草稿。
+
 ### 8.2 运行中追加输入
 
 用户路径：
