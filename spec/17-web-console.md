@@ -607,7 +607,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 `POST /api/sessions/{id}/planmode/input`
 
 - 输入 `{ "request_id": "...", "answers": [...] }`
-- active runner 存在时直接投递回答；active handle 丢失时先 append 对应 `tool_call_id` 的 tool result，再恢复 planning turn
+- active runner 存在时直接投递回答；durable pending request 发布后、同一 runner waiter 尚未注册的窗口内，Web 对原 handle generation/request ID 有界等待（复用 continue settle timeout/poll），只能投递一次；handle 被替换时返回 conflict；尚未注册 waiter 时仅在 durable plan_input state 的旧 generation 等待，晚于该 state 的 handle 仍 conflict。精确 session/request waiter 已注册时可以直接投递，不能因恢复后 handle 晚于旧 request.CreatedAt 而拒绝。active handle 已释放时才走恢复路径，先 append 对应 `tool_call_id` 的 tool result，再恢复 planning turn。
+- Plan approve/revise、linked mission approve 和 recovered input 的 shared continue launcher 必须复用普通 continue 的 durable resumable state + 原 handle generation settling 检查；等待旧 handle 释放后重读并验证 state，再原子 claim 新 handle。running、新 generation、等待中替换、超时或取消仍 fail closed，不清除新 handle、不预先重复修改 plan/input 事实。
 
 `GET /api/config` / `POST /api/config`
 
@@ -682,6 +683,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 - `DELETE /api/files?path=...`：删除单个文件或目录
 - `POST /api/files/delete`：事务式删除多个文件或目录
 
+文本预览的 `offset`、`limit`、`next_offset` 使用源文件 byte 单位。分页读取最多 `limit + 3` bytes，将结束边界延伸至完整 UTF-8 rune（小 limit 至少返回一个 rune），每页始终返回真实 `next_offset` 与 `eof`，超出 EOF 的 offset 归一到 EOF。落在 continuation byte 的非零 offset 返回 `400`，读到 invalid UTF-8 或 NUL 二进制内容返回 `415` 并提示下载；只验证有界当前页，不扫描整个大文件。未分页的兼容读取也拒绝 unsupported text。下载继续返回原始 bytes，path/symlink 与敏感文件限制不变。浏览器只能使用服务端 byte cursor；旧响应末页可以使用源文件 size，不得从 JavaScript UTF-16 string length 推断位置；旧响应缺少分页 cursor 时明确报错。渲染预览使用 `textContent` 保留 CRLF 原文；切换文件后仍用 request sequence 拒绝旧页。
+
 所有 workspace mutation 都必须限制在默认 `workspace/` 根内，复用敏感路径与 symlink policy，并写入 `web.workspace.*` 审计事件。
 
 ## 8. 交互状态机
@@ -699,6 +702,13 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 5. 点击 Start
 6. UI 立即切换到该 session 详情页
 7. Timeline 开始轮询刷新
+
+### 8.1.1 Composer 提交恢复
+
+- 本地 Goal/Plan draft 校验和 session 可提交状态检查须在清空 composer 前完成；发送 payload 继续 trim，失败恢复必须保留原始多行/空格文本。
+- start/continue/steer/plan revision 的 pending send 以 client request ID、原 session（包含 ephemeral identity）、发送类型绑定。明确拒绝或网络结果未知时，浏览器只在内存保留可操作的失败草稿卡片；不写 localStorage、不成为 runtime 状态。
+- 失败卡片标注原 session ID，并在切换/新建 session 后仍有独立可见入口；用户显式点击恢复按钮时，只在当前 composer 为空时复制原文并恢复输入状态/高度/焦点；已有新草稿时保留失败卡片，不覆盖草稿。旧请求不得移除新 pending 或污染后来选择的会话。
+- 网络结果未知必须明确显示“未确认是否送达”，触发当前 durable session history/steer receipt 刷新，提醒用户核验后再发送；不自动重发、不以相同文字推断请求身份。失败草稿不参与 optimistic text reconciliation，成功请求不产生失败草稿。
 
 ### 8.2 运行中追加输入
 

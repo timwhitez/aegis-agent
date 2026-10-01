@@ -146,6 +146,7 @@ vm.runInContext(`
   function isFloatingPanelExpanded() {
     return true;
   }
+  function currentFailedSendDrafts() { return []; }
   function isNextSendInterruptArmed() {
     return false;
   }
@@ -220,7 +221,7 @@ function fakeAppElement(initial = {}) {
     replaceChildren(...newChildren) {
       children.splice(0, children.length);
       newChildren.forEach((child) => this.appendChild(child));
-      const text = newChildren.map((child) => String(child?.innerText ?? child?.textContent ?? '')).join('');
+      const text = newChildren.map((child) => String(child?.textContent || child?.innerText || '')).join('');
       this.innerText = text;
       this.textContent = text;
     },
@@ -6315,7 +6316,7 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
 
   const otherLoad = vm.runInContext(`loadFile('other.txt')`, workspaceContext);
   assert.equal(workspaceContext.pendingRequests.length, 3);
-  workspaceContext.pendingRequests[2].resolve({ content: 'other body' });
+  workspaceContext.pendingRequests[2].resolve({ content: 'other body', size: 10 });
   await otherLoad;
 
   workspaceContext.pendingRequests[1].resolve({
@@ -6345,6 +6346,33 @@ test('loadFile renders paged preview and ignores stale load-more responses', asy
     },
     stateHasWorkspaceFilePreview: false
   });
+});
+
+test('Unicode preview uses server byte cursors including final and legacy pages', async () => {
+  const context = createWorkspaceHarnessContext();
+  let pending = vm.runInContext("loadFile('unicode.txt')", context);
+  context.pendingRequests[0].resolve({ content: 'A中', offset: 0, next_offset: 4, size: 8, truncated: true, eof: false });
+  await pending;
+  pending = vm.runInContext('nodes.editorContent.__children[1].__children[1].listeners.click()', context);
+  assert.match(context.pendingRequests[1].url, /offset=4/);
+  context.pendingRequests[1].resolve({ content: '🙂', offset: 4, next_offset: 8, size: 8, truncated: false, eof: true });
+  await pending;
+  assert.deepEqual(sameRealm(vm.runInContext('workspaceFilePreview()', context)), {
+    path: 'unicode.txt', content: 'A中🙂', offset: 4, nextOffset: 8, size: 8, truncated: false
+  });
+  pending = vm.runInContext("loadFile('legacy.txt')", context);
+  context.pendingRequests[2].resolve({ content: '中🙂', size: 7, truncated: false });
+  await pending;
+  assert.equal(vm.runInContext('workspaceFilePreview().nextOffset', context), 7);
+});
+
+test('legacy truncated preview without a byte cursor fails explicitly', async () => {
+  const context = createWorkspaceHarnessContext();
+  const pending = vm.runInContext("loadFile('legacy.txt')", context);
+  context.pendingRequests[0].resolve({ content: '中', size: 7, truncated: true });
+  await pending;
+  assert.equal(vm.runInContext('workspaceFilePreview()', context), null);
+  assert.match(vm.runInContext('nodes.editorContent.innerText', context), /missing a valid byte cursor/);
 });
 
 test('workspace file click does not activate stale file selection', async () => {
@@ -7861,4 +7889,99 @@ test('settings preserves configured max reasoning for OpenAI-compatible provider
   } finally {
     harness.restore();
   }
+});
+
+for (const route of ['start', 'continue', 'steer', 'plan-revision']) {
+  for (const outcome of ['failed', 'unconfirmed']) {
+    test(`${route} ${outcome} preserves the exact prompt for manual recovery`, async () => {
+      const appContext = createAppHarnessContext();
+      installChatActionAPITestWrappers(appContext);
+      appContext.rawPrompt = '  多行输入 <script>原文</script>\n  第二行  \n';
+      const send = vm.runInContext(`
+        updateDynamicLayoutMetrics = () => {};
+        state.sessionId = 'draft_a';
+        state.sessionBacked = ${route !== 'start'};
+        state.sessionDetail = { state: { status: '${route === 'steer' ? 'running' : 'paused'}' }, messages: [],
+          plan_mode: ${route === 'plan-revision' ? "{status: 'awaiting_approval'}" : 'null'} };
+        setGeneratingViewState(${route === 'steer'});
+        nodes.chatInput.value = rawPrompt;
+        sendMessage();
+      `, appContext);
+      assert.equal(appContext.pendingRequests.length, 1);
+      const request = appContext.pendingRequests[0];
+      assert.equal(request.payload.payload?.prompt || request.payload.payload?.message || request.payload.message, appContext.rawPrompt.trim());
+      const error = new Error('rejected or disconnected');
+      if (outcome === 'failed') error.status = 400;
+      request.reject(error);
+      await send;
+      const draft = sameRealm(vm.runInContext('currentFailedSendDrafts()[0]', appContext));
+      assert.equal(draft.rawText, appContext.rawPrompt);
+      assert.equal(draft.kind, route);
+      assert.equal(draft.status, outcome);
+      appContext.draftID = draft.id;
+      vm.runInContext('restoreSendDraft(draftID)', appContext);
+      assert.equal(vm.runInContext('nodes.chatInput.value', appContext), appContext.rawPrompt);
+      assert.equal(vm.runInContext('isComposerInputEmpty()', appContext), false);
+      assert.equal(vm.runInContext('nodes.chatInput.focused', appContext), true);
+      assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 0);
+      assert.equal(appContext.pendingRequests.length, 1, 'restoring never retries the API');
+      assert.equal(Array.from(appContext.storage.values()).some((value) => value.includes('多行输入')), false);
+    });
+  }
+}
+
+for (const validator of ['collectGoalDraft', 'collectPlanModeDraft']) {
+  test(`${validator} validation preserves composer before creating pending input`, async () => {
+    const appContext = createAppHarnessContext();
+    installChatActionAPITestWrappers(appContext);
+    appContext.rawPrompt = '  校验失败\n 原文  ';
+    await vm.runInContext(`
+      ${validator} = () => ({ error: 'invalid draft' });
+      nodes.chatInput.value = rawPrompt;
+      sendMessage();
+    `, appContext);
+    assert.equal(vm.runInContext('nodes.chatInput.value', appContext), appContext.rawPrompt);
+    assert.equal(vm.runInContext('currentOptimisticMessages().length', appContext), 0);
+    assert.equal(appContext.pendingRequests.length, 0);
+  });
+}
+
+test('failed requests stay bound to their session and request while newer drafts and sends survive', async () => {
+  const appContext = createAppHarnessContext();
+  installChatActionAPITestWrappers(appContext);
+  const oldSend = vm.runInContext(String.raw`
+    state.sessionId = 'draft_a'; state.sessionBacked = true;
+    state.sessionDetail = { state: { status: 'running' }, messages: [] };
+    setGeneratingViewState(true);
+    nodes.chatInput.value = ' old prompt\n ';
+    sendMessage();
+  `, appContext);
+  const newSend = vm.runInContext(`nodes.chatInput.value = 'new pending'; sendMessage();`, appContext);
+  vm.runInContext(`state.sessionId = 'draft_b'; nodes.chatInput.value = 'new editor draft';`, appContext);
+  appContext.pendingRequests[0].reject(Object.assign(new Error('old reject'), { status: 400 }));
+  await oldSend;
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  assert.equal(vm.runInContext('currentFailedSendDrafts()[0].sessionId', appContext), 'draft_a');
+  assert.equal(vm.runInContext('nodes.chatInput.value', appContext), 'new editor draft');
+  assert.equal(vm.runInContext('currentOptimisticMessages()[0].text', appContext), 'new pending');
+  vm.runInContext(`
+    state.sessionId = 'draft_a';
+    restoreSendDraft(currentFailedSendDrafts()[0].id);
+  `, appContext);
+  assert.equal(vm.runInContext('nodes.chatInput.value', appContext), 'new editor draft');
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  // Equal durable text cannot prove delivery of this specific failed request.
+  vm.runInContext(`reconcileOptimisticMessages({messages: [{role: 'user', text: 'old prompt'}]});`, appContext);
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+  appContext.pendingRequests[1].resolve({ status: 'queued' });
+  await newSend;
+  assert.equal(vm.runInContext('currentFailedSendDrafts().length', appContext), 1);
+});
+
+test('failed draft renderer escapes raw text and exposes manual recovery and unknown-delivery status', () => {
+  const html = vm.runInContext(String.raw`renderFailedSendDraft({id:'request_1', rawText:' <script>alert(1)</script>\n ', status:'unconfirmed'})`, context);
+  assert.match(html, /data-restore-send-draft="request_1"/);
+  assert.match(html, /Delivery unconfirmed/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
 });

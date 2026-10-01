@@ -3369,8 +3369,18 @@ func withRequestSnapshotCorrelation(data map[string]any, snapshot RequestBudgetS
 	return copy
 }
 
+func tokenUsageSource(usage provider.Usage) string {
+	if usage.TotalTokensSource != "" {
+		return usage.TotalTokensSource
+	}
+	if _, known := usage.TokenTotal(); !known {
+		return "unknown"
+	}
+	return "legacy_incomplete"
+}
+
 func providerUsageEventData(usage provider.Usage) map[string]any {
-	reported := usage.Reported || usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.CacheCreationInputTokens != 0 || usage.CacheReadInputTokens != 0
+	reported := usage.Reported || usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.CacheCreationInputTokens != 0 || usage.CacheReadInputTokens != 0 || usage.TotalTokens != nil || usage.ReasoningTokens != nil
 	data := map[string]any{"reported": reported}
 	if !reported {
 		return data
@@ -3384,6 +3394,16 @@ func providerUsageEventData(usage provider.Usage) map[string]any {
 	data["output_tokens"] = usage.OutputTokens
 	data["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
 	data["cache_read_input_tokens"] = usage.CacheReadInputTokens
+	data["total_tokens_source"] = tokenUsageSource(usage)
+	if total, known := usage.TokenTotal(); known {
+		data["total_tokens"] = total
+	}
+	if usage.ReasoningTokens != nil {
+		data["reasoning_tokens"] = *usage.ReasoningTokens
+	}
+	if usage.ProviderTotalTokens != nil {
+		data["provider_total_tokens"] = *usage.ProviderTotalTokens
+	}
 	return data
 }
 

@@ -79,6 +79,10 @@ type RequestBudgetAction struct {
 }
 
 type ContextProviderUsage struct {
+	TotalTokens              *int64 `json:"total_tokens,omitempty"`
+	TotalTokensSource        string `json:"total_tokens_source,omitempty"`
+	ReasoningTokens          *int64 `json:"reasoning_tokens,omitempty"`
+	ProviderTotalTokens      *int64 `json:"provider_total_tokens,omitempty"`
 	Reported                 bool   `json:"reported"`
 	Source                   string `json:"source,omitempty"`
 	InputTokens              *int   `json:"input_tokens,omitempty"`
@@ -88,10 +92,12 @@ type ContextProviderUsage struct {
 }
 
 type ContextUsageTotals struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	TotalTokens              int64 `json:"total_tokens"`
+	IncompleteRequestCount   int   `json:"incomplete_request_count"`
+	InputTokens              int   `json:"input_tokens"`
+	OutputTokens             int   `json:"output_tokens"`
+	CacheCreationInputTokens int   `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int   `json:"cache_read_input_tokens"`
 }
 
 type ContextCompactionEvent struct {
@@ -397,7 +403,7 @@ func (s *Store) contextSessionReport(meta SessionMetadata, rootSessionID string)
 		return builder
 	}
 
-	err := s.VisitEvents(meta.ID, func(evt events.Event) error {
+	err := s.visitEvents(meta.ID, func(evt events.Event) error {
 		updateContextEventBounds(&report.Metrics, evt.Time)
 		data := evt.Data
 		requestID := strings.TrimSpace(contextString(data, "request_id"))
@@ -458,7 +464,7 @@ func (s *Store) contextSessionReport(meta SessionMetadata, rootSessionID string)
 			builder.report.FinishedAt = evt.Time
 			builder.report.StopReason = strings.TrimSpace(contextString(data, "stop_reason"))
 			builder.report.ProviderResponseID = strings.TrimSpace(contextString(data, "provider_response_id"))
-			builder.report.Usage = contextProviderUsage(data["usage"])
+			builder.report.Usage = contextProviderUsage(data["usage"], contextUsageAPI(meta, builder.report.Budget))
 		case "provider.request.failed":
 			builder := getRequest(requestID, data)
 			if builder == nil {
@@ -469,7 +475,7 @@ func (s *Store) contextSessionReport(meta SessionMetadata, rootSessionID string)
 			builder.report.FinishedAt = evt.Time
 			builder.report.ErrorClass = strings.TrimSpace(contextString(data, "error_class"))
 			builder.report.RejectionCode = strings.TrimSpace(contextString(data, "rejection_code"))
-			builder.report.Usage = contextProviderUsage(data["usage"])
+			builder.report.Usage = contextProviderUsage(data["usage"], contextUsageAPI(meta, builder.report.Budget))
 		case "provider.request.rejected":
 			builder := getRequest(requestID, data)
 			if builder != nil && !builder.lifecycleSeen {
@@ -485,7 +491,7 @@ func (s *Store) contextSessionReport(meta SessionMetadata, rootSessionID string)
 				builder.report.FinishedAt = evt.Time
 				builder.report.StopReason = strings.TrimSpace(contextString(data, "stop_reason"))
 				builder.report.ProviderResponseID = strings.TrimSpace(contextString(data, "provider_response_id"))
-				builder.report.Usage = contextProviderUsage(data["usage"])
+				builder.report.Usage = contextProviderUsage(data["usage"], contextUsageAPI(meta, builder.report.Budget))
 			}
 		case "tool.after":
 			callID := strings.TrimSpace(contextString(data, "call_id"))
@@ -499,7 +505,7 @@ func (s *Store) contextSessionReport(meta SessionMetadata, rootSessionID string)
 			}
 		}
 		return nil
-	})
+	}, true)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return ContextSessionReport{}, fmt.Errorf("visit events: %w", err)
 	}
@@ -596,7 +602,7 @@ func contextCompactionEvent(evt events.Event) ContextCompactionEvent {
 	}
 }
 
-func contextProviderUsage(value any) ContextProviderUsage {
+func contextProviderUsage(value any, api string) ContextProviderUsage {
 	usage := ContextProviderUsage{Reported: false}
 	data, ok := value.(map[string]any)
 	if !ok {
@@ -626,7 +632,70 @@ func contextProviderUsage(value any) ContextProviderUsage {
 	usage.OutputTokens = intPointer(output)
 	usage.CacheCreationInputTokens = intPointer(creation)
 	usage.CacheReadInputTokens = intPointer(read)
+	usage.TotalTokensSource = contextString(data, "total_tokens_source")
+	switch usage.TotalTokensSource {
+	case "", "anthropic_sum", "openai_sum", "google_sum", "google_total", "invalid", "legacy_inferred", "legacy_incomplete":
+	default:
+		usage.TotalTokensSource = "invalid"
+	}
+	usage.TotalTokens = contextTokenPointer(data, "total_tokens")
+	if usage.TotalTokens != nil && *usage.TotalTokens < 0 {
+		usage.TotalTokens = nil
+		usage.TotalTokensSource = "invalid"
+	}
+	usage.ReasoningTokens = contextTokenPointer(data, "reasoning_tokens")
+	usage.ProviderTotalTokens = contextTokenPointer(data, "provider_total_tokens")
+	if usage.TotalTokensSource == "" {
+		usage.TotalTokensSource = "legacy_incomplete"
+		var total int64
+		var valid bool
+		rawTotal, rawValid := TokenSum(int64(input), int64(output), int64(creation), int64(read))
+		if !rawValid {
+			usage.TotalTokensSource = "invalid"
+		} else {
+			switch api {
+			case "anthropic", "anthropic-compatible":
+				total, valid = rawTotal, true
+			case "openai", "openai-compatible":
+				total, valid = TokenSum(int64(input), int64(output))
+			}
+		}
+		if valid {
+			usage.TotalTokens = &total
+			usage.TotalTokensSource = "legacy_inferred"
+		}
+	}
 	return usage
+}
+
+// Legacy reconstruction uses recorded API identity, never today's configuration.
+func contextUsageAPI(meta SessionMetadata, budget *RequestBudgetSnapshot) string {
+	if budget != nil {
+		if budget.APIProvider != "" {
+			return budget.APIProvider
+		}
+		return budget.Provider
+	}
+	if meta.ProviderOptions.APIProvider != "" {
+		return meta.ProviderOptions.APIProvider
+	}
+	return meta.Provider
+}
+
+func contextTokenPointer(data map[string]any, key string) *int64 {
+	value, ok := data[key]
+	if !ok || value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var count int64
+	if err := json.Unmarshal(encoded, &count); err != nil {
+		return nil
+	}
+	return &count
 }
 
 func normalizeContextRequestStatus(value string) string {
@@ -783,6 +852,11 @@ func incrementCompactionMetric(metrics *ContextSessionMetrics, eventType string)
 }
 
 func addContextUsage(total *ContextUsageTotals, usage ContextProviderUsage) {
+	if usage.TotalTokens != nil && usage.TotalTokensSource != "legacy_incomplete" && usage.TotalTokensSource != "invalid" {
+		total.TotalTokens, _ = TokenSum(total.TotalTokens, *usage.TotalTokens)
+	} else if usage.Reported {
+		total.IncompleteRequestCount++
+	}
 	if usage.InputTokens != nil {
 		total.InputTokens += *usage.InputTokens
 	}
@@ -798,6 +872,8 @@ func addContextUsage(total *ContextUsageTotals, usage ContextProviderUsage) {
 }
 
 func addContextUsageTotals(total *ContextUsageTotals, value ContextUsageTotals) {
+	total.TotalTokens, _ = TokenSum(total.TotalTokens, value.TotalTokens)
+	total.IncompleteRequestCount += value.IncompleteRequestCount
 	total.InputTokens += value.InputTokens
 	total.OutputTokens += value.OutputTokens
 	total.CacheCreationInputTokens += value.CacheCreationInputTokens

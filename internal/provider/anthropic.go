@@ -111,6 +111,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
 			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
 		}
+		usage.setTotal("anthropic_sum", int64(usage.InputTokens), int64(usage.OutputTokens), int64(usage.CacheCreationInputTokens), int64(usage.CacheReadInputTokens))
 	}
 	stopReasonRaw := strings.TrimSpace(resp.StopReason)
 	var textParts []string

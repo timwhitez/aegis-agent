@@ -102,6 +102,15 @@ usage presence 是 provider contract 的一部分：
 - OpenAI、Anthropic 与 Google 的响应 usage 字段必须按可空对象解析，不能用内嵌零值 struct 丢失 presence
 - lifecycle/report 中的 usage source 只接受稳定 `provider` / `legacy_inferred`；旧 event 缺 source 时按 presence/counter 规则推导，任意其他字符串不得进入 ContextReport
 
+#### Canonical token accounting
+
+- `usage.total_tokens` 是可空的 int64 canonical 请求总量；缺失仍为 unknown，显式零保留为零。`total_tokens_source` 记录稳定的协议公式/来源；原始 input/output/cache breakdown 不改变语义，Google/OpenAI reasoning 与上游 total 用可空字段保存 presence。
+- 归一化只在 adapter：Anthropic 为 input + cache creation + cache read + output；OpenAI 为 input + output（cache/reasoning 已包含，不再相加）；Google 优先 `totalTokenCount`，缺失时为 prompt + candidates + thoughts（省略 thoughts 按协议零处理）。Google cached content 已包含在 prompt，不能再加。
+- 每个负计数使 canonical total 无效（unknown，source=`invalid`），不扣减 Goal；Google 显式 total 小于已知 breakdown 合计也无效，较大 total 保留上游权威值。求和先转 int64，正溢出饱和为 MaxInt64；Goal 累计与 ContextReport canonical aggregate 同样饱和。
+- Goal、request/turn durable usage 与 ContextReport 消费同一个 canonical 总量；unknown 在 Goal accounting/history 显式记录，不冒充实测零。旧/第三方 adapter 无 total/source 时保留旧 input+output subtotal，并明确 `legacy_incomplete`，不得由 runtime 按 provider 名猜测。
+- 本修复只影响后续 provider 请求的 Goal delta，不重新计量已保存的 `goal.json` 或重放旧回合。ContextReport 只读重建旧 usage 时，仅用已保存的 API/provider metadata 推导可证明的 Anthropic/OpenAI total，标 `legacy_inferred`；旧 Google 无 thoughts 的历史 canonical total 为 unknown（`legacy_incomplete`），不补造隐含思考用量。恢复读取旧字段兼容，新旧历史混合时 incomplete request count 必须可见。
+- 协议依据：[Anthropic 总输入公式](https://platform.claude.com/docs/en/api/rate-limits)、[Google UsageMetadata](https://ai.google.dev/api/generate-content#UsageMetadata)。这些是 token 数量契约，不是价格或费用预算。
+
 #### 2.2.1 Result-level micro-compaction replay contract
 
 - micro-compaction 的选择单位是独立 `ToolResult`，同一 tool message 允许较旧 result 已压缩、较新 result 完整；不得拆分或回写 durable message record

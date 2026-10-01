@@ -129,7 +129,7 @@ func goalEventData(goal session.SessionGoal) map[string]any {
 }
 
 func (e *Engine) updateGoalAccounting(sessionID string, turn int, usage provider.Usage, elapsed time.Duration) (session.SessionGoal, bool, error) {
-	tokens := int64(usage.InputTokens + usage.OutputTokens)
+	tokens, known := usage.TokenTotal()
 	elapsedSeconds := int64(elapsed / time.Second)
 	if elapsed > 0 && elapsedSeconds == 0 {
 		elapsedSeconds = 1
@@ -141,6 +141,8 @@ func (e *Engine) updateGoalAccounting(sessionID string, turn int, usage provider
 		TokensUsedDelta:      tokens,
 		TimeUsedSecondsDelta: elapsedSeconds,
 		SourceTurn:           turn,
+		TokenUsageKnown:      &known,
+		TokenUsageSource:     tokenUsageSource(usage),
 	})
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -155,6 +157,8 @@ func (e *Engine) updateGoalAccounting(sessionID string, turn int, usage provider
 		"goal_id":                          goal.GoalID,
 		"status":                           goal.Status,
 		"tokens_used_delta":                tokens,
+		"token_usage_known":                known,
+		"token_usage_source":               tokenUsageSource(usage),
 		"provider_time_used_seconds_delta": elapsedSeconds,
 		"time_used_seconds_delta":          elapsedSeconds,
 		"tokens_used":                      goal.TokensUsed,

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
@@ -2149,11 +2150,7 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
-			if s.hasActiveHandle(sessionID) {
-				writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-				return
-			}
-			if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+			if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 				SessionID:            sessionID,
 				ApprovePlan:          true,
 				OverrideGoalCoverage: req.OverrideCoverage,
@@ -2660,15 +2657,11 @@ func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
-	}
 	if err := s.ensurePlanModeApprovalPreflight(sessionID, req.OverrideCoverage); err != nil {
 		writeError(w, planModeActionStatus(err), err)
 		return
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID:            sessionID,
 		ApprovePlan:          true,
 		OverrideGoalCoverage: req.OverrideCoverage,
@@ -2690,15 +2683,11 @@ func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, s
 		writeError(w, http.StatusBadRequest, errors.New("revision message is required"))
 		return
 	}
-	if s.hasActiveHandle(sessionID) {
-		writeError(w, http.StatusConflict, errors.New("session is already active in this web console"))
-		return
-	}
 	if err := s.ensurePlanModeRevisionPreflight(sessionID); err != nil {
 		writeError(w, planModeActionStatus(err), err)
 		return
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID: sessionID,
 		Message:   strings.TrimSpace(req.Message),
 		Source:    session.PlanModeSourceWeb,
@@ -2781,12 +2770,17 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	if handle, ok := s.handleForSession(sessionID); ok {
-		if handle.runner.AnswerActivePlanInput(sessionID, req.RequestID, req.Answers) {
+		delivered, err := s.waitForActivePlanInput(r.Context(), handle, pendingRequest, req.Answers)
+		if err != nil {
+			writeError(w, planModeActionStatus(err), err)
+			return
+		}
+		if delivered {
 			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
 			return
 		}
 	}
-	if err := s.launchPlanModeContinue(sessionID, runtime.ContinueRequest{
+	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID:          sessionID,
 		PlanInputRequestID: req.RequestID,
 		PlanInputAnswers:   req.Answers,
@@ -2798,7 +2792,49 @@ func (s *Service) handlePlanModeInput(w http.ResponseWriter, r *http.Request, se
 	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
 }
 
-func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueRequest) error {
+// A durable request can become visible before its live runner registers the waiter.
+// Pin the original generation; only a released handle permits recovery via continue.
+func (s *Service) waitForActivePlanInput(ctx context.Context, handle *launchHandle, request session.PlanModeInputRequest, answers []session.PlanModeInputAnswer) (bool, error) {
+	timer := time.NewTimer(continueHandleSettleWait)
+	defer timer.Stop()
+	ticker := time.NewTicker(continueHandleSettlePoll)
+	defer ticker.Stop()
+	for {
+		if ctx.Err() != nil {
+			return false, errSessionAlreadyActive
+		}
+		s.mu.RLock()
+		current, exists := s.handles[handle.sessionID]
+		if current != handle {
+			s.mu.RUnlock()
+			if !exists {
+				return false, nil
+			}
+			return false, errSessionAlreadyActive
+		}
+		delivered := handle.runner.AnswerActivePlanInput(handle.sessionID, request.RequestID, answers)
+		s.mu.RUnlock()
+		if delivered {
+			return true, nil
+		}
+		state, err := s.store.LoadState(handle.sessionID)
+		if err != nil {
+			return false, err
+		}
+		if state.Status != session.StatusAwaitingInput || state.Phase != "plan_input" || !handleStartedNoLaterThanState(handle.startedAt, state.UpdatedAt) {
+			return false, errSessionAlreadyActive
+		}
+		select {
+		case <-ctx.Done():
+			return false, errSessionAlreadyActive
+		case <-timer.C:
+			return false, errSessionAlreadyActive
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, req runtime.ContinueRequest) error {
 	meta, err := s.store.LoadMetadata(sessionID)
 	if err != nil {
 		return err
@@ -2810,9 +2846,24 @@ func (s *Service) launchPlanModeContinue(sessionID string, req runtime.ContinueR
 	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
 		return webContinueError(err)
 	}
+	if s.hasActiveHandle(sessionID) {
+		if !s.waitForSettlingActiveHandle(ctx, sessionID, state.UpdatedAt) {
+			return errSessionAlreadyActive
+		}
+		state, err = s.store.LoadState(sessionID)
+		if err != nil {
+			return err
+		}
+		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+			return webContinueError(err)
+		}
+	}
 	cfg, err := s.configSnapshot()
 	if err != nil {
 		return err
+	}
+	if ctx.Err() != nil {
+		return errSessionAlreadyActive
 	}
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -3474,21 +3525,30 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if paged {
-		content, info, err := fileutil.ReadRegularFileRangeNoSymlink(fullPath, offset, limit)
+		content, info, err := fileutil.ReadRegularFileRangeNoSymlink(fullPath, offset, limit+utf8.UTFMax-1)
 		if err != nil {
 			writeError(w, workspaceBrowserStatStatus(err), err)
 			return
 		}
+		if offset > 0 && len(content) > 0 && !utf8.RuneStart(content[0]) {
+			writeError(w, http.StatusBadRequest, errors.New("preview offset must be at a UTF-8 character boundary"))
+			return
+		}
+		content, err = workspaceTextPage(content, limit)
+		if err != nil {
+			writeError(w, http.StatusUnsupportedMediaType, err)
+			return
+		}
+		offset = min(offset, info.Size())
 		nextOffset := offset + int64(len(content))
 		response := workspaceFilePageResponse{
-			Content:   string(content),
-			Offset:    offset,
-			Limit:     limit,
-			Size:      info.Size(),
-			Truncated: nextOffset < info.Size(),
-		}
-		if response.Truncated {
-			response.NextOffset = nextOffset
+			Content:    string(content),
+			Offset:     offset,
+			Limit:      limit,
+			Size:       info.Size(),
+			Truncated:  nextOffset < info.Size(),
+			NextOffset: nextOffset,
+			EOF:        nextOffset >= info.Size(),
 		}
 		writeJSON(w, http.StatusOK, response)
 		return
@@ -3496,6 +3556,10 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	content, _, err := fileutil.ReadRegularFileNoSymlink(fullPath)
 	if err != nil {
 		writeError(w, workspaceBrowserStatStatus(err), err)
+		return
+	}
+	if !utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0 {
+		writeError(w, http.StatusUnsupportedMediaType, errWorkspaceUnsupportedText)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": string(content)})
@@ -4278,13 +4342,30 @@ func workspaceBrowserContext() (string, string, *webFileBrowserReadPolicy, error
 	return root, browseRoot, newWebFileBrowserReadPolicy(root, browseRoot), nil
 }
 
+var errWorkspaceUnsupportedText = errors.New("preview supports UTF-8 text only; download this file to view its original bytes")
+
+// workspaceTextPage uses the range reader's three-byte lookahead to finish a rune.
+// The read_file tool keeps its stricter output budget and explicit adjusted-start contract.
+func workspaceTextPage(data []byte, limit int64) ([]byte, error) {
+	end := 0
+	for int64(end) < limit && end < len(data) {
+		r, size := utf8.DecodeRune(data[end:])
+		if (r == utf8.RuneError && size == 1) || r == 0 {
+			return nil, errWorkspaceUnsupportedText
+		}
+		end += size
+	}
+	return data[:end], nil
+}
+
 type workspaceFilePageResponse struct {
 	Content    string `json:"content"`
 	Offset     int64  `json:"offset"`
 	Limit      int64  `json:"limit"`
 	Size       int64  `json:"size"`
 	Truncated  bool   `json:"truncated"`
-	NextOffset int64  `json:"next_offset,omitempty"`
+	NextOffset int64  `json:"next_offset"`
+	EOF        bool   `json:"eof"`
 }
 
 func parseWorkspaceFileReadPage(r *http.Request) (bool, int64, int64, error) {

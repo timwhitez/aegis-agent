@@ -260,12 +260,13 @@ function renderMessageStream() {
   const optimisticMessages = currentOptimisticMessages().slice();
   const stream = detailMessages.length ? detailMessages.concat(optimisticMessages) : optimisticMessages;
   const displayStream = buildDisplayMessageStream(stream);
+  const failedDraftHTML = currentFailedSendDrafts().map(renderFailedSendDraft).join('');
 
   if (!displayStream.length) {
     return {
       activity: hasDurableSession() || isGenerating() ? renderSessionActivityCard() : '',
       flow: renderFlowLane(),
-      body: renderEmptySessionState(),
+      body: failedDraftHTML || renderEmptySessionState(),
       pending: isGenerating() ? renderPendingStageCard() : ''
     };
   }
@@ -278,7 +279,7 @@ function renderMessageStream() {
     </div>
   ` : '';
 
-  const bodyHTML = loadEarlierHTML + displayStream.map((message) => renderMessage(message)).join('');
+  const bodyHTML = loadEarlierHTML + displayStream.map((message) => renderMessage(message)).join('') + failedDraftHTML;
 
   return {
     activity: hasDurableSession() || isGenerating() ? renderSessionActivityCard() : '',
@@ -545,6 +546,20 @@ function renderFlowLane() {
       </div>
     </section>
   `;
+}
+
+function renderFailedSendDraft(draft) {
+  const notice = draft.status === 'unconfirmed'
+    ? 'Delivery unconfirmed. Check session history before sending again.'
+    : 'Prompt was not accepted. Restore it to edit or send again.';
+  return `<article class="message user failed-send-draft" data-send-draft="${escapeAttr(draft.id)}">
+    <div class="message-header"><span class="message-header-name">Saved prompt</span><span class="tiny-code-chip" translate="no">${escapeHTML(draft.sessionId || '')}</span></div>
+    <div class="message-body">
+      <p role="status">${escapeHTML(notice)}</p>
+      <div class="message-bubble" translate="no" style="white-space:pre-wrap">${escapeHTML(draft.rawText)}</div>
+      <button class="plan-action-btn" type="button" data-restore-send-draft="${escapeAttr(draft.id)}">Restore to composer</button>
+    </div>
+  </article>`;
 }
 
 function renderMessage(message) {

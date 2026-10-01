@@ -75,6 +75,10 @@ func TestProviderUsagePresenceDistinguishesMissingFromReportedZero(t *testing.T)
 					if result.Usage.Reported != withUsage {
 						t.Fatalf("reported=%v want %v usage=%#v", result.Usage.Reported, withUsage, result.Usage)
 					}
+					total, known := result.Usage.TokenTotal()
+					if known != withUsage || total != 0 || (result.Usage.TotalTokens != nil) != withUsage {
+						t.Fatalf("canonical presence differs: total=%d known=%v usage=%#v", total, known, result.Usage)
+					}
 					if result.Usage.InputTokens != 0 || result.Usage.OutputTokens != 0 {
 						t.Fatalf("expected zero counters, got %#v", result.Usage)
 					}
