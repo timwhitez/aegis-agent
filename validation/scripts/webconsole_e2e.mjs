@@ -313,7 +313,9 @@ try {
 	  assert.equal(detail.plan_mode.pending_request, undefined);
 	  assert.match(detail.plan_mode.summary, /durable browser input/);
 	});
+	const inputPlanApprovalResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`/api/sessions/${inputPlanID}/planmode/approve`));
 	await page.locator('#inspector-slide-out [data-plan-action="approve"]').click();
+	assert.equal((await inputPlanApprovalResponse).status(), 202);
 	await waitForSession(baseURL, inputPlanID, (detail) => detail?.state?.status === 'completed', 25_000);
 
 	const childrenID = await startSession(page, 'E2E_UI_CHILDREN spawn and expose a real child.');
