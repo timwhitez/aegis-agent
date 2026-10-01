@@ -5506,11 +5506,13 @@ func TestEngineAcceptsSteerAfterProviderDoneCandidateBoundary(t *testing.T) {
 
 func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	started := make(chan struct{})
 	registry.Register(tools.Definition{
 		Name:        "slow",
 		Description: "slow",
 		InputSchema: map[string]any{"type": "object"},
 		Execute: func(ctx context.Context, execCtx tools.ExecContext, raw json.RawMessage) (session.ToolResult, error) {
+			close(started)
 			<-ctx.Done()
 			return session.ToolResult{}, ctx.Err()
 		},
@@ -5525,7 +5527,7 @@ func TestEngineWritesInterruptedToolResultOnPause(t *testing.T) {
 		}, nil
 	})
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		<-started
 		engine.control.requestPause()
 	}()
 	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
