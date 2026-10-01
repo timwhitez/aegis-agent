@@ -649,11 +649,16 @@ func contextProviderUsage(value any, api string) ContextProviderUsage {
 		usage.TotalTokensSource = "legacy_incomplete"
 		var total int64
 		var valid bool
-		switch api {
-		case "anthropic", "anthropic-compatible":
-			total, valid = TokenSum(int64(input), int64(output), int64(creation), int64(read))
-		case "openai", "openai-compatible":
-			total, valid = TokenSum(int64(input), int64(output))
+		rawTotal, rawValid := TokenSum(int64(input), int64(output), int64(creation), int64(read))
+		if !rawValid {
+			usage.TotalTokensSource = "invalid"
+		} else {
+			switch api {
+			case "anthropic", "anthropic-compatible":
+				total, valid = rawTotal, true
+			case "openai", "openai-compatible":
+				total, valid = TokenSum(int64(input), int64(output))
+			}
 		}
 		if valid {
 			usage.TotalTokens = &total

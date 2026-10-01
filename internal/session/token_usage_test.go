@@ -102,3 +102,23 @@ func TestContextCanonicalUsageLegacyAndDurability(t *testing.T) {
 		})
 	}
 }
+
+func TestContextLegacyUsageRejectsNegativeRawCounters(t *testing.T) {
+	for _, api := range []string{"openai-compatible", "anthropic-compatible"} {
+		for _, field := range []string{"input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"} {
+			t.Run(api+"/"+field, func(t *testing.T) {
+				data := map[string]any{"reported": true, "input_tokens": 1, "output_tokens": 1}
+				data[field] = -1
+				usage := contextProviderUsage(data, api)
+				if usage.TotalTokens != nil || usage.TotalTokensSource != "invalid" {
+					t.Fatalf("negative raw counter counted as canonical: %#v", usage)
+				}
+				var total ContextUsageTotals
+				addContextUsage(&total, usage)
+				if total.TotalTokens != 0 || total.IncompleteRequestCount != 1 {
+					t.Fatalf("invalid usage aggregated as complete: %#v", total)
+				}
+			})
+		}
+	}
+}
