@@ -3481,7 +3481,7 @@ func (s *Service) handleReadFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if offset > 0 && len(content) > 0 && !utf8.RuneStart(content[0]) {
-			writeError(w, http.StatusBadRequest, errors.New("Preview offset must be at a UTF-8 character boundary."))
+			writeError(w, http.StatusBadRequest, errors.New("preview offset must be at a UTF-8 character boundary"))
 			return
 		}
 		content, err = workspaceTextPage(content, limit)
@@ -4292,7 +4292,7 @@ func workspaceBrowserContext() (string, string, *webFileBrowserReadPolicy, error
 	return root, browseRoot, newWebFileBrowserReadPolicy(root, browseRoot), nil
 }
 
-var errWorkspaceUnsupportedText = errors.New("Preview supports UTF-8 text only. Download this file to view its original bytes.")
+var errWorkspaceUnsupportedText = errors.New("preview supports UTF-8 text only; download this file to view its original bytes")
 
 // workspaceTextPage uses the range reader's three-byte lookahead to finish a rune.
 // The read_file tool keeps its stricter output budget and explicit adjusted-start contract.

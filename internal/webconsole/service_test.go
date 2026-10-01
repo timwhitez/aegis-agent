@@ -12344,7 +12344,7 @@ func TestServiceWorkspaceTextPreviewUTF8Pages(t *testing.T) {
 			}
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if resp.StatusCode != http.StatusUnsupportedMediaType || !strings.Contains(string(body), "Download") {
+			if resp.StatusCode != http.StatusUnsupportedMediaType || !strings.Contains(string(body), "download") {
 				t.Fatalf("unsupported %s: status=%d body=%s", name, resp.StatusCode, body)
 			}
 		}
