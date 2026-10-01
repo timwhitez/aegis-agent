@@ -764,12 +764,25 @@ func (s *Store) LoadEvents(sessionID string) ([]events.Event, error) {
 // boundary. It preserves the same validation and missing-file semantics as
 // LoadEvents without materializing the complete event history.
 func (s *Store) VisitEvents(sessionID string, visit func(events.Event) error) error {
+	return s.visitEvents(sessionID, visit, false)
+}
+
+// exactNumbers preserves int64 token counts for the derived ContextReport.
+func (s *Store) visitEvents(sessionID string, visit func(events.Event) error, exactNumbers bool) error {
 	path, err := s.sessionPath(sessionID, "events.jsonl")
 	if err != nil {
 		return err
 	}
 	seen := map[string]struct{}{}
-	err = readJSONLVisit(path, func(event events.Event) error {
+	err = readJSONLVisit(path, func(raw json.RawMessage) error {
+		var event events.Event
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		if exactNumbers {
+			decoder.UseNumber()
+		}
+		if err := decoder.Decode(&event); err != nil {
+			return err
+		}
 		if err := validateEvent(sessionID, event); err != nil {
 			return err
 		}

@@ -273,7 +273,7 @@ func TestContextProviderUsagePreservesOnlyStableSources(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			usage := contextProviderUsage(tt.data)
+			usage := contextProviderUsage(tt.data, "")
 			if usage.Reported != tt.reported || usage.Source != tt.wantSource {
 				t.Fatalf("unexpected usage presence/source: %#v", usage)
 			}

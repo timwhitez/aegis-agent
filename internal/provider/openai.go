@@ -112,14 +112,15 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			Summary          []openAIReasoningText `json:"summary"`
 		} `json:"output"`
 		Usage *struct {
-			InputTokens        int `json:"input_tokens"`
-			OutputTokens       int `json:"output_tokens"`
+			InputTokens        int    `json:"input_tokens"`
+			OutputTokens       int    `json:"output_tokens"`
+			TotalTokens        *int64 `json:"total_tokens"`
 			InputTokensDetails struct {
 				CachedTokens     int `json:"cached_tokens"`
 				CacheWriteTokens int `json:"cache_write_tokens"`
 			} `json:"input_tokens_details"`
 			OutputTokensDetails struct {
-				ReasoningTokens int `json:"reasoning_tokens"`
+				ReasoningTokens *int64 `json:"reasoning_tokens"`
 			} `json:"output_tokens_details"`
 		} `json:"usage"`
 		IncompleteDetails struct {
@@ -284,6 +285,9 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			CacheCreationInputTokens: resp.Usage.InputTokensDetails.CacheWriteTokens,
 			CacheReadInputTokens:     resp.Usage.InputTokensDetails.CachedTokens,
 		}
+		usage.ReasoningTokens = resp.Usage.OutputTokensDetails.ReasoningTokens
+		usage.ProviderTotalTokens = resp.Usage.TotalTokens
+		usage.setTotal("openai_sum", int64(usage.InputTokens), int64(usage.OutputTokens))
 	}
 	rawStopSource := "status"
 	rawStopReason := resp.Status
