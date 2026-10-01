@@ -309,8 +309,8 @@ func (a *OpenAIAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 		"metadata_sent":                metadataSent,
 		"metadata_capability_fallback": metadataFallback,
 	}
-	if resp.Usage != nil {
-		rawExtras["reasoning_tokens"] = resp.Usage.OutputTokensDetails.ReasoningTokens
+	if usage.ReasoningTokens != nil {
+		rawExtras["reasoning_tokens"] = int(*usage.ReasoningTokens)
 	}
 	if incompleteReason != "" {
 		rawStopSource = "incomplete_details.reason"
