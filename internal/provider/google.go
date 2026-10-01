@@ -87,8 +87,11 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
 		UsageMetadata *struct {
-			PromptTokenCount     int `json:"promptTokenCount"`
-			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			PromptTokenCount        int    `json:"promptTokenCount"`
+			CandidatesTokenCount    int    `json:"candidatesTokenCount"`
+			ThoughtsTokenCount      *int64 `json:"thoughtsTokenCount"`
+			TotalTokenCount         *int64 `json:"totalTokenCount"`
+			CachedContentTokenCount int    `json:"cachedContentTokenCount"`
 		} `json:"usageMetadata"`
 		PromptFeedback struct {
 			BlockReason string `json:"blockReason"`
@@ -107,6 +110,24 @@ func (a *GoogleAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitF
 			Reported:     true,
 			InputTokens:  resp.UsageMetadata.PromptTokenCount,
 			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+		}
+		usage.ReasoningTokens = resp.UsageMetadata.ThoughtsTokenCount
+		usage.ProviderTotalTokens = resp.UsageMetadata.TotalTokenCount
+		usage.CacheReadInputTokens = resp.UsageMetadata.CachedContentTokenCount
+		thoughts := int64(0)
+		if usage.ReasoningTokens != nil {
+			thoughts = *usage.ReasoningTokens
+		}
+		usage.setTotal("google_sum", int64(usage.InputTokens), int64(usage.OutputTokens), thoughts)
+		// Cached content is already included in promptTokenCount.
+		if usage.TotalTokens != nil && usage.ProviderTotalTokens != nil {
+			if *usage.ProviderTotalTokens < *usage.TotalTokens {
+				usage.TotalTokens = nil
+				usage.TotalTokensSource = "invalid"
+			} else {
+				usage.TotalTokens = usage.ProviderTotalTokens
+				usage.TotalTokensSource = "google_total"
+			}
 		}
 	}
 	if len(resp.Candidates) == 0 {

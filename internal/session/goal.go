@@ -316,6 +316,8 @@ type GoalDraft struct {
 }
 
 type GoalUsageDelta struct {
+	TokenUsageKnown      *bool
+	TokenUsageSource     string
 	TokensUsedDelta      int64
 	TimeUsedSecondsDelta int64
 	SourceTurn           int
@@ -1459,7 +1461,7 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 		if goal.GoalID == "" {
 			return nil
 		}
-		goal.TokensUsed += maxInt64(0, delta.TokensUsedDelta)
+		goal.TokensUsed, _ = TokenSum(goal.TokensUsed, maxInt64(0, delta.TokensUsedDelta))
 		goal.TimeUsedSeconds += maxInt64(0, delta.TimeUsedSecondsDelta)
 		if goal.Status == GoalStatusActive && goalBudgetExceeded(*goal) {
 			goal.Status = GoalStatusBudgetLimited
@@ -1492,6 +1494,8 @@ func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (Se
 			"time_used_seconds":                goal.TimeUsedSeconds,
 			"accounting_scope":                 "provider_time",
 			"measurement_source":               "provider_call_elapsed",
+			"token_usage_known":                delta.TokenUsageKnown,
+			"token_usage_source":               delta.TokenUsageSource,
 		},
 	}); err != nil {
 		if rollbackErr := s.rollbackGoalAfterHistoryError(sessionID, rollback); rollbackErr != nil {

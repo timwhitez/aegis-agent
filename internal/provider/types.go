@@ -52,11 +52,45 @@ type ToolCall struct {
 }
 
 type Usage struct {
-	Reported                 bool `json:"reported"`
-	InputTokens              int  `json:"input_tokens,omitempty"`
-	OutputTokens             int  `json:"output_tokens,omitempty"`
-	CacheCreationInputTokens int  `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int  `json:"cache_read_input_tokens,omitempty"`
+	TotalTokens              *int64 `json:"total_tokens,omitempty"`
+	TotalTokensSource        string `json:"total_tokens_source,omitempty"`
+	ProviderTotalTokens      *int64 `json:"provider_total_tokens,omitempty"`
+	ReasoningTokens          *int64 `json:"reasoning_tokens,omitempty"`
+	Reported                 bool   `json:"reported"`
+	InputTokens              int    `json:"input_tokens,omitempty"`
+	OutputTokens             int    `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+}
+
+// TokenTotal is provider-independent; adapters supply the canonical count.
+// Old adapters retain their previous subtotal, explicitly marked incomplete.
+func (u Usage) TokenTotal() (int64, bool) {
+	if u.TotalTokens != nil {
+		if *u.TotalTokens < 0 {
+			return 0, false
+		}
+		return *u.TotalTokens, true
+	}
+	if u.TotalTokensSource != "" {
+		return 0, false
+	}
+	if !u.Reported && u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheCreationInputTokens == 0 && u.CacheReadInputTokens == 0 {
+		return 0, false
+	}
+	return session.TokenSum(int64(u.InputTokens), int64(u.OutputTokens))
+}
+
+func (u *Usage) setTotal(source string, counts ...int64) {
+	u.TotalTokensSource = source
+	total, valid := session.TokenSum(counts...)
+	_, rawValid := session.TokenSum(int64(u.InputTokens), int64(u.OutputTokens), int64(u.CacheCreationInputTokens), int64(u.CacheReadInputTokens))
+	valid = valid && rawValid && (u.ReasoningTokens == nil || *u.ReasoningTokens >= 0) && (u.ProviderTotalTokens == nil || *u.ProviderTotalTokens >= 0)
+	if !valid {
+		u.TotalTokensSource = "invalid"
+		return
+	}
+	u.TotalTokens = &total
 }
 
 type TurnResult struct {
