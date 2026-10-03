@@ -201,6 +201,12 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			}
 			return "", budgetErr
 		}
+		if err := e.checkApprovalExecutionTarget(ctx, meta.ID); err != nil {
+			if recordErr := e.appendProviderRequestFailed(meta.ID, "compact", snapshot, "rejected", err); recordErr != nil {
+				return "", fmt.Errorf("record changed approval summary rejection after %v: %w", err, recordErr)
+			}
+			return "", err
+		}
 		callData := map[string]any{
 			"provider": meta.Provider,
 		}
@@ -412,56 +418,38 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		if err != nil {
 			return RunResult{}, err
 		}
-		goal, err := loadGoalOptional(e.store, meta.ID)
+		approvalSnapshot, err := e.approvalExecutionSnapshot(ctx, meta.ID)
 		if err != nil {
-			return RunResult{}, err
+			return e.requireApprovalReview(meta, state, err)
+		}
+		var goal *session.SessionGoal
+		if approvalSnapshot != nil {
+			goal = approvalSnapshot.Goal
+		} else {
+			goal, err = loadGoalOptional(e.store, meta.ID)
+			if err != nil {
+				return RunResult{}, err
+			}
 		}
 		budgetWrapUpTurn := false
 		if goal != nil && goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt != "" && !session.HasBudgetWrapUpRecord(*goal) {
-			goalCopy := *goal
-			if session.MarkBudgetWrapUpTurnStarted(&goalCopy) {
-				if err := e.store.SaveGoal(meta.ID, goalCopy); err != nil {
-					return RunResult{}, err
-				}
-				if err := e.store.AppendGoalHistory(meta.ID, session.GoalHistoryEntry{
-					Type:   "goal.budget_wrapup_turn_started",
-					Source: session.GoalSourceSystem,
-					Status: goalCopy.Status,
-					Data: map[string]any{
-						"budget_wrapup_turn_started_at": goalCopy.BudgetWrapUpTurnStartedAt,
-					},
-				}); err != nil {
-					if rollbackErr := e.store.SaveGoal(meta.ID, *goal); rollbackErr != nil {
-						return RunResult{}, fmt.Errorf("restore goal after budget wrap-up turn history error %v: %w", err, rollbackErr)
-					}
-					return e.fail(ctx, meta, state, err, hookManager)
-				}
-				if err := e.appendEvent(meta.ID, "goal.budget_wrapup_turn_started", "prepare", goalEventData(goalCopy)); err != nil {
-					currentHistory, historyErr := e.store.LoadGoalHistory(meta.ID)
-					if historyErr != nil {
-						if rollbackErr := e.store.SaveGoal(meta.ID, *goal); rollbackErr != nil {
-							return RunResult{}, fmt.Errorf("restore goal after budget wrap-up turn event error %v and history load error %v: %w", err, historyErr, rollbackErr)
-						}
-						return RunResult{}, fmt.Errorf("load goal history after budget wrap-up turn event error %v: %w", err, historyErr)
-					}
-					previousHistory := currentHistory
-					if len(previousHistory) > 0 {
-						previousHistory = previousHistory[:len(previousHistory)-1]
-					}
-					if rollbackErr := e.restoreBudgetWrapUpTurnStartAfterEventError(meta.ID, *goal, previousHistory, err); rollbackErr != nil {
-						return RunResult{}, rollbackErr
-					}
-					return RunResult{}, fmt.Errorf("record goal.budget_wrapup_turn_started event: %w", err)
-				}
-				goal = &goalCopy
-				budgetWrapUpTurn = true
-			} else {
+			var waiting bool
+			goal, budgetWrapUpTurn, waiting, err = e.startGoalBudgetWrapUpTurn(meta.ID)
+			if err != nil {
+				return e.fail(ctx, meta, state, err, hookManager)
+			}
+			if waiting {
 				return e.awaitingBudgetWrapUp(ctx, meta, state, hookManager)
 			}
 		}
-		planMode, err := loadPlanModeOptional(e.store, meta.ID)
-		if err != nil {
-			return RunResult{}, err
+		var planMode *session.PlanModeState
+		if approvalSnapshot != nil {
+			planMode = &approvalSnapshot.PlanMode
+		} else {
+			planMode, err = loadPlanModeOptional(e.store, meta.ID)
+			if err != nil {
+				return RunResult{}, err
+			}
 		}
 		projectMemory := loadProjectMemoryStack(meta.Workdir)
 		contextData := contextLoadedEventData(meta, state.Turn, projectMemory, todo, tasks)
@@ -581,6 +569,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					return RunResult{}, fmt.Errorf("record provider request cancelled before call: %w", err)
 				}
 				return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+			}
+			if err := e.checkApprovalExecutionTarget(ctx, meta.ID); err != nil {
+				if recordErr := e.appendProviderRequestFailed(meta.ID, state.Phase, snapshot, "rejected", err); recordErr != nil {
+					return RunResult{}, fmt.Errorf("record changed approval request rejection after %v: %w", err, recordErr)
+				}
+				return e.requireApprovalReview(meta, state, err)
 			}
 			callCtx, cancel := context.WithCancel(ctx)
 			e.control.setCancel(cancel)
@@ -1041,7 +1035,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if responder, ok := e.runner.(tools.PlanInputResponder); ok {
 						planInputResponder = responder
 					}
-					toolResult, toolErr = registry.Execute(toolCtx, call.Name, tools.ExecContext{
+					toolResult, toolErr = e.executeApprovalSemanticTool(toolCtx, registry, call.Name, tools.ExecContext{
 						SessionID:             meta.ID,
 						ToolCallID:            call.ID,
 						Workdir:               meta.Workdir,
@@ -1050,6 +1044,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						Config:                e.cfg,
 						Catalog:               catalog,
 						PlanInputResponder:    planInputResponder,
+						ScopedEvents: func(scoped *session.Store) (func(string, map[string]any), func(string, map[string]any) error, func([]tools.ToolEvent) error) {
+							return e.approvalScopedEvents(scoped, meta.ID, "tool_execute")
+						},
 						Emit: func(eventType string, data map[string]any) {
 							e.emit(meta.ID, eventType, "tool_execute", data)
 						},
@@ -2857,6 +2854,18 @@ func (e *Engine) deferPendingInterrupts(sessionID string) error {
 }
 
 func (e *Engine) drainSteer(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager) (int, bool, error) {
+	var accepted int
+	var stop bool
+	err := e.store.WithApprovalLock(meta.ID, func(scoped *session.Store) error {
+		preparedEngine := e.newApprovalScopedEngine(scoped)
+		var err error
+		accepted, stop, err = preparedEngine.drainSteerScoped(ctx, meta, hookManager)
+		return err
+	})
+	return accepted, stop, err
+}
+
+func (e *Engine) drainSteerScoped(ctx context.Context, meta session.SessionMetadata, hookManager *hooks.Manager) (int, bool, error) {
 	sessionID := meta.ID
 	requests, err := e.store.LoadSteerRequests(sessionID)
 	if err != nil {

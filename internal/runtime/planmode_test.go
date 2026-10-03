@@ -1831,7 +1831,7 @@ func TestApprovePlanModeReportsPlanApprovedEventAppendError(t *testing.T) {
 	}
 	blockRuntimeEventsPath(t, runner.store, sessionID)
 
-	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, Source: session.PlanModeSourceCLI})
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected plan mode approval event append error, got result=%#v err=%v", result, err)
 	}
@@ -1914,7 +1914,7 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 		t.Fatalf("submit plan mode: %v", err)
 	}
 	blockRuntimeMessagesPath(t, runner.store, sessionID)
-	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, Source: session.PlanModeSourceCLI})
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err == nil {
 		t.Fatalf("expected approval replay message append error, got result=%#v err=%v", result, err)
 	}
@@ -1937,7 +1937,7 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 	if err := os.RemoveAll(messagesPath); err != nil {
 		t.Fatalf("remove blocked messages path: %v", err)
 	}
-	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, Source: session.PlanModeSourceCLI})
+	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err != nil {
 		t.Fatalf("retry plan approval: result=%#v err=%v", retried, err)
 	}

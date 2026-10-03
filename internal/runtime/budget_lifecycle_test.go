@@ -809,10 +809,10 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "checkpoint failure")); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	started := make(chan struct{}, 1)
+	started := make(chan *childBudgetRun, 1)
 	fake := provider.NewFake(func(ctx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
 		select {
-		case started <- struct{}{}:
+		case started <- childBudgetRunFromContext(ctx):
 		default:
 		}
 		<-ctx.Done()
@@ -827,13 +827,23 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 		result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
 		done <- runOutcome{result: result, err: err}
 	}()
+	var activeBudget *childBudgetRun
 	select {
-	case <-started:
+	case activeBudget = <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("provider did not start")
 	}
-	if err := engine.store.DeleteJob(job.ID); err != nil {
-		t.Fatalf("delete linked job to inject checkpoint persistence failure: %v", err)
+	if activeBudget == nil {
+		t.Fatal("provider context has no active child budget")
+	}
+	// A checkpoint holds this mutex across LoadJob and SaveJob. Delete between
+	// checkpoints so an already loaded snapshot cannot recreate the job and
+	// undo the persistence failure this test intends to inject.
+	activeBudget.mu.Lock()
+	deleteErr := engine.store.DeleteJob(job.ID)
+	activeBudget.mu.Unlock()
+	if deleteErr != nil {
+		t.Fatalf("delete linked job to inject checkpoint persistence failure: %v", deleteErr)
 	}
 	select {
 	case outcome := <-done:

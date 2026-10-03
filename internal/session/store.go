@@ -30,6 +30,8 @@ type Store struct {
 	dirMode  fs.FileMode
 	fileMode fs.FileMode
 	mu       sync.Mutex
+	// approvalScope is private to a synchronous WithApprovalLock callback.
+	approvalScope *approvalScope
 	// jsonlValidated tracks the byte offset through which this Store instance
 	// has already validated append-only JSONL files. It is guarded by mu.
 	jsonlValidated map[string]int64

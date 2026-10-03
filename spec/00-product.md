@@ -160,7 +160,7 @@
 - 恢复 `paused`、`awaiting_input`、`failed` session
 - 可追加新的 user message
 - 不重放旧的外部副作用
-- 可通过 `--approve-plan` 批准最新 Plan Mode plan 并追加可回放的 `planmode_approval` user message；普通 message 在 `awaiting_approval` 下默认视为 plan revision
+- 可通过 `--approve-plan` 携带已审阅 Plan Mode 的版本/revision target 批准，并追加可回放的 `planmode_approval` user message；脚本可显式选择 `--approve-latest` 捕获当前 target，缺少目标不默默批准 latest；普通 message 在 `awaiting_approval` 下默认视为 plan revision
 
 ## 6. 核心设计原则
 

@@ -193,6 +193,10 @@
 - pending Plan Mode 下 provider schema 和 CompletionController 双层门禁必须一致：只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input`、`submit_plan`
 - `request_user_input` 保存 `pending_request.tool_call_id`，使 Web active runner、server restart fallback、取消和回答都能补齐 provider replay 所需 tool result
 - 以 pending Plan Mode session 为 parent 的 child/delegate/queue 提交必须拒绝；独立新 session 或无 parent queue job 不受影响
+- #125 是从 latest 到“已审阅审批内容”的契约增强；审批 target 由 `plan_mode_id`、`plan_version`、`expected_revision` 组成。coherent snapshot 必须同时绑定 Plan Mode 与 linked mission 审批语义，包括经 progress 改写的 coverage mappings；revision 不是权限令牌，也不冻结无关运行时输入
+- Web 202 / handle 接纳事件之前同步完成权威 CAS 与 durable prepare/claim；仅异步 runner 事后比较不能满足契约。stale target 不得审批、写 replay/history、调用 provider 或把可恢复 session 标成 failed；coverage override 必须保持原 target
+- 跨 Store/跨进程固定锁序为 `approval.lock -> scoped Store.mu -> single-file lock`，公开 plan/goal 语义 mutation 共用协调边界，内部 helper 避免非重入锁嵌套。多文件 prepare 恢复协议不是原子事务；验证必须覆盖部分失败与既有 handle generation settling
+- 成功事实与 retry/dedup identity 保存实际匹配的 `approved_revision`；旧事实缺 revision 保留 legacy/unknown，不用当前 scope 倒填。CLI 脚本必须明确 target 或显式 `--approve-latest`，交互入口携带展示 target；普通 continue 保持原行为
 
 ### 2.12 Context budget 与 lineage observability
 

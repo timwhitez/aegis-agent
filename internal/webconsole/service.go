@@ -152,6 +152,8 @@ type Service struct {
 	// beforeAppendGoalMutation is set only by package tests to force deterministic
 	// goal mutation persistence failures after earlier side facts have been recorded.
 	beforeAppendGoalMutation func(sessionID string, goal session.SessionGoal, eventType string) error
+	// Set only by tests to interleave a semantic update before authoritative admission.
+	beforeApprovalPrepare func(sessionID string)
 	// beforeQueueReaperPass is set only by package tests after historyMu is held,
 	// allowing clear-history/reaper ordering to be exercised deterministically.
 	beforeQueueReaperPass func()
@@ -1430,22 +1432,22 @@ func (s *Service) sessionDetail(sessionID string, limit int) (SessionDetailRespo
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return SessionDetailResponse{}, fmt.Errorf("load parent-coordination.json: %w", err)
 	}
-	var goalPtr *session.SessionGoal
+	approval, err := s.store.LoadApprovalSnapshot(sessionID)
+	if err != nil {
+		return SessionDetailResponse{}, err
+	}
+	goalPtr := approval.Goal
 	var goalFacts *GoalFactsResponse
-	if goal, err := s.store.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
-		goalPtr = &goal
-		goalFacts, err = s.goalFacts(sessionID, goal, children, background)
+	if goalPtr != nil {
+		goalFacts, err = s.goalFacts(sessionID, *goalPtr, children, background)
 		if err != nil {
 			return SessionDetailResponse{}, err
 		}
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return SessionDetailResponse{}, fmt.Errorf("load goal.json: %w", err)
 	}
 	var planModePtr *session.PlanModeState
-	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.PlanModeID != "" {
-		planModePtr = &planMode
-	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return SessionDetailResponse{}, fmt.Errorf("load planmode.json: %w", err)
+	if approval.PlanMode.PlanModeID != "" {
+		approval.PlanMode.ApprovalRevision = approval.Revision
+		planModePtr = &approval.PlanMode
 	}
 	ownerEvents, _, err := s.store.LoadEventsTail(sessionID, 1000)
 	if err != nil {
@@ -1572,7 +1574,7 @@ func (s *Service) handleGoalGet(w http.ResponseWriter, sessionID string) {
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *goalMutationService) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req GoalDraftRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1681,7 +1683,7 @@ func (s *Service) handleGoalCreate(w http.ResponseWriter, r *http.Request, sessi
 	writeJSON(w, http.StatusCreated, goal)
 }
 
-func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *goalMutationService) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req GoalPatchRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1860,7 +1862,7 @@ func (s *Service) handleGoalPatch(w http.ResponseWriter, r *http.Request, sessio
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleGoalClear(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *goalMutationService) handleGoalClear(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
@@ -1918,7 +1920,7 @@ func (s *Service) handleGoalClear(w http.ResponseWriter, r *http.Request, sessio
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "cleared": cleared})
 }
 
-func (s *Service) handleGoalStatus(w http.ResponseWriter, r *http.Request, sessionID, status, eventType string) {
+func (s *goalMutationService) handleGoalStatus(w http.ResponseWriter, r *http.Request, sessionID, status, eventType string) {
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
@@ -1952,7 +1954,7 @@ func (s *Service) handleGoalStatus(w http.ResponseWriter, r *http.Request, sessi
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *goalMutationService) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req MissionPlanPatchRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2130,15 +2132,24 @@ func (s *Service) handleMissionPlanPatch(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Request, sessionID string) {
-	req, ok := decodeOptionalMissionPlanApproveRequest(w, r)
-	if !ok {
-		return
-	}
+func (s *goalMutationService) handleMissionPlanApprove(w http.ResponseWriter, r *http.Request, sessionID string, req MissionPlanApproveRequest) {
 	goal, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		writeError(w, goalStoreStatus(err), err)
 		return
+	}
+	if req.PlanModeID != "" || req.ExpectedRevision != "" || req.PlanVersion != 0 {
+		snapshot, err := s.store.LoadApprovalSnapshot(sessionID)
+		if err == nil {
+			err = session.ValidateApprovalTarget(snapshot, req.ApprovalTarget)
+		}
+		if err == nil && (!snapshot.PlanMode.Enabled || snapshot.PlanMode.LinkedGoalID != goal.GoalID) {
+			err = session.ErrApprovalConflict
+		}
+		if err != nil {
+			writeError(w, planModeActionStatus(err), err)
+			return
+		}
 	}
 	previousGoal := goal
 	goal.Mode = session.GoalModeMission
@@ -2150,21 +2161,22 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 	if planMode, err := s.store.LoadPlanMode(sessionID); err == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
-			if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
-				SessionID:            sessionID,
-				ApprovePlan:          true,
-				OverrideGoalCoverage: req.OverrideCoverage,
-				Source:               session.PlanModeSourceWeb,
-			}); err != nil {
-				writeError(w, planModeActionStatus(err), err)
-				return
-			}
-			writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+			// The root adapter dispatches execution before entering this locked fact-repair path.
+			writeError(w, http.StatusConflict, session.ErrApprovalConflict)
 			return
 		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
 			writeError(w, http.StatusConflict, errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan"))
 			return
 		case session.PlanModeStatusExecuting:
+			snapshot, err := s.store.LoadApprovalSnapshot(sessionID)
+			if err != nil {
+				writeError(w, planModeActionStatus(err), err)
+				return
+			}
+			if planMode.ApprovedVersion <= 0 || planMode.ApprovedVersion != planMode.PlanVersion || (planMode.ApprovedRevision != "" && planMode.ApprovedRevision != snapshot.Revision) {
+				writeError(w, http.StatusConflict, session.ErrApprovalConflict)
+				return
+			}
 			approvedAt := mission.ApprovedAt
 			if approvedAt == "" {
 				approvedAt = nowString()
@@ -2175,10 +2187,12 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 				CoverageOverride: req.OverrideCoverage,
 				PlanModeID:       planMode.PlanModeID,
 				ApprovedVersion:  planMode.ApprovedVersion,
+				ApprovedRevision: planMode.ApprovedRevision,
 			}, map[string]any{
 				"approved_at":       approvedAt,
 				"plan_mode_id":      planMode.PlanModeID,
 				"approved_version":  planMode.ApprovedVersion,
+				"approved_revision": planMode.ApprovedRevision,
 				"coverage_override": req.OverrideCoverage,
 			})
 			if err != nil {
@@ -2252,7 +2266,7 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, goal)
 }
 
-func (s *Service) handleMissionValidationPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
+func (s *goalMutationService) handleMissionValidationPatch(w http.ResponseWriter, r *http.Request, sessionID string) {
 	var req struct {
 		ValidationPlan     []session.GoalValidation `json:"validation_plan,omitempty"`
 		ValidationContract []session.GoalValidation `json:"validation_contract,omitempty"`
@@ -2640,30 +2654,36 @@ func (s *Service) trackLaunch(fn func()) {
 }
 
 func (s *Service) handlePlanModeGet(w http.ResponseWriter, sessionID string) {
-	planMode, err := s.store.LoadPlanMode(sessionID)
+	approval, err := s.store.LoadApprovalSnapshot(sessionID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, fs.ErrNotExist) {
-			status = http.StatusNotFound
-		}
-		writeError(w, status, err)
+		writeError(w, planModeActionStatus(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, planMode)
+	if approval.PlanMode.PlanModeID == "" {
+		writeError(w, http.StatusNotFound, fs.ErrNotExist)
+		return
+	}
+	approval.PlanMode.ApprovalRevision = approval.Revision
+	linkedGoal := approval.Goal
+	if approval.PlanMode.LinkedGoalID == "" {
+		linkedGoal = nil
+	}
+	writeJSON(w, http.StatusOK, struct {
+		session.PlanModeState
+		LinkedGoal *session.SessionGoal         `json:"linked_goal,omitempty"`
+		Coverage   *session.MissionPlanCoverage `json:"mission_plan_coverage,omitempty"`
+	}{approval.PlanMode, linkedGoal, approval.Coverage})
 }
 
 func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, sessionID string) {
-	req, ok := decodeOptionalMissionPlanApproveRequest(w, r)
+	req, ok := decodeOptionalPlanModeApproveRequest(w, r)
 	if !ok {
-		return
-	}
-	if err := s.ensurePlanModeApprovalPreflight(sessionID, req.OverrideCoverage); err != nil {
-		writeError(w, planModeActionStatus(err), err)
 		return
 	}
 	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
 		SessionID:            sessionID,
 		ApprovePlan:          true,
+		ApprovalTarget:       &req.ApprovalTarget,
 		OverrideGoalCoverage: req.OverrideCoverage,
 		Source:               session.PlanModeSourceWeb,
 	}); err != nil {
@@ -2867,13 +2887,33 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	}
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
+	var prepared *runtime.PreparedApproval
+	if req.ApprovePlan {
+		if s.beforeApprovalPrepare != nil {
+			s.beforeApprovalPrepare(sessionID)
+		}
+		prepared, err = runner.PrepareApprovalContinue(runCtx, req)
+		if err != nil {
+			cancel()
+			return err
+		}
+	}
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	if err := s.addHandle(handle); err != nil {
 		cancel()
+		if prepared != nil {
+			return errors.Join(err, runner.AbortPreparedApproval(prepared, err))
+		}
 		return err
 	}
 	s.trackLaunch(func() {
-		result, err := runner.Continue(runCtx, req)
+		var result runtime.RunResult
+		var err error
+		if prepared != nil {
+			result, err = runner.RunPreparedApproval(runCtx, prepared)
+		} else {
+			result, err = runner.Continue(runCtx, req)
+		}
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
 	})
 	return nil
@@ -2885,39 +2925,6 @@ func webContinueError(err error) error {
 		return newWebError(errorCodeSessionNotResumable, "session is not resumable", notResumable.Detail, notResumable.Action)
 	}
 	return err
-}
-
-func (s *Service) ensurePlanModeApprovalPreflight(sessionID string, overrideCoverage bool) error {
-	planMode, err := s.store.LoadPlanMode(sessionID)
-	if err != nil {
-		return err
-	}
-	switch planMode.Status {
-	case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
-		if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-			return errors.New("plan mode has no submitted plan")
-		}
-	case session.PlanModeStatusExecuting:
-		if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-			return errors.New("plan mode has no approved plan")
-		}
-	default:
-		return fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
-	}
-	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
-		return nil
-	}
-	goal, err := s.store.LoadGoal(sessionID)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if goal.GoalID != planMode.LinkedGoalID || goal.Mission == nil {
-		return nil
-	}
-	return ensureWebMissionCoverage(goal, overrideCoverage)
 }
 
 func (s *Service) ensurePlanModeRevisionPreflight(sessionID string) error {
@@ -2940,8 +2947,11 @@ func planModeActionStatus(err error) int {
 	if errors.Is(err, fs.ErrNotExist) {
 		return http.StatusNotFound
 	}
-	if errors.Is(err, errSessionAlreadyActive) {
+	if errors.Is(err, errSessionAlreadyActive) || errors.Is(err, session.ErrApprovalConflict) {
 		return http.StatusConflict
+	}
+	if errors.Is(err, session.ErrMissingApprovalTarget) {
+		return http.StatusBadRequest
 	}
 	var webErr webError
 	if errors.As(err, &webErr) {
@@ -7120,7 +7130,7 @@ func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string
 	return nil
 }
 
-func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (bool, error) {
+func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReason string) (bool, error) {
 	if s.hasActiveHandle(sessionID) {
 		return false, nil
 	}
@@ -7129,6 +7139,16 @@ func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (b
 		return false, err
 	}
 	if state.Status != session.StatusRunning {
+		return false, nil
+	}
+	canReconcile, err := runtime.CanReconcileApprovalPreparation(s.store, sessionID)
+	if err != nil {
+		if (pauseReason != "manual_stop" && pauseReason != "delete_session") || !errors.Is(err, session.ErrApprovalConflict) {
+			return false, err
+		}
+		canReconcile = true
+	}
+	if !canReconcile {
 		return false, nil
 	}
 	eventsList, err := s.store.LoadEvents(sessionID)
@@ -7151,8 +7171,12 @@ func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (b
 	state.Phase = "interrupt"
 	state.PauseReason = pauseReason
 	state.LastError = ""
-	if err := s.store.SaveState(sessionID, state); err != nil {
+	committed, saved, err := s.store.SwapStateIfCurrent(sessionID, previousState, state)
+	if err != nil {
 		return false, err
+	}
+	if !saved {
+		return false, session.ErrApprovalConflict
 	}
 
 	released := events.New(sessionID, "webconsole.handle.released", "webconsole", map[string]any{
@@ -7165,7 +7189,7 @@ func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (b
 		"previous_event_at": owner.LastEventAt,
 	})
 	if err := s.store.AppendEvent(sessionID, released); err != nil {
-		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
 	paused := events.New(sessionID, "session.paused", "interrupt", map[string]any{
 		"reason":             pauseReason,
@@ -7177,10 +7201,10 @@ func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (b
 		"process_start_id":   owner.ProcessStartID,
 	})
 	if err := s.store.AppendEvent(sessionID, paused); err != nil {
-		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
-	if _, err := s.rejectPendingStopFallbackSteers(sessionID, requests, pauseReason); err != nil {
-		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err)
+	if _, err := s.rejectPendingStopFallbackSteers(sessionID, requests, pauseReason, &committed); err != nil {
+		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
 	return true, nil
 }
@@ -7211,7 +7235,7 @@ func (s *Service) rejectStopFallbackSteersForPausedStop(sessionID, pauseReason s
 	return changed, nil
 }
 
-func (s *Service) rejectPendingStopFallbackSteers(sessionID string, requests []session.SteerRequest, pauseReason string) (bool, error) {
+func (s *Service) rejectPendingStopFallbackSteers(sessionID string, requests []session.SteerRequest, pauseReason string, expected ...*session.State) (bool, error) {
 	rejectedEvents := make([]events.Event, 0)
 	changed := false
 	for i := range requests {
@@ -7237,8 +7261,19 @@ func (s *Service) rejectPendingStopFallbackSteers(sessionID string, requests []s
 	if err := s.store.UpdateSteerRequests(sessionID, requests); err != nil {
 		return false, err
 	}
-	if _, err := s.store.RefreshPendingSteerCount(sessionID); err != nil {
-		return false, err
+	if len(expected) > 0 {
+		updated, saved, err := s.store.SwapStateIfCurrent(sessionID, *expected[0], *expected[0])
+		if err != nil {
+			return false, err
+		}
+		if !saved {
+			return false, session.ErrApprovalConflict
+		}
+		*expected[0] = updated
+	} else {
+		if _, err := s.store.RefreshPendingSteerCount(sessionID); err != nil {
+			return false, err
+		}
 	}
 	if err := s.store.AppendEvents(sessionID, rejectedEvents); err != nil {
 		return false, err
@@ -7250,15 +7285,28 @@ func isStopFallbackSteerRequest(request session.SteerRequest) bool {
 	return request.Interrupt && strings.TrimSpace(request.Text) == stopFallbackSteerMessage
 }
 
-func (s *Service) restoreStaleRunningSessionReconcile(sessionID string, previousState session.State, previousEvents []events.Event, previousRequests []session.SteerRequest, cause error) error {
+func (s *goalMutationService) restoreStaleRunningSessionReconcile(sessionID string, previousState session.State, previousEvents []events.Event, previousRequests []session.SteerRequest, cause error, expected ...session.State) error {
+	if len(expected) > 0 {
+		// Restore running before rollback so a normal continue cannot claim the
+		// temporary paused state while its control facts are being restored.
+		saved, err := s.store.SaveStateIfCurrent(sessionID, expected[0], previousState)
+		if err != nil {
+			return errors.Join(cause, err)
+		}
+		if !saved {
+			return errors.Join(cause, session.ErrApprovalConflict)
+		}
+	}
 	if err := s.store.RestoreEvents(sessionID, previousEvents); err != nil {
 		return fmt.Errorf("restore events after stale session reconcile error %v: %w", cause, err)
 	}
 	if err := s.store.UpdateSteerRequests(sessionID, previousRequests); err != nil {
 		return fmt.Errorf("restore steer requests after stale session reconcile error %v: %w", cause, err)
 	}
-	if err := s.store.SaveState(sessionID, previousState); err != nil {
-		return fmt.Errorf("restore state after stale session reconcile error %v: %w", cause, err)
+	if len(expected) == 0 {
+		if err := s.store.SaveState(sessionID, previousState); err != nil {
+			return fmt.Errorf("restore state after stale session reconcile error %v: %w", cause, err)
+		}
 	}
 	return cause
 }
@@ -7746,7 +7794,7 @@ func optionalGoalValidations(items []session.GoalValidation) *[]session.GoalVali
 	return &copyItems
 }
 
-func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
+func (s *goalMutationService) appendGoalMutation(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
 	data := webGoalEventData(goal)
 	for key, value := range extra {
 		data[key] = value
@@ -7771,7 +7819,7 @@ func (s *Service) appendGoalMutation(sessionID string, goal session.SessionGoal,
 	return nil
 }
 
-func (s *Service) appendLinkedPlanModeEvent(sessionID string, previous session.PlanModeSnapshot, planMode session.PlanModeState, created bool) error {
+func (s *goalMutationService) appendLinkedPlanModeEvent(sessionID string, previous session.PlanModeSnapshot, planMode session.PlanModeState, created bool) error {
 	eventType := webLinkedPlanModeEventType(previous, planMode, created)
 	if eventType == "" {
 		return nil
@@ -7827,7 +7875,7 @@ func webPlanModeChanged(previous session.PlanModeSnapshot, current session.PlanM
 		previous.State.Status != current.Status
 }
 
-func (s *Service) restoreGoalHistoryAfterMutationError(sessionID string, previousHistory []session.GoalHistoryEntry, cause error, context string) error {
+func (s *goalMutationService) restoreGoalHistoryAfterMutationError(sessionID string, previousHistory []session.GoalHistoryEntry, cause error, context string) error {
 	if !goalMutationHistoryAppended(cause) {
 		return nil
 	}
@@ -7837,7 +7885,7 @@ func (s *Service) restoreGoalHistoryAfterMutationError(sessionID string, previou
 	return nil
 }
 
-func (s *Service) restoreEventsAfterMutationError(sessionID string, previousEvents []events.Event, hasSnapshot bool, cause error, context string) error {
+func (s *goalMutationService) restoreEventsAfterMutationError(sessionID string, previousEvents []events.Event, hasSnapshot bool, cause error, context string) error {
 	if !hasSnapshot {
 		return nil
 	}
@@ -7847,7 +7895,7 @@ func (s *Service) restoreEventsAfterMutationError(sessionID string, previousEven
 	return nil
 }
 
-func (s *Service) restoreGoalCreateAfterPlanModeError(sessionID string, previousPlanMode session.PlanModeSnapshot, previousPlanModeHistory []session.PlanModeHistoryEntry, previousTasks []session.Task, previousHistory []session.GoalHistoryEntry, cause error) error {
+func (s *goalMutationService) restoreGoalCreateAfterPlanModeError(sessionID string, previousPlanMode session.PlanModeSnapshot, previousPlanModeHistory []session.PlanModeHistoryEntry, previousTasks []session.Task, previousHistory []session.GoalHistoryEntry, cause error) error {
 	if err := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); err != nil {
 		return fmt.Errorf("restore plan mode after linked plan mode error %v: %w", cause, err)
 	}
@@ -7866,7 +7914,7 @@ func (s *Service) restoreGoalCreateAfterPlanModeError(sessionID string, previous
 	return nil
 }
 
-func (s *Service) restoreGoalPatchAfterPlanModeError(sessionID string, previousGoal session.SessionGoal, previousPlanMode session.PlanModeSnapshot, previousPlanModeHistory []session.PlanModeHistoryEntry, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
+func (s *goalMutationService) restoreGoalPatchAfterPlanModeError(sessionID string, previousGoal session.SessionGoal, previousPlanMode session.PlanModeSnapshot, previousPlanModeHistory []session.PlanModeHistoryEntry, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
 	if err := s.store.RestorePlanModeSnapshot(sessionID, previousPlanMode); err != nil {
 		return fmt.Errorf("restore plan mode after linked plan mode error %v: %w", cause, err)
 	}
@@ -7884,7 +7932,7 @@ func (s *Service) restoreGoalPatchAfterPlanModeError(sessionID string, previousG
 	return nil
 }
 
-func (s *Service) restoreGoalPatchAfterTaskSyncError(sessionID string, previousGoal session.SessionGoal, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
+func (s *goalMutationService) restoreGoalPatchAfterTaskSyncError(sessionID string, previousGoal session.SessionGoal, previousTasks []session.Task, hasTasksSnapshot bool, cause error) error {
 	var restoreErr error
 	if hasTasksSnapshot {
 		if err := s.store.SaveTasks(sessionID, previousTasks); err != nil {
@@ -7900,7 +7948,7 @@ func (s *Service) restoreGoalPatchAfterTaskSyncError(sessionID string, previousG
 	return restoreErr
 }
 
-func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
+func (s *goalMutationService) appendGoalEvent(sessionID string, goal session.SessionGoal, eventType string, extra map[string]any) error {
 	data := webGoalEventData(goal)
 	for key, value := range extra {
 		data[key] = value
@@ -7908,7 +7956,7 @@ func (s *Service) appendGoalEvent(sessionID string, goal session.SessionGoal, ev
 	return s.store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", data))
 }
 
-func (s *Service) approveMissionPlanWithEvent(sessionID string, input session.MissionPlanApprovalInput, eventExtra map[string]any) (session.SessionGoal, error) {
+func (s *goalMutationService) approveMissionPlanWithEvent(sessionID string, input session.MissionPlanApprovalInput, eventExtra map[string]any) (session.SessionGoal, error) {
 	previousGoal, err := s.store.LoadGoal(sessionID)
 	if err != nil {
 		return session.SessionGoal{}, missionPlanApprovalStoreError{err: err}
@@ -8989,6 +9037,13 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	resp := ErrorResponse{Error: err.Error()}
+	if errors.Is(err, session.ErrApprovalConflict) {
+		resp.Code = "APPROVAL_TARGET_CONFLICT"
+		resp.Action = "Reload the plan and review it again."
+	}
+	if errors.Is(err, session.ErrMissingApprovalTarget) {
+		resp.Code = "APPROVAL_TARGET_REQUIRED"
+	}
 	var coded webError
 	if errors.As(err, &coded) {
 		resp.Code = coded.code

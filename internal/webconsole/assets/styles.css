@@ -2838,7 +2838,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 40;
+  z-index: 80;
   pointer-events: none;
 }
 

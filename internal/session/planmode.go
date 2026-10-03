@@ -45,26 +45,29 @@ type PlanModeDraft struct {
 }
 
 type PlanModeState struct {
-	SchemaVersion   int                   `json:"schema_version"`
-	SessionID       string                `json:"session_id"`
-	PlanModeID      string                `json:"plan_mode_id"`
-	Enabled         bool                  `json:"enabled"`
-	Status          string                `json:"status"`
-	Objective       string                `json:"objective"`
-	Source          string                `json:"source"`
-	LinkedGoalID    string                `json:"linked_goal_id,omitempty"`
-	PlanID          string                `json:"plan_id,omitempty"`
-	PlanVersion     int                   `json:"plan_version,omitempty"`
-	ApprovedVersion int                   `json:"approved_version,omitempty"`
-	PlanMarkdown    string                `json:"plan_markdown,omitempty"`
-	Summary         string                `json:"summary,omitempty"`
-	Assumptions     []string              `json:"assumptions,omitempty"`
-	Risks           []string              `json:"risks,omitempty"`
-	Verification    []string              `json:"verification,omitempty"`
-	PendingRequest  *PlanModeInputRequest `json:"pending_request,omitempty"`
-	Approvals       []PlanModeApproval    `json:"approvals,omitempty"`
-	CreatedAt       string                `json:"created_at"`
-	UpdatedAt       string                `json:"updated_at"`
+	SchemaVersion    int    `json:"schema_version"`
+	SessionID        string `json:"session_id"`
+	PlanModeID       string `json:"plan_mode_id"`
+	Enabled          bool   `json:"enabled"`
+	Status           string `json:"status"`
+	Objective        string `json:"objective"`
+	Source           string `json:"source"`
+	LinkedGoalID     string `json:"linked_goal_id,omitempty"`
+	PlanID           string `json:"plan_id,omitempty"`
+	PlanVersion      int    `json:"plan_version,omitempty"`
+	ApprovedVersion  int    `json:"approved_version,omitempty"`
+	ApprovedRevision string `json:"approved_revision,omitempty"`
+	// ApprovalRevision is an API projection; authoritative saves discard it.
+	ApprovalRevision string                `json:"approval_revision,omitempty"`
+	PlanMarkdown     string                `json:"plan_markdown,omitempty"`
+	Summary          string                `json:"summary,omitempty"`
+	Assumptions      []string              `json:"assumptions,omitempty"`
+	Risks            []string              `json:"risks,omitempty"`
+	Verification     []string              `json:"verification,omitempty"`
+	PendingRequest   *PlanModeInputRequest `json:"pending_request,omitempty"`
+	Approvals        []PlanModeApproval    `json:"approvals,omitempty"`
+	CreatedAt        string                `json:"created_at"`
+	UpdatedAt        string                `json:"updated_at"`
 }
 
 type PlanModeInputOption struct {
@@ -99,10 +102,11 @@ type PlanModeInputAnswer struct {
 }
 
 type PlanModeApproval struct {
-	Version    int    `json:"version"`
-	Source     string `json:"source"`
-	ApprovedBy string `json:"approved_by,omitempty"`
-	ApprovedAt string `json:"approved_at"`
+	Version          int    `json:"version"`
+	Source           string `json:"source"`
+	ApprovedBy       string `json:"approved_by,omitempty"`
+	ApprovedAt       string `json:"approved_at"`
+	ApprovedRevision string `json:"approved_revision,omitempty"`
 }
 
 type PlanModeHistoryEntry struct {
@@ -381,6 +385,16 @@ func findPlanModeQuestionOption(question PlanModeInputQuestion, label, value str
 }
 
 func (s *Store) CreatePlanMode(sessionID string, draft PlanModeDraft) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.createPlanModeApprovalLocked(sessionID, draft)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) createPlanModeApprovalLocked(sessionID string, draft PlanModeDraft) (PlanModeState, error) {
 	linkedGoalID := ""
 	if goal, err := s.LoadGoal(sessionID); err == nil && goal.GoalID != "" {
 		linkedGoalID = goal.GoalID
@@ -431,6 +445,13 @@ func (s *Store) LoadPlanMode(sessionID string) (PlanModeState, error) {
 }
 
 func (s *Store) SavePlanMode(sessionID string, state PlanModeState) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.savePlanModeApprovalLocked(sessionID, state)
+	})
+	return err
+}
+
+func (s *Store) savePlanModeApprovalLocked(sessionID string, state PlanModeState) error {
 	preparePlanModeForSave(sessionID, &state)
 	if err := ValidatePlanMode(state); err != nil {
 		return err
@@ -445,6 +466,17 @@ func (s *Store) SavePlanMode(sessionID string, state PlanModeState) error {
 }
 
 func (s *Store) MutatePlanMode(sessionID string, mutate func(*PlanModeState) error) (PlanModeState, bool, error) {
+	var value0 PlanModeState
+	var value1 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.mutatePlanModeApprovalLocked(sessionID, mutate)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) mutatePlanModeApprovalLocked(sessionID string, mutate func(*PlanModeState) error) (PlanModeState, bool, error) {
 	path, err := s.sessionPath(sessionID, "planmode.json")
 	if err != nil {
 		return PlanModeState{}, false, err
@@ -487,6 +519,7 @@ func preparePlanModeForSave(sessionID string, state *PlanModeState) {
 	if state == nil {
 		return
 	}
+	state.ApprovalRevision = ""
 	if strings.TrimSpace(state.SessionID) == "" {
 		state.SessionID = sessionID
 	}
@@ -503,6 +536,13 @@ func preparePlanModeForSave(sessionID string, state *PlanModeState) {
 }
 
 func (s *Store) AppendPlanModeHistory(sessionID string, entry PlanModeHistoryEntry) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.appendPlanModeHistoryApprovalLocked(sessionID, entry)
+	})
+	return err
+}
+
+func (s *Store) appendPlanModeHistoryApprovalLocked(sessionID string, entry PlanModeHistoryEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry.SchemaVersion == 0 {
@@ -568,6 +608,13 @@ func (s *Store) LoadPlanModeHistory(sessionID string) ([]PlanModeHistoryEntry, e
 }
 
 func (s *Store) RestorePlanModeHistory(sessionID string, entries []PlanModeHistoryEntry) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.restorePlanModeHistoryApprovalLocked(sessionID, entries)
+	})
+	return err
+}
+
+func (s *Store) restorePlanModeHistoryApprovalLocked(sessionID string, entries []PlanModeHistoryEntry) error {
 	path, err := s.sessionPath(sessionID, "artifacts", "planmode-history.jsonl")
 	if err != nil {
 		return err
@@ -610,6 +657,16 @@ func validatePlanModeHistoryEntry(entry PlanModeHistoryEntry) error {
 }
 
 func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.submitPlanModeApprovalLocked(sessionID, input)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) submitPlanModeApprovalLocked(sessionID string, input PlanModeSubmitInput) (PlanModeState, error) {
 	title := strings.TrimSpace(input.Title)
 	if title == "" {
 		return PlanModeState{}, errors.New("title is required")
@@ -645,6 +702,7 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 		}
 		state.PlanVersion++
 		state.ApprovedVersion = 0
+		state.ApprovedRevision = ""
 		state.Status = PlanModeStatusAwaitingApproval
 		state.PendingRequest = nil
 		state.PlanMarkdown = planMarkdown
@@ -694,6 +752,13 @@ func (s *Store) SubmitPlanMode(sessionID string, input PlanModeSubmitInput) (Pla
 }
 
 func (s *Store) WritePlanModeMarkdown(sessionID string, state PlanModeState) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.writePlanModeMarkdownApprovalLocked(sessionID, state)
+	})
+	return err
+}
+
+func (s *Store) writePlanModeMarkdownApprovalLocked(sessionID string, state PlanModeState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.sessionPath(sessionID, "artifacts", "planmode-plan.md")
@@ -704,6 +769,16 @@ func (s *Store) WritePlanModeMarkdown(sessionID string, state PlanModeState) err
 }
 
 func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInputRequest, source string) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.setPlanModePendingRequestApprovalLocked(sessionID, request, source)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) setPlanModePendingRequestApprovalLocked(sessionID string, request PlanModeInputRequest, source string) (PlanModeState, error) {
 	if request.RequestID == "" {
 		request.RequestID = NewPlanModeQuestionID()
 	}
@@ -760,6 +835,17 @@ func (s *Store) SetPlanModePendingRequest(sessionID string, request PlanModeInpu
 }
 
 func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers []PlanModeInputAnswer) (PlanModeState, PlanModeInputRequest, error) {
+	var value0 PlanModeState
+	var value1 PlanModeInputRequest
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.answerPlanModeInputApprovalLocked(sessionID, requestID, source, answers)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) answerPlanModeInputApprovalLocked(sessionID, requestID, source string, answers []PlanModeInputAnswer) (PlanModeState, PlanModeInputRequest, error) {
 	var request PlanModeInputRequest
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -815,53 +901,32 @@ func (s *Store) AnswerPlanModeInput(sessionID, requestID, source string, answers
 }
 
 func (s *Store) ApprovePlanMode(sessionID string, source string) (PlanModeState, error) {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	rollback, err := s.planModeRollbackSnapshot(sessionID)
-	if err != nil {
-		return PlanModeState{}, err
-	}
-	state, mutated, err := s.MutatePlanMode(sessionID, func(state *PlanModeState) error {
-		if state.PlanModeID == "" {
-			return errors.New("session has no current plan mode")
-		}
-		if state.Status != PlanModeStatusAwaitingApproval && state.Status != PlanModeStatusApproved {
-			return fmt.Errorf("plan mode is not awaiting approval: %s", state.Status)
-		}
-		if state.PlanVersion <= 0 || strings.TrimSpace(state.PlanMarkdown) == "" {
-			return errors.New("plan mode has no submitted plan")
-		}
-		state.Status = PlanModeStatusApproved
-		state.ApprovedVersion = state.PlanVersion
-		state.Approvals = append(state.Approvals, PlanModeApproval{
-			Version:    state.PlanVersion,
-			Source:     normalizePlanModeSource(source),
-			ApprovedBy: "operator",
-			ApprovedAt: now,
-		})
-		return nil
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.approvePlanModeApprovalLocked(sessionID, source)
+		return callErr
 	})
-	if err != nil {
-		return PlanModeState{}, err
-	}
-	if !mutated {
-		return PlanModeState{}, errors.New("session has no current plan mode")
-	}
-	if err := s.AppendPlanModeHistory(sessionID, PlanModeHistoryEntry{
-		PlanModeID:  state.PlanModeID,
-		Type:        "planmode.plan_approved",
-		Source:      normalizePlanModeSource(source),
-		Status:      state.Status,
-		PlanVersion: state.PlanVersion,
-	}); err != nil {
-		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
-			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
-		}
-		return PlanModeState{}, err
-	}
-	return state, nil
+	return value0, err
+}
+
+func (s *Store) approvePlanModeApprovalLocked(sessionID string, source string) (PlanModeState, error) {
+	// Legacy Store compatibility: intentionally approves latest without claiming
+	// that any historical content was reviewed. New adapters use target CAS.
+	return s.approvePlanModeRevisionLocked(sessionID, source, "")
 }
 
 func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.markPlanModeExecutingApprovalLocked(sessionID, source)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) markPlanModeExecutingApprovalLocked(sessionID string, source string) (PlanModeState, error) {
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {
 		return PlanModeState{}, err
@@ -891,6 +956,7 @@ func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanMode
 		Source:      normalizePlanModeSource(source),
 		Status:      state.Status,
 		PlanVersion: state.ApprovedVersion,
+		Data:        map[string]any{"approved_revision": state.ApprovedRevision},
 	}); err != nil {
 		if rollbackErr := s.rollbackPlanModeAfterHistoryError(sessionID, rollback); rollbackErr != nil {
 			return PlanModeState{}, fmt.Errorf("restore plan mode snapshot after %v: %w", err, rollbackErr)
@@ -901,6 +967,16 @@ func (s *Store) MarkPlanModeExecuting(sessionID string, source string) (PlanMode
 }
 
 func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.revisePlanModeApprovalLocked(sessionID, source, message)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) revisePlanModeApprovalLocked(sessionID, source, message string) (PlanModeState, error) {
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {
 		return PlanModeState{}, err
@@ -941,6 +1017,16 @@ func (s *Store) RevisePlanMode(sessionID, source, message string) (PlanModeState
 }
 
 func (s *Store) CancelPlanMode(sessionID string, source string) (PlanModeState, error) {
+	var value0 PlanModeState
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.cancelPlanModeApprovalLocked(sessionID, source)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) cancelPlanModeApprovalLocked(sessionID string, source string) (PlanModeState, error) {
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {
 		return PlanModeState{}, err
@@ -993,6 +1079,16 @@ type PlanModeSnapshot struct {
 }
 
 func (s *Store) SnapshotPlanMode(sessionID string) (PlanModeSnapshot, error) {
+	var value0 PlanModeSnapshot
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.snapshotPlanModeApprovalLocked(sessionID)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) snapshotPlanModeApprovalLocked(sessionID string) (PlanModeSnapshot, error) {
 	rollback, err := s.planModeRollbackSnapshot(sessionID)
 	if err != nil {
 		return PlanModeSnapshot{}, err
@@ -1006,6 +1102,13 @@ func (s *Store) SnapshotPlanMode(sessionID string) (PlanModeSnapshot, error) {
 }
 
 func (s *Store) RestorePlanModeSnapshot(sessionID string, snapshot PlanModeSnapshot) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.restorePlanModeSnapshotApprovalLocked(sessionID, snapshot)
+	})
+	return err
+}
+
+func (s *Store) restorePlanModeSnapshotApprovalLocked(sessionID string, snapshot PlanModeSnapshot) error {
 	return s.rollbackPlanModeAfterHistoryError(sessionID, planModeRollback{
 		Snapshot:        snapshot.State,
 		HasSnapshot:     snapshot.HasState,

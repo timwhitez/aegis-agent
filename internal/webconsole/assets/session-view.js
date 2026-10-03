@@ -1183,7 +1183,7 @@ function renderGoalToolSpecialResult(result, parsed) {
     <div class="tool-special-card goal-tool-card">
       <div class="goal-tool-head">
         <span class="status-badge ${goalStatusTone(status)}">${escapeHTML(goalStatusLabel(parsed))}</span>
-        <span class="tiny-code-chip">${escapeHTML(shortId(parsed.goal_id || result?.metadata?.goal_id || 'goal'))}</span>
+        <span class="tiny-code-chip" translate="no" data-i18n-skip>${escapeHTML(shortId(parsed.goal_id || result?.metadata?.goal_id || 'goal'))}</span>
       </div>
       ${parsed.objective ? `<div class="goal-tool-objective">${escapeHTML(goalObjectiveReference(parsed.objective))}</div>` : ''}
       <div class="meta-chip-row">
@@ -2432,7 +2432,7 @@ function renderGoalPanel(detail) {
         <div class="goal-panel-head-chips">
           <span class="status-badge ${goalStatusTone(goal.status)}">${escapeHTML(humanizeStatus(goal.status || 'active'))}</span>
           ${historicalCompletion ? '<span class="status-badge neutral">Historical</span>' : ''}
-          <span class="tiny-code-chip">${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
+          <span class="tiny-code-chip" translate="no" data-i18n-skip>${escapeHTML(shortId(goal.goal_id || 'goal'))}</span>
         </div>
       </div>
       <div class="goal-objective">${escapeHTML(goal.objective || '')}</div>
@@ -2576,6 +2576,11 @@ function renderGoalItem(item, kind) {
     : kind === 'role'
       ? item?.name || item?.role || 'role'
       : item?.title || item?.text || item?.id || 'item';
+  const hasDurableTitle = kind === 'validation'
+    ? Boolean(item?.command || item?.artifact || item?.description || item?.kind)
+    : kind === 'role'
+      ? Boolean(item?.name || item?.role)
+      : Boolean(item?.title || item?.text || item?.id);
   const meta = kind === 'validation'
     ? item?.kind || ''
     : kind === 'role'
@@ -2584,7 +2589,7 @@ function renderGoalItem(item, kind) {
   return `
     <div class="goal-item">
       <div class="goal-item-top">
-        <span>${escapeHTML(title)}</span>
+        <span${hasDurableTitle ? ' translate="no" data-i18n-skip' : ''}>${escapeHTML(title)}</span>
         <span class="status-badge ${toneForStatus(status)}">${escapeHTML(humanizeStatus(status))}</span>
       </div>
       ${meta ? `<div class="goal-meta-line">${escapeHTML(meta)}</div>` : ''}

@@ -3357,7 +3357,7 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	defer ts.Close()
 
 	var launch LaunchResponse
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusAccepted, &launch)
 	waitFor(t, 4*time.Second, func() bool {
 		state, err := svc.store.LoadState(meta.ID)
 		return err == nil && state.Status == session.StatusCompleted
@@ -3426,7 +3426,7 @@ func TestServicePlanModeApproveAcceptsExecutingRecovery(t *testing.T) {
 	defer ts.Close()
 
 	var launch LaunchResponse
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusAccepted, &launch)
 	waitFor(t, 4*time.Second, func() bool {
 		state, err := svc.store.LoadState(meta.ID)
 		return err == nil && state.Status == session.StatusCompleted
@@ -3476,8 +3476,12 @@ func TestServicePlanModeApproveRejectsPlanningBeforeLaunch(t *testing.T) {
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
-	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusConflict)
-	if !strings.Contains(errResp.Error, "not awaiting approval") {
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", func() PlanModeApproveRequest {
+		payload := reviewedApprovalPayload(t, svc.store, meta.ID, false)
+		payload.PlanVersion = 1
+		return payload
+	}(), http.StatusConflict)
+	if !strings.Contains(errResp.Error, "review the current plan") {
 		t.Fatalf("expected plan status conflict, got %#v", errResp)
 	}
 	state, err := svc.store.LoadState(meta.ID)
@@ -3544,7 +3548,7 @@ func TestServicePlanModeApproveReturnsConflictWhenLinkedMissionCoverageBlocks(t 
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
-	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusConflict)
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusConflict)
 	if !strings.Contains(errResp.Error, "mission validation coverage blocks approval") {
 		t.Fatalf("expected coverage conflict, got %#v", errResp)
 	}
@@ -3972,7 +3976,7 @@ func TestServicePlanModeContinueIsTrackedByLaunchWaitGroup(t *testing.T) {
 	}
 
 	var launch LaunchResponse
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", map[string]any{}, http.StatusAccepted, &launch)
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusAccepted, &launch)
 	select {
 	case <-started:
 	case <-time.After(3 * time.Second):
@@ -8291,8 +8295,8 @@ func TestServiceOptionalJSONMutationsAllowUnknownLengthEmptyBodyWithoutContentTy
 		{
 			name:       "plan mode approve",
 			path:       "/api/sessions/" + planMeta.ID + "/planmode/approve",
-			wantStatus: http.StatusConflict,
-			wantBody:   "not awaiting approval",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "approval target is required",
 		},
 		{
 			name:       "mission plan approve",
@@ -8370,8 +8374,8 @@ func TestServiceBodylessMutationsDoNotRequireJSONContentType(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create plan mode: %v", err)
 	}
-	planBody := requestWithoutJSONContentType(t, http.MethodPost, ts.URL+"/api/sessions/"+planMeta.ID+"/planmode/approve", http.StatusConflict)
-	if !strings.Contains(planBody, "not awaiting approval") {
+	planBody := requestWithoutJSONContentType(t, http.MethodPost, ts.URL+"/api/sessions/"+planMeta.ID+"/planmode/approve", http.StatusBadRequest)
+	if !strings.Contains(planBody, "approval target is required") {
 		t.Fatalf("expected handler-level plan mode conflict, got body=%s", planBody)
 	}
 

@@ -63,10 +63,21 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 				path = "/api/sessions/" + meta.ID + "/mission/plan/approve"
 				body = `{"override_coverage":true}`
 			}
+			if action == "approve" || action == "mission" {
+				payload, err := json.Marshal(reviewedApprovalPayload(t, svc.store, meta.ID, action == "mission"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(payload)
+			}
 			if action == "revise" {
 				body = `{"message":"revise once"}`
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
+			preparing := make(chan struct{}, 1)
+			if action == "approve" || action == "mission" {
+				svc.beforeApprovalPrepare = func(string) { preparing <- struct{}{} }
+			}
 			go func() {
 				w := httptest.NewRecorder()
 				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
@@ -84,13 +95,27 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 			svc.mu.Lock()
 			delete(svc.handles, meta.ID)
 			svc.mu.Unlock()
+			// Observe handle release separately from the approval journal's
+			// synchronous durable writes. The settling deadline applies to the
+			// former; filesystem latency must not masquerade as a missed release.
+			responseWait := time.Second
+			if action == "approve" || action == "mission" {
+				select {
+				case <-preparing:
+				case response := <-done:
+					t.Fatalf("approval returned before preparation: %d %s", response.Code, response.Body)
+				case <-time.After(time.Second):
+					t.Fatal("did not observe original handle release")
+				}
+				responseWait = 10 * time.Second
+			}
 			select {
 			case response := <-done:
 				if response.Code != http.StatusAccepted {
 					t.Fatalf("status=%d body=%s state=%#v", response.Code, response.Body, state)
 				}
-			case <-time.After(time.Second):
-				t.Fatal("did not observe original handle release")
+			case <-time.After(responseWait):
+				t.Fatal("action did not complete after original handle release")
 			}
 		})
 	}

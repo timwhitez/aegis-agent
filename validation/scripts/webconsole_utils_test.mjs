@@ -874,7 +874,7 @@ test('Plan Mode input actions reuse cached markup and hide after the gate clears
       }
     };
     nodes.planModeInputActions = actionNode;
-    state.sessionDetail = { plan_mode: { status: 'awaiting_approval' } };
+    state.sessionDetail = { plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_fixture', plan_version: 1, approval_revision: 'rev_fixture' } };
     renderPlanModeInputActions();
     renderPlanModeInputActions();
     const approvalVisible = !actionNode.hidden;
@@ -2294,7 +2294,7 @@ function installPlanModeAPITestWrappers(appContext) {
   vm.runInContext(`
     approvePlanMode = function(sessionID, payload = {}) {
       const suffix = payload.override_coverage ? '?override=1' : '';
-      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST' });
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST', payload });
     };
     answerPlanModeInput = function(sessionID, payload = {}) {
       return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/input', {
@@ -2321,7 +2321,7 @@ function installGoalAPITestWrappers(appContext) {
     };
     approveMissionPlan = function(sessionID, payload = {}) {
       const suffix = payload.override_coverage ? '?override=1' : '';
-      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/mission/plan/approve' + suffix, { method: 'POST' });
+      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/mission/plan/approve' + suffix, { method: 'POST', payload });
     };
   `, appContext);
 }
@@ -3792,7 +3792,7 @@ test('Plan Mode approval does not mark a newly selected session as generating', 
     state.sessionDetail = {
       metadata: { id: 'session_plan_slow_a' },
       state: { status: 'awaiting_input' },
-      plan_mode: { status: 'awaiting_approval' }
+      plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_fixture', plan_version: 1, approval_revision: 'rev_fixture' }
     };
     handlePlanModeAction(planApproveButton);
   `, appContext);
@@ -3894,7 +3894,7 @@ test('Plan Mode approval override ignores stale confirmation after session chang
     state.sessionDetail = {
       metadata: { id: 'session_plan_override_a' },
       state: { status: 'awaiting_input' },
-      plan_mode: { status: 'awaiting_approval' }
+      plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_fixture', plan_version: 1, approval_revision: 'rev_fixture' }
     };
     handlePlanModeAction(planApproveButton);
   `, Object.assign(appContext, { confirmResolversRef: confirmResolvers, toastsRef: toasts }));
@@ -3955,6 +3955,7 @@ test('Plan Mode approval override ignores stale confirmation after same-session 
         status: 'awaiting_approval',
         objective: 'old plan',
         plan_version: 1,
+        approval_revision: 'rev_fixture_v1',
         updated_at: '2026-05-30T01:00:00Z'
       }
     };
@@ -3979,6 +3980,7 @@ test('Plan Mode approval override ignores stale confirmation after same-session 
         status: 'awaiting_approval',
         objective: 'new plan',
         plan_version: 2,
+        approval_revision: 'rev_fixture_v2',
         updated_at: '2026-05-30T01:01:00Z'
       }
     };
@@ -3999,6 +4001,7 @@ test('Plan Mode approval override ignores stale confirmation after same-session 
         status: 'awaiting_approval',
         objective: 'new plan',
         plan_version: 2,
+        approval_revision: 'rev_fixture_v2',
         updated_at: '2026-05-30T01:01:00Z'
       },
       messages: [],
@@ -4008,7 +4011,7 @@ test('Plan Mode approval override ignores stale confirmation after same-session 
   await approval;
 
   assert.equal(appContext.pendingRequests.length, 1);
-  assert.deepEqual(sameRealm(toasts), []);
+  assert.deepEqual(sameRealm(toasts), [{ message: 'The plan has changed. Please review it again.', tone: 'error' }]);
 });
 
 test('Plan input answer does not refresh a newly selected session after stale completion', async () => {
@@ -5517,7 +5520,7 @@ test('plan revision completion does not mark a newly selected session as generat
     state.sessionDetail = {
       metadata: { id: 'session_revision_slow_a' },
       state: { status: 'awaiting_input' },
-      plan_mode: { status: 'awaiting_approval' },
+      plan_mode: { status: 'awaiting_approval', plan_mode_id: 'plan_fixture', plan_version: 1, approval_revision: 'rev_fixture' },
       messages: []
     };
     nodes.chatInput.value = 'revise the plan';
@@ -5575,6 +5578,7 @@ test('plan revision completion ignores refreshed same-session Plan Mode', async 
         status: 'awaiting_approval',
         objective: 'old plan',
         plan_version: 1,
+        approval_revision: 'rev_fixture_v1',
         updated_at: '2026-05-30T04:00:00Z'
       },
       messages: []
@@ -5597,6 +5601,7 @@ test('plan revision completion ignores refreshed same-session Plan Mode', async 
         status: 'awaiting_approval',
         objective: 'new plan',
         plan_version: 2,
+        approval_revision: 'rev_fixture_v2',
         updated_at: '2026-05-30T04:01:00Z'
       },
       messages: []
@@ -7984,4 +7989,166 @@ test('failed draft renderer escapes raw text and exposes manual recovery and unk
   assert.match(html, /Delivery unconfirmed/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<script>/);
+});
+
+for (const route of ['plan', 'linked-mission']) {
+  test(`reviewed approval target ${route} carries displayed scope through coverage override`, async () => {
+    const appContext = createAppHarnessContext();
+    installPlanModeAPITestWrappers(appContext);
+    installGoalAPITestWrappers(appContext);
+    appContext.reviewButton = fakeActionButton(route === 'plan'
+      ? { 'data-plan-action': 'approve' } : { 'data-goal-action': 'approve-plan' });
+    const approval = vm.runInContext(`
+      confirmCoverageOverride = async function() { return true; };
+      refreshCurrentSession = async function() {};
+      state.sessionId = 'session_reviewed';
+      state.sessionBacked = true;
+      state.sessionDetail = {
+        metadata: { id: 'session_reviewed' }, state: { status: 'awaiting_input' },
+        goal: { goal_id: 'goal_reviewed', mission: { plan_status: 'needs_approval' } },
+        plan_mode: { plan_mode_id: 'plan_reviewed', plan_version: 1, approval_revision: 'revision_reviewed',
+          linked_goal_id: 'goal_reviewed', status: 'awaiting_approval' }
+      };
+      ${route === 'plan' ? 'handlePlanModeAction' : 'handleGoalAction'}(reviewButton);
+    `, appContext);
+    assert.equal(appContext.pendingRequests.length, 1);
+    const target = { plan_mode_id: 'plan_reviewed', plan_version: 1, expected_revision: 'revision_reviewed' };
+    assert.deepEqual(sameRealm(appContext.pendingRequests[0].payload.payload), target);
+    appContext.pendingRequests[0].reject({ status: 409, message: 'validation coverage blocks approval' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(appContext.pendingRequests.length, 2);
+    assert.deepEqual(sameRealm(appContext.pendingRequests[1].payload.payload), { ...target, override_coverage: true });
+    appContext.pendingRequests[1].resolve({ session_id: 'session_reviewed', status: 'accepted' });
+    await approval;
+  });
+}
+
+test('reviewed approval target stale conflict displays bilingual review message without retry', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.reviewButton = fakeActionButton({ 'data-plan-action': 'approve' });
+  const toasts = [];
+  const approval = vm.runInContext(`
+    showToast = function(message) { toastsRef.push(message); };
+    state.sessionId = 'session_stale'; state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_stale' }, state: { status: 'awaiting_input' },
+      plan_mode: { plan_mode_id: 'plan_v1', plan_version: 1, approval_revision: 'rev_v1', status: 'awaiting_approval' } };
+    handlePlanModeAction(reviewButton);
+  `, Object.assign(appContext, { toastsRef: toasts }));
+  assert.equal(appContext.pendingRequests.length, 1);
+  appContext.pendingRequests[0].reject({ status: 409, code: 'approval_target_stale', message: 'approval target no longer matches' });
+  await approval;
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(toasts, ['The plan has changed. Please review it again.']);
+  const i18nContext = { window: { document: { readyState: 'loading', documentElement: { setAttribute() {} }, addEventListener() {}, getElementById() { return null; } }, localStorage: { getItem() { return null; } } } };
+  vm.createContext(i18nContext);
+  vm.runInContext(i18nSource, i18nContext);
+  assert.equal(i18nContext.window.AegisI18n.t('The plan has changed. Please review it again.'), '计划已更新，请重新审阅。');
+  i18nContext.window.AegisI18n.setLocale('en');
+  assert.equal(i18nContext.window.AegisI18n.t('The plan has changed. Please review it again.'), 'The plan has changed. Please review it again.');
+});
+
+test('reviewed approval target revision changes during coverage confirmation require review', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.reviewButton = fakeActionButton({ 'data-plan-action': 'approve' });
+  const confirms = [], toasts = [];
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() { return new Promise((resolve) => confirmsRef.push(resolve)); };
+    showToast = function(message) { toastsRef.push(message); };
+    state.sessionId = 'session_link_change'; state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_link_change' }, state: { status: 'awaiting_input' },
+      plan_mode: { plan_mode_id: 'plan_same', plan_version: 1, approval_revision: 'rev_old', status: 'awaiting_approval' } };
+    handlePlanModeAction(reviewButton);
+  `, Object.assign(appContext, { confirmsRef: confirms, toastsRef: toasts }));
+  appContext.pendingRequests[0].reject({ status: 409, message: 'validation coverage blocks approval' });
+  await new Promise((resolve) => setImmediate(resolve));
+  vm.runInContext(`state.sessionDetail.plan_mode.approval_revision = 'rev_new';`, appContext);
+  confirms[0](true);
+  await approval;
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(toasts, ['The plan has changed. Please review it again.']);
+});
+
+test('reviewed approval target missing revision requires reload without sending', async () => {
+  const appContext = createAppHarnessContext();
+  installPlanModeAPITestWrappers(appContext);
+  appContext.reviewButton = fakeActionButton({ 'data-plan-action': 'approve' });
+  const toasts = [];
+  await vm.runInContext(`
+    showToast = function(message) { toastsRef.push(message); };
+    state.sessionId = 'session_old_client'; state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_old_client' }, state: { status: 'awaiting_input' },
+      plan_mode: { plan_mode_id: 'plan_v1', plan_version: 1, status: 'awaiting_approval' } };
+    handlePlanModeAction(reviewButton);
+  `, Object.assign(appContext, { toastsRef: toasts }));
+  assert.equal(appContext.pendingRequests.length, 0);
+  assert.deepEqual(toasts, ['Reload the plan and review it before approving.']);
+});
+
+test('reviewed approval target linked mission semantic change during confirmation requires review', async () => {
+  const appContext = createAppHarnessContext();
+  installGoalAPITestWrappers(appContext);
+  appContext.reviewButton = fakeActionButton({ 'data-goal-action': 'approve-plan' });
+  const confirms = [], toasts = [];
+  const approval = vm.runInContext(`
+    confirmCoverageOverride = function() { return new Promise((resolve) => confirmsRef.push(resolve)); };
+    showToast = function(message) { toastsRef.push(message); };
+    state.sessionId = 'session_mission_change'; state.sessionBacked = true;
+    state.sessionDetail = { metadata: { id: 'session_mission_change' }, state: { status: 'awaiting_input' },
+      goal: { goal_id: 'goal_same', updated_at: 'old' },
+      plan_mode: { plan_mode_id: 'plan_same', plan_version: 1, linked_goal_id: 'goal_same', approval_revision: 'rev_old', status: 'awaiting_approval' } };
+    handleGoalAction(reviewButton);
+  `, Object.assign(appContext, { confirmsRef: confirms, toastsRef: toasts }));
+  appContext.pendingRequests[0].reject({ status: 409, message: 'validation coverage blocks approval' });
+  await new Promise((resolve) => setImmediate(resolve));
+  vm.runInContext(`state.sessionDetail.plan_mode.approval_revision = 'rev_new'; state.sessionDetail.goal.updated_at = 'new';`, appContext);
+  confirms[0](true);
+  await approval;
+  assert.equal(appContext.pendingRequests.length, 1);
+  assert.deepEqual(toasts, ['The plan has changed. Please review it again.']);
+});
+
+test('linked mission approval i18n covers its inspector labels and status facts in both locales', () => {
+  const document = { readyState: 'loading', documentElement: { setAttribute() {} }, addEventListener() {}, dispatchEvent() {}, getElementById() { return null; } };
+  const window = { document, localStorage: { getItem() { return null; }, setItem() {} } };
+  const i18nContext = { window };
+  vm.createContext(i18nContext);
+  vm.runInContext(i18nSource, i18nContext);
+  const cases = [
+    ['Goal Active', '目标进行中'], ['Pause', '暂停'], ['Features', '功能'], ['Milestones', '里程碑'],
+    ['coverage 1/1', '覆盖率 1/1'], ['Mission plan updated', '目标计划已更新'],
+    ['Goal plan', '目标计划'], ['Plan needs_approval', '计划等待审批'],
+    ['Goal plan updated', '目标计划已更新'], ['Goal plan is Needs approval.', '目标计划等待审批。'],
+    ['session Awaiting input', '会话等待输入'],
+    ['Latest Mission plan updated · 2026/10/3 15:17:13', '最近事件：目标计划已更新 · 2026/10/3 15:17:13'],
+    ['latest Mission plan updated · 2026/10/3 15:17:13', '最近目标计划已更新 · 2026/10/3 15:17:13'],
+    ['session Awaiting input · Plan approval · tokens 2 · provider time 1s · latest Mission plan updated · 2026/10/3 15:17:13', '会话等待输入 · 计划审批 · Token 2 · 提供商耗时 1s · 最近目标计划已更新 · 2026/10/3 15:17:13']
+  ];
+  for (const [source, expected] of cases) assert.equal(window.AegisI18n.t(source), expected, source);
+  window.AegisI18n.setLocale('en', { persist: false });
+  for (const [source] of cases) assert.equal(window.AegisI18n.t(source), source, source);
+});
+
+test('linked mission approval keeps durable titles and goal IDs raw while labels remain audited', () => {
+  const feature = context.renderGoalItem({ title: 'Reviewed linked scope', status: 'pending' }, 'feature');
+  const milestone = context.renderGoalItem({ title: 'Coverage milestone', status: 'pending' }, 'milestone');
+  for (const [html, title] of [[feature, 'Reviewed linked scope'], [milestone, 'Coverage milestone']]) {
+    assert.match(html, new RegExp('<span translate="no" data-i18n-skip>' + title + '</span>'));
+    assert.match(html, /class="status-badge queued">Pending<\/span>/);
+  }
+  const fallback = context.renderGoalItem({ status: 'pending' }, 'feature');
+  assert.match(fallback, /<span>item<\/span>/);
+  const panel = context.renderGoalPanel({
+    state: { status: 'awaiting_input', phase: 'plan_approval' },
+    goal: { goal_id: 'goal_reviewed_id', objective: 'Reviewed objective', status: 'active', mission: { plan_status: 'needs_approval', features: [{ title: 'Reviewed linked scope', status: 'pending' }], milestones: [{ title: 'Coverage milestone', status: 'pending' }] } },
+    goal_facts: { coverage: { covered_assertions: 1, validation_total: 1 } },
+    plan_mode: { status: 'awaiting_approval' }
+  });
+  assert.match(panel, /class="tiny-code-chip" translate="no" data-i18n-skip>goal_r…d_id<\/span>/);
+  assert.match(panel, /class="goal-section-title">Features<\/div>/);
+  assert.match(panel, /class="goal-meta-line">coverage 1\/1<\/div>/);
+  assert.doesNotMatch(panel, /class="goal-section-title"[^>]*translate="no"/);
+  const tool = context.renderGoalToolSpecialResult({ name: 'get_goal' }, { goal_id: 'goal_reviewed_id', status: 'active' });
+  assert.match(tool, /class="tiny-code-chip" translate="no" data-i18n-skip>goal_r…d_id<\/span>/);
 });

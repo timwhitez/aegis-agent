@@ -75,6 +75,7 @@
 - `steer` 参数解析
 - `run` / `exec --plan` 与 `exec --plan-only` 参数解析
 - `continue --plan` / `--approve-plan` / `--cancel-plan` 参数解析
+- 审批显式 target 三参数、明确 `--approve-latest`、TTY 展示并捕获 target、非交互缺 target 拒绝；普通 continue 不增加审批步骤。Web/linked alias 与 coverage override 保持实际显示 target，stale 409 两种语言提示重新审阅；同版本 linked semantic revision 变化必须拒绝，usage/evidence 不产生假冲突
 - `exec --json`
 - `exec` 未显式完成时退出码为 `6`
 - `run` 的 `awaiting_input` 提示

@@ -76,7 +76,13 @@ type MissionPlanPatchRequest struct {
 	CreateTasksFromPlan *bool                        `json:"create_tasks_from_plan,omitempty"`
 }
 
+type PlanModeApproveRequest struct {
+	session.ApprovalTarget
+	OverrideCoverage bool `json:"override_coverage,omitempty"`
+}
+
 type MissionPlanApproveRequest struct {
+	session.ApprovalTarget
 	OverrideCoverage bool `json:"override_coverage,omitempty"`
 }
 

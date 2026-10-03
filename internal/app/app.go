@@ -549,7 +549,7 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system"}, []string{"json", "plan", "approve-plan", "cancel-plan", "override-goal-coverage"})
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage"})
 	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -564,12 +564,17 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		overrideGoalCoverage = fs.Bool("override-goal-coverage", false, "")
 		cancelPlan           = fs.Bool("cancel-plan", false, "")
 	)
+	approvalFlags := registerCLIApprovalFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
 		return fmt.Errorf("continue requires <session-id>")
 	}
+	if err := approvalFlags.validate(*approvePlan || approvalFlags.latest); err != nil {
+		return err
+	}
+	*approvePlan = *approvePlan || approvalFlags.latest
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -577,6 +582,21 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	runner, _, err := runnerLoader(*configPath, cwd)
 	if err != nil {
 		return err
+	}
+	var approvalTarget *session.ApprovalTarget
+	if *approvePlan {
+		var store *session.Store
+		if !approvalFlags.hasTarget() && (approvalFlags.latest || stdinIsTerminal()) {
+			storeRunner, _, err := storeRunnerLoader(*configPath, cwd)
+			if err != nil {
+				return err
+			}
+			store = storeRunner.Store()
+		}
+		approvalTarget, err = resolveCLIApprovalTarget(ctx, store, fs.Arg(0), approvalFlags, os.Stdin, stderr)
+		if err != nil {
+			return err
+		}
 	}
 	renderer := output.New(*jsonMode, stdout)
 	sub := runner.Bus().Subscribe(128)
@@ -593,7 +613,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			}
 		}
 	}()
-	if strings.TrimSpace(*message) == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
+	if !*approvePlan && strings.TrimSpace(*message) == "" && !term.IsTerminal(int(os.Stdin.Fd())) {
 		data, err := readPromptStdin(os.Stdin)
 		if err != nil {
 			cancelRender()
@@ -611,6 +631,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		PlanMode:             planModeDraftFromCLI(*planMode, strings.TrimSpace(*message)),
 		PlanInputHandler:     cliPlanInputHandler(os.Stdin, stderr),
 		ApprovePlan:          *approvePlan,
+		ApprovalTarget:       approvalTarget,
 		OverrideGoalCoverage: *overrideGoalCoverage,
 		CancelPlan:           *cancelPlan,
 		Source:               session.PlanModeSourceCLI,
@@ -867,17 +888,21 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
-	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json", "override-coverage"})
+	subArgs := normalizeInterspersedFlags(args[1:], []string{"config", "plan-mode-id", "plan-version", "expected-revision"}, []string{"json", "override-coverage", "approve-latest"})
 	fs := flag.NewFlagSet("goal plan "+subcommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "")
 	jsonMode := fs.Bool("json", false, "")
 	overrideCoverage := fs.Bool("override-coverage", false, "")
+	approvalFlags := registerCLIApprovalFlags(fs)
 	if err := fs.Parse(subArgs); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
 		return fmt.Errorf("goal plan %s requires <session-id>", subcommand)
+	}
+	if err := approvalFlags.validate(subcommand == "approve"); err != nil {
+		return err
 	}
 	sessionID := fs.Arg(0)
 	switch subcommand {
@@ -894,10 +919,41 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		if err != nil {
 			return err
 		}
+		var approvalTarget *session.ApprovalTarget
+		if snapshot, snapshotErr := runner.Store().LoadApprovalSnapshot(sessionID); snapshotErr == nil {
+			if snapshot.PlanMode.LinkedGoalID != "" {
+				if snapshot.Goal == nil || snapshot.PlanMode.LinkedGoalID != snapshot.Goal.GoalID {
+					return session.ErrApprovalConflict
+				}
+				goal = *snapshot.Goal
+				target := snapshot.Target()
+				approvalTarget = &target
+			}
+		} else if !os.IsNotExist(snapshotErr) {
+			return snapshotErr
+		}
 		if *jsonMode {
-			return json.NewEncoder(stdout).Encode(goal.Mission)
+			if approvalTarget == nil {
+				return json.NewEncoder(stdout).Encode(goal.Mission)
+			}
+			data, err := json.Marshal(goal.Mission)
+			if err != nil {
+				return err
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return err
+			}
+			if payload == nil {
+				payload = map[string]any{}
+			}
+			payload["approval_target"] = approvalTarget
+			return json.NewEncoder(stdout).Encode(payload)
 		}
 		printMissionPlan(stdout, goal)
+		if approvalTarget != nil {
+			fmt.Fprintf(stdout, "plan_mode_id: %s\nplan_version: %d\nexpected_revision: %s\n", approvalTarget.PlanModeID, approvalTarget.PlanVersion, approvalTarget.ExpectedRevision)
+		}
 		return nil
 	case "check":
 		cwd, err := os.Getwd()
@@ -923,13 +979,13 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		if err != nil {
 			return err
 		}
-		return goalPlanApproveCommand(ctx, sessionID, *configPath, cwd, *jsonMode, *overrideCoverage, stdout)
+		return goalPlanApproveCommand(ctx, sessionID, *configPath, cwd, *jsonMode, *overrideCoverage, approvalFlags, stdout, stderr)
 	default:
 		return fmt.Errorf("unknown goal plan subcommand: %s", subcommand)
 	}
 }
 
-func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd string, jsonMode bool, overrideCoverage bool, stdout io.Writer) error {
+func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd string, jsonMode bool, overrideCoverage bool, approvalFlags *cliApprovalFlags, stdout, stderr io.Writer) error {
 	storeRunner, _, err := storeRunnerLoader(configPath, cwd)
 	if err != nil {
 		return err
@@ -944,6 +1000,13 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 	}
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	if planModeErr == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
+		var approvalTarget *session.ApprovalTarget
+		if planMode.Status == session.PlanModeStatusAwaitingApproval || planMode.Status == session.PlanModeStatusApproved || planMode.Status == session.PlanModeStatusExecuting {
+			approvalTarget, err = resolveCLIApprovalTarget(ctx, store, sessionID, approvalFlags, os.Stdin, stderr)
+			if err != nil {
+				return err
+			}
+		}
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
 			runner, _, err := runnerLoader(configPath, cwd)
@@ -953,6 +1016,7 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 			result, err := runner.Continue(ctx, runtime.ContinueRequest{
 				SessionID:            sessionID,
 				ApprovePlan:          true,
+				ApprovalTarget:       approvalTarget,
 				OverrideGoalCoverage: overrideCoverage,
 				Source:               session.PlanModeSourceCLI,
 			})
@@ -967,25 +1031,48 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
 			return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 		case session.PlanModeStatusExecuting:
-			if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-				return errors.New("plan mode has no approved plan")
-			}
-			approvedAt := ""
-			if goal.Mission != nil {
-				approvedAt = goal.Mission.ApprovedAt
-			}
-			if approvedAt == "" {
-				approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
-			}
-			approved, err := approveCLIMissionPlanWithEvent(store, sessionID, goal, session.MissionPlanApprovalInput{
-				Source:           session.GoalSourceCLI,
-				ApprovedAt:       approvedAt,
-				CoverageOverride: overrideCoverage,
-				PlanModeID:       planMode.PlanModeID,
-				ApprovedVersion:  planMode.ApprovedVersion,
-			}, map[string]any{
-				"plan_mode_id":     planMode.PlanModeID,
-				"approved_version": planMode.ApprovedVersion,
+			var approved session.SessionGoal
+			err := store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+				snapshot, err := scoped.LoadApprovalSnapshot(sessionID)
+				if err != nil {
+					return err
+				}
+				if err := session.ValidateApprovalTarget(snapshot, *approvalTarget); err != nil {
+					return err
+				}
+				currentPlan := snapshot.PlanMode
+				if currentPlan.Status != session.PlanModeStatusExecuting || currentPlan.LinkedGoalID == "" || snapshot.Goal == nil || currentPlan.LinkedGoalID != snapshot.Goal.GoalID {
+					return fmt.Errorf("%w: executing linked plan changed during mission fact repair", session.ErrApprovalConflict)
+				}
+				if currentPlan.ApprovedVersion <= 0 || strings.TrimSpace(currentPlan.PlanMarkdown) == "" {
+					return errors.New("plan mode has no approved plan")
+				}
+				if currentPlan.ApprovedVersion != currentPlan.PlanVersion || (currentPlan.ApprovedRevision != "" && currentPlan.ApprovedRevision != snapshot.Revision) {
+					return fmt.Errorf("%w: mission scope differs from the executing approval; submit and review a pending plan", session.ErrApprovalConflict)
+				}
+				if err := approveMissionCoverage(*snapshot.Goal, overrideCoverage); err != nil {
+					return err
+				}
+				approvedAt := ""
+				if snapshot.Goal.Mission != nil {
+					approvedAt = snapshot.Goal.Mission.ApprovedAt
+				}
+				if approvedAt == "" {
+					approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
+				}
+				approved, err = approveCLIMissionPlanWithEvent(scoped, sessionID, *snapshot.Goal, session.MissionPlanApprovalInput{
+					Source:           session.GoalSourceCLI,
+					ApprovedAt:       approvedAt,
+					CoverageOverride: overrideCoverage,
+					PlanModeID:       currentPlan.PlanModeID,
+					ApprovedVersion:  currentPlan.ApprovedVersion,
+					ApprovedRevision: currentPlan.ApprovedRevision,
+				}, map[string]any{
+					"plan_mode_id":      currentPlan.PlanModeID,
+					"approved_version":  currentPlan.ApprovedVersion,
+					"approved_revision": currentPlan.ApprovedRevision,
+				})
+				return err
 			})
 			if err != nil {
 				return err
@@ -998,6 +1085,9 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		}
 	} else if planModeErr != nil && !errors.Is(planModeErr, fs.ErrNotExist) {
 		return planModeErr
+	}
+	if approvalFlags.hasTarget() || approvalFlags.latest {
+		return fmt.Errorf("%w: linked mission approval target no longer exists", session.ErrApprovalConflict)
 	}
 	if session.GoalRequiresPlanApproval(goal) {
 		previousPlanMode, err := store.SnapshotPlanMode(sessionID)
@@ -1024,11 +1114,29 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	goal, err = approveCLIMissionPlanWithEvent(store, sessionID, goal, session.MissionPlanApprovalInput{
-		Source:           session.GoalSourceCLI,
-		ApprovedAt:       approvedAt,
-		CoverageOverride: overrideCoverage,
-	}, nil)
+	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		current, err := loadCLIGoal(scoped, sessionID)
+		if err != nil {
+			return err
+		}
+		if currentPlan, planErr := scoped.LoadPlanMode(sessionID); planErr == nil {
+			if currentPlan.Enabled && currentPlan.LinkedGoalID == current.GoalID {
+				return session.ErrMissingApprovalTarget
+			}
+		} else if !errors.Is(planErr, fs.ErrNotExist) {
+			return planErr
+		}
+		if session.GoalRequiresPlanApproval(current) {
+			return session.ErrMissingApprovalTarget
+		}
+		if err := approveMissionCoverage(current, overrideCoverage); err != nil {
+			return err
+		}
+		goal, err = approveCLIMissionPlanWithEvent(scoped, sessionID, current, session.MissionPlanApprovalInput{
+			Source: session.GoalSourceCLI, ApprovedAt: approvedAt, CoverageOverride: overrideCoverage,
+		}, nil)
+		return err
+	})
 	if err != nil {
 		return err
 	}

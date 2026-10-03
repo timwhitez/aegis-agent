@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { runApprovalCASE2E } from './webconsole_approval_cas_e2e.mjs';
 import { runSendRecoveryE2E } from './webconsole_send_recovery_e2e.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +123,8 @@ try {
   await capture(page, '02-session-default-en-desktop.png');
   await page.locator('#language-toggle-btn').click();
   await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
+
+  const approvalCAS = await runApprovalCASE2E({browser,baseURL,sessionRoot,check,capture});
 
   const mainID = await startSession(page, 'E2E_UI_MAIN raw user text: Settings must remain unchanged.');
   await waitForSession(baseURL, mainID, (detail) => detail?.state?.status === 'completed', 30_000);
@@ -717,6 +720,7 @@ try {
     checks,
     screenshots,
     browser_errors: browserErrors,
+    approval_cas: approvalCAS,
     process_logs: processLogs
   };
   await writeFile(path.join(outputDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
@@ -965,8 +969,8 @@ async function assertText(locator, expected) {
   assert.equal((await locator.innerText()).trim(), expected);
 }
 
-async function capture(page, name) {
-  await page.locator('#toast-rack .toast').last().waitFor({ state: 'detached', timeout: 4_000 }).catch(() => {});
+async function capture(page, name, {retainToasts = false} = {}) {
+  if (!retainToasts) await page.locator('#toast-rack .toast').last().waitFor({ state: 'detached', timeout: 4_000 }).catch(() => {});
   await page.waitForTimeout(350);
   if ((await page.locator('html').getAttribute('lang')) === 'zh-CN') {
     untranslatedByScreenshot.push({ name, values: await collectUntranslatedOperatorText(page) });

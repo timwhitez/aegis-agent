@@ -168,12 +168,13 @@ func terminalPlanModeSyntheticResult(action string) string {
 
 func planModeEventData(planMode session.PlanModeState) map[string]any {
 	data := map[string]any{
-		"plan_mode_id":     planMode.PlanModeID,
-		"status":           planMode.Status,
-		"objective":        planMode.Objective,
-		"plan_id":          planMode.PlanID,
-		"plan_version":     planMode.PlanVersion,
-		"approved_version": planMode.ApprovedVersion,
+		"plan_mode_id":      planMode.PlanModeID,
+		"status":            planMode.Status,
+		"objective":         planMode.Objective,
+		"plan_id":           planMode.PlanID,
+		"plan_version":      planMode.PlanVersion,
+		"approved_version":  planMode.ApprovedVersion,
+		"approved_revision": planMode.ApprovedRevision,
 	}
 	if planMode.Summary != "" {
 		data["summary"] = planMode.Summary

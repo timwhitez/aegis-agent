@@ -803,14 +803,14 @@ func TestContinueCommandParsesPlanApproval(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"continue", "s1", "--json", "--approve-plan"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"continue", "s1", "--json", "--approve-plan", "--plan-mode-id", "plan_reviewed", "--plan-version", "1", "--expected-revision", "rev_reviewed"}, &stdout, &stderr); err != nil {
 		t.Fatalf("continue: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
 	if len(fake.continueCalls) != 1 {
 		t.Fatalf("expected one continue call, got %d", len(fake.continueCalls))
 	}
 	call := fake.continueCalls[0]
-	if !call.ApprovePlan || call.CancelPlan || call.Source != session.PlanModeSourceCLI {
+	if !call.ApprovePlan || call.CancelPlan || call.Source != session.PlanModeSourceCLI || call.ApprovalTarget == nil || call.ApprovalTarget.PlanModeID != "plan_reviewed" || call.ApprovalTarget.PlanVersion != 1 || call.ApprovalTarget.ExpectedRevision != "rev_reviewed" {
 		t.Fatalf("unexpected continue request: %#v", call)
 	}
 }
@@ -1220,7 +1220,11 @@ func TestGoalPlanApproveCommandPreservesLinkedExecutingPlanMode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("submit plan mode: %v", err)
 	}
-	if _, err := store.ApprovePlanMode(meta.ID, session.PlanModeSourceCLI); err != nil {
+	approvalSnapshot, err := store.LoadApprovalSnapshot(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApprovePlanModeTarget(meta.ID, session.PlanModeSourceCLI, approvalSnapshot.Target(), false); err != nil {
 		t.Fatalf("approve plan mode: %v", err)
 	}
 	if _, err := store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceCLI); err != nil {
@@ -1236,7 +1240,7 @@ func TestGoalPlanApproveCommandPreservesLinkedExecutingPlanMode(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"goal", "plan", "approve", meta.ID, "--json", "--approve-latest"}, &stdout, &stderr); err != nil {
 		t.Fatalf("goal plan approve should accept linked executing Plan Mode: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
 	approved, err := store.LoadGoal(meta.ID)
@@ -4201,5 +4205,36 @@ func blockAppEventsPath(t *testing.T, store *session.Store, sessionID string) {
 	}
 	if err := os.Mkdir(eventsPath, 0o700); err != nil {
 		t.Fatalf("block events path: %v", err)
+	}
+}
+
+func TestContinueCommandRequiresReviewedApprovalTarget(t *testing.T) {
+	fake := newFakeRunner()
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) { return fake, config.Default(), nil }
+	defer func() { runnerLoader = restore }()
+	restoreTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	defer func() { stdinIsTerminal = restoreTTY }()
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), []string{"continue", "s1", "--approve-plan"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "expected-revision") {
+		t.Fatalf("missing reviewed target must fail explicitly, got %v", err)
+	}
+	if len(fake.continueCalls) != 0 {
+		t.Fatalf("missing target entered runtime: %#v", fake.continueCalls)
+	}
+}
+
+func TestContinueCommandRejectsPartialOrAmbiguousApprovalTarget(t *testing.T) {
+	for _, args := range [][]string{
+		{"continue", "s1", "--approve-plan", "--plan-mode-id", "plan_1"},
+		{"continue", "s1", "--approve-plan", "--approve-latest", "--plan-mode-id", "plan_1", "--plan-version", "1", "--expected-revision", "rev_1"},
+		{"continue", "s1", "--plan-mode-id", "plan_1", "--plan-version", "1", "--expected-revision", "rev_1"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), args, &stdout, &stderr); err == nil {
+			t.Fatalf("ambiguous target accepted: %v", args)
+		}
 	}
 }
