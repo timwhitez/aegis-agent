@@ -188,9 +188,12 @@ func TestE2EConfigInitGuidanceSelectsConfigWithShellSafePath(t *testing.T) {
 }
 
 func TestE2EConfigGeneratedHookExecutesAndRecordsPayload(t *testing.T) {
-	for _, scenario := range []string{"init_directory_control", "default_workspace", "custom_workspace", "moved_config"} {
+	for _, scenario := range []string{"init_directory_control", "default_workspace", "custom_workspace", "moved_config", "literal_hook_variable_path"} {
 		t.Run(scenario, func(t *testing.T) {
 			invokeDir := filepath.Join(t.TempDir(), "operator's installation")
+			if scenario == "literal_hook_variable_path" {
+				invokeDir = filepath.Join(t.TempDir(), "operator's $STATUS $WORKDIR $SESSION_ID $FILE $TOOL_NAME installation")
+			}
 			guidanceWorkingDirectory(t, invokeDir)
 			guidanceIsolatedEnvironment(t, t.TempDir())
 			var stdout, stderr bytes.Buffer

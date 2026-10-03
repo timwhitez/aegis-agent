@@ -2217,7 +2217,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		cfg.Hooks.SessionComplete = []config.HookDefinition{
 			{
 				Name:    "log-session-complete",
-				Command: []string{"/bin/sh", filepath.Join(cwd, ".aegis-agent", "hooks", "session-complete.sh")},
+				Command: generatedInitHookCommand(filepath.Join(cwd, ".aegis-agent", "hooks", "session-complete.sh")),
 			},
 		}
 	}
@@ -2279,6 +2279,19 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 
 func quoteShellArgument(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func generatedInitHookCommand(path string) []string {
+	if !strings.Contains(path, "$") {
+		return []string{"/bin/sh", path}
+	}
+	// Hook substitution precedes shell parsing. Quote dollar-delimited segments
+	// separately so a literal installation path cannot contain a hook token.
+	parts := strings.Split(path, "$")
+	for i := range parts {
+		parts[i] = quoteShellArgument(parts[i])
+	}
+	return []string{"/bin/sh", "-c", "exec /bin/sh " + strings.Join(parts, "'$'")}
 }
 
 func defaultInitSessionDir(cwd, configured string) string {
