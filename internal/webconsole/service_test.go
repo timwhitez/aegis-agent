@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -3149,7 +3150,8 @@ func TestServiceQueueSubmitRejectsUnsupportedWaitMode(t *testing.T) {
 }
 
 func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
-	server := newSubmitPlanServer()
+	diagnostic := newWebTimingDiagnostic()
+	server := newSubmitPlanServer(diagnostic.record)
 	defer server.Close()
 
 	cfg := testConfig(t, server.URL)
@@ -3157,12 +3159,21 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	defer svc.Close()
+	var result LaunchResponse
+	defer func() {
+		if t.Failed() {
+			diagnostic.dump(t, svc.store.SessionDir(result.SessionID))
+		}
+		diagnostic.record("service close started")
+		svc.Close() // Cancel and drain the launch before its temporary directory is removed.
+		diagnostic.record("service drained")
+		t.Logf("plan start timing (request timeout=%ds retries=%d): %s", cfg.Providers["openai"].RequestTimeoutSec, cfg.Providers["openai"].Retry.MaxAttempts, diagnostic.summary())
+	}()
 
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
-	var result LaunchResponse
+	diagnostic.record("start request sent")
 	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
 		"prompt": "Plan this change before editing.",
 		"mode":   "exec",
@@ -3171,8 +3182,12 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 		},
 	}, http.StatusAccepted, &result)
 
+	diagnostic.record("start accepted")
 	waitFor(t, 4*time.Second, func() bool {
 		state, err := svc.store.LoadState(result.SessionID)
+		if err == nil && state.Status == session.StatusFailed {
+			t.Fatalf("condition was not satisfied: engine ended early status=%s phase=%s err=%s", state.Status, state.Phase, state.LastError)
+		}
 		return err == nil && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval"
 	}, func() string {
 		state, err := svc.store.LoadState(result.SessionID)
@@ -3185,6 +3200,7 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 		}
 		return string(data)
 	})
+	diagnostic.record("plan approval observed")
 	planMode, err := svc.store.LoadPlanMode(result.SessionID)
 	if err != nil {
 		t.Fatalf("load plan mode: %v", err)
@@ -14860,8 +14876,16 @@ func newFinishServer() *httptest.Server {
 	}))
 }
 
-func newSubmitPlanServer() *httptest.Server {
+func newSubmitPlanServer(observers ...func(string)) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, observe := range observers {
+			observe("mock provider request entered")
+		}
+		defer func() {
+			for _, observe := range observers {
+				observe("mock provider response written")
+			}
+		}()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"id":"resp_plan_1",
@@ -15361,4 +15385,59 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only the timing regression fixtures opt into this recorder. The original
+// deadlines and assertions remain unchanged; failure output captures the stage
+// before cancellation/draining can change it.
+type webTimingDiagnostic struct {
+	started time.Time
+	mu      sync.Mutex
+	phases  []string
+}
+
+func newWebTimingDiagnostic() *webTimingDiagnostic {
+	return &webTimingDiagnostic{started: time.Now()}
+}
+
+func (d *webTimingDiagnostic) record(phase string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.phases) < 16 {
+		d.phases = append(d.phases, fmt.Sprintf("%.3fms %s", float64(time.Since(d.started))/float64(time.Millisecond), phase))
+	}
+}
+
+func (d *webTimingDiagnostic) summary() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strings.Join(d.phases, "; ")
+}
+
+func (d *webTimingDiagnostic) dump(t *testing.T, sessionDir string) {
+	t.Helper()
+	t.Logf("web fixture failure timing: %s", d.summary())
+	for _, name := range []string{"state.json", "events.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(sessionDir, name))
+		if err != nil {
+			t.Logf("%s: %v", name, err)
+			continue
+		}
+		if name == "events.jsonl" {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 6 {
+				lines = lines[len(lines)-6:]
+			}
+			for _, line := range lines {
+				var event events.Event
+				if err := json.Unmarshal([]byte(line), &event); err == nil {
+					t.Logf("last event: time=%s type=%s phase=%s", event.Time, event.Type, event.Phase)
+				}
+			}
+		} else {
+			t.Logf("%s: %s", name, data)
+		}
+	}
+	stacks := make([]byte, 32<<10)
+	t.Logf("bounded failure stacks:\n%s", stacks[:goruntime.Stack(stacks, true)])
 }

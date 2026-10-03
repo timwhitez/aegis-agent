@@ -620,7 +620,9 @@ func waitForApprovalStateWindow(t *testing.T, function string) {
 		for _, stack := range strings.Split(string(buffer[:size]), "\n\n") {
 			// Require the writer's actual state.lock syscall, not an earlier
 			// pending-count read that happens to have the same caller frame.
-			if strings.Contains(stack, "aegis-agent/internal/session.(*Store)."+function) && strings.Contains(stack, "[syscall]") && strings.Contains(stack, "(*Store).withFileLock") && !strings.Contains(stack, "(*Store).pendingSteerCountLocked") {
+			// This proves both operations are blocked, not FIFO flock order.
+			stateLock := strings.Contains(stack, "(*Store).withFileLock") || strings.Contains(stack, "(*Store).withExistingFileLock")
+			if strings.Contains(stack, "aegis-agent/internal/session.(*Store)."+function) && strings.Contains(stack, "[syscall]") && stateLock && !strings.Contains(stack, "(*Store).pendingSteerCountLocked") {
 				return
 			}
 		}
@@ -653,7 +655,7 @@ func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
 				_, err := r.Steer(context.Background(), SteerRequest{SessionID: p.meta.ID, Message: "Keep the approved scope"})
 				steerDone <- err
 			}()
-			waitForApprovalStateWindow(t, "saveStateLocked")
+			waitForApprovalStateWindow(t, "RefreshPendingSteerCount")
 			preparedDone := make(chan error, 1)
 			go func() {
 				if operation == "abort" {

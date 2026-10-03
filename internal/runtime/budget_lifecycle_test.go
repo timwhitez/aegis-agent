@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -797,6 +799,7 @@ func TestRecoveredActiveRuntimeExhaustionPausesBeforeProviderCall(t *testing.T) 
 }
 
 func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(t *testing.T) {
+	diagnostic := newBudgetTimingDiagnostic()
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
 	cfg.Runtime.MaxTurnsHard = -1
@@ -809,13 +812,35 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "checkpoint failure")); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
+	diagnostic.record("fixture ready")
+	engine.beforeAppendEvent = func(event events.Event) {
+		diagnostic.record(event.Type + "/" + event.Phase)
+	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		if t.Failed() {
+			diagnostic.dump(t, engine.store.SessionDir(meta.ID))
+		}
+		cancelRun()
+		select {
+		case <-finished:
+			diagnostic.record("engine drained")
+		case <-time.After(3 * time.Second):
+			t.Error("checkpoint test cleanup: engine did not drain after cancellation")
+			diagnostic.dump(t, engine.store.SessionDir(meta.ID))
+		}
+		t.Logf("checkpoint test timing: %s", diagnostic.summary())
+	})
 	started := make(chan *childBudgetRun, 1)
 	fake := provider.NewFake(func(ctx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		diagnostic.record("fake provider entered")
 		select {
 		case started <- childBudgetRunFromContext(ctx):
 		default:
 		}
 		<-ctx.Done()
+		diagnostic.record("fake provider cancelled")
 		return provider.TurnResult{}, ctx.Err()
 	})
 	type runOutcome struct {
@@ -823,13 +848,19 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 		err    error
 	}
 	done := make(chan runOutcome, 1)
+	diagnostic.record("engine launched")
 	go func() {
-		result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+		defer close(finished)
+		result, err := engine.Run(runCtx, meta, state, "", fake, catalog, registry, hookManager)
+		diagnostic.record(fmt.Sprintf("engine returned status=%s err=%v", result.Status, err))
 		done <- runOutcome{result: result, err: err}
 	}()
 	var activeBudget *childBudgetRun
 	select {
 	case activeBudget = <-started:
+		diagnostic.record("provider start observed")
+	case outcome := <-done:
+		t.Fatalf("provider did not start: engine returned early status=%s err=%v", outcome.result.Status, outcome.err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("provider did not start")
 	}
@@ -839,9 +870,12 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 	// A checkpoint holds this mutex across LoadJob and SaveJob. Delete between
 	// checkpoints so an already loaded snapshot cannot recreate the job and
 	// undo the persistence failure this test intends to inject.
+	diagnostic.record("waiting for checkpoint mutex")
 	activeBudget.mu.Lock()
+	diagnostic.record("checkpoint mutex acquired")
 	deleteErr := engine.store.DeleteJob(job.ID)
 	activeBudget.mu.Unlock()
+	diagnostic.record(fmt.Sprintf("job deleted err=%v", deleteErr))
 	if deleteErr != nil {
 		t.Fatalf("delete linked job to inject checkpoint persistence failure: %v", deleteErr)
 	}
@@ -1650,4 +1684,59 @@ func repeatFakeTurns(count int, turn func(context.Context, provider.TurnRequest)
 		out[i] = turn
 	}
 	return out
+}
+
+// Diagnostics are bounded and emitted only on failure (or with go test -v).
+// Read the durable files directly so a blocked Store mutex cannot hide the
+// stage that caused a timeout.
+type budgetTimingDiagnostic struct {
+	started time.Time
+	mu      sync.Mutex
+	phases  []string
+}
+
+func newBudgetTimingDiagnostic() *budgetTimingDiagnostic {
+	return &budgetTimingDiagnostic{started: time.Now()}
+}
+
+func (d *budgetTimingDiagnostic) record(phase string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.phases) < 32 {
+		d.phases = append(d.phases, fmt.Sprintf("%.3fms %s", float64(time.Since(d.started))/float64(time.Millisecond), phase))
+	}
+}
+
+func (d *budgetTimingDiagnostic) summary() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strings.Join(d.phases, "; ")
+}
+
+func (d *budgetTimingDiagnostic) dump(t *testing.T, sessionDir string) {
+	t.Helper()
+	t.Logf("checkpoint failure timing: %s", d.summary())
+	for _, name := range []string{"state.json", "events.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(sessionDir, name))
+		if err != nil {
+			t.Logf("%s: %v", name, err)
+			continue
+		}
+		if name == "events.jsonl" {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 6 {
+				lines = lines[len(lines)-6:]
+			}
+			for _, line := range lines {
+				var event events.Event
+				if err := json.Unmarshal([]byte(line), &event); err == nil {
+					t.Logf("last event: time=%s type=%s phase=%s", event.Time, event.Type, event.Phase)
+				}
+			}
+		} else {
+			t.Logf("%s: %s", name, data)
+		}
+	}
+	stacks := make([]byte, 32<<10)
+	t.Logf("bounded failure stacks:\n%s", stacks[:goruntime.Stack(stacks, true)])
 }

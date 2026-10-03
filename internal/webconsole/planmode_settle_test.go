@@ -16,6 +16,7 @@ import (
 func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 	for _, action := range []string{"approve", "revise", "mission"} {
 		t.Run(action, func(t *testing.T) {
+			diagnostic := newWebTimingDiagnostic()
 			provider := newFinishServer()
 			defer provider.Close()
 			cfg := testConfig(t, provider.URL)
@@ -23,8 +24,26 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer svc.Close()
 			meta := testSessionMetadata(t, "settle_"+action)
+			requestCtx, cancelRequest := context.WithCancel(context.Background())
+			var requestFinished chan struct{}
+			defer func() {
+				if t.Failed() {
+					diagnostic.dump(t, svc.store.SessionDir(meta.ID))
+				}
+				cancelRequest()
+				svc.Close()
+				if requestFinished != nil {
+					select {
+					case <-requestFinished:
+						diagnostic.record("request drained")
+					case <-time.After(3 * time.Second):
+						t.Error("settling test cleanup: request did not drain after cancellation")
+						diagnostic.dump(t, svc.store.SessionDir(meta.ID))
+					}
+				}
+				t.Logf("settling %s timing: %s", action, diagnostic.summary())
+			}()
 			meta.Mode = session.ModeExec
 			meta.RootSessionID = meta.ID
 			meta.CompletionPolicy = session.CompletionPolicyAutonomous
@@ -76,15 +95,19 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 			done := make(chan *httptest.ResponseRecorder, 1)
 			preparing := make(chan struct{}, 1)
 			if action == "approve" || action == "mission" {
-				svc.beforeApprovalPrepare = func(string) { preparing <- struct{}{} }
+				svc.beforeApprovalPrepare = func(string) { diagnostic.record("approval prepare marker"); preparing <- struct{}{} }
 			}
+			requestFinished = make(chan struct{})
+			diagnostic.record("request launched")
 			go func() {
+				defer close(requestFinished)
 				w := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				req := httptest.NewRequestWithContext(requestCtx, http.MethodPost, path, strings.NewReader(body))
 				req.Host = "127.0.0.1"
 				req.Header.Set("X-Aegis-Agent-Web", "1")
 				req.Header.Set("Content-Type", "application/json")
 				svc.ServeHTTP(w, req)
+				diagnostic.record("request returned")
 				done <- w
 			}()
 			select {
@@ -95,9 +118,10 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 			svc.mu.Lock()
 			delete(svc.handles, meta.ID)
 			svc.mu.Unlock()
-			// Observe handle release separately from the approval journal's
-			// synchronous durable writes. The settling deadline applies to the
-			// former; filesystem latency must not masquerade as a missed release.
+			diagnostic.record("original handle removed")
+			// This marker follows settling plus preflight/config reads. Its
+			// one-second observation deadline is retained for investigation;
+			// timings identify whether that stage or admission was delayed.
 			responseWait := time.Second
 			if action == "approve" || action == "mission" {
 				select {
