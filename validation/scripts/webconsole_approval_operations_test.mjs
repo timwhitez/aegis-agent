@@ -54,12 +54,43 @@ function harness({ linked = false, reply = response(), storage } = {}) {
   }
   vm.createContext(ctx);
   for (const name of ['displayedApprovalTarget', 'isDisplayedApprovalTarget', 'isStaleApprovalTarget', 'approvalActionError', 'isCoverageApprovalBlock', 'currentGoalActionIdentity', 'isCurrentGoalActionIdentity', 'currentPlanModeActionIdentity', 'isCurrentPlanModeActionIdentity',
-    'approvalController', 'currentApprovalViewToken', 'isCurrentApprovalViewToken', 'isNewApprovalAdmission', 'canPresentApprovalAdmission', 'executeReviewedApproval', 'presentApprovalResponse', 'handlePlanModeAction', 'handleGoalAction']) {
+    'generateApprovalRequestID', 'approvalController', 'currentApprovalViewToken', 'isCurrentApprovalViewToken', 'isNewApprovalAdmission', 'canPresentApprovalAdmission', 'executeReviewedApproval', 'presentApprovalResponse', 'handlePlanModeAction', 'handleGoalAction']) {
     vm.runInContext(sourceFunction(name), ctx, { filename: `app.js:${name}` });
   }
   return { ctx, calls, generating, toasts, queries, values };
 }
 const button = action => ({ disabled: false, getAttribute: () => action });
+
+for (const linked of [false, true]) {
+  test(`actual ${linked ? 'mission' : 'planmode'} approval supports secure random IDs without randomUUID on trusted HTTP`, async () => {
+    const h = harness({ linked });
+    let randomCalls = 0;
+    h.ctx.crypto = { getRandomValues(bytes) {
+      randomCalls++;
+      bytes.fill(randomCalls);
+      return bytes;
+    } };
+    await (linked ? h.ctx.handleGoalAction(button('approve-plan')) : h.ctx.handlePlanModeAction(button('approve')));
+    assert.equal(h.calls.length, 1);
+    assert.equal(randomCalls, 1);
+    const id = h.calls[0].payload.approval_request_id;
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.ok(h.calls[0].stored.some(value => value.includes(id)), 'fallback ID must be persisted before POST');
+    assert.notEqual(h.ctx.generateApprovalRequestID(), id, 'each new identity consumes fresh secure randomness');
+  });
+}
+
+test('approval ID retains native randomUUID when available and fails before POST without secure randomness', async () => {
+  const native = harness();
+  native.ctx.crypto.getRandomValues = () => { throw new Error('native UUID should be preferred'); };
+  assert.equal(native.ctx.generateApprovalRequestID(), 'request_1');
+  const absent = harness();
+  absent.ctx.crypto = {};
+  await absent.ctx.handlePlanModeAction(button('approve'));
+  assert.equal(absent.calls.length, 0);
+  assert.equal(absent.values.size, 0);
+  assert.ok(absent.toasts.some(message => message.includes('Secure randomness')));
+});
 
 function admittedResponse(payload, generation, status = 'running') {
   const result = receipt(payload);

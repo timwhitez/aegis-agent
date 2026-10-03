@@ -602,6 +602,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 `GET /api/sessions/{id}/approval-receipts/{requestID}` 提供只读绑定、canonical receipt 与单独标注的当前 durable 状态。UI 保存 pending ID/target/参数，未知响应先查询，不自动换 ID 重发；刷新、切 session 和旧响应不能污染新操作；完成回执重放不得假显示 generating。
 
+浏览器审批 ID 使用安全随机 UUID：优先原生 `crypto.randomUUID`，可信 LAN HTTP 等未提供该方法的环境使用 `crypto.getRandomValues` 生成 UUID v4。仍须在 POST 前保存原 ID 与参数；缺少安全随机能力时明确失败，不用弱随机 ID 或发送无身份审批。
+
 同一会话内晚到的新 admission 202 同样不能覆盖已加载的 terminal 状态或 ordinary continue 的后续 generation；前端按请求开始时的已观测状态、receipt 的实际 run generation 与最新会话状态判断是否显示执行中，允许新 claim 在页面仍显示原 pre-claim 状态时正常呈现。回执始终描述原操作，当前会话状态优先取最新已加载的 session facts，不能用历史响应中的状态长期替代。
 
 只读 receipt 查询未命中不能覆盖已有明确未接纳的失败结果；用户重新审阅新 target 后可以创建新的审批请求，网络结果未知且查询 404 的请求仍保留原 ID 与参数。linked executing 的合法 mission facts 修复返回 200 / SessionGoal、无 receipt，只完成并释放同 ID 的浏览器意图，不显示 generating，后续新 target 可以重新审阅审批；direct 执行入口不得把无 receipt 的响应当作成功接纳。

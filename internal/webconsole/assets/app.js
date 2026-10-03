@@ -2255,13 +2255,27 @@ async function confirmCoverageOverride() {
   });
 }
 
+function generateApprovalRequestID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  // Trusted LAN HTTP is supported but is not a secure context: randomUUID is
+  // absent there, while getRandomValues still supplies cryptographic entropy.
+  if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+    throw new Error('Secure randomness is unavailable. Reload in a supported browser before approving.');
+  }
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function approvalController() {
   if (!approvalOperationController) {
     const Controller = (approvalOperationsModule || window.AegisApprovalOperations)?.ApprovalOperationController;
     if (!Controller) throw new Error('Approval controls could not be loaded. Reload before approving.');
     approvalOperationController = new Controller({
       storage: localStorage,
-      requestID: () => crypto.randomUUID(),
+      requestID: generateApprovalRequestID,
       submit: (sessionID, entrypoint, payload) => entrypoint === 'mission'
         ? approveMissionPlan(sessionID, payload) : approvePlanMode(sessionID, payload),
       query: getApprovalReceipt,
