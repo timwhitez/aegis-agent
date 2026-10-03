@@ -20,6 +20,7 @@ const selectors = {
 };
 const pendingStorageKey = 'aegis-agent.webconsole.approval-operations.v1';
 const detailAbortDiagnostics = new WeakMap();
+const completionObservations = new WeakMap();
 
 // Only transport failures and an old, real detail GET are intercepted. All
 // approval POSTs that reach the server, receipt queries, and provider runs use
@@ -96,7 +97,7 @@ async function unknownResponse(env) {
   const beforeCalls = await providerCalls(providerLogPath, id);
   const traffic = observe(a, baseURL, id);
   const lost = await loseNextApproval(a, baseURL, id, expectedFailures, async () => {
-    await completed(context, baseURL, id);
+    await completed(env, id);
   });
   try {
     await a.locator(selectors.approve).click();
@@ -160,7 +161,7 @@ async function reloadPending(env) {
     const response = await retry;
     assert.equal(response.status(), 202, await response.text());
     assert.deepEqual(response.request().postDataJSON(), original, 'explicit retry must retain ID, target and parameters');
-    await completed(context, baseURL, id);
+    await completed(env, id);
     const receipt = await queryReceipt(context, baseURL, id, original.approval_request_id);
     assertReceipt(receipt, original, 'admitted');
     assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 1);
@@ -190,7 +191,7 @@ async function lateResponseIsolation(env) {
     await a.locator(selectors.approve).dblclick();
     const old = await delayed.fetched;
     assert.equal(old.status, 202, old.text);
-    await completed(context, baseURL, idA);
+    await completed(env, idA);
     assert.equal(trafficA.posts.length, 1, 'double-click must not allocate a second operation');
     await openSessionUI(a, idB, 'plan');
     await a.locator(selectors.approve).click();
@@ -254,7 +255,7 @@ async function sameViewLateResponseIsolation(env) {
         request_id: document.querySelector('#approval-operation-notice')?.getAttribute('data-approval-request-id') }));
       assert.equal(originalView.session_id, id);
       assert.equal(originalView.request_id, old.body.approval_request_id);
-      const original = await completed(context, baseURL, id);
+      const original = await completed(env, id);
       // Awaiting-input views do not poll before the held acceptance arrives.
       // A real History click on this same session refreshes current facts and
       // preserves the original approval view token and pending operation.
@@ -273,7 +274,7 @@ async function sameViewLateResponseIsolation(env) {
         // This is the real composer Send control. No new approval operation is
         // allocated for an ordinary continuation of the settled session.
         await ordinaryContinue(a, baseURL, id, 'Explicit same-view ordinary follow-up while the old approval transport is delayed.');
-        current = await completed(context, baseURL, id);
+        current = await completed(env, id);
         assert.notEqual(current.state.run_generation, original.state.run_generation);
         await loadedState(a, id, current.state.run_generation, 'completed');
         await assertNotGenerating(a);
@@ -420,7 +421,7 @@ async function sameSessionPeerIsolation(env) {
     const old = await delayed.fetched;
     assert.equal(old.status, 202, old.text);
     fixture.assertApprovalPost(old.body, originalTarget);
-    await completed(context, baseURL, id);
+    await completed(env, id);
     // This page shares the actual browser context and localStorage with A.
     // Its restored intent and Check control query the real old receipt.
     peer = await context.newPage();
@@ -451,7 +452,7 @@ async function sameSessionPeerIsolation(env) {
     const fresh = response.request().postDataJSON();
     fixture.assertApprovalPost(fresh, freshTarget);
     assert.notEqual(fresh.approval_request_id, old.body.approval_request_id);
-    await completed(context, baseURL, id);
+    await completed(env, id);
     await assertNotGenerating(peer);
     await assertNotice(peer, env.profile.locale, fresh.approval_request_id);
     const peerRecord = await assertStoredPending(peer, id, fresh);
@@ -533,7 +534,7 @@ async function coverageNewID(env) {
     fixture.assertApprovalPost(newRequest, reviewed, true);
     assert.notEqual(newRequest.approval_request_id, original.approval_request_id);
     assertReceipt(await approved.json(), newRequest, 'admitted');
-    const settled = await completed(context, baseURL, id);
+    const settled = await completed(env, id);
     const ledger = await readLedger(env.sessionRoot, id);
     assert.equal(Object.values(ledger.operations).filter((op) => op.stage === 'rejected').length, 1);
     assert.equal(Object.values(ledger.operations).filter((op) => op.stage === 'admitted').length, 1);
@@ -576,7 +577,7 @@ async function completedAlias(env) {
     canonicalRequest = response.request().postDataJSON();
     fixture.assertApprovalPost(canonicalRequest, reviewed);
     operationID = (await response.json()).approval.lookup.receipt.operation_id;
-    const settled = await completed(context, baseURL, id);
+    const settled = await completed(env, id);
     originalExecution = await providerExecution(env, id, settled, beforeCalls,
       ['get_goal', 'shell', 'record_goal_progress', 'update_goal', 'finish']);
     originalReceipt = (await queryReceipt(context, baseURL, id,
@@ -607,7 +608,7 @@ async function completedAlias(env) {
   // They are not counted as additional clicked UI scenarios.
   await openSessionUI(b, id, 'plan');
   await ordinaryContinue(b, baseURL, id, 'Explicit ordinary follow-up after the old approval.');
-  const later = await completed(context, baseURL, id);
+  const later = await completed(env, id);
   const query = await queryReceipt(context, baseURL, id, canonicalRequest.approval_request_id);
   assert.equal(query.approval.lookup.receipt.operation_id, operationID);
   assert.notEqual(query.current_state.run_generation, query.approval.lookup.receipt.recovery.run_generation);
@@ -659,7 +660,7 @@ async function completedAlias(env) {
   const freshRequest = fresh.request().postDataJSON();
   fixture.assertApprovalPost(freshRequest, newTarget);
   assert.notEqual(freshRequest.approval_request_id, canonicalRequest.approval_request_id);
-  const freshSettled = await completed(context, baseURL, id);
+  const freshSettled = await completed(env, id);
   assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 7);
   const freshExecution = await providerExecution(env, id, freshSettled, beforeCalls + 6, ['finish']);
   assert.notEqual(freshExecution.run_generation, originalExecution.run_generation);
@@ -708,7 +709,7 @@ async function legacyRecovery(env) {
   }
   await openSessionUI(a, id, 'plan');
   await ordinaryContinue(a, baseURL, id, 'Explicit ordinary continue to recover the legacy session.');
-  const recovered = await completed(context, baseURL, id);
+  const recovered = await completed(env, id);
   assert.equal(recovered.plan_mode.approved_revision || '', '', 'legacy recovery must not backfill a reviewed revision');
   assert.equal(await readOptional(path.join(sessionRoot, id, 'approval-operations.json')), null);
   assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 1);
@@ -764,7 +765,7 @@ async function legacyRecovery(env) {
   assert.notEqual(freshRequest.approval_request_id, repairRequest.approval_request_id,
     'completed non-executing repair must not block a newly reviewed target');
   assertReceipt(await response.json(), freshRequest, 'admitted');
-  const linkedSettled = await completed(context, baseURL, linked);
+  const linkedSettled = await completed(env, linked);
   const ledger = await readLedger(sessionRoot, linked);
   assert.equal(Object.keys(ledger.operations).length, 1);
   assert.equal(Object.keys(ledger.target_admissions).length, 1);
@@ -821,8 +822,48 @@ function create(env, label, linked = false) {
     linked ? 'E2E_UI_PLAN_RECEIPT_MISSION' : 'E2E_UI_PLAN');
 }
 
-function completed(context, baseURL, id) {
-  return fixture.waitForDetail(context, baseURL, id, (detail) => detail.state?.status === 'completed' && !detail.active_handle);
+async function completed(env, id) {
+  const { context, baseURL, sessionRoot } = env;
+  let generation, acquired, owner, settled, release;
+  // Completed/no-handle can precede the original runner's final release write:
+  // a detail GET can prune the handle while RunPreparedApproval is settling.
+  // One existing 25-second budget covers both current facts and owner release.
+  await until(async () => {
+    const detail = await fixture.getJSON(context, `${baseURL}/api/sessions/${encodeURIComponent(id)}`);
+    if (!generation && (detail.state?.status !== 'completed' || detail.active_handle)) return false;
+    if (!generation) {
+      generation = detail.state.run_generation;
+      assert.ok(generation, 'completion boundary requires the current execution generation');
+    }
+    assert.equal(detail.state.run_generation, generation, 'a later generation cannot satisfy the original completion boundary');
+    assert.equal(detail.state.status, 'completed');
+    const events = (await readFile(path.join(sessionRoot, id, 'events.jsonl'), 'utf8'))
+      .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    const latestAcquired = events.findLast((event) => event.type === 'webconsole.handle.acquired');
+    assert.ok(latestAcquired, 'the completed execution must have a real acquired web owner');
+    if (!acquired) {
+      acquired = latestAcquired;
+      owner = { pid: acquired.data.pid, process_start_id: acquired.data.process_start_id, started_at: acquired.data.started_at };
+      assert.ok(Number.isInteger(owner.pid) && owner.pid > 0 && owner.process_start_id && owner.started_at);
+      assert.equal(acquired.session_id, id);
+    }
+    assert.equal(latestAcquired.id, acquired.id, 'a replaced web owner cannot satisfy the original completion boundary');
+    const releases = events.filter((event) => event.type === 'webconsole.handle.released' &&
+      event.data.pid === owner.pid && event.data.process_start_id === owner.process_start_id && event.data.started_at === owner.started_at &&
+      event.data.result_session_id === id && event.data.reason === undefined && event.data.error === undefined);
+    if (!releases.length) return false;
+    assert.equal(releases.length, 1, 'one normal successful release for this exact execution owner');
+    release = releases[0];
+    assert.ok(events.indexOf(release) > events.indexOf(acquired));
+    settled = await fixture.getJSON(context, `${baseURL}/api/sessions/${encodeURIComponent(id)}`);
+    assert.equal(settled.state.run_generation, generation);
+    assert.equal(settled.state.status, 'completed');
+    assert.ok(!settled.active_handle, 'the current generation must remain completed with no active handle after normal owner release');
+    return true;
+  }, 'current completed generation and its exact owner normal successful release', 25_000);
+  completionObservations.set(settled, { run_generation: generation, owner,
+    acquired_event_id: acquired.id, acquired_at: acquired.time, normal_release_event_id: release.id, normal_released_at: release.time });
+  return settled;
 }
 
 async function closeInspector(page) {
@@ -980,7 +1021,8 @@ async function providerExecution(env, id, detail, beforeCalls, expectedTools) {
   assert.ok(detail.state.run_generation, 'settled execution has a durable generation identity');
   return { run_generation: detail.state.run_generation, provider_turns: turns.length,
     tool_sequence: turns.map((row) => row.tool), provider_call_numbers: turns.map((row) => row.call),
-    session_status: detail.state.status, goal_status: detail.goal?.status || null };
+    session_status: detail.state.status, goal_status: detail.goal?.status || null,
+    completion_boundary: completionObservations.get(detail) };
 }
 
 function withoutLedger(facts) {
