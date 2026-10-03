@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/session"
+	"golang.org/x/sys/unix"
 )
 
 func newApprovalTargetFixture(t *testing.T) (*Runner, string, *atomic.Int32) {
@@ -551,6 +553,218 @@ func TestPreparedApprovalAbortPreservesQueuedSteer(t *testing.T) {
 	state, err := r.store.LoadState(id)
 	if err != nil || state.Status != session.StatusAwaitingInput || state.PendingSteerCount != 1 || calls.Load() != 0 {
 		t.Fatalf("abort did not preserve recoverable queued steer: %#v %v calls=%d", state, err, calls.Load())
+	}
+}
+
+func newPreparedApprovalWindowFixture(t *testing.T) (*Runner, *PreparedApproval, error) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	r := NewRunner(cfg)
+	stopBeforeProvider := errors.New("approval window test stops before provider")
+	r.SetRunLifecycleHooks(RunLifecycleHooks{OnSessionActive: func(session.SessionMetadata, *Runner) error {
+		return stopBeforeProvider
+	}})
+	id := session.NewSessionID()
+	meta := session.SessionMetadata{SchemaVersion: 1, ID: id, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: session.ModeRun, Provider: "openai", Model: "test", CompletionPolicy: session.CompletionPolicyInteractive}
+	if err := r.store.Create(meta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.CreatePlanMode(id, session.PlanModeDraft{Enabled: true, Objective: "Reviewed scope"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.SubmitPlanMode(id, session.PlanModeSubmitInput{Title: "Reviewed", Summary: "Reviewed scope", PlanMarkdown: "# Reviewed scope", Verification: []string{"unit tests"}}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r, p, stopBeforeProvider
+}
+
+// Hold the actual state.lock to order a writer before the prepared CAS, after
+// the prepared operation has already read state.json. No runtime hook replaces
+// either Store operation: the failed compare comes from the durable writer.
+func holdApprovalStateWindow(t *testing.T, r *Runner, id string) func() {
+	t.Helper()
+	lock, err := os.OpenFile(filepath.Join(r.store.SessionDir(id), "state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
+				t.Error(err)
+			}
+			if err := lock.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(release)
+	return release
+}
+
+func waitForApprovalStateWindow(t *testing.T, function string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		buffer := make([]byte, 1<<20)
+		size := goruntime.Stack(buffer, true)
+		for _, stack := range strings.Split(string(buffer[:size]), "\n\n") {
+			// Require the writer's actual state.lock syscall, not an earlier
+			// pending-count read that happens to have the same caller frame.
+			if strings.Contains(stack, "aegis-agent/internal/session.(*Store)."+function) && strings.Contains(stack, "[syscall]") && strings.Contains(stack, "(*Store).withFileLock") && !strings.Contains(stack, "(*Store).pendingSteerCountLocked") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("did not reach real blocked state operation %s", function)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
+	for _, operation := range []string{"run", "abort", "review_required"} {
+		t.Run(operation, func(t *testing.T) {
+			r, p, stopBeforeProvider := newPreparedApprovalWindowFixture(t)
+			if operation == "review_required" {
+				if _, _, err := r.store.MutatePlanMode(p.meta.ID, func(plan *session.PlanModeState) error {
+					plan.Objective = "Changed after admission"
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				snapshot, err := r.store.LoadApprovalSnapshot(p.meta.ID)
+				if err != nil || !errors.Is(session.ValidateApprovalTarget(snapshot, *p.req.ApprovalTarget), session.ErrApprovalConflict) {
+					t.Fatalf("fixture must change the reviewed approval scope: %#v %v", snapshot, err)
+				}
+			}
+			unlock := holdApprovalStateWindow(t, r, p.meta.ID)
+			steerDone := make(chan error, 1)
+			go func() {
+				_, err := r.Steer(context.Background(), SteerRequest{SessionID: p.meta.ID, Message: "Keep the approved scope"})
+				steerDone <- err
+			}()
+			waitForApprovalStateWindow(t, "saveStateLocked")
+			preparedDone := make(chan error, 1)
+			go func() {
+				if operation == "abort" {
+					preparedDone <- r.AbortPreparedApproval(p, nil)
+					return
+				}
+				_, err := r.RunPreparedApproval(context.Background(), p)
+				preparedDone <- err
+			}()
+			waitForApprovalStateWindow(t, "SwapStateIfCurrent")
+			unlock()
+			if err := <-steerDone; err != nil {
+				t.Fatal(err)
+			}
+			err := <-preparedDone
+			if operation == "run" && !errors.Is(err, stopBeforeProvider) || operation == "abort" && err != nil || operation == "review_required" && !errors.Is(err, session.ErrApprovalConflict) {
+				t.Fatalf("accepted same-run steer stranded prepared %s: %v", operation, err)
+			}
+			state, err := r.store.LoadState(p.meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStatus := session.StatusFailed
+			if operation == "abort" {
+				wantStatus = p.originalState.Status
+			} else if operation == "review_required" {
+				wantStatus = session.StatusAwaitingInput
+			}
+			if state.Status != wantStatus || state.PendingSteerCount != 1 {
+				t.Fatalf("prepared %s lost recovery or queued steer: %#v", operation, state)
+			}
+			var record approvalPreparationRecord
+			if err := r.store.ReadArtifact(p.meta.ID, approvalPreparationArtifact, &record); err != nil {
+				t.Fatal(err)
+			}
+			wantPhase := "executing"
+			if operation == "abort" {
+				wantPhase = "aborted"
+			} else if operation == "review_required" {
+				wantPhase = "review_required"
+			}
+			if record.Phase != wantPhase || record.PreparedState.PendingSteerCount != 1 {
+				t.Fatalf("prepared %s lost its updated claim facts: %#v", operation, record)
+			}
+		})
+	}
+}
+
+func TestPreparedApprovalCASWindowRejectsReplacementOrAdvancedState(t *testing.T) {
+	for _, change := range []string{"generation", "phase", "turn", "semantic"} {
+		for _, operation := range []string{"run", "abort"} {
+			t.Run(change+"/"+operation, func(t *testing.T) {
+				r, p, _ := newPreparedApprovalWindowFixture(t)
+				unlock := holdApprovalStateWindow(t, r, p.meta.ID)
+				peer := session.NewStore(r.store.Root())
+				writerDone := make(chan error, 1)
+				go func() {
+					if change == "generation" {
+						// The Store API explicitly permits a replacement claim from
+						// this status. Its fresh identity must reject the older CAS.
+						_, err := peer.ClaimSessionRun(p.meta.ID, session.StatusRunning)
+						writerDone <- err
+						return
+					}
+					state := p.state
+					switch change {
+					case "phase":
+						state.Phase = "provider"
+					case "turn":
+						state.Turn++
+					case "semantic":
+						state.LastError = "another semantic state update"
+					}
+					writerDone <- peer.SaveState(p.meta.ID, state)
+				}()
+				if change == "generation" {
+					waitForApprovalStateWindow(t, "ClaimSessionRun")
+				} else {
+					waitForApprovalStateWindow(t, "saveStateLocked")
+				}
+				preparedDone := make(chan error, 1)
+				go func() {
+					if operation == "abort" {
+						preparedDone <- r.AbortPreparedApproval(p, nil)
+						return
+					}
+					_, err := r.RunPreparedApproval(context.Background(), p)
+					preparedDone <- err
+				}()
+				waitForApprovalStateWindow(t, "SwapStateIfCurrent")
+				unlock()
+				if err := <-writerDone; err != nil {
+					t.Fatal(err)
+				}
+				if err := <-preparedDone; !errors.Is(err, session.ErrApprovalConflict) {
+					t.Fatalf("prepared %s adopted %s update: %v", operation, change, err)
+				}
+				state, err := peer.LoadState(p.meta.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var record approvalPreparationRecord
+				if err := peer.ReadArtifact(p.meta.ID, approvalPreparationArtifact, &record); err != nil {
+					t.Fatal(err)
+				}
+				if state.Status != session.StatusRunning || record.Phase != "prepared" || change == "generation" && state.RunGeneration == p.state.RunGeneration || change == "phase" && state.Phase != "provider" || change == "turn" && state.Turn != p.state.Turn+1 || change == "semantic" && state.LastError == "" {
+					t.Fatalf("prepared %s changed peer %s state or facts: %#v %#v", operation, change, state, record)
+				}
+			})
+		}
 	}
 }
 

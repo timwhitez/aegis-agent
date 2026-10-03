@@ -152,19 +152,11 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 		if err := validateCurrentPreparedClaim(scoped, p); err != nil {
 			return err
 		}
-		current, err := scoped.LoadState(p.meta.ID)
-		if err != nil {
-			return err
-		}
-		if !samePreparedRun(p.state, current) {
-			return fmt.Errorf("%w: prepared run generation changed; cannot restore its claim", session.ErrApprovalConflict)
-		}
-		committed, saved, err := scoped.SwapStateIfCurrent(p.meta.ID, current, p.originalState)
+		committed, err := swapPreparedApprovalState(scoped, p.meta.ID, p.state, func(session.State) session.State {
+			return p.originalState
+		})
 		if err != nil {
 			return fmt.Errorf("restore run claim after approval prepare abort: %w", err)
-		}
-		if !saved {
-			return fmt.Errorf("%w: prepared run generation changed; cannot restore its claim", session.ErrApprovalConflict)
 		}
 		data := map[string]any{"plan_mode_id": p.req.ApprovalTarget.PlanModeID, "approved_revision": p.req.ApprovalTarget.ExpectedRevision, "resumed_from": p.originalState.Status}
 		if cause != nil {
@@ -205,17 +197,15 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 			return fmt.Errorf("%w: prepared run generation changed", session.ErrApprovalConflict)
 		}
 		if targetErr := r.engine.newApprovalScopedEngine(scoped).checkApprovalExecutionTarget(ctx, p.meta.ID); targetErr != nil {
-			pending := current
-			pending.Status = session.StatusAwaitingInput
-			pending.Phase = "plan_approval"
-			pending.IdleReason = "approval_content_changed"
-			pending.LastError = targetErr.Error()
-			saved, err := scoped.SaveStateIfCurrent(p.meta.ID, current, pending)
+			pending, err := swapPreparedApprovalState(scoped, p.meta.ID, p.state, func(current session.State) session.State {
+				current.Status = session.StatusAwaitingInput
+				current.Phase = "plan_approval"
+				current.IdleReason = "approval_content_changed"
+				current.LastError = targetErr.Error()
+				return current
+			})
 			if err != nil {
 				return err
-			}
-			if !saved {
-				return fmt.Errorf("%w: prepared run generation changed", session.ErrApprovalConflict)
 			}
 			targetChanged = true
 			reviewResult = RunResult{SessionID: p.meta.ID, Status: pending.Status, LastError: targetErr.Error()}
@@ -233,12 +223,11 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 		}
 		// CAS marks execution intent before registering an active provider.
 		// An unrelated state writer cannot replace a newer run generation.
-		committed, saved, err := scoped.SwapStateIfCurrent(p.meta.ID, current, current)
+		committed, err := swapPreparedApprovalState(scoped, p.meta.ID, p.state, func(current session.State) session.State {
+			return current
+		})
 		if err != nil {
 			return err
-		}
-		if !saved {
-			return fmt.Errorf("%w: prepared run generation changed", session.ErrApprovalConflict)
 		}
 		p.state = committed
 		prep := r.newApprovalPreparationRunner(scoped)
@@ -437,6 +426,29 @@ func samePreparedRun(expected, current session.State) bool {
 	current.PendingSteerCount = expected.PendingSteerCount
 	current.LoadedSkills = expected.LoadedSkills
 	return reflect.DeepEqual(expected, current)
+}
+
+// The approval lock keeps the reviewed scope stable while state observations
+// can still change independently. Retry a lost full-state CAS only after proving
+// the same run is still in its unadvanced preparation state. Build each write
+// from that fresh observation; never ignore fields in the Store's generic CAS.
+func swapPreparedApprovalState(store *session.Store, sessionID string, expected session.State, next func(session.State) session.State) (session.State, error) {
+	for {
+		current, err := store.LoadState(sessionID)
+		if err != nil {
+			return session.State{}, err
+		}
+		if !samePreparedRun(expected, current) {
+			return session.State{}, fmt.Errorf("%w: prepared run generation or state changed", session.ErrApprovalConflict)
+		}
+		committed, saved, err := store.SwapStateIfCurrent(sessionID, current, next(current))
+		if err != nil {
+			return session.State{}, err
+		}
+		if saved {
+			return committed, nil
+		}
+	}
 }
 
 func approvalPreparationOwnsState(record approvalPreparationRecord, current session.State) error {
