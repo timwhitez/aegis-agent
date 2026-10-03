@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -636,6 +637,23 @@ func (s *Store) LookupApprovalOperationByGeneration(sessionID, runGeneration str
 		return nil
 	})
 	return result, err
+}
+
+// ListApprovalOperationReceipts returns canonical operations in stable order.
+// Runtime may validate all opaque recovery payloads before accepting a new
+// operation; checking only the requested record could bypass damaged evidence
+// under another ID. Current goal, plan, and defaults are deliberately unread.
+func (s *Store) ListApprovalOperationReceipts(sessionID string) (receipts []ApprovalReceipt, err error) {
+	receipts = make([]ApprovalReceipt, 0)
+	err = s.withApprovalOperations(sessionID, func(_ *Store, ledger *approvalOperations) error {
+		for _, receipt := range ledger.Operations {
+			receipt.Recovery = captureApprovalRecovery(receipt.Recovery)
+			receipts = append(receipts, receipt)
+		}
+		sort.Slice(receipts, func(i, j int) bool { return receipts[i].OperationID < receipts[j].OperationID })
+		return nil
+	})
+	return receipts, err
 }
 
 func bindApprovalRequest(ledger *approvalOperations, request ApprovalOperationRequest, fingerprint, operationID string) (ApprovalReceipt, error) {

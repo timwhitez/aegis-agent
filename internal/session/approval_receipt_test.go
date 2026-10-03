@@ -897,3 +897,95 @@ func TestApprovalReceiptGenerationLookupAmbiguousCanonicalFailsClosed(t *testing
 		t.Fatalf("ambiguous generation chose an arbitrary operation: %#v %v", lookup, err)
 	}
 }
+
+func TestApprovalReceiptListCanonicalSortedAndGoalIndependent(t *testing.T) {
+	store, id := newLinkedApprovalTestStore(t)
+	first := newReceiptTestRequest(t, store, id, "operation_z")
+	first.Parameters.OverrideCoverage = true
+	prepareReceiptForTest(t, store, id, first)
+	alias := first
+	alias.RequestID = "alias_z"
+	if _, err := store.BindApprovalRequest(id, alias, first.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.MutateGoal(id, func(goal *SessionGoal) error {
+		goal.Objective = "A distinct mission target"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := newReceiptTestRequest(t, store, id, "operation_a")
+	second.Parameters.OverrideCoverage = true
+	prepareReceiptForTest(t, store, id, second)
+	alias = second
+	alias.RequestID = "alias_a"
+	if _, err := store.BindApprovalRequest(id, alias, second.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SessionDir(id), "goal.json"), []byte(`broken current goal`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := receiptLedgerBytes(t, store, id)
+	var retained *Store
+	if err := store.WithApprovalLock(id, func(scoped *Store) error {
+		retained = scoped
+		receipts, err := scoped.ListApprovalOperationReceipts(id)
+		if err != nil {
+			return err
+		}
+		if len(receipts) != 2 || receipts[0].OperationID != second.RequestID || receipts[1].OperationID != first.RequestID {
+			return fmt.Errorf("list returned aliases or unstable canonical order: %#v", receipts)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipts, err := NewStore(store.Root()).ListApprovalOperationReceipts(id)
+	if err != nil || len(receipts) != 2 || receipts[0].OperationID != second.RequestID || receipts[1].OperationID != first.RequestID {
+		t.Fatalf("reloaded list differed: %#v %v", receipts, err)
+	}
+	originalPayload := append([]byte(nil), receipts[0].Recovery.Data...)
+	receipts[0].Recovery.Data[0] = 'x'
+	receipts[0].OperationID = "caller_mutated"
+	again, err := store.ListApprovalOperationReceipts(id)
+	if err != nil || len(again) != 2 || again[0].OperationID != second.RequestID || !bytes.Equal(again[0].Recovery.Data, originalPayload) {
+		t.Fatalf("returned values changed durable receipts: %#v %v", again, err)
+	}
+	if !bytes.Equal(before, receiptLedgerBytes(t, store, id)) {
+		t.Fatal("read-only canonical list rewrote ledger")
+	}
+	if _, err := retained.ListApprovalOperationReceipts(id); !errors.Is(err, ErrApprovalScopeClosed) {
+		t.Fatalf("expired scoped list bypassed coordination: %v", err)
+	}
+}
+
+func TestApprovalReceiptListEmptyAndCorruptClosed(t *testing.T) {
+	store, id := newApprovalTestStore(t)
+	receipts, err := store.ListApprovalOperationReceipts(id)
+	if err != nil || receipts == nil || len(receipts) != 0 {
+		t.Fatalf("empty ledger did not return an empty array: %#v %v", receipts, err)
+	}
+	path := filepath.Join(store.SessionDir(id), approvalOperationsFile)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("empty list created ledger")
+	}
+	if _, err := store.ListApprovalOperationReceipts("unknown_session"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown session list returned success: %v", err)
+	}
+	request := newReceiptTestRequest(t, store, id, "operation_1")
+	prepareReceiptForTest(t, store, id, request)
+	data := receiptLedgerBytes(t, store, id)
+	for _, corrupt := range [][]byte{
+		[]byte(`{"schema_version":1,"operations":`),
+		bytes.Replace(data, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1),
+		bytes.Replace(data, []byte(`"target_admissions":{}`), []byte(`"target_admissions":{"bad":"missing"}`), 1),
+	} {
+		if err := os.WriteFile(path, corrupt, 0600); err != nil {
+			t.Fatal(err)
+		}
+		receipts, err := store.ListApprovalOperationReceipts(id)
+		if !errors.Is(err, ErrApprovalReceiptUnverifiable) || len(receipts) != 0 {
+			t.Fatalf("canonical list bypassed corrupt ledger: %#v %v", receipts, err)
+		}
+	}
+}
