@@ -53,6 +53,9 @@ func (e *ApprovalPreparationOutcomeError) Error() string {
 }
 
 func approvalRequest(req ContinueRequest) (session.ApprovalOperationRequest, ContinueRequest, error) {
+	if err := validatePlanModeControlCombination(req); err != nil {
+		return session.ApprovalOperationRequest{}, req, err
+	}
 	if !req.ApprovePlan {
 		return session.ApprovalOperationRequest{}, req, errors.New("approval preparation requires approve_plan")
 	}

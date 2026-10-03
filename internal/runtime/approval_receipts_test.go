@@ -96,6 +96,72 @@ func TestApprovalReceiptMissingIDRequiresUpgrade(t *testing.T) {
 	}
 }
 
+func TestApprovalReceiptConflictingControlsPrecedeIdentityAndReplay(t *testing.T) {
+	for _, identity := range []string{"missing_identity", "missing_target", "known_request", "new_alias"} {
+		for _, control := range []string{"start", "cancel", "answer_input"} {
+			t.Run(identity+"/"+control, func(t *testing.T) {
+				r, id, calls := newApprovalTargetFixture(t)
+				req := ContinueRequest{SessionID: id, ApprovePlan: true}
+				if identity == "missing_target" {
+					req.ApprovalRequestID = "missing-target"
+				}
+				if identity == "known_request" || identity == "new_alias" {
+					req.ApprovalRequestID = "admitted-control"
+					req.ApprovalTarget = approvalTargetForTest(t, r, id)
+					if _, err := r.Continue(context.Background(), req); err != nil {
+						t.Fatal(err)
+					}
+					if identity == "new_alias" {
+						req.ApprovalRequestID = "must-not-bind-alias"
+					}
+				}
+				switch control {
+				case "start":
+					req.PlanMode = &session.PlanModeDraft{Enabled: true, Objective: "Conflicting start"}
+				case "cancel":
+					req.CancelPlan = true
+				case "answer_input":
+					req.PlanInputRequestID = "conflicting-input"
+					req.PlanInputAnswers = []session.PlanModeInputAnswer{{QuestionID: "choice", Value: "answer"}}
+				}
+				before, resumed, replay := receiptBaselineRunFacts(t, r, id)
+				plan, err := r.store.LoadPlanMode(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ledgerPath := filepath.Join(r.cfg.Session.Dir, id, "approval-operations.json")
+				ledger, readErr := os.ReadFile(ledgerPath)
+				if readErr != nil && !os.IsNotExist(readErr) {
+					t.Fatal(readErr)
+				}
+				providerCalls := calls.Load()
+				entries := []struct {
+					name string
+					call func() error
+				}{
+					{"continue", func() error { _, err := r.Continue(context.Background(), req); return err }},
+					{"prepare", func() error { _, err := r.PrepareApprovalOperation(context.Background(), req); return err }},
+					{"lookup", func() error { _, err := r.LookupApprovalContinue(req); return err }},
+				}
+				for _, entry := range entries {
+					if err := entry.call(); err == nil || !strings.Contains(err.Error(), "conflicting plan mode controls") {
+						t.Errorf("%s checked identity or replay before incompatible controls: %v", entry.name, err)
+					}
+				}
+				after, afterResumed, afterReplay := receiptBaselineRunFacts(t, r, id)
+				afterPlan, err := r.store.LoadPlanMode(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterLedger, afterReadErr := os.ReadFile(ledgerPath)
+				if calls.Load() != providerCalls || resumed != afterResumed || replay != afterReplay || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(plan, afterPlan) || !bytes.Equal(ledger, afterLedger) || os.IsNotExist(readErr) != os.IsNotExist(afterReadErr) {
+					t.Fatal("incompatible controls changed approval, alias, run, or replay facts")
+				}
+			})
+		}
+	}
+}
+
 func TestApprovalReceiptNewRequestSameTargetDoesNotReadmit(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)

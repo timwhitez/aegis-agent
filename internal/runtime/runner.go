@@ -1292,7 +1292,7 @@ func planModeDraftForContinue(sessionID string, req ContinueRequest, source stri
 	return &draft, nil
 }
 
-func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest) error {
+func validatePlanModeControlCombination(req ContinueRequest) error {
 	var controls []string
 	if req.PlanMode != nil && req.PlanMode.Enabled {
 		controls = append(controls, "start")
@@ -1308,6 +1308,13 @@ func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest)
 	}
 	if len(controls) > 1 {
 		return fmt.Errorf("conflicting plan mode controls: %s", strings.Join(controls, ", "))
+	}
+	return nil
+}
+
+func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest) error {
+	if err := validatePlanModeControlCombination(req); err != nil {
+		return err
 	}
 	if req.ApprovePlan && stringsTrim(req.Message) != "" {
 		return errors.New("plan mode approval cannot include ordinary message")
