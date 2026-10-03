@@ -45,6 +45,7 @@
     'Continue session': '继续会话',
     'Current session': '当前会话',
     'Approval controls could not be loaded. Reload before approving.': '审批控件加载失败。请刷新后再审批。',
+    'Secure randomness is unavailable. Reload in a supported browser before approving.': '安全随机能力不可用。请使用受支持的浏览器刷新后再审批。',
     'Approval already admitted. Showing its receipt and the current session.': '该审批已接纳，正在显示原回执和当前会话。',
     'Approval is being checked. Keep this request ID.': '正在核验审批，请保留此请求 ID。',
     'Approval delivery is unconfirmed. Check its receipt before retrying.': '审批结果尚未确认，请先查询回执再重试。',

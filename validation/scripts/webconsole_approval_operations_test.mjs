@@ -528,6 +528,7 @@ test('visible approval recovery controls and receipt messages are translated in 
   const window = { document, localStorage: { getItem: () => null, setItem() {} } };
   vm.runInNewContext(readFileSync(new URL('../../internal/webconsole/assets/i18n.js', import.meta.url), 'utf8'), { window });
   const labels = ['Approval receipt', 'Check approval', 'Retry approval', 'Continue session', 'Current session', 'Goal plan updated',
+    'Secure randomness is unavailable. Reload in a supported browser before approving.',
     'Approval delivery is unconfirmed. Check its receipt before retrying.',
     'No receipt was found. Retry only this saved request with its original parameters.',
     'Approval was prepared but has not been admitted. Retry the saved request to check whether it can resume.',
