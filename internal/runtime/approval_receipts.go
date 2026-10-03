@@ -374,8 +374,15 @@ func validateApprovalRecoveryStates(receipt session.ApprovalReceipt, record appr
 		}
 	case "review_required":
 		state := record.PreparedState
-		if claimed && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval" && state.Turn == record.OriginalState.Turn && state.IdleReason == "approval_content_changed" && state.LastError != "" && state.LastError == record.LastError {
-			return nil
+		if claimed && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval" && state.IdleReason == "approval_content_changed" && state.LastError != "" && state.LastError == record.LastError {
+			// The pre-execution scope-change CAS changes only these four core
+			// fields. Every remaining fact must still be the unadvanced claim;
+			// samePreparedRun preserves its explicit observation exclusions.
+			state.Status, state.Phase = session.StatusRunning, "prepare"
+			state.IdleReason, state.LastError = expectedClaim.IdleReason, expectedClaim.LastError
+			if samePreparedRun(expectedClaim, state) {
+				return nil
+			}
 		}
 	case "settled", "recovered":
 		// Executed/settled runs can advance status, phase and turn. Recovered

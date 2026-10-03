@@ -1153,6 +1153,95 @@ func TestApprovalReceiptPreparedPhaseStateConsistency(t *testing.T) {
 	}
 }
 
+func TestApprovalReceiptReviewRequiredStateConsistency(t *testing.T) {
+	for _, damage := range []string{"control", "provider_resume_count", "max_tokens_resume_count", "ralph_loop_count", "compaction_chars", "current_task", "assistant_excerpt", "pause_reason", "incomplete_reason"} {
+		t.Run(damage, func(t *testing.T) {
+			r, id, calls := newApprovalTargetFixture(t)
+			old := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "old-review-required"}
+			prepared, err := r.PrepareApprovalOperation(context.Background(), old)
+			if err != nil || prepared.Prepared == nil {
+				t.Fatalf("prepare real operation: %v", err)
+			}
+			if _, err := r.Steer(context.Background(), SteerRequest{SessionID: id, Message: "Preserve this legal queued observation"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.store.MutatePlanMode(id, func(plan *session.PlanModeState) error {
+				plan.PlanVersion++
+				plan.Status = session.PlanModeStatusAwaitingApproval
+				plan.PlanMarkdown = "New reviewed target after actual scope change"
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.RunPreparedApproval(context.Background(), prepared.Prepared); !errors.Is(err, session.ErrApprovalConflict) || calls.Load() != 0 {
+				t.Fatalf("actual scope-change boundary: %v calls=%d", err, calls.Load())
+			}
+			prior, err := r.ApprovalReceipt(id, old.ApprovalRequestID)
+			if err != nil || prior.Receipt.Phase != "review_required" {
+				t.Fatalf("actual source receipt: %v %#v", err, prior.Receipt)
+			}
+			payload, err := decodeApprovalRecovery(prior.Receipt)
+			if err != nil || payload.Preparation.PreparedState.PendingSteerCount != 1 {
+				t.Fatalf("legal queued observation was not captured: %v %#v", err, payload.Preparation.PreparedState)
+			}
+			path := filepath.Join(r.cfg.Session.Dir, id, "approval-operations.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ledger map[string]any
+			if err := json.Unmarshal(raw, &ledger); err != nil {
+				t.Fatal(err)
+			}
+			captured := ledger["operations"].(map[string]any)[old.ApprovalRequestID].(map[string]any)["recovery"].(map[string]any)["data"].(map[string]any)["preparation"].(map[string]any)["prepared_state"].(map[string]any)
+			switch damage {
+			case "provider_resume_count":
+				captured["provider_auto_resume_count"] = 1
+			case "max_tokens_resume_count":
+				captured["provider_max_tokens_resume_count"] = 1
+			case "ralph_loop_count":
+				captured["ralph_loop_count"] = 1
+			case "compaction_chars":
+				captured["last_compaction_input_chars"] = 1
+			case "current_task":
+				captured["current_task"] = "invented task"
+			case "assistant_excerpt":
+				captured["last_assistant_excerpt"] = "invented excerpt"
+			case "pause_reason":
+				captured["pause_reason"] = "invented pause"
+			case "incomplete_reason":
+				captured["incomplete_reason"] = "invented incompleteness"
+			}
+			raw, err = json.Marshal(ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			next := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "new-review-required"}
+			before, beforeResumed, beforeReplay := receiptBaselineRunFacts(t, r, id)
+			_, queryErr := r.ApprovalReceipt(id, old.ApprovalRequestID)
+			_, lookupErr := r.LookupApprovalContinue(next)
+			_, err = r.Continue(context.Background(), next)
+			after, afterResumed, afterReplay := receiptBaselineRunFacts(t, r, id)
+			t.Logf("damage=%s source=actual_review_required queued=1 query=%v lookup=%v execution=%v provider_calls=%d", damage, queryErr, lookupErr, err, calls.Load())
+			if damage == "control" {
+				if queryErr != nil || lookupErr != nil || err != nil || calls.Load() != 1 {
+					t.Fatalf("lawful control: query=%v lookup=%v execute=%v calls=%d", queryErr, lookupErr, err, calls.Load())
+				}
+				return
+			}
+			if !errors.Is(queryErr, session.ErrApprovalReceiptUnverifiable) || !errors.Is(lookupErr, session.ErrApprovalReceiptUnverifiable) || !errors.Is(err, session.ErrApprovalReceiptUnverifiable) || calls.Load() != 0 || !reflect.DeepEqual(before, after) || beforeResumed != afterResumed || beforeReplay != afterReplay {
+				t.Fatalf("corrupt review-required state admitted: query=%v lookup=%v execute=%v calls=%d", queryErr, lookupErr, err, calls.Load())
+			}
+			if afterRaw, err := os.ReadFile(path); err != nil || !bytes.Equal(raw, afterRaw) {
+				t.Fatalf("failed validation changed ledger: %v", err)
+			}
+		})
+	}
+}
+
 func TestApprovalReceiptResumableOriginalStatusControls(t *testing.T) {
 	for _, status := range []string{session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted} {
 		t.Run(status, func(t *testing.T) {
