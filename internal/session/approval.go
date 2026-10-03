@@ -68,6 +68,7 @@ func (s *Store) WithApprovalLock(sessionID string, fn func(*Store) error) error 
 		// live Store or toggling a bypass flag on it would race other callers.
 		scoped := NewStoreWithDirMode(s.root, s.dirMode)
 		scoped.beforePlanModeMarkdownWrite = s.beforePlanModeMarkdownWrite
+		scoped.beforeApprovalReceiptCommit = s.beforeApprovalReceiptCommit
 		scoped.beforeQueueClaimRename = s.beforeQueueClaimRename
 		scoped.beforeQueueClaimLeaseWrite = s.beforeQueueClaimLeaseWrite
 		scoped.beforeQueueReapCommit = s.beforeQueueReapCommit

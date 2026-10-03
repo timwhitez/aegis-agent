@@ -41,6 +41,8 @@ type Store struct {
 
 	// Set only by package tests to force deterministic Plan Mode artifact failures.
 	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
+	// Instance-only seam for approval receipt durability failures.
+	beforeApprovalReceiptCommit func(fileutil.AtomicCommitStage) error
 	// Set only by package tests to force deterministic queue claim rename races.
 	beforeQueueClaimRename func(from, to string, job QueueJob) error
 	// Set only by package tests to force deterministic queue claim lease write failures.
