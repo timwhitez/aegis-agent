@@ -1,11 +1,12 @@
 class APIError extends Error {
-  constructor(message, { code = '', detail = '', action = '', status = 0 } = {}) {
+  constructor(message, { code = '', detail = '', action = '', status = 0, payload = null } = {}) {
     super(message);
     this.name = 'APIError';
     this.code = code;
     this.detail = detail;
     this.action = action;
     this.status = status;
+    this.payload = payload;
   }
 }
 
@@ -46,7 +47,8 @@ async function requestJSON(url, options = {}) {
       code: payload?.code || '',
       detail: payload?.detail || '',
       action: payload?.action || '',
-      status: response.status
+      status: response.status,
+      payload
     });
   }
   return payload;
@@ -92,6 +94,10 @@ function getPlanMode(sessionID) {
 
 function approvePlanMode(sessionID, payload = {}) {
   return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/planmode/approve`, jsonRequest(payload));
+}
+
+function getApprovalReceipt(sessionID, requestID) {
+  return requestJSON(`/api/sessions/${encodeURIComponent(sessionID)}/approval-receipts/${encodeURIComponent(requestID)}`);
 }
 
 function revisePlanMode(sessionID, message) {

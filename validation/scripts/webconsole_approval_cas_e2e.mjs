@@ -87,7 +87,7 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
           await a.locator('#inspector-slide-out [data-plan-action="approve"]').click();
           const response = await approved;
           assert.equal(response.status(), 202, await response.text());
-          assert.deepEqual(response.request().postDataJSON(), reviewedV2);
+          assertApprovalPost(response.request().postDataJSON(), reviewedV2);
           const completed = await waitForDetail(context, baseURL, id,
             (detail) => detail.state?.status === 'completed' && !detail.active_handle);
           assert.equal(completed.plan_mode.approved_revision, reviewedV2.expected_revision);
@@ -144,7 +144,9 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
             await a.locator('#inspector-slide-out [data-plan-action="approve"]').click();
             const blocked = await first;
             assert.equal(blocked.status(), 409);
-            assert.deepEqual(blocked.request().postDataJSON(), reviewed);
+            const blockedRequest = blocked.request().postDataJSON();
+            assertApprovalPost(blockedRequest, reviewed);
+            assert.equal((await blocked.json()).approval.lookup.receipt.stage, 'rejected');
             assert.match(JSON.stringify(await blocked.json()), /coverage/i);
             const dialog = a.locator('.confirm-dialog');
             await dialog.waitFor();
@@ -169,7 +171,11 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
             await assertStaleResponse(rejected, { ...reviewed, override_coverage: true });
             await assertStaleUI(a, locale, previousToasts);
             await assertUnaccepted(context, baseURL, sessionRoot, id, before, reviewed.plan_version);
-            assert.deepEqual(posts.payloads, [reviewed, { ...reviewed, override_coverage: true }], 'coverage retry must not capture the latest target');
+            assert.equal(posts.payloads.length, 2, 'coverage must not automatically approve another target');
+            assertApprovalPost(posts.payloads[0], reviewed);
+            assertApprovalPost(posts.payloads[1], reviewed, true);
+            assert.notEqual(posts.payloads[1].approval_request_id, blockedRequest.approval_request_id,
+              'coverage confirmation changes parameters and must use a new request ID');
             posts.dispose();
             evidence.push({ scenario: 'coverage_confirmation', locale, viewport: size, session_id: id, reviewed, status: rejected.status(), code: (await rejected.json()).code });
             await capture(a, `approval-cas-coverage-${suffix}.png`, { retainToasts: true });
@@ -198,7 +204,8 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
           await dialog.locator('.confirm-dialog-confirm').click();
           await assertStaleUI(a, locale, previousToasts);
           await assertUnaccepted(context, baseURL, sessionRoot, id, before, reviewed.plan_version);
-          assert.deepEqual(posts.payloads, [reviewed], 'a changed display must not automatically approve or retry');
+          assert.equal(posts.payloads.length, 1, 'a changed display must not automatically approve or retry');
+          assertApprovalPost(posts.payloads[0], reviewed);
           posts.dispose();
           evidence.push({ scenario: 'coverage_display_changed', locale, viewport: size, session_id: id, reviewed, approval_requests: 1 });
           await capture(a, `approval-cas-coverage-refreshed-${suffix}.png`, { retainToasts: true });
@@ -213,8 +220,8 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
   return { scenarios: evidence.length, evidence, browser_errors: browserErrors };
 }
 
-async function createFixture(context, baseURL, label, linked = false) {
-  const prompt = `E2E_UI_PLAN_REVISE browser approval CAS ${label}`;
+async function createFixture(context, baseURL, label, linked = false, marker = 'E2E_UI_PLAN_REVISE') {
+  const prompt = `${marker} browser approval ${label}`;
   const response = await context.request.post(`${baseURL}/api/sessions/start`, {
     headers: { 'X-Aegis-Agent-Web': '1' },
     data: {
@@ -349,7 +356,8 @@ async function clickStaleApproval(page, baseURL, id, action, reviewed, selector,
     await assertStaleResponse(response, reviewed);
     await assertStaleUI(page, locale, previousToasts);
     await page.waitForTimeout(200);
-    assert.deepEqual(posts.payloads, [reviewed], 'stale approval must not automatically retry with latest');
+    assert.equal(posts.payloads.length, 1, 'stale approval must not automatically retry with latest');
+    assertApprovalPost(posts.payloads[0], reviewed);
     return response;
   } finally {
     posts.dispose();
@@ -359,7 +367,17 @@ async function clickStaleApproval(page, baseURL, id, action, reviewed, selector,
 async function assertStaleResponse(response, reviewed) {
   assert.equal(response.status(), 409, await response.text());
   assert.equal((await response.json()).code, 'APPROVAL_TARGET_CONFLICT');
-  assert.deepEqual(response.request().postDataJSON(), reviewed, 'Approve must send the target actually displayed');
+  assertApprovalPost(response.request().postDataJSON(), reviewed, reviewed.override_coverage === true);
+}
+
+function assertApprovalPost(payload, reviewed, overrideCoverage = false) {
+  assert.equal(typeof payload.approval_request_id, 'string');
+  assert.ok(payload.approval_request_id.trim(), 'Approve must supply an operation request ID');
+  assert.deepEqual({ plan_mode_id: payload.plan_mode_id, plan_version: payload.plan_version,
+    expected_revision: payload.expected_revision }, { plan_mode_id: reviewed.plan_mode_id,
+    plan_version: reviewed.plan_version, expected_revision: reviewed.expected_revision },
+  'Approve must send the target actually displayed');
+  assert.equal(payload.override_coverage ?? false, overrideCoverage);
 }
 
 function toastIDs(page) {
@@ -395,7 +413,7 @@ async function assertStaleUI(page, locale, previousToasts = []) {
 async function durableFacts(root, id) {
   const facts = {};
   for (const relative of ['session.json', 'planmode.json', 'goal.json', 'state.json', 'messages.jsonl', 'events.jsonl',
-    'artifacts/planmode-history.jsonl', 'artifacts/goal-history.jsonl', 'artifacts/approval-preparation.json']) {
+    'artifacts/planmode-history.jsonl', 'artifacts/goal-history.jsonl', 'artifacts/approval-preparation.json', 'approval-operations.json']) {
     try {
       facts[relative] = await readFile(path.join(root, id, relative), 'utf8');
     } catch (error) {
@@ -405,6 +423,14 @@ async function durableFacts(root, id) {
   }
   return facts;
 }
+
+// Shared deterministic setup and fact readers; receipt scenarios still drive
+// user controls themselves and never call the application's approval handlers.
+export const approvalE2EFixtures = {
+  createFixture, missionPlan, patchMission, getJSON, waitForDetail, waitForPlan,
+  coherentSnapshot, freezeDetail, target, displayedTarget, nextPost,
+  approvalPosts, assertApprovalPost, durableFacts, assertStaleUI, toastIDs
+};
 
 async function assertUnaccepted(context, baseURL, root, id, before, version) {
   const detail = await getJSON(context, `${baseURL}/api/sessions/${encodeURIComponent(id)}`);

@@ -402,3 +402,5 @@ fixture 内容：
 - 至少一条真实 Web 手工路径通过
 - 至少一条 CLI fallback 手工路径通过
 - spec 与实现对照检查无关键偏差
+
+审批回执阶段必须验证同 ID/同参重放、改参冲突、同 target 换 ID alias、当前目标改变后 receipt-first、新目标新 ID、coverage rejected binding 与新 ID override；实际 CLI/SDK/Web/direct-linked 并发至多一次 admission，linked executing 200 不执行，普通 follow-up 保持。按 write/file-fsync/publish/dir-fsync/after-commit 及 prepared/claim/approval/history/replay/admitted 边界注入失败和重启，验证 corrupt ledger 对任意 ID fail closed、hook 空/替换消息、addHandle 失败和 legacy 显式恢复。运行相关 race、完整 ./test.sh 及 zh-CN/en 桌面/移动实际完成回执重放/未知响应/refresh/session-switch E2E；保留所有实际红例、合法 controls 和历史环境失败。

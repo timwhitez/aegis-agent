@@ -9,6 +9,10 @@ const WS_RECONNECT_MAX_MS = 30000;
 const MAX_LIVE_EVENTS = 80;
 const STOP_REQUEST_HOLD_MS = 15000;
 const UI_STATE_STORAGE_KEY = 'aegis-agent.webconsole.ui-state.v1';
+const APPROVAL_MODULE_URL = new URL('approval-operations.mjs', document.currentScript?.src || window.location?.href || 'http://localhost/shared-assets/app.js').href;
+let approvalOperationsModule = null;
+let approvalOperationController = null;
+let approvalViewEpoch = 0;
 const STOP_FALLBACK_STEER_MESSAGE = 'Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue.';
 const DEFAULT_LIVE_ACTIVITY = {
   title: 'Ready for a new session',
@@ -654,6 +658,12 @@ const nodes = {
 };
 
 async function init() {
+  try {
+    approvalOperationsModule = await import(APPROVAL_MODULE_URL);
+  } catch (err) {
+    console.error('approval controls error', err);
+    showToast('Approval controls could not be loaded. Reload before approving.', 'error');
+  }
   restoreUIState();
   if (window.lucide && lucide.createIcons) {
     lucide.createIcons();
@@ -1169,6 +1179,7 @@ function setupEventListeners() {
     }},
     { selector: '[data-goal-action]', handler: async (el) => { await handleGoalAction(el); } },
     { selector: '[data-plan-action]', handler: async (el) => { await handlePlanModeAction(el); } },
+    { selector: '[data-approval-operation-action]', handler: async (el) => { await handleApprovalOperationAction(el); } },
     { selector: '[data-plan-input-action]', handler: async (el) => { await handlePlanInputAction(el); } },
     { selector: '[data-todo-float-toggle]', handler: () => {
       setFloatingPanelExpanded('todo', !isFloatingPanelExpanded('todo'));
@@ -1838,6 +1849,7 @@ function adoptSession(sessionID, backed) {
     return;
   }
   if (sessionID !== state.sessionId) {
+    approvalViewEpoch++;
     setSelectedQueueJob('');
     clearPlanInputSelections();
     resetMessagePagingWindowState();
@@ -1858,6 +1870,7 @@ function adoptSession(sessionID, backed) {
 }
 
 function resetChatSession() {
+  approvalViewEpoch++;
   state.sessionId = nextEphemeralSessionId();
   state.sessionBacked = false;
   state.sessionDetail = null;
@@ -1951,6 +1964,7 @@ function updateUI() {
 
   nodes.inputStatusText.textContent = inputActionLabel();
   renderPlanModeInputActions();
+  renderApprovalOperationNotice();
   renderGoalComposer();
 
   if (!isLiveRelayConnected()) {
@@ -2235,10 +2249,156 @@ function isCoverageApprovalBlock(err) {
 async function confirmCoverageOverride() {
   return confirmLocalAction({
     title: 'Override validation coverage',
-    message: 'Validation coverage blocks approval. Continue only if you accept the uncovered validation risk for this local session.',
+    message: 'Validation coverage blocks approval. Confirm a new approval request for the same reviewed plan only if you accept the uncovered validation risk for this local session.',
     confirmLabel: 'Override',
     tone: 'danger'
   });
+}
+
+function approvalController() {
+  if (!approvalOperationController) {
+    const Controller = (approvalOperationsModule || window.AegisApprovalOperations)?.ApprovalOperationController;
+    if (!Controller) throw new Error('Approval controls could not be loaded. Reload before approving.');
+    approvalOperationController = new Controller({
+      storage: localStorage,
+      requestID: () => crypto.randomUUID(),
+      submit: (sessionID, entrypoint, payload) => entrypoint === 'mission'
+        ? approveMissionPlan(sessionID, payload) : approvePlanMode(sessionID, payload),
+      query: getApprovalReceipt,
+      onChange: (sessionID) => {
+        if (state.sessionId === sessionID) renderApprovalOperationNotice();
+      }
+    });
+  }
+  return approvalOperationController;
+}
+
+function currentApprovalViewToken() {
+  return `${state.sessionId}\n${approvalViewEpoch}`;
+}
+
+function isCurrentApprovalViewToken(token) {
+  return token === currentApprovalViewToken();
+}
+
+function isNewApprovalAdmission(response) {
+  return response?.status === 'accepted' && response?.approval?.lookup?.receipt?.stage === 'admitted' &&
+    response.approval.replay === false && response.approval.recovery_required !== true;
+}
+
+async function executeReviewedApproval(sessionID, entrypoint, target, viewToken, goalIdentity = '') {
+  const controller = approvalController();
+  if (controller.busy(sessionID)) {
+    showToast('An approval request is already pending. Check its receipt.', 'info');
+    return null;
+  }
+  let response = await controller.start(sessionID, entrypoint, { ...target, override_coverage: false });
+  if (!isCurrentApprovalViewToken(viewToken)) return response;
+  if (response?.approval?.lookup?.receipt?.stage === 'rejected' && isCoverageApprovalBlock({
+    status: 409, message: response.error || response.approval.lookup.receipt.rejection, code: response.code
+  })) {
+    if (!isDisplayedApprovalTarget(target)) throw Object.assign(new Error('The plan has changed. Please review it again.'), { status: 409, code: 'APPROVAL_TARGET_CONFLICT' });
+    if (goalIdentity && !isCurrentGoalActionIdentity(goalIdentity)) return response;
+    if (!await confirmCoverageOverride()) {
+      if (isCurrentApprovalViewToken(viewToken)) showToast('Plan approval was not overridden.', 'info');
+      return response;
+    }
+    if (!isCurrentApprovalViewToken(viewToken)) return response;
+    if (!isDisplayedApprovalTarget(target)) throw Object.assign(new Error('The plan has changed. Please review it again.'), { status: 409, code: 'APPROVAL_TARGET_CONFLICT' });
+    if (goalIdentity && !isCurrentGoalActionIdentity(goalIdentity)) return response;
+    response = await controller.override(sessionID, target);
+  }
+  return response;
+}
+
+function presentApprovalResponse(response, viewToken) {
+  if (!isCurrentApprovalViewToken(viewToken)) return;
+  if (response && response.approval?.lookup?.binding?.approval_request_id !==
+    approvalController().get(state.sessionId)?.approval_request_id) return;
+  if (isNewApprovalAdmission(response)) {
+    setGenerating(true, {
+      title: 'Executing approved plan',
+      copy: 'The approved Plan Mode plan is now running as the next durable turn.',
+      tone: 'live'
+    });
+    showToast('Plan approved and execution started.', 'success');
+  } else if (response?.approval?.lookup?.receipt?.stage === 'admitted') {
+    showToast('Approval already admitted. Showing its receipt and the current session.', 'info');
+  }
+  renderApprovalOperationNotice();
+}
+
+function renderApprovalOperationNotice() {
+  let node = document.getElementById('approval-operation-notice');
+  let record = null;
+  let controller;
+  try {
+    if (hasDurableSession()) {
+      controller = approvalController();
+      record = controller.get(state.sessionId);
+    }
+  } catch { return; }
+  if (!record) {
+    if (node) node.hidden = true;
+    return;
+  }
+  if (!node) {
+    node = document.createElement('div');
+    node.id = 'approval-operation-notice';
+    node.className = 'goal-composer-panel';
+    node.setAttribute('role', 'status');
+    node.setAttribute('aria-live', 'polite');
+    nodes.inputContainer?.insertBefore(node, nodes.inputContainer.firstChild);
+  }
+  const response = controller.response(state.sessionId);
+  const phase = record.phase;
+  const copy = {
+    pending: 'Approval is being checked. Keep this request ID.',
+    unknown: 'Approval delivery is unconfirmed. Check its receipt before retrying.',
+    not_found: 'No receipt was found. Retry only this saved request with its original parameters.',
+    prepared: 'Approval was prepared but has not been admitted. Retry the saved request to check whether it can resume.',
+    admitted: 'This approval was already admitted. The current session below may be a later turn.',
+    rejected: 'This approval was rejected. A coverage override requires confirmation and a new request ID.',
+    recovery_required: 'Approval needs explicit recovery. Stop an active run, then use the message box to continue the session normally.',
+    failed: 'Approval was not admitted. Review the reported error before approving again.'
+  }[phase] || 'Approval delivery is unconfirmed. Check its receipt before retrying.';
+  const busy = controller.busy(state.sessionId);
+  const canRetry = ['not_found', 'prepared'].includes(phase) ||
+    (phase === 'recovery_required' && response?.approval?.lookup?.receipt?.stage === 'prepared');
+  const current = response?.current_state?.status || state.sessionDetail?.state?.status;
+  node.hidden = false;
+  node.setAttribute('data-approval-operation-phase', phase);
+  node.setAttribute('data-approval-request-id', record.approval_request_id);
+  node.innerHTML = `<div><strong>Approval receipt</strong> · <code translate="no" data-i18n-skip>${escapeHTML(record.approval_request_id)}</code></div>
+    <div>${escapeHTML(copy)}</div>
+    ${current ? `<div><span>Current session</span>: <span>${escapeHTML(humanizeStatus(current))}</span></div>` : ''}
+    <div class="plan-action-group"><button class="plan-action-btn" type="button" data-approval-operation-action="check" ${busy ? 'disabled' : ''}>Check approval</button>
+    ${canRetry ? `<button class="plan-action-btn" type="button" data-approval-operation-action="retry" ${busy ? 'disabled' : ''}>Retry approval</button>` : ''}
+    ${phase === 'recovery_required' ? '<button class="plan-action-btn" type="button" data-approval-operation-action="continue">Continue session</button>' : ''}</div>`;
+  window.AegisI18n?.apply?.(node);
+}
+
+async function handleApprovalOperationAction(button) {
+  const sessionID = state.sessionId;
+  const viewToken = currentApprovalViewToken();
+  const action = button.getAttribute('data-approval-operation-action');
+  if (action === 'continue') {
+    closeInspectorSlideOut({ restoreFocus: false });
+    nodes.chatInput?.focus();
+    showToast('Send a message to continue this session normally. Stop an active run first.', 'info');
+    return;
+  }
+  button.disabled = true;
+  try {
+    const controller = approvalController();
+    const response = action === 'retry' ? await controller.retry(sessionID) : await controller.check(sessionID);
+    presentApprovalResponse(response, viewToken);
+    if (isCurrentApprovalViewToken(viewToken)) queueSessionRefresh(80);
+  } catch (err) {
+    if (isCurrentApprovalViewToken(viewToken)) showToast(approvalActionError(err, 'Approval check failed.'), 'error');
+  } finally {
+    if (isCurrentApprovalViewToken(viewToken)) renderApprovalOperationNotice();
+  }
 }
 
 async function confirmGoalClear() {
@@ -2452,44 +2612,9 @@ async function handlePlanModeAction(button) {
   button.disabled = true;
   try {
     if (action === 'approve') {
-      const target = displayedApprovalTarget();
-      try {
-        await approvePlanMode(sessionID, target);
-      } catch (err) {
-        if (state.sessionId !== sessionID) {
-          return;
-        }
-        if (!isCoverageApprovalBlock(err)) {
-          throw err;
-        }
-        if (!isDisplayedApprovalTarget(target)) {
-          showToast('The plan has changed. Please review it again.', 'error');
-          return;
-        }
-        if (!await confirmCoverageOverride()) {
-          if (state.sessionId === sessionID && isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
-            showToast('Plan approval was not overridden.', 'info');
-          }
-          return;
-        }
-        if (state.sessionId !== sessionID) {
-          return;
-        }
-        if (!isDisplayedApprovalTarget(target)) {
-          showToast('The plan has changed. Please review it again.', 'error');
-          return;
-        }
-        await approvePlanMode(sessionID, { ...target, override_coverage: true });
-      }
-      if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
-        return;
-      }
-      setGenerating(true, {
-        title: 'Executing approved plan',
-        copy: 'The approved Plan Mode plan is now running as the next durable turn.',
-        tone: 'live'
-      });
-      showToast('Plan approved and execution started.', 'success');
+      const viewToken = currentApprovalViewToken();
+      const response = await executeReviewedApproval(sessionID, 'planmode', displayedApprovalTarget(), viewToken);
+      presentApprovalResponse(response, viewToken);
     } else if (action === 'cancel') {
       await cancelPlanMode(sessionID);
       if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
@@ -2640,54 +2765,25 @@ async function handleGoalAction(button) {
       }
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
-      const linked = Boolean(currentPlanMode()?.linked_goal_id);
-      const target = linked ? displayedApprovalTarget() : {};
-      let response = null;
-      try {
-        response = await approveMissionPlan(sessionID, target);
-      } catch (err) {
-        if (state.sessionId !== sessionID) {
-          return;
+      if (currentPlanMode()?.linked_goal_id) {
+        const viewToken = currentApprovalViewToken();
+        const response = await executeReviewedApproval(sessionID, 'mission', displayedApprovalTarget(), viewToken, actionGoalIdentity);
+        presentApprovalResponse(response, viewToken);
+      } else {
+        // An unlinked mission changes facts only and has no execution receipt.
+        try {
+          await approveMissionPlan(sessionID, {});
+        } catch (err) {
+          if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) return;
+          if (!isCoverageApprovalBlock(err)) throw err;
+          if (!await confirmCoverageOverride()) return;
+          if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) return;
+          await approveMissionPlan(sessionID, { override_coverage: true });
         }
-        if (!isCoverageApprovalBlock(err)) {
-          throw err;
+        if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
+          showToast('Goal plan approved.', 'success');
         }
-        if (linked && !isDisplayedApprovalTarget(target)) {
-          showToast('The plan has changed. Please review it again.', 'error');
-          return;
-        }
-        if (!isCurrentGoalActionIdentity(actionGoalIdentity)) {
-          return;
-        }
-        if (!await confirmCoverageOverride()) {
-          if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
-            showToast('Goal plan approval was not overridden.', 'info');
-          }
-          return;
-        }
-        if (state.sessionId !== sessionID) {
-          return;
-        }
-        if (linked && !isDisplayedApprovalTarget(target)) {
-          showToast('The plan has changed. Please review it again.', 'error');
-          return;
-        }
-        if (!isCurrentGoalActionIdentity(actionGoalIdentity)) {
-          return;
-        }
-        response = await approveMissionPlan(sessionID, { ...target, override_coverage: true });
       }
-      if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
-        return;
-      }
-      if (isAcceptedLaunchResponse(response)) {
-        setGenerating(true, {
-          title: 'Executing approved plan',
-          copy: 'The linked Plan Mode plan is now running as the next durable turn.',
-          tone: 'live'
-        });
-      }
-      showToast('Goal plan approved.', 'success');
     }
     if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
       await refreshCurrentSession();
@@ -3177,6 +3273,20 @@ async function refreshCurrentSession(options = {}) {
     mergeLoadedMessagesIntoDetail(detail);
     mergeMessageTimelineEntries(detail);
     state.sessionDetail = detail;
+    try {
+      const viewToken = currentApprovalViewToken();
+      const pendingCheck = approvalController().restore(sessionID);
+      pendingCheck?.then((response) => {
+        if (isCurrentApprovalViewToken(viewToken)) {
+          presentApprovalResponse(response, viewToken);
+          renderApprovalOperationNotice();
+        }
+      }).catch((err) => {
+        if (isCurrentApprovalViewToken(viewToken)) showToast(err.message, 'error');
+      });
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
     clearSettledStopRequestsFromDetail(detail);
     syncWorkspaceToCurrentSession();
     await refreshSelectedQueueJobDetail(queueJobItems(detail?.children?.jobs), {

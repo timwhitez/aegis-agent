@@ -10,6 +10,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { runApprovalCASE2E } from './webconsole_approval_cas_e2e.mjs';
+import { runApprovalReceiptsE2E } from './webconsole_approval_receipts_e2e.mjs';
 import { runSendRecoveryE2E } from './webconsole_send_recovery_e2e.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +25,7 @@ const sessionRoot = path.join(runtimeRoot, 'sessions');
 const skillsRoot = path.join(workspaceRoot, 'skills');
 const binaryPath = path.join(runtimeRoot, 'aegis-agent');
 const providerBinaryPath = path.join(runtimeRoot, 'budgetsmokeprovider');
+const providerLogPath = path.join(outputDir, 'provider-decisions.jsonl');
 const configPath = path.join(runtimeRoot, 'config.yaml');
 const uploadPath = path.join(runtimeRoot, 'upload-note.txt');
 const skillZipPath = path.join(runtimeRoot, 'e2e-skill.zip');
@@ -57,7 +59,7 @@ try {
   const baseURL = `http://127.0.0.1:${webPort}`;
   await writeFile(configPath, renderConfig({ providerURL, sessionRoot, skillsRoot }), { mode: 0o600 });
 
-  children.push(startProcess(providerBinaryPath, ['--listen', `127.0.0.1:${providerPort}`], { cwd: workspaceRoot, label: 'provider' }));
+  children.push(startProcess(providerBinaryPath, ['--listen', `127.0.0.1:${providerPort}`, '--log', providerLogPath], { cwd: workspaceRoot, label: 'provider' }));
   await waitHTTP(`${providerURL}/healthz`, 15_000);
   children.push(startProcess(binaryPath, ['web', '--config', configPath, '--listen', `127.0.0.1:${webPort}`, '--workers', '0'], {
     cwd: workspaceRoot,
@@ -125,6 +127,7 @@ try {
   await page.waitForFunction(() => window.AegisI18n?.locale?.() === 'zh-CN');
 
   const approvalCAS = await runApprovalCASE2E({browser,baseURL,sessionRoot,check,capture});
+  const approvalReceipts = await runApprovalReceiptsE2E({browser,baseURL,sessionRoot,providerLogPath,check,capture});
 
   const mainID = await startSession(page, 'E2E_UI_MAIN raw user text: Settings must remain unchanged.');
   await waitForSession(baseURL, mainID, (detail) => detail?.state?.status === 'completed', 30_000);
@@ -721,6 +724,7 @@ try {
     screenshots,
     browser_errors: browserErrors,
     approval_cas: approvalCAS,
+    approval_receipts: approvalReceipts,
     process_logs: processLogs
   };
   await writeFile(path.join(outputDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 });
