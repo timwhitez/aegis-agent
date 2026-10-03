@@ -39,11 +39,23 @@ func (e *Engine) executeApprovalSemanticTool(ctx context.Context, registry *tool
 // A budget update is outside the approval projection, but a stale whole-goal
 // write or rollback could clobber approved scope. Load its rollback snapshot and
 // apply the update under the same boundary as semantic goal mutations.
-func (e *Engine) startGoalBudgetWrapUpTurn(sessionID string) (goal *session.SessionGoal, started bool, waiting bool, err error) {
+func (e *Engine) startGoalBudgetWrapUpTurn(ctx context.Context, sessionID string) (goal *session.SessionGoal, started bool, waiting bool, err error) {
 	err = e.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
-		current, loadErr := loadGoalOptional(scoped, sessionID)
+		// This fresh goal will be used to build the provider prompt. It must
+		// still belong to the reviewed scope, even if a later disk comparison
+		// could observe that a concurrent semantic edit has been reverted.
+		snapshot, loadErr := e.newApprovalScopedEngine(scoped).approvalExecutionSnapshot(ctx, sessionID)
 		if loadErr != nil {
 			return loadErr
+		}
+		var current *session.SessionGoal
+		if snapshot != nil {
+			current = snapshot.Goal
+		} else {
+			current, loadErr = loadGoalOptional(scoped, sessionID)
+			if loadErr != nil {
+				return loadErr
+			}
 		}
 		goal = current
 		if current == nil || current.Status != session.GoalStatusBudgetLimited || !current.Control.StopOnBudget || current.BudgetWrapUpRequestedAt == "" || session.HasBudgetWrapUpRecord(*current) {

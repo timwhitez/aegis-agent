@@ -452,3 +452,163 @@ func TestCLIGoalControlRollbackRetainsConcurrentApprovedScope(t *testing.T) {
 		})
 	}
 }
+
+func TestCLILinkedPlanGateFallbackRollbackRetainsPeerApproval(t *testing.T) {
+	for _, initial := range []string{"missing", "unlinked"} {
+		t.Run(initial, func(t *testing.T) {
+			store := session.NewStore(t.TempDir())
+			peer := session.NewStore(store.Root())
+			id := "session_cli_gate_fallback"
+			if err := store.Create(session.SessionMetadata{SchemaVersion: 1, ID: id, Mode: session.ModeRun, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), RequestedWorkdir: t.TempDir(), Provider: "openai", Model: "gpt-5.4", CompletionPolicy: session.CompletionPolicyInteractive, RootSessionID: id}, session.State{Status: session.StatusAwaitingInput}); err != nil {
+				t.Fatal(err)
+			}
+			linkEvent := "planmode.created"
+			if initial == "unlinked" {
+				if _, err := store.CreatePlanMode(id, session.PlanModeDraft{Enabled: true, Objective: "Existing unlinked planning gate", Source: session.PlanModeSourceCLI}); err != nil {
+					t.Fatal(err)
+				}
+				linkEvent = "planmode.linked_goal"
+			}
+			goal, err := store.CreateGoal(id, session.GoalDraft{Enabled: true, Mode: session.GoalModeMission, Objective: "Mission requiring a planning gate", RequirePlanApproval: true, Source: session.GoalSourceCLI})
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeHistory, err := store.LoadPlanModeHistory(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(filepath.Join(store.SessionDir(id), "events.jsonl"), os.O_CREATE|os.O_RDWR, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			defer unix.Flock(int(file.Fd()), unix.LOCK_UN)
+			fake := newFakeRunner()
+			fake.store = store
+			restore := storeRunnerLoader
+			storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) { return fake, config.Default(), nil }
+			defer func() { storeRunnerLoader = restore }()
+			cliDone := make(chan error, 1)
+			go func() {
+				cliDone <- Run(context.Background(), []string{"goal", "plan", "approve", id}, io.Discard, io.Discard)
+			}()
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				history, err := peer.LoadPlanModeHistory(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(history) > len(beforeHistory) && history[len(history)-1].Type == linkEvent {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("CLI did not reach blocked linked gate event write")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			type peerResult struct {
+				snapshot session.PlanModeSnapshot
+				history  []session.PlanModeHistoryEntry
+				revision string
+				err      error
+			}
+			peerStarted := make(chan struct{})
+			peerDone := make(chan peerResult, 1)
+			go func() {
+				close(peerStarted)
+				result := peerResult{}
+				result.err = peer.WithApprovalLock(id, func(scoped *session.Store) error {
+					currentGoal, err := scoped.LoadGoal(id)
+					if err != nil {
+						return err
+					}
+					if _, _, err := scoped.EnsurePlanModeForGoal(id, currentGoal, session.PlanModeSourceWeb); err != nil {
+						return err
+					}
+					if _, err := scoped.SubmitPlanMode(id, session.PlanModeSubmitInput{Title: "Peer reviewed plan", Summary: "New peer plan after fallback", PlanMarkdown: "# Peer plan\n\nPreserve this reviewed work.", Verification: []string{"verify peer work"}, Source: session.PlanModeSourceTool}); err != nil {
+						return err
+					}
+					approval, err := scoped.LoadApprovalSnapshot(id)
+					if err != nil {
+						return err
+					}
+					approved, err := scoped.ApprovePlanModeTarget(id, session.PlanModeSourceWeb, approval.Target(), false)
+					if err != nil {
+						return err
+					}
+					result.revision = approved.ApprovedRevision
+					result.snapshot, err = scoped.SnapshotPlanMode(id)
+					if err != nil {
+						return err
+					}
+					result.history, err = scoped.LoadPlanModeHistory(id)
+					return err
+				})
+				peerDone <- result
+			}()
+			<-peerStarted
+			var result peerResult
+			peerCrossed := false
+			select {
+			case result = <-peerDone:
+				peerCrossed = true
+			case <-time.After(50 * time.Millisecond):
+			}
+			corruption := []byte("{\"bogus\":true}\n")
+			if _, err := file.WriteAt(corruption, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Truncate(int64(len(corruption))); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Flock(int(file.Fd()), unix.LOCK_UN); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-cliDone:
+				if err == nil || !strings.Contains(err.Error(), linkEvent) || !strings.Contains(err.Error(), "events.jsonl") {
+					t.Fatalf("expected CLI linked gate event failure: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("CLI linked gate rollback deadlocked")
+			}
+			if !peerCrossed {
+				select {
+				case result = <-peerDone:
+				case <-time.After(3 * time.Second):
+					t.Fatal("peer CAS deadlocked after CLI linked gate rollback")
+				}
+			}
+			if result.err != nil {
+				t.Fatalf("peer submit/approval failed: %v", result.err)
+			}
+			afterSnapshot, err := peer.SnapshotPlanMode(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(afterSnapshot, result.snapshot) {
+				t.Errorf("CLI fallback rollback overwrote peer approved plan/markdown: got %#v want %#v", afterSnapshot, result.snapshot)
+			}
+			afterHistory, err := peer.LoadPlanModeHistory(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(afterHistory, result.history) {
+				t.Errorf("CLI fallback rollback overwrote peer submission/approval history: got %#v want %#v", afterHistory, result.history)
+			}
+			approval, err := peer.LoadApprovalSnapshot(id)
+			if err != nil || approval.Revision != result.revision || approval.PlanMode.ApprovedRevision != result.revision || approval.PlanMode.Status != session.PlanModeStatusApproved || approval.PlanMode.LinkedGoalID != goal.GoalID {
+				t.Errorf("peer reviewed approval was lost: snapshot=%#v revision=%s err=%v", approval, result.revision, err)
+			}
+			if peerCrossed {
+				t.Error("peer submit/approval crossed incomplete CLI fallback/rollback boundary")
+			}
+			if len(fake.continueCalls) != 0 {
+				t.Fatalf("fallback started provider execution: %#v", fake.continueCalls)
+			}
+		})
+	}
+}

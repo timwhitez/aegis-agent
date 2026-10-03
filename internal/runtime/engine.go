@@ -47,6 +47,9 @@ type Engine struct {
 	// beforeAppendEvent is set only by package tests to force deterministic
 	// storage failures at precise event boundaries.
 	beforeAppendEvent func(events.Event)
+	// Set only by tests to interleave a goal mutation after the matched
+	// approval snapshot and before the budget wrap-up reads its current goal.
+	beforeGoalBudgetWrapUpTurn func()
 }
 
 type RunnerInterface interface {
@@ -433,9 +436,15 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		budgetWrapUpTurn := false
 		if goal != nil && goal.Status == session.GoalStatusBudgetLimited && goal.Control.StopOnBudget && goal.BudgetWrapUpRequestedAt != "" && !session.HasBudgetWrapUpRecord(*goal) {
+			if e.beforeGoalBudgetWrapUpTurn != nil {
+				e.beforeGoalBudgetWrapUpTurn()
+			}
 			var waiting bool
-			goal, budgetWrapUpTurn, waiting, err = e.startGoalBudgetWrapUpTurn(meta.ID)
+			goal, budgetWrapUpTurn, waiting, err = e.startGoalBudgetWrapUpTurn(ctx, meta.ID)
 			if err != nil {
+				if errors.Is(err, session.ErrApprovalConflict) {
+					return e.requireApprovalReview(meta, state, err)
+				}
 				return e.fail(ctx, meta, state, err, hookManager)
 			}
 			if waiting {

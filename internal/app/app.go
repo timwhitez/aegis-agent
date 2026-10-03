@@ -1095,28 +1095,52 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		return fmt.Errorf("%w: linked mission approval target no longer exists", session.ErrApprovalConflict)
 	}
 	if session.GoalRequiresPlanApproval(goal) {
-		previousPlanMode, err := store.SnapshotPlanMode(sessionID)
-		if err != nil {
-			return err
-		}
-		previousPlanModeHistory, err := store.LoadPlanModeHistory(sessionID)
-		if err != nil {
-			return err
-		}
-		planMode, created, err := store.EnsurePlanModeForGoal(sessionID, goal, session.PlanModeSourceCLI)
-		if err != nil {
-			return err
-		}
-		if err := appendCLIPlanModeLinkEvent(store, sessionID, previousPlanMode, planMode, created); err != nil {
-			if restoreErr := store.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
-				return fmt.Errorf("restore plan mode after linked plan mode event error %v: %w", err, restoreErr)
+		return store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+			currentGoal, err := loadCLIGoal(scoped, sessionID)
+			if err != nil {
+				return err
 			}
-			if restoreErr := store.RestorePlanModeHistory(sessionID, previousPlanModeHistory); restoreErr != nil {
-				return fmt.Errorf("restore plan mode history after linked plan mode event error %v: %w", err, restoreErr)
+			if currentPlan, planErr := scoped.LoadPlanMode(sessionID); planErr == nil {
+				if currentPlan.Enabled && currentPlan.LinkedGoalID == currentGoal.GoalID {
+					switch currentPlan.Status {
+					case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved, session.PlanModeStatusExecuting:
+						return session.ErrMissingApprovalTarget
+					case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
+						return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+					}
+				}
+			} else if !errors.Is(planErr, fs.ErrNotExist) {
+				return planErr
 			}
-			return err
-		}
-		return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+			if !session.GoalRequiresPlanApproval(currentGoal) {
+				return fmt.Errorf("%w: mission no longer requires a linked planning gate", session.ErrApprovalConflict)
+			}
+			if err := approveMissionCoverage(currentGoal, overrideCoverage); err != nil {
+				return err
+			}
+			previousPlanMode, err := scoped.SnapshotPlanMode(sessionID)
+			if err != nil {
+				return err
+			}
+			previousPlanModeHistory, err := scoped.LoadPlanModeHistory(sessionID)
+			if err != nil {
+				return err
+			}
+			planMode, created, err := scoped.EnsurePlanModeForGoal(sessionID, currentGoal, session.PlanModeSourceCLI)
+			if err != nil {
+				return err
+			}
+			if err := appendCLIPlanModeLinkEvent(scoped, sessionID, previousPlanMode, planMode, created); err != nil {
+				if restoreErr := scoped.RestorePlanModeSnapshot(sessionID, previousPlanMode); restoreErr != nil {
+					return fmt.Errorf("restore plan mode after linked plan mode event error %v: %w", err, restoreErr)
+				}
+				if restoreErr := scoped.RestorePlanModeHistory(sessionID, previousPlanModeHistory); restoreErr != nil {
+					return fmt.Errorf("restore plan mode history after linked plan mode event error %v: %w", err, restoreErr)
+				}
+				return err
+			}
+			return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
+		})
 	}
 	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
