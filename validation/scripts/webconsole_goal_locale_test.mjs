@@ -11,6 +11,8 @@ const ctx = { window, document,
   toneForStatus: () => 'neutral', isMultiAgentTool: () => false };
 vm.createContext(ctx);
 for (const file of ['i18n.js', 'utils.js', 'session-view.js']) vm.runInContext(readFileSync(new URL(file, assets), 'utf8'), ctx, { filename: file });
+const appSource = readFileSync(new URL('app.js', assets), 'utf8');
+vm.runInContext(appSource.match(/function phaseHeadline\(phase\) \{[\s\S]*?\n\}/)[0], ctx, { filename: 'app.js:phaseHeadline' });
 
 const summary = 'The approved local validation command completed with the expected output.';
 const kind = 'progress';
@@ -26,6 +28,35 @@ test('Goal progress fixed operator labels translate in zh-CN and preserve their 
   for (const [source, translated] of cases) assert.equal(window.AegisI18n.t(source), translated, source);
   window.AegisI18n.setLocale('en');
   for (const [source] of cases) assert.equal(window.AegisI18n.t(source), source, source);
+});
+
+function completedGoalLine(budgets = {}) {
+  const html = ctx.renderSessionGoalLine({
+    state: { status: 'completed', phase: 'turn_decide' },
+    goal: { ...goal, status: 'complete', tokens_used: 12, provider_time_used_seconds: 6, ...budgets },
+    goal_facts: { latest_history: { type: 'goal.accounting_updated', created_at: '2026-10-03T12:34:56Z' } }
+  });
+  return html.match(/<span>([^<]+)<\/span>/)?.[1] || '';
+}
+
+test('actual completed session Goal line translates all fixed labels and preserves accounting values', () => {
+  window.AegisI18n.setLocale('zh-CN');
+  for (const [budgets, tokens, providerTime] of [
+    [{}, '12', '6s'],
+    [{ token_budget: 100, provider_time_budget_seconds: 20 }, '12 / 100', '6s / 20s']
+  ]) {
+    const source = completedGoalLine(budgets);
+    const date = ctx.formatTimestamp('2026-10-03T12:34:56Z');
+    assert.equal(source, `session Completed · Awaiting model decision · tokens ${tokens} · provider time ${providerTime} · latest Goal accounting updated · ${date}`);
+    assert.equal(window.AegisI18n.t(source), `会话已完成 · 等待模型决策 · Token ${tokens} · 提供商耗时 ${providerTime} · 最近目标记账更新 · ${date}`);
+  }
+});
+
+test('actual completed session Goal line retains its original English labels and accounting values', () => {
+  window.AegisI18n.setLocale('en');
+  const source = completedGoalLine({ token_budget: 100, provider_time_budget_seconds: 20 });
+  assert.match(source, /^session Completed · Awaiting model decision · tokens 12 \/ 100 · provider time 6s \/ 20s · latest Goal accounting updated · /);
+  assert.equal(window.AegisI18n.t(source), source);
 });
 
 test('actual progress tool call preview keeps arbitrary kind and summary in raw descendants', () => {

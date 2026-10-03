@@ -755,6 +755,7 @@
     [/^Latest Mission plan updated · (.+)$/, '最近事件：目标计划已更新 · $1'],
     [/^latest Mission plan updated · (.+)$/, '最近目标计划已更新 · $1'],
     [/^session Awaiting input · Plan approval · tokens (.+?) · provider time (.+?) · latest Mission plan updated · (.+)$/, '会话等待输入 · 计划审批 · Token $1 · 提供商耗时 $2 · 最近目标计划已更新 · $3'],
+    [/^session Completed · Awaiting model decision · tokens (.+?) · provider time (.+?) · latest Goal accounting updated · (.+)$/, '会话已完成 · 等待模型决策 · Token $1 · 提供商耗时 $2 · 最近目标记账更新 · $3'],
     [/^coverage (\d+)\/(\d+)$/, '覆盖率 $1/$2'],
     [/^Latest (.+) · (.+)$/, '最近事件：$1 · $2'],
     [/^by tool · (.+)$/, '由工具完成 · $1'],
