@@ -874,7 +874,7 @@ func TestApprovalReceiptRecoverySnapshotsMustMatchRevision(t *testing.T) {
 }
 
 func TestApprovalReceiptRecoveryStateCorruptionBlocksUnrelatedNewAdmission(t *testing.T) {
-	for _, damage := range []string{"different_prepared_generation", "empty_prepared_generation", "invalid_original_status", "invalid_prepared_status", "negative_original_turn", "negative_prepared_turn", "null_hook_pending", "null_prepared_state"} {
+	for _, damage := range []string{"different_prepared_generation", "empty_prepared_generation", "invalid_original_status", "running_original_status", "cancelled_original_status", "invalid_prepared_status", "negative_original_turn", "negative_prepared_turn", "null_hook_pending", "null_prepared_state"} {
 		t.Run(damage, func(t *testing.T) {
 			r, id, calls := newApprovalTargetFixture(t)
 			old := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "old-state-receipt"}
@@ -900,6 +900,10 @@ func TestApprovalReceiptRecoveryStateCorruptionBlocksUnrelatedNewAdmission(t *te
 				delete(prepared, "run_generation")
 			case "invalid_original_status":
 				original["status"] = "INVALID"
+			case "running_original_status":
+				original["status"] = session.StatusRunning
+			case "cancelled_original_status":
+				original["status"] = session.StatusCancelled
 			case "invalid_prepared_status":
 				prepared["status"] = "INVALID"
 			case "negative_original_turn":
@@ -997,6 +1001,12 @@ func TestApprovalReceiptRecoveryGenerationPhaseControls(t *testing.T) {
 				payload.Preparation.PreparedState.Status = session.StatusCompleted
 			case "awaiting":
 				payload.Preparation.PreparedState.Status = session.StatusAwaitingInput
+				if tc.phase == "review_required" {
+					payload.Preparation.PreparedState.Phase = "plan_approval"
+					payload.Preparation.PreparedState.IdleReason = "approval_content_changed"
+					payload.Preparation.PreparedState.LastError = "captured scope change"
+					payload.Preparation.LastError = "captured scope change"
+				}
 			}
 			receipt.Recovery.Data, err = json.Marshal(payload)
 			if err != nil {
@@ -1069,6 +1079,99 @@ func TestApprovalReceiptLinkedAndReplayFactsAreSelfContained(t *testing.T) {
 			}
 			if _, err := r.ApprovalReceipt(id, req.ApprovalRequestID); !errors.Is(err, session.ErrApprovalReceiptUnverifiable) || calls.Load() != 0 {
 				t.Fatalf("typed recovery accepted %s: %v provider=%d", damage, err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestApprovalReceiptPreparedPhaseStateConsistency(t *testing.T) {
+	for _, variation := range []string{"control", "completed_status", "advanced_phase", "advanced_turn"} {
+		t.Run(variation, func(t *testing.T) {
+			r, id, calls := newApprovalTargetFixture(t)
+			original := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "old-local-operation"}
+			boundaryError := errors.New("fixed fixture admission before publication")
+			r.approvalAdmit = func(_ *session.Store, _, _, _ string) (session.ApprovalReceipt, error) {
+				return session.ApprovalReceipt{}, boundaryError
+			}
+			prior, err := r.PrepareApprovalOperation(context.Background(), original)
+			if !errors.Is(err, boundaryError) || prior.Prepared != nil || calls.Load() != 0 {
+				t.Fatalf("fixture boundary: error=%v prepared=%v calls=%d", err, prior.Prepared != nil, calls.Load())
+			}
+			payload, err := decodeApprovalRecovery(prior.Lookup.Receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prior.Lookup.Receipt.Stage != session.ApprovalReceiptPrepared || prior.Lookup.Receipt.Phase != "prepare_failed" || payload.Preparation.CompletedPhase != "prepared" {
+				t.Fatalf("unexpected source phase: stage=%s phase=%s completed=%s", prior.Lookup.Receipt.Stage, prior.Lookup.Receipt.Phase, payload.Preparation.CompletedPhase)
+			}
+			t.Logf("source stage=%s phase=%s completed=%s prepared_status=%s prepared_phase=%s prepared_turn=%d", prior.Lookup.Receipt.Stage, prior.Lookup.Receipt.Phase, payload.Preparation.CompletedPhase, payload.Preparation.PreparedState.Status, payload.Preparation.PreparedState.Phase, payload.Preparation.PreparedState.Turn)
+			path := filepath.Join(r.cfg.Session.Dir, id, "approval-operations.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ledger map[string]any
+			if err := json.Unmarshal(raw, &ledger); err != nil {
+				t.Fatal(err)
+			}
+			state := ledger["operations"].(map[string]any)[original.ApprovalRequestID].(map[string]any)["recovery"].(map[string]any)["data"].(map[string]any)["preparation"].(map[string]any)["prepared_state"].(map[string]any)
+			switch variation {
+			case "completed_status":
+				state["status"] = session.StatusCompleted
+			case "advanced_phase":
+				state["phase"] = "provider_execution"
+			case "advanced_turn":
+				state["turn"] = state["turn"].(float64) + 1
+			}
+			raw, err = json.Marshal(ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.store.MutatePlanMode(id, func(plan *session.PlanModeState) error {
+				plan.PlanVersion++
+				plan.Status = session.PlanModeStatusAwaitingApproval
+				plan.PlanMarkdown = "Another reviewed target"
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			r.approvalAdmit = nil
+			next := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "new-local-operation"}
+			_, err = r.Continue(context.Background(), next)
+			t.Logf("variation=%s error=%v provider_calls=%d", variation, err, calls.Load())
+			if variation == "control" {
+				if err != nil || calls.Load() != 1 {
+					t.Fatalf("lawful control: error=%v calls=%d", err, calls.Load())
+				}
+			} else if !errors.Is(err, session.ErrApprovalReceiptUnverifiable) || calls.Load() != 0 {
+				t.Fatalf("phase-inconsistent historical state accepted: error=%v calls=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestApprovalReceiptResumableOriginalStatusControls(t *testing.T) {
+	for _, status := range []string{session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted} {
+		t.Run(status, func(t *testing.T) {
+			r, id, calls := newApprovalTargetFixture(t)
+			state, err := r.store.LoadState(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.Status = status
+			if err := r.store.SaveState(id, state); err != nil {
+				t.Fatal(err)
+			}
+			result, err := r.Continue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "resumable-original"})
+			if err != nil || result.Approval == nil || calls.Load() != 1 {
+				t.Fatalf("legitimate original status blocked: status=%s error=%v calls=%d", status, err, calls.Load())
+			}
+			payload, err := decodeApprovalRecovery(result.Approval.Lookup.Receipt)
+			if err != nil || payload.Preparation.OriginalState.Status != status {
+				t.Fatalf("captured original status changed: status=%s error=%v", status, err)
 			}
 		})
 	}

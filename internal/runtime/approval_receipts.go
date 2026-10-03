@@ -322,6 +322,13 @@ func validateApprovalRecoveryStates(receipt session.ApprovalReceipt, record appr
 			return fmt.Errorf("invalid captured recovery state: %w", err)
 		}
 	}
+	// New operation records are created only after continue preflight. A known
+	// state.json status is insufficient if it could not pass that entrypoint.
+	switch record.OriginalState.Status {
+	case session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted:
+	default:
+		return errors.New("captured original recovery state is not resumable")
+	}
 	if record.Phase != "prepare_failed" && record.Phase != record.CompletedPhase {
 		return errors.New("contradictory completed recovery phase")
 	}
@@ -333,6 +340,17 @@ func validateApprovalRecoveryStates(receipt session.ApprovalReceipt, record appr
 	observedOriginal.LoadedSkills = record.OriginalState.LoadedSkills
 	original := reflect.DeepEqual(record.OriginalState, observedOriginal)
 	claimed := receipt.Recovery.RunGeneration != "" && record.PreparedState.RunGeneration == receipt.Recovery.RunGeneration
+	expectedClaim := record.OriginalState
+	expectedClaim.Status, expectedClaim.Phase = session.StatusRunning, "prepare"
+	expectedClaim.PauseReason, expectedClaim.ProviderAutoResumeCount = "", 0
+	expectedClaim.RunGeneration = record.ClaimUpdatedAt
+	prepared := record.PreparedState
+	failedOwnClaim := prepared.Status == session.StatusFailed && prepared.LastError != "" && prepared.LastError == record.LastError
+	if failedOwnClaim && (record.Phase == "prepare_failed" || record.Phase == "aborted") {
+		prepared.Status = session.StatusRunning
+		prepared.LastError = record.OriginalState.LastError
+	}
+	unadvanced := claimed && samePreparedRun(expectedClaim, prepared) && (record.Phase != "prepare_failed" || failedOwnClaim)
 	switch record.CompletedPhase {
 	case "validated":
 		if original && receipt.Recovery.RunGeneration == "" {
@@ -341,30 +359,35 @@ func validateApprovalRecoveryStates(receipt session.ApprovalReceipt, record appr
 	case "claim_pending":
 		// A resumed preparation checkpoints claim_pending again before reusing
 		// its existing claim; its snapshot can be original or already claimed.
-		expected := record.OriginalState
-		expected.Status, expected.Phase = session.StatusRunning, "prepare"
-		expected.PauseReason, expected.ProviderAutoResumeCount = "", 0
-		expected.RunGeneration = record.ClaimUpdatedAt
-		prepared := record.PreparedState
-		if record.Phase == "prepare_failed" && prepared.Status == session.StatusFailed && prepared.LastError == record.LastError {
-			prepared.Status = session.StatusRunning
-			prepared.LastError = record.OriginalState.LastError
-		}
-		if receipt.Recovery.RunGeneration != "" && (original || (claimed && samePreparedRun(expected, prepared))) {
+		if receipt.Recovery.RunGeneration != "" && (original || unadvanced) {
 			return nil
 		}
-	case "aborted", "recovered":
+	case "run_claimed", "plan_executing", "mission_approved", "replay_recorded", "prepared", "executing":
+		if unadvanced {
+			return nil
+		}
+	case "aborted":
 		// Abort after addHandle failure restores original state; an uncertain
 		// admission write leaves a failed own claim. Both retain the receipt.
-		if receipt.Recovery.RunGeneration != "" && (original || claimed) {
+		if receipt.Recovery.RunGeneration != "" && (original || (failedOwnClaim && unadvanced)) {
 			return nil
 		}
-	default:
+	case "review_required":
+		state := record.PreparedState
+		if claimed && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval" && state.Turn == record.OriginalState.Turn && state.IdleReason == "approval_content_changed" && state.LastError != "" && state.LastError == record.LastError {
+			return nil
+		}
+	case "settled", "recovered":
+		// Executed/settled runs can advance status, phase and turn. Recovered
+		// snapshots may preserve that claim or the original compensation state.
+		if record.CompletedPhase == "recovered" && original && receipt.Recovery.RunGeneration != "" {
+			return nil
+		}
 		if claimed {
 			return nil
 		}
 	}
-	return errors.New("contradictory captured recovery state generation")
+	return errors.New("contradictory captured recovery state or generation")
 }
 
 func validateRecoveryFields(data []byte, typ reflect.Type) error {
