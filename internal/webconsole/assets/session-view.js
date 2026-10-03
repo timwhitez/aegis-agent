@@ -790,6 +790,7 @@ function renderToolLane(message, options = {}) {
     const hasExpanded = delegate || callResults.some(function(r) { return r.is_error || (r.final && !compactFinal); });
     const callPreview = summarizeToolCall(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults });
     const callPreviewRaw = toolCallPreviewIsRaw(call, compactFinal);
+    const callPreviewHTML = isGoalToolName(call.name) ? renderGoalToolCallPreview(call) : escapeHTML(callPreview);
 
     treeHTML +=
       '<details class="tl-row tl-row-call"' + (hasExpanded ? ' open' : '') + '>' +
@@ -797,7 +798,7 @@ function renderToolLane(message, options = {}) {
           '<span class="tl-type-chip call">Call</span>' +
           '<strong class="tl-name">' + escapeHTML(call.name) + '</strong>' +
           (call.id ? '<span class="tl-id-chip">' + escapeHTML(shortId(call.id)) + '</span>' : '') +
-          '<span class="tl-preview"' + (callPreviewRaw ? ' translate="no" data-i18n-skip' : '') + '>' + escapeHTML(callPreview) + '</span>' +
+          '<span class="tl-preview"' + (callPreviewRaw ? ' translate="no" data-i18n-skip' : '') + '>' + callPreviewHTML + '</span>' +
         '</summary>' +
         renderToolCallBody(call, { finalTextRendered: options.finalTextRendered, pairedResults: callResults }) +
         callResults.map(function(r) { return renderToolLaneResultRow(r, true, options); }).join('') +
@@ -835,6 +836,9 @@ function renderToolLaneResultRow(result, indent, options = {}) {
   var open = result.is_error || delegate || (result.final && !compactFinal);
   var special = renderSpecialToolResult(result, parsed);
   var body = special || '<pre class="tl-body">' + escapeHTML(truncateText(payloadText, 3200)) + '</pre>';
+  var preview = compactFinal ? 'Final response captured' : summarizeToolResult(result, parsed, payloadText);
+  var structuredProgress = isStructuredGoalProgressResult(result, parsed);
+  var previewHTML = structuredProgress ? renderGoalToolResultPreview(result, parsed, preview) : escapeHTML(preview);
 
   return (
     '<details class="tl-row tl-row-result' + (indent ? ' tl-indent' : '') + (result.is_error ? ' tl-error' : '') + '"' + (open ? ' open' : '') + '>' +
@@ -843,7 +847,7 @@ function renderToolLaneResultRow(result, indent, options = {}) {
         '<strong class="tl-name">' + escapeHTML(result.name) + '</strong>' +
         (result.final ? '<span class="tl-badge final">Final</span>' : '') +
         (delegate ? '<span class="tl-badge delegate">Delegate</span>' : '') +
-        '<span class="tl-preview"' + (compactFinal ? '' : ' translate="no" data-i18n-skip') + '>' + escapeHTML(compactFinal ? 'Final response captured' : summarizeToolResult(result, parsed, payloadText)) + '</span>' +
+        '<span class="tl-preview"' + (compactFinal || structuredProgress ? '' : ' translate="no" data-i18n-skip') + '>' + previewHTML + '</span>' +
       '</summary>' +
       body +
       renderMetadataChips(result.metadata) +
@@ -969,6 +973,46 @@ function summarizeGoalToolCall(call) {
   return 'Goal tool';
 }
 
+function renderGoalRawFact(value) {
+  return `<span translate="no" data-i18n-skip>${escapeHTML(value)}</span>`;
+}
+
+function renderGoalProgressSummary(progress, maxLength = 0, callFallback = false) {
+  const summary = progress?.summary ? (maxLength ? truncateText(progress.summary, maxLength) : progress.summary) : '';
+  const kind = progress?.kind ? renderGoalRawFact(progress.kind) : callFallback ? '<span>Progress</span>' : '';
+  const detail = summary ? renderGoalRawFact(summary) : callFallback ? '<span>Record progress facts</span>' : '';
+  return [kind, detail].filter(Boolean).join(': ') ||
+    (progress?.id ? renderGoalRawFact(progress.id) : '<span>Progress</span>');
+}
+
+function renderGoalToolCallPreview(call) {
+  return call?.name === 'record_goal_progress'
+    ? renderGoalProgressSummary(parseMaybeJSON(call.arguments), 110, true)
+    : escapeHTML(summarizeGoalToolCall(call));
+}
+
+function isStructuredGoalProgressResult(result, parsed) {
+  return result?.name === 'record_goal_progress' && !result.is_error && !result.final &&
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+}
+
+function renderGoalToolResultPreview(result, parsed, preview) {
+  if (!isStructuredGoalProgressResult(result, parsed)) {
+    return escapeHTML(preview);
+  }
+  const parts = [
+    parsed.mode ? renderGoalRawFact(parsed.mode) : '<span>Goal</span>',
+    parsed.status ? `<span>${escapeHTML(humanizeStatus(parsed.status))}</span>` : '',
+    parsed.goal_id ? renderGoalRawFact(shortId(parsed.goal_id)) : '',
+    Number.isFinite(Number(parsed.tokens_used)) ? `<span>tokens ${escapeHTML(Number(parsed.tokens_used))}</span>` : '',
+    Number.isFinite(Number(parsed.provider_time_used_seconds ?? parsed.time_used_seconds))
+      ? `<span>provider time ${escapeHTML(Number(parsed.provider_time_used_seconds ?? parsed.time_used_seconds))}s</span>` : ''
+  ].filter(Boolean);
+  const latest = maybeArray(parsed.progress).slice(-1)[0];
+  if (latest?.kind || latest?.summary) parts.push(renderGoalProgressSummary(latest, 80));
+  return parts.join(' · ');
+}
+
 function summarizeToolResult(result, parsed, payloadText) {
   if (result.final) {
     return truncateText(payloadText, 120);
@@ -1026,6 +1070,7 @@ function compactText(value, maxLength = 120) {
 function renderToolCall(call) {
   const delegate = isMultiAgentTool(call.name);
   const preview = summarizeToolCall(call);
+  const previewHTML = isGoalToolName(call.name) ? renderGoalToolCallPreview(call) : escapeHTML(preview);
   return `
     <details class="tool-card tool-call-card ${delegate ? 'delegate' : ''}" ${delegate ? 'open' : ''}>
       <summary>
@@ -1038,7 +1083,7 @@ function renderToolCall(call) {
             ${renderUniqueCodeChips(call.id, call.provider_call_id)}
           </div>
         </div>
-        ${preview ? `<div class="tool-card-summary-copy">${escapeHTML(preview)}</div>` : ''}
+        ${preview ? `<div class="tool-card-summary-copy">${previewHTML}</div>` : ''}
       </summary>
       ${renderToolCallBody(call)}
     </details>
@@ -1052,6 +1097,8 @@ function renderToolResult(result) {
   const open = delegate || result.is_error || result.final;
   const special = renderSpecialToolResult(result, parsed);
   const preview = summarizeToolResult(result, parsed, payloadText);
+  const previewHTML = isStructuredGoalProgressResult(result, parsed)
+    ? renderGoalToolResultPreview(result, parsed, preview) : escapeHTML(preview);
   return `
     <details class="tool-card tool-result-card ${delegate ? 'delegate' : ''} ${result.is_error ? 'error' : ''}" ${open ? 'open' : ''}>
       <summary>
@@ -1065,7 +1112,7 @@ function renderToolResult(result) {
             ${result.final ? '<span class="status-badge live">Final</span>' : ''}
           </div>
         </div>
-        ${preview ? `<div class="tool-card-summary-copy">${escapeHTML(preview)}</div>` : ''}
+        ${preview ? `<div class="tool-card-summary-copy">${previewHTML}</div>` : ''}
       </summary>
       ${special || `<pre class="tool-output-block">${escapeHTML(truncateText(payloadText, 3200))}</pre>`}
       ${renderMetadataChips(result.metadata)}
@@ -1193,7 +1240,7 @@ function renderGoalToolSpecialResult(result, parsed) {
       ${latestProgress ? `
         <div class="goal-tool-progress">
           <span class="goal-section-title">Latest progress</span>
-          <div class="goal-meta-line">${escapeHTML([latestProgress.kind, latestProgress.summary].filter(Boolean).join(': ') || latestProgress.id || 'progress')}</div>
+          <div class="goal-meta-line">${renderGoalProgressSummary(latestProgress)}</div>
         </div>
       ` : ''}
     </div>
@@ -1203,13 +1250,13 @@ function renderGoalToolSpecialResult(result, parsed) {
 function renderGoalToolCallBody(call) {
   const parsed = parseMaybeJSON(call?.arguments);
   const name = String(call?.name || 'goal tool');
-  const action = summarizeGoalToolCall(call);
+  const action = renderGoalToolCallPreview(call);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return `
       <div class="tool-special-card goal-tool-card">
         <div class="goal-tool-head">
           <span class="status-badge neutral goal-raw" translate="no">${escapeHTML(name)}</span>
-          <span class="goal-tool-title">${escapeHTML(action)}</span>
+          <span class="goal-tool-title">${action}</span>
         </div>
       </div>
     `;
@@ -1217,7 +1264,7 @@ function renderGoalToolCallBody(call) {
   const chips = [
     parsed.mode ? `mode ${parsed.mode}` : '',
     parsed.status ? `status ${parsed.status}` : '',
-    parsed.kind ? `kind ${parsed.kind}` : '',
+    parsed.kind ? { kind: parsed.kind } : '',
     parsed.token_budget ? `token budget ${parsed.token_budget}` : '',
     parsed.provider_time_budget_minutes ? `provider time budget ${parsed.provider_time_budget_minutes}m` : parsed.time_budget_minutes ? `provider time budget ${parsed.time_budget_minutes}m` : '',
     maybeArray(parsed.success_criteria).length ? `${maybeArray(parsed.success_criteria).length} criteria` : '',
@@ -1229,11 +1276,11 @@ function renderGoalToolCallBody(call) {
     <div class="tool-special-card goal-tool-card">
       <div class="goal-tool-head">
         <span class="status-badge neutral goal-raw" translate="no">${escapeHTML(name)}</span>
-        <span class="goal-tool-title">${escapeHTML(action)}</span>
+        <span class="goal-tool-title">${action}</span>
       </div>
       ${parsed.objective ? `<div class="goal-tool-objective">${escapeHTML(goalObjectiveReference(parsed.objective))}</div>` : ''}
-      ${parsed.summary ? `<div class="goal-meta-line">${escapeHTML(truncateText(parsed.summary, 220))}</div>` : ''}
-      ${chips.length ? `<div class="meta-chip-row">${chips.map((chip) => `<span class="surface-chip">${escapeHTML(chip)}</span>`).join('')}</div>` : ''}
+      ${parsed.summary ? `<div class="goal-meta-line">${renderGoalRawFact(truncateText(parsed.summary, 220))}</div>` : ''}
+      ${chips.length ? `<div class="meta-chip-row">${chips.map((chip) => `<span class="surface-chip">${typeof chip === 'object' ? `<span>Kind</span> ${renderGoalRawFact(chip.kind)}` : escapeHTML(chip)}</span>`).join('')}</div>` : ''}
     </div>
   `;
 }
@@ -2529,8 +2576,8 @@ function renderGoalFacts(facts) {
           ${progress.map((item) => `
             <div class="goal-item">
               <div class="goal-item-top">
-                <span class="goal-raw" translate="no">${escapeHTML(item.summary || item.kind || 'progress')}</span>
-                <span class="status-badge neutral">${escapeHTML(item.kind || 'progress')}</span>
+                ${item.summary || item.kind ? `<span class="goal-raw" translate="no" data-i18n-skip>${escapeHTML(item.summary || item.kind)}</span>` : '<span>Progress</span>'}
+                <span class="status-badge neutral">${item.kind ? renderGoalRawFact(item.kind) : 'Progress'}</span>
               </div>
               ${maybeArray(item.evidence).length ? `<div class="goal-meta-line goal-raw" translate="no">${escapeHTML(maybeArray(item.evidence).join(' · '))}</div>` : ''}
               ${maybeArray(item.blockers).length ? `<div class="goal-meta-line goal-raw" translate="no">${escapeHTML(`blockers ${maybeArray(item.blockers).join(' · ')}`)}</div>` : ''}
