@@ -53,6 +53,7 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
           const id = await createFixture(context, baseURL, `version ${suffix}`);
           const v1 = await coherentSnapshot(context, baseURL, id);
           assert.equal(v1.plan_mode.plan_version, 1);
+          let staleRequestID;
           const thaw = await freezeDetail(a, baseURL, id, v1);
           try {
             await openSession(a, id, 'plan');
@@ -73,6 +74,7 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
             const before = await durableFacts(sessionRoot, id);
             const result = await clickStaleApproval(a, baseURL, id, 'planmode/approve', reviewed,
               '#inspector-slide-out [data-plan-action="approve"]', locale);
+            staleRequestID = result.request().postDataJSON().approval_request_id;
             await assertUnaccepted(context, baseURL, sessionRoot, id, before, 2);
             evidence.push({ scenario: 'version', locale, viewport: size, session_id: id, reviewed, status: result.status(), code: (await result.json()).code });
             await capture(a, `approval-cas-version-${suffix}.png`, { retainToasts: true });
@@ -88,6 +90,8 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
           const response = await approved;
           assert.equal(response.status(), 202, await response.text());
           assertApprovalPost(response.request().postDataJSON(), reviewedV2);
+          assert.notEqual(response.request().postDataJSON().approval_request_id, staleRequestID,
+            'a freshly reviewed V2 must start a new request instead of querying the rejected V1 forever');
           const completed = await waitForDetail(context, baseURL, id,
             (detail) => detail.state?.status === 'completed' && !detail.active_handle);
           assert.equal(completed.plan_mode.approved_revision, reviewedV2.expected_revision);

@@ -345,14 +345,14 @@ func TestWebApprovalReceiptExplicitSDKParameters(t *testing.T) {
 
 func TestWebApprovalReceiptCoverageRejectedBinding(t *testing.T) {
 	svc, id, calls := webReceiptFixture(t)
-	target := linkWebReceiptMission(t, svc, id, "Unclaimed requirement")
+	linkWebReceiptMission(t, svc, id, "Unclaimed requirement")
 	if _, _, err := svc.store.MutateGoal(id, func(goal *session.SessionGoal) error {
 		goal.Mission.ValidationContract = []session.GoalValidation{{ID: "uncovered", Kind: "command", Command: "true", Status: "pending"}}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	target = reviewedApprovalPayload(t, svc.store, id, false).ApprovalTarget
+	target := reviewedApprovalPayload(t, svc.store, id, false).ApprovalTarget
 	first := webReceiptPost(svc, id, "mission/plan/approve", receiptBody(t, target, "coverage-rejected", false))
 	var rejected ApprovalResponse
 	if err := json.Unmarshal(first.Body.Bytes(), &rejected); err != nil {

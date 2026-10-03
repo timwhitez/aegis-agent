@@ -452,10 +452,10 @@ async function legacyRecovery(env) {
   const { a, b, context, baseURL, sessionRoot, providerLogPath } = env;
   const id = await create(env, 'legacy-direct');
   const old = await fixture.coherentSnapshot(context, baseURL, id);
-  const thaw = await fixture.freezeDetail(a, baseURL, id, old);
+  const thaw = await holdDetailPolling(a, baseURL, id, true);
+  await openSessionUI(a, id, 'plan');
   const beforeCalls = await providerCalls(providerLogPath, id);
   try {
-    await openSessionUI(a, id, 'plan');
     await seedLegacyExecuting(sessionRoot, id);
     const before = await fixture.durableFacts(sessionRoot, id);
     const approval = fixture.nextPost(a, baseURL, id, 'planmode/approve');
@@ -481,25 +481,101 @@ async function legacyRecovery(env) {
   assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 1);
   const linked = await create(env, 'legacy-linked-facts', true);
   await fixture.patchMission(b, baseURL, linked, fixture.missionPlan(true));
-  await seedLegacyExecuting(sessionRoot, linked);
-  const detail = await fixture.coherentSnapshot(context, baseURL, linked);
+  const linkedReview = await fixture.coherentSnapshot(context, baseURL, linked);
+  const releaseLinked = await holdDetailPolling(a, baseURL, linked, true);
+  await openSessionUI(a, linked, 'goal');
   const linkedBefore = await providerCalls(providerLogPath, linked);
-  const missing = await apiApproval(context, baseURL, linked, {}, 'mission/plan/approve');
-  assert.equal(missing.status, 400, missing.text);
-  const repair = await apiApproval(context, baseURL, linked, fixture.target(detail), 'mission/plan/approve');
-  assert.equal(repair.status, 200, repair.text);
-  assert.equal(repair.json.approval, undefined, 'linked executing repair is not an execution receipt');
-  const repaired = await fixture.coherentSnapshot(context, baseURL, linked);
-  assert.equal(repaired.goal.mission.plan_status, 'approved');
-  assert.equal(repaired.goal.mission.approved_revision || '', '');
-  assert.equal(repaired.plan_mode.approved_revision || '', '');
-  assert.equal(await providerCalls(providerLogPath, linked), linkedBefore);
-  assert.equal(await readOptional(path.join(sessionRoot, linked, 'approval-operations.json')), null);
+  const linkedTraffic = observe(a, baseURL, linked);
+  let repairRequest;
+  try {
+    await seedLegacyExecuting(sessionRoot, linked);
+    await assertNotGenerating(a);
+    const generationWatch = await watchGenerating(a);
+    const repairedResponse = fixture.nextPost(a, baseURL, linked, 'mission/plan/approve');
+    await a.locator(selectors.goalApprove).click();
+    const response = await repairedResponse;
+    assert.equal(response.status(), 200, await response.text());
+    repairRequest = response.request().postDataJSON();
+    fixture.assertApprovalPost(repairRequest, fixture.target(linkedReview));
+    assert.equal((await response.json()).approval, undefined, 'linked executing repair is not an execution receipt');
+    await assertNotGenerating(a);
+    assert.deepEqual(await generationWatch.stop(), [], 'facts-repair HTTP 200 must never start generating');
+    const repaired = await fixture.coherentSnapshot(context, baseURL, linked);
+    assert.equal(repaired.goal.mission.plan_status, 'approved');
+    assert.equal(repaired.goal.mission.approved_revision || '', '');
+    assert.equal(repaired.plan_mode.approved_revision || '', '');
+    assert.equal(await providerCalls(providerLogPath, linked), linkedBefore);
+    assert.equal(await readOptional(path.join(sessionRoot, linked, 'approval-operations.json')), null);
+    const missing = await apiApproval(context, baseURL, linked, {}, 'mission/plan/approve');
+    assert.equal(missing.status, 400, missing.text);
+    const repair = await apiApproval(context, baseURL, linked, fixture.target(repaired), 'mission/plan/approve');
+    assert.equal(repair.status, 200, repair.text);
+    assert.equal(repair.json.approval, undefined);
+    const query = await context.request.get(`${baseURL}/api/sessions/${linked}/approval-receipts/${repairRequest.approval_request_id}`);
+    assert.equal(query.status(), 404, 'fact repair must not fabricate an execution receipt');
+  } finally {
+    await releaseLinked();
+  }
+  await a.waitForFunction((value) => state.sessionId === value && state.sessionDetail?.plan_mode?.status === 'executing', linked);
+  await seedNewTarget(sessionRoot, linked);
+  await openSessionUI(a, linked, 'plan');
+  const freshTarget = await fixture.displayedTarget(a);
+  assert.equal(freshTarget.plan_version, linkedReview.plan_mode.plan_version + 1);
+  assert.notEqual(freshTarget.expected_revision, linkedReview.plan_mode.approval_revision);
+  const accepted = fixture.nextPost(a, baseURL, linked, 'planmode/approve');
+  await a.locator(selectors.approve).click();
+  const response = await accepted;
+  assert.equal(response.status(), 202, await response.text());
+  const freshRequest = response.request().postDataJSON();
+  fixture.assertApprovalPost(freshRequest, freshTarget);
+  assert.notEqual(freshRequest.approval_request_id, repairRequest.approval_request_id,
+    'completed non-executing repair must not block a newly reviewed target');
+  assertReceipt(await response.json(), freshRequest, 'admitted');
+  await completed(context, baseURL, linked);
+  const ledger = await readLedger(sessionRoot, linked);
+  assert.equal(Object.keys(ledger.operations).length, 1);
+  assert.equal(Object.keys(ledger.target_admissions).length, 1);
+  assert.equal(ledger.requests[repairRequest.approval_request_id], undefined);
+  assert.equal(await providerCalls(providerLogPath, linked), linkedBefore + 1);
+  assert.equal(linkedTraffic.posts.length, 2, 'fact repair must not automatically retry or block the one fresh approval');
+  linkedTraffic.dispose();
   await assertNotGenerating(a);
-  return { session_id: id, linked_session_id: linked, provider_delta: { legacy_approval: 0, explicit_ordinary_continue: 1, linked_fact_repair: 0 },
-    ui_controls: ['old real Approve returns explicit recovery', 'composer Send performs ordinary continue'],
-    api_checks: ['linked executing missing target: HTTP 400', 'linked executing complete target: HTTP 200, no receipt/provider, unknown revision remains unknown'],
+  await assertNotice(a, env.profile.locale, freshRequest.approval_request_id);
+  return { session_id: id, linked_session_id: linked, linked_repair_request_id: repairRequest.approval_request_id,
+    linked_fresh_request_id: freshRequest.approval_request_id, linked_ui_posts: linkedTraffic.posts,
+    provider_delta: { legacy_approval: 0, explicit_ordinary_continue: 1, linked_fact_repair: 0, linked_fresh_target_admission: 1 },
+    ui_controls: ['old real Approve returns explicit recovery', 'composer Send performs ordinary continue',
+      'old real Goal Approve repairs executing facts without admission', 'newly reviewed linked V2 starts a new operation'],
+    api_checks: ['linked executing missing target: HTTP 400', 'linked executing complete target replay: HTTP 200, no receipt/provider, unknown revision remains unknown',
+      'UI fact-repair request ID has no fabricated receipt: query HTTP 404'],
     fixture_setup: 'stopped local fixture enters legacy executing without receipt or assigned historical revision' };
+}
+
+async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
+  const pathname = new URL(`${baseURL}/api/sessions/${id}`).pathname;
+  const matches = (url) => url.pathname === pathname;
+  const released = deferred();
+  const pending = new Set();
+  const handler = (route) => {
+    assert.equal(route.request().method(), 'GET', 'only real detail polling is delayed');
+    if (allowInitialRead) {
+      allowInitialRead = false;
+      return route.continue();
+    }
+    const task = (async () => {
+      await released.promise;
+      await route.continue();
+    })();
+    pending.add(task);
+    task.finally(() => pending.delete(task)).catch(() => {});
+    return task;
+  };
+  await page.route(matches, handler);
+  return async () => {
+    released.resolve();
+    await page.unroute(matches, handler);
+    await Promise.all([...pending]);
+  };
 }
 
 function create(env, label, linked = false) {

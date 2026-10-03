@@ -23,7 +23,7 @@ function response(replay = false) {
 }
 function harness({ linked = false, reply = response(), storage } = {}) {
   const values = storage || new Map();
-  const calls = [], generating = [], toasts = [];
+  const calls = [], generating = [], toasts = [], queries = [];
   const ctx = {
     state: { sessionId: 'session_a', sessionBacked: true, sessionDetail: {
       state: { status: 'awaiting_input' }, goal: { goal_id: 'goal_a', updated_at: 'same' },
@@ -43,7 +43,7 @@ function harness({ linked = false, reply = response(), storage } = {}) {
     isAcceptedLaunchResponse: result => result?.status === 'accepted',
     approvePlanMode: async (sessionID, payload) => { calls.push({ sessionID, payload: structuredClone(payload), stored: [...values.values()] }); return replyFor(payload); },
     approveMissionPlan: async (sessionID, payload) => { calls.push({ sessionID, payload: structuredClone(payload), stored: [...values.values()] }); return replyFor(payload); },
-    getApprovalReceipt: async () => { const err = new Error('Not found'); err.status = 404; throw err; },
+    getApprovalReceipt: async (sessionID, requestID) => { queries.push({ sessionID, requestID }); const err = new Error('Not found'); err.status = 404; throw err; },
     renderApprovalOperationNotice() {}, console
   };
   function replyFor(payload) {
@@ -57,7 +57,7 @@ function harness({ linked = false, reply = response(), storage } = {}) {
     'approvalController', 'currentApprovalViewToken', 'isCurrentApprovalViewToken', 'isNewApprovalAdmission', 'executeReviewedApproval', 'presentApprovalResponse', 'handlePlanModeAction', 'handleGoalAction']) {
     vm.runInContext(sourceFunction(name), ctx, { filename: `app.js:${name}` });
   }
-  return { ctx, calls, generating, toasts, values };
+  return { ctx, calls, generating, toasts, queries, values };
 }
 const button = action => ({ disabled: false, getAttribute: () => action });
 
@@ -305,6 +305,71 @@ test('API retains a coverage-rejected receipt on HTTP409 and queries receipts re
   assert.equal(calls[1].url, '/api/sessions/session%2Fa/approval-receipts/request%2Fid');
   assert.deepEqual(Object.keys(calls[1].options.headers), []);
   assert.equal(calls[1].options.body, undefined);
+});
+
+test('definitive stale rejection survives restore 404 and permits a newly reviewed target', async () => {
+  const h = harness({ reply: payload => {
+    if (payload.plan_version === 1) {
+      const err = new Error('approval target no longer matches'); err.status = 409; err.code = 'APPROVAL_TARGET_CONFLICT'; throw err;
+    }
+    return receipt(payload);
+  } });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.equal(h.ctx.approvalController().get('session_a').phase, 'failed');
+  const reloaded = harness({ storage: h.values, reply: payload => receipt(payload) });
+  await reloaded.ctx.approvalController().restore('session_a');
+  const restoredPhase = reloaded.ctx.approvalController().get('session_a').phase;
+  Object.assign(reloaded.ctx.state.sessionDetail.plan_mode, { plan_version: 2, approval_revision: 'reviewed_revision_v2' });
+  reloaded.ctx.crypto.randomUUID = () => 'request_new_review_v2';
+  await reloaded.ctx.handlePlanModeAction(button('approve'));
+  assert.equal(reloaded.calls.length, 1, 'fresh visible V2 approval must POST after the definite V1 rejection');
+  assert.equal(restoredPhase, 'failed', 'a readonly miss cannot erase definitive non-admission');
+  assert.notEqual(reloaded.calls[0].payload.approval_request_id, h.calls[0].payload.approval_request_id);
+  assert.equal(reloaded.calls[0].payload.expected_revision, 'reviewed_revision_v2');
+  assert.deepEqual(reloaded.generating, []);
+});
+
+test('unknown transport delivery plus 404 preserves the original ID even when the displayed target changes', async () => {
+  const h = harness({ reply: () => { throw new TypeError('response lost'); } });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  const original = h.ctx.approvalController().get('session_a');
+  Object.assign(h.ctx.state.sessionDetail.plan_mode, { plan_version: 2, approval_revision: 'reviewed_revision_v2' });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.ctx.approvalController().get('session_a').approval_request_id, original.approval_request_id);
+  assert.deepEqual(h.ctx.approvalController().get('session_a').parameters, original.parameters);
+  assert.deepEqual(h.generating, []);
+});
+
+const repairedGoal = { schema_version: 1, session_id: 'session_a', goal_id: 'goal_a', mode: 'mission',
+  objective: 'Reviewed linked mission', status: 'active', mission: { plan_status: 'approved', approved_at: '2026-10-03T01:00:00Z' } };
+test('actual linked mission handler releases successful facts-only intent without a receipt or generation', async () => {
+  const h = harness({ linked: true, reply: repairedGoal });
+  await h.ctx.handleGoalAction(button('approve-plan'));
+  assert.equal(h.calls.length, 1);
+  assert.ok(h.calls[0].payload.approval_request_id);
+  assert.equal(h.ctx.approvalController().get('session_a'), null, 'HTTP200 SessionGoal completes facts-only intent');
+  assert.equal(h.queries.length, 0, 'confirmed facts response needs no receipt lookup');
+  assert.deepEqual(h.generating, []);
+});
+
+test('a newly reviewed target can execute after linked facts-only completion', async () => {
+  const h = harness({ linked: true, reply: payload => payload.plan_version === 1 ? repairedGoal : receipt(payload) });
+  await h.ctx.handleGoalAction(button('approve-plan'));
+  Object.assign(h.ctx.state.sessionDetail.plan_mode, { plan_version: 2, approval_revision: 'reviewed_revision_v2' });
+  await h.ctx.handleGoalAction(button('approve-plan'));
+  assert.equal(h.calls.length, 2);
+  assert.notEqual(h.calls[0].payload.approval_request_id, h.calls[1].payload.approval_request_id);
+  assert.equal(h.calls[1].payload.plan_version, 2);
+  assert.deepEqual(h.generating, []);
+});
+
+test('direct approval never mistakes a receipt-free Goal response for admission or mission facts completion', async () => {
+  const h = harness({ reply: repairedGoal });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.equal(h.ctx.approvalController().get('session_a').phase, 'not_found');
+  assert.equal(h.queries.length, 1);
+  assert.deepEqual(h.generating, []);
 });
 
 test('visible approval recovery controls and receipt messages are translated in both locales', () => {

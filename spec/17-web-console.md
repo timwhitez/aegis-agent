@@ -601,6 +601,8 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 `GET /api/sessions/{id}/approval-receipts/{requestID}` 提供只读绑定、canonical receipt 与单独标注的当前 durable 状态。UI 保存 pending ID/target/参数，未知响应先查询，不自动换 ID 重发；刷新、切 session 和旧响应不能污染新操作；完成回执重放不得假显示 generating。
 
+只读 receipt 查询未命中不能覆盖已有明确未接纳的失败结果；用户重新审阅新 target 后可以创建新的审批请求，网络结果未知且查询 404 的请求仍保留原 ID 与参数。linked executing 的合法 mission facts 修复返回 200 / SessionGoal、无 receipt，只完成并释放同 ID 的浏览器意图，不显示 generating，后续新 target 可以重新审阅审批；direct 执行入口不得把无 receipt 的响应当作成功接纳。
+
 `POST /api/sessions/{id}/planmode/revise`
 
 - 输入 `{ "message": "..." }`

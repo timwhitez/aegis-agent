@@ -9,6 +9,12 @@ function sameTarget(a, b) {
     a?.expected_revision === b?.expected_revision;
 }
 
+function missionFactsResponse(record, response) {
+  return record.entrypoint === 'mission' && !response?.approval && response?.schema_version === 1 &&
+    response.session_id === record.session_id && typeof response.goal_id === 'string' && response.goal_id !== '' &&
+    response.mode === 'mission' && response.mission?.plan_status === 'approved';
+}
+
 // This stores pending user intent. Receipts and current run facts always come
 // from the server; a saved phase never authorizes execution after a reload.
 export class ApprovalOperationController {
@@ -52,6 +58,17 @@ export class ApprovalOperationController {
     saved.sessions[record.session_id] = { ...copy(record), updated_at: new Date().toISOString() };
     try { this.storage.setItem(APPROVAL_STORAGE_KEY, JSON.stringify(saved)); }
     catch { throw new Error('Approval could not be saved. Enable local storage before approving.'); }
+    this.onChange(record.session_id);
+    return true;
+  }
+
+  release(record) {
+    const saved = this.read();
+    if (saved.sessions[record.session_id]?.approval_request_id !== record.approval_request_id) return false;
+    delete saved.sessions[record.session_id];
+    try { this.storage.setItem(APPROVAL_STORAGE_KEY, JSON.stringify(saved)); }
+    catch { throw new Error('Approval could not be saved. Enable local storage before approving.'); }
+    this.responses.delete(record.session_id);
     this.onChange(record.session_id);
     return true;
   }
@@ -150,11 +167,14 @@ export class ApprovalOperationController {
       return this.observe(record, await this.query(record.session_id, record.approval_request_id));
     } catch (err) {
       if (err.status === 404) {
-        this.save({ ...record, phase: record.phase === 'recovery_required' ? 'recovery_required' : 'not_found' }, record.approval_request_id);
+        // A receipt miss is new information about unknown delivery, but cannot
+        // undo an explicit POST rejection that already proved non-admission.
+        const phase = ['failed', 'recovery_required'].includes(record.phase) ? record.phase : 'not_found';
+        this.save({ ...record, phase }, record.approval_request_id);
       } else if (err.code === 'APPROVAL_RECOVERY_REQUIRED') {
         this.save({ ...record, phase: 'recovery_required', notice: err.message }, record.approval_request_id);
       } else {
-        this.save({ ...record, phase: 'unknown' }, record.approval_request_id);
+        this.save({ ...record, phase: record.phase === 'failed' ? 'failed' : 'unknown' }, record.approval_request_id);
       }
       this.responses.delete(record.session_id);
       return null;
@@ -164,8 +184,13 @@ export class ApprovalOperationController {
   async post(record) {
     this.save({ ...record, phase: 'pending' }, record.approval_request_id);
     try {
-      return this.observe(record, await this.submit(record.session_id, record.entrypoint,
-        { ...copy(record.parameters), approval_request_id: record.approval_request_id }));
+      const response = await this.submit(record.session_id, record.entrypoint,
+        { ...copy(record.parameters), approval_request_id: record.approval_request_id });
+      // Legacy linked executing missions can repair their goal facts without
+      // admitting execution or generating a receipt. Complete this user intent
+      // only for the documented SessionGoal response from the mission alias.
+      if (missionFactsResponse(record, response)) return this.release(record) ? response : null;
+      return this.observe(record, response);
     } catch (err) {
       if (err.payload?.approval?.lookup?.found) return this.observe(record, err.payload);
       if (err.code === 'APPROVAL_RECOVERY_REQUIRED') {
