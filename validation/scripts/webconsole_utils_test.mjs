@@ -10,6 +10,7 @@ const settingsViewSource = readFileSync(new URL('../../internal/webconsole/asset
 const workspaceViewSource = readFileSync(new URL('../../internal/webconsole/assets/workspace-view.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../internal/webconsole/assets/app.js', import.meta.url), 'utf8');
 const stylesSource = readFileSync(new URL('../../internal/webconsole/assets/styles.css', import.meta.url), 'utf8');
+const eventsSource = readFileSync(new URL('../../internal/webconsole/assets/events.js', import.meta.url), 'utf8');
 const context = {
   console: {
     warn() {}
@@ -8151,4 +8152,17 @@ test('linked mission approval keeps durable titles and goal IDs raw while labels
   assert.doesNotMatch(panel, /class="goal-section-title"[^>]*translate="no"/);
   const tool = context.renderGoalToolSpecialResult({ name: 'get_goal' }, { goal_id: 'goal_reviewed_id', status: 'active' });
   assert.match(tool, /class="tiny-code-chip" translate="no" data-i18n-skip>goal_r…d_id<\/span>/);
+});
+
+test('mission timeline keeps goal identity raw without skipping operator labels', () => {
+  vm.runInContext(eventsSource, context, { filename: 'events.js' });
+  for (const event_type of ['mission.plan.updated', 'mission.plan.approved', 'mission.validation.updated']) {
+    const item = { kind: 'event', event_type, data: { goal_id: 'goal_reviewed_id', plan_status: 'needs_approval' } };
+    assert.equal(context.describeTimelineItem(item).metaIsRaw, true);
+    const html = context.renderTimelineItem(item);
+    assert.match(html, /class="timeline-card-meta" translate="no" data-i18n-skip>goal_r…d_id<\/div>/);
+    assert.match(html, /class="timeline-card-text">Goal plan is Needs approval\.<\/div>/);
+    assert.doesNotMatch(html, /class="timeline-card-title"[^>]*translate="no"/);
+    assert.equal(context.describeTimelineItem({ ...item, data: {} }).metaIsRaw, false);
+  }
 });
