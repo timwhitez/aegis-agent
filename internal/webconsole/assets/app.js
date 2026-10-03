@@ -2315,7 +2315,7 @@ function presentApprovalResponse(response, viewToken) {
   if (!isCurrentApprovalViewToken(viewToken)) return;
   if (!response?.approval && response?.schema_version === 1 && response.session_id === state.sessionId &&
     response.goal_id === state.sessionDetail?.goal?.goal_id && response.mode === 'mission' && response.mission?.plan_status === 'approved') {
-    showToast('Goal plan approved.', 'success');
+    showToast('Goal plan updated', 'success');
     renderApprovalOperationNotice();
     return;
   }

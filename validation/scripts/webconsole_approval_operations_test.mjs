@@ -351,6 +351,7 @@ test('actual linked mission handler releases successful facts-only intent withou
   assert.equal(h.ctx.approvalController().get('session_a'), null, 'HTTP200 SessionGoal completes facts-only intent');
   assert.equal(h.queries.length, 0, 'confirmed facts response needs no receipt lookup');
   assert.deepEqual(h.generating, []);
+  assert.deepEqual(h.toasts, ['Goal plan updated']);
 });
 
 test('a newly reviewed target can execute after linked facts-only completion', async () => {
@@ -372,11 +373,31 @@ test('direct approval never mistakes a receipt-free Goal response for admission 
   assert.deepEqual(h.generating, []);
 });
 
+test('late linked facts completion cannot release a newer operation saved by a peer tab', async () => {
+  const pending = deferred();
+  const a = harness({ linked: true, reply: () => pending.promise });
+  const oldAction = a.ctx.handleGoalAction(button('approve-plan'));
+  const oldID = a.calls[0].payload.approval_request_id;
+  const b = harness({ linked: true, storage: a.values, reply: payload => payload.plan_version === 1 ? repairedGoal : receipt(payload) });
+  await b.ctx.approvalController().check('session_a');
+  await b.ctx.approvalController().retry('session_a');
+  assert.equal(b.calls[0].payload.approval_request_id, oldID);
+  Object.assign(b.ctx.state.sessionDetail.plan_mode, { plan_version: 2, approval_revision: 'peer_reviewed_revision_v2' });
+  b.ctx.crypto.randomUUID = () => 'peer_reviewed_operation_v2';
+  await b.ctx.handleGoalAction(button('approve-plan'));
+  pending.resolve(repairedGoal);
+  await oldAction;
+  assert.equal(a.ctx.approvalController().get('session_a').approval_request_id, 'peer_reviewed_operation_v2');
+  assert.equal(a.ctx.approvalController().get('session_a').parameters.expected_revision, 'peer_reviewed_revision_v2');
+  assert.deepEqual(a.generating, []);
+  assert.deepEqual(a.toasts, []);
+});
+
 test('visible approval recovery controls and receipt messages are translated in both locales', () => {
   const document = { readyState: 'loading', documentElement: { setAttribute() {} }, addEventListener() {}, getElementById: () => null };
   const window = { document, localStorage: { getItem: () => null, setItem() {} } };
   vm.runInNewContext(readFileSync(new URL('../../internal/webconsole/assets/i18n.js', import.meta.url), 'utf8'), { window });
-  const labels = ['Approval receipt', 'Check approval', 'Retry approval', 'Continue session', 'Current session',
+  const labels = ['Approval receipt', 'Check approval', 'Retry approval', 'Continue session', 'Current session', 'Goal plan updated',
     'Approval delivery is unconfirmed. Check its receipt before retrying.',
     'No receipt was found. Retry only this saved request with its original parameters.',
     'Approval was prepared but has not been admitted. Retry the saved request to check whether it can resume.',
