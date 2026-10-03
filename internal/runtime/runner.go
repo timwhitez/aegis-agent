@@ -27,11 +27,14 @@ import (
 )
 
 type Runner struct {
-	cfg     *config.Config
-	store   *session.Store
-	bus     *events.Bus
-	control *runControl
-	engine  *Engine
+	cfg                 *config.Config
+	store               *session.Store
+	bus                 *events.Bus
+	control             *runControl
+	engine              *Engine
+	approvalPreparation *approvalPreparationRecord
+	// Set only by package tests to force run-claim publication failures.
+	approvalRunClaim func(*session.Store, string, string, ...string) (session.State, error)
 
 	activeMu        sync.Mutex
 	activeSessionID string
@@ -263,6 +266,7 @@ type ContinueRequest struct {
 	PlanMode               *session.PlanModeDraft
 	PlanInputHandler       PlanInputHandler
 	ApprovePlan            bool
+	ApprovalTarget         *session.ApprovalTarget
 	OverrideGoalCoverage   bool
 	CancelPlan             bool
 	PlanInputRequestID     string
@@ -458,9 +462,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		EffectiveBudget:  effectiveBudget,
 	}
 	state := session.State{
-		Status:    session.StatusRunning,
-		Phase:     "prepare",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Status:        session.StatusRunning,
+		Phase:         "prepare",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		RunGeneration: createdAt.Format(time.RFC3339Nano),
 	}
 	if err := r.store.Create(meta, state); err != nil {
 		return RunResult{}, err
@@ -502,8 +507,8 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	r.notifySessionInactive(meta, result, err)
 	if err != nil {
 		currentState, loadErr := r.store.LoadState(meta.ID)
-		if loadErr == nil && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {
-			return r.failBeforeRun(meta.ID, currentState, currentState.Phase, err)
+		if loadErr == nil && state.RunGeneration != "" && currentState.RunGeneration == state.RunGeneration && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {
+			return r.failStartedRunIfCurrent(meta.ID, currentState, err)
 		}
 	}
 	return result, err
@@ -559,6 +564,13 @@ type startGoalPlanRollback struct {
 }
 
 func (r *Runner) initializeStartGoalAndPlanMode(sessionID string, req StartRequest) error {
+	return r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		return prep.initializeStartGoalAndPlanModeScoped(sessionID, req)
+	})
+}
+
+func (r *Runner) initializeStartGoalAndPlanModeScoped(sessionID string, req StartRequest) error {
 	goalEnabled := req.Goal != nil && req.Goal.Enabled
 	planModeEnabled := req.PlanMode != nil && req.PlanMode.Enabled
 	if !goalEnabled && !planModeEnabled {
@@ -917,6 +929,20 @@ func resolvedChildProviderOptions(cfg *config.Config, parentMeta *session.Sessio
 }
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
+	if req.ApprovePlan {
+		prepared, err := r.PrepareApprovalContinue(ctx, req)
+		if err != nil {
+			return RunResult{}, err
+		}
+		return r.RunPreparedApproval(ctx, prepared)
+	}
+	return r.continueWithPreparation(ctx, req, nil)
+}
+
+// continueWithPreparation shares the existing recovery and message preparation
+// with synchronous approval admission. A preparation runner owns a scoped Store,
+// and returns before registering an active runner or starting any provider.
+func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueRequest, prepared **PreparedApproval) (RunResult, error) {
 	meta, err := r.store.LoadMetadata(req.SessionID)
 	if err != nil {
 		return RunResult{}, err
@@ -937,11 +963,13 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			return RunResult{}, err
 		}
 	}
-	releaseRunSlot, err := r.acquireRunSlot(meta.ID)
-	if err != nil {
-		return RunResult{}, err
+	if prepared == nil {
+		releaseRunSlot, err := r.acquireRunSlot(meta.ID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		defer releaseRunSlot()
 	}
-	defer releaseRunSlot()
 	providerNameOverride := normalizeProviderOverride(req.Provider)
 	modelOverride := normalizeModelOverride(req.Model)
 	if providerNameOverride != "" {
@@ -988,9 +1016,26 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 			meta.ProviderOptions = mergedProviderOptions
 		}
 	}
-	state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
-	if err != nil {
+	if err := r.recordApprovalPreparation("claim_pending", state); err != nil {
 		return RunResult{}, err
+	}
+	if r.approvalPreparation != nil {
+		if r.approvalRunClaim != nil {
+			state, err = r.approvalRunClaim(r.store, meta.ID, r.approvalPreparation.ClaimUpdatedAt, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
+		} else {
+			state, err = r.store.ClaimSessionRunWithGeneration(meta.ID, r.approvalPreparation.ClaimUpdatedAt, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
+		}
+	} else {
+		state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
+	}
+	if err != nil {
+		if r.approvalPreparation != nil {
+			return RunResult{}, r.restoreApprovalClaimAfterError(meta.ID, err)
+		}
+		return RunResult{}, err
+	}
+	if err := r.recordApprovalPreparation("run_claimed", state); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
@@ -1026,18 +1071,25 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		if err := r.checkPlanModeGoalCoverage(meta.ID, req.OverrideGoalCoverage); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		executing, err := r.ensurePlanModeExecutingForApproval(meta.ID, source)
+		executing, err := r.ensurePlanModeExecutingForTarget(meta.ID, source, *req.ApprovalTarget, req.OverrideGoalCoverage)
 		if err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		if err := r.recordApprovalPreparation("plan_executing", state); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 		if err := r.approveLinkedMissionPlan(meta.ID, executing, source, req.OverrideGoalCoverage); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
+		if err := r.recordApprovalPreparation("mission_approved", state); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
 		req.Message = fmt.Sprintf("Implement the approved Plan Mode plan version %d.", executing.ApprovedVersion)
 		extraUserMeta = map[string]any{
-			"source":       "planmode_approval",
-			"plan_mode_id": executing.PlanModeID,
-			"plan_version": executing.ApprovedVersion,
+			"source":            "planmode_approval",
+			"plan_mode_id":      executing.PlanModeID,
+			"plan_version":      executing.ApprovedVersion,
+			"approved_revision": executing.ApprovedRevision,
 		}
 	}
 	if planModeDraft != nil {
@@ -1088,15 +1140,29 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 		}
 	}
 	if stringsTrim(req.Message) != "" {
-		if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
+		if req.ApprovePlan {
+			if err := r.appendApprovalUserMessageOnce(ctx, meta, req.Message, extraUserMeta); err != nil {
+				return r.failBeforeRun(meta.ID, state, "prepare", err)
+			}
+		} else if err := r.appendUserMessage(ctx, meta, "prepare", req.Message, extraUserMeta); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
+	}
+	if err := r.recordApprovalPreparation("replay_recorded", state); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	if err := r.refreshContractFromMessages(meta, "prepare"); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
 	if err := r.appendSessionResumedEvent(meta, resumedFrom, source); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
+	if prepared != nil {
+		if err := r.recordApprovalPreparation("prepared", state); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
+		*prepared = &PreparedApproval{meta: meta, state: state, req: req, preparation: r.approvalPreparation}
+		return RunResult{}, nil
 	}
 	releaseActiveRegistration := registerActiveSessionRunner(r.store, meta.ID, r)
 	defer releaseActiveRegistration()
@@ -1241,21 +1307,18 @@ func (r *Runner) preflightPlanModeControl(sessionID string, req ContinueRequest)
 		}
 	}
 	if req.ApprovePlan {
-		planMode, err := r.store.LoadPlanMode(sessionID)
+		if req.ApprovalTarget == nil {
+			return session.ErrMissingApprovalTarget
+		}
+		snapshot, err := r.store.LoadApprovalSnapshot(sessionID)
 		if err != nil {
 			return err
 		}
-		switch planMode.Status {
-		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
-			if planMode.PlanVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-				return errors.New("plan mode has no submitted plan")
-			}
-		case session.PlanModeStatusExecuting:
-			if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-				return errors.New("plan mode has no approved plan")
-			}
-		default:
-			return fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
+		if err := session.ValidateApprovalTarget(snapshot, *req.ApprovalTarget); err != nil {
+			return err
+		}
+		if snapshot.Coverage != nil && snapshot.Coverage.ApprovalBlocked && !req.OverrideGoalCoverage {
+			return fmt.Errorf("mission validation coverage blocks approval: %s", snapshot.Coverage.BlockingSummary())
 		}
 	}
 	if req.CancelPlan {
@@ -1300,6 +1363,17 @@ func (r *Runner) hasRecoverablePlanInputAnswer(sessionID, requestID string, answ
 }
 
 func (r *Runner) ensurePlanModeCreatedForContinue(sessionID string, draft session.PlanModeDraft) (session.PlanModeState, error) {
+	var state session.PlanModeState
+	err := r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		var err error
+		state, err = prep.ensurePlanModeCreatedForContinueScoped(sessionID, draft)
+		return err
+	})
+	return state, err
+}
+
+func (r *Runner) ensurePlanModeCreatedForContinueScoped(sessionID string, draft session.PlanModeDraft) (session.PlanModeState, error) {
 	if current, err := r.store.LoadPlanMode(sessionID); err == nil && matchesPlanModeDraft(current, draft) {
 		if err := r.appendPlanModeEventOnce(sessionID, "planmode.created", current); err != nil {
 			return session.PlanModeState{}, err
@@ -1329,6 +1403,17 @@ func matchesPlanModeDraft(planMode session.PlanModeState, draft session.PlanMode
 }
 
 func (r *Runner) ensurePlanModeCancelled(sessionID, source string) (session.PlanModeState, error) {
+	var state session.PlanModeState
+	err := r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		var err error
+		state, err = prep.ensurePlanModeCancelledScoped(sessionID, source)
+		return err
+	})
+	return state, err
+}
+
+func (r *Runner) ensurePlanModeCancelledScoped(sessionID, source string) (session.PlanModeState, error) {
 	planMode, err := r.store.LoadPlanMode(sessionID)
 	if err != nil {
 		return session.PlanModeState{}, err
@@ -1346,6 +1431,22 @@ func (r *Runner) ensurePlanModeCancelled(sessionID, source string) (session.Plan
 }
 
 func (r *Runner) ensurePlanModeRevisedForMessage(sessionID string, planMode session.PlanModeState, source, message string) (session.PlanModeState, bool, error) {
+	var state session.PlanModeState
+	var revised bool
+	err := r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		var err error
+		current, loadErr := scoped.LoadPlanMode(sessionID)
+		if loadErr != nil {
+			return loadErr
+		}
+		state, revised, err = prep.ensurePlanModeRevisedForMessageScoped(sessionID, current, source, message)
+		return err
+	})
+	return state, revised, err
+}
+
+func (r *Runner) ensurePlanModeRevisedForMessageScoped(sessionID string, planMode session.PlanModeState, source, message string) (session.PlanModeState, bool, error) {
 	switch planMode.Status {
 	case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusRejected, session.PlanModeStatusApproved:
 		revised, err := r.store.RevisePlanMode(sessionID, source, message)
@@ -1429,56 +1530,27 @@ func (r *Runner) hasPlanModeRevisionMessage(sessionID string, planMode session.P
 	return false, nil
 }
 
-func (r *Runner) ensurePlanModeExecutingForApproval(sessionID, source string) (session.PlanModeState, error) {
-	planMode, err := r.store.LoadPlanMode(sessionID)
+func (r *Runner) ensurePlanModeExecutingForTarget(sessionID, source string, target session.ApprovalTarget, overrideCoverage bool) (session.PlanModeState, error) {
+	approved, err := r.store.ApprovePlanModeTarget(sessionID, source, target, overrideCoverage)
 	if err != nil {
 		return session.PlanModeState{}, err
 	}
-	switch planMode.Status {
-	case session.PlanModeStatusAwaitingApproval:
-		approved, err := r.store.ApprovePlanMode(sessionID, source)
-		if err != nil {
-			return session.PlanModeState{}, err
-		}
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", approved); err != nil {
-			return session.PlanModeState{}, err
-		}
-		executing, err := r.store.MarkPlanModeExecuting(sessionID, source)
-		if err != nil {
-			return session.PlanModeState{}, err
-		}
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", executing); err != nil {
-			return session.PlanModeState{}, err
-		}
-		return executing, nil
-	case session.PlanModeStatusApproved:
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", planMode); err != nil {
-			return session.PlanModeState{}, err
-		}
-		executing, err := r.store.MarkPlanModeExecuting(sessionID, source)
-		if err != nil {
-			return session.PlanModeState{}, err
-		}
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", executing); err != nil {
-			return session.PlanModeState{}, err
-		}
-		return executing, nil
-	case session.PlanModeStatusExecuting:
-		if planMode.ApprovedVersion <= 0 || strings.TrimSpace(planMode.PlanMarkdown) == "" {
-			return session.PlanModeState{}, errors.New("plan mode has no approved plan")
-		}
-		approvalEvent := planMode
-		approvalEvent.Status = session.PlanModeStatusApproved
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", approvalEvent); err != nil {
-			return session.PlanModeState{}, err
-		}
-		if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", planMode); err != nil {
-			return session.PlanModeState{}, err
-		}
-		return planMode, nil
-	default:
-		return session.PlanModeState{}, fmt.Errorf("plan mode is not awaiting approval: %s", planMode.Status)
+	approvalEvent := approved
+	approvalEvent.Status = session.PlanModeStatusApproved
+	if err := r.appendPlanModeEventOnce(sessionID, "planmode.plan_approved", approvalEvent); err != nil {
+		return session.PlanModeState{}, err
 	}
+	executing := approved
+	if approved.Status != session.PlanModeStatusExecuting {
+		executing, err = r.store.MarkPlanModeExecuting(sessionID, source)
+		if err != nil {
+			return session.PlanModeState{}, err
+		}
+	}
+	if err := r.appendPlanModeEventOnce(sessionID, "planmode.execution_started", executing); err != nil {
+		return session.PlanModeState{}, err
+	}
+	return executing, nil
 }
 
 func (r *Runner) appendPlanModeEventOnce(sessionID, eventType string, planMode session.PlanModeState) error {
@@ -1513,6 +1585,9 @@ func (r *Runner) hasPlanModeEvent(sessionID, eventType string, planMode session.
 			continue
 		}
 		if eventType == "planmode.execution_started" && intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
+			continue
+		}
+		if (eventType == "planmode.plan_approved" || eventType == "planmode.execution_started") && approvalRevisionFromData(item.Data) != planMode.ApprovedRevision {
 			continue
 		}
 		if eventType == "planmode.plan_revised" && intFromEventData(item.Data, "plan_version") != planMode.PlanVersion {
@@ -1569,6 +1644,13 @@ func ensureMissionCoverageForApproval(goal session.SessionGoal, override bool) e
 }
 
 func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.PlanModeState, source string, overrideCoverage bool) error {
+	return r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		return prep.approveLinkedMissionPlanScoped(sessionID, planMode, source, overrideCoverage)
+	})
+}
+
+func (r *Runner) approveLinkedMissionPlanScoped(sessionID string, planMode session.PlanModeState, source string, overrideCoverage bool) error {
 	if strings.TrimSpace(planMode.LinkedGoalID) == "" {
 		return nil
 	}
@@ -1602,6 +1684,7 @@ func (r *Runner) approveLinkedMissionPlan(sessionID string, planMode session.Pla
 		CoverageOverride: overrideCoverage,
 		PlanModeID:       planMode.PlanModeID,
 		ApprovedVersion:  planMode.ApprovedVersion,
+		ApprovedRevision: planMode.ApprovedRevision,
 	})
 	if err != nil {
 		return err
@@ -1616,7 +1699,7 @@ func missionPlanApprovalMatches(goal session.SessionGoal, planMode session.PlanM
 	if strings.TrimSpace(goal.Mission.ApprovedAt) == "" {
 		return false
 	}
-	return strings.TrimSpace(planMode.PlanModeID) != "" && planMode.ApprovedVersion > 0
+	return strings.TrimSpace(planMode.PlanModeID) != "" && planMode.ApprovedVersion > 0 && goal.Mission.ApprovedRevision == planMode.ApprovedRevision
 }
 
 func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMode session.PlanModeState) (bool, error) {
@@ -1640,6 +1723,9 @@ func (r *Runner) hasMissionPlanApprovedHistory(sessionID, goalID string, planMod
 		if intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
 			continue
 		}
+		if approvalRevisionFromData(item.Data) != planMode.ApprovedRevision {
+			continue
+		}
 		return true, nil
 	}
 	return false, nil
@@ -1657,6 +1743,7 @@ func (r *Runner) appendMissionPlanApprovedEventOnce(sessionID, goalID string, pl
 		"goal_id":           goalID,
 		"plan_mode_id":      planMode.PlanModeID,
 		"approved_version":  planMode.ApprovedVersion,
+		"approved_revision": planMode.ApprovedRevision,
 		"approved_at":       approvedAt,
 		"coverage_override": overrideCoverage,
 	})
@@ -1682,12 +1769,22 @@ func (r *Runner) hasMissionPlanApprovedEvent(sessionID, goalID string, planMode 
 		if intFromEventData(item.Data, "approved_version") != planMode.ApprovedVersion {
 			continue
 		}
+		if approvalRevisionFromData(item.Data) != planMode.ApprovedRevision {
+			continue
+		}
 		return true, nil
 	}
 	return false, nil
 }
 
 func (r *Runner) appendPlanInputCancelToolResult(sessionID, source string) error {
+	return r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		return prep.appendPlanInputCancelToolResultScoped(sessionID, source)
+	})
+}
+
+func (r *Runner) appendPlanInputCancelToolResultScoped(sessionID, source string) error {
 	planMode, err := r.store.LoadPlanMode(sessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -2029,6 +2126,13 @@ func unresolvedToolCalls(messages []session.Message) []session.ToolCall {
 }
 
 func (r *Runner) appendPlanInputToolResult(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {
+	return r.store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		prep := r.newApprovalPreparationRunner(scoped)
+		return prep.appendPlanInputToolResultScoped(sessionID, requestID, source, answers)
+	})
+}
+
+func (r *Runner) appendPlanInputToolResultScoped(sessionID, requestID, source string, answers []session.PlanModeInputAnswer) error {
 	planModeSnapshot, err := r.store.SnapshotPlanMode(sessionID)
 	if err != nil {
 		return err
@@ -2724,7 +2828,34 @@ func (r *Runner) transformUserMessage(ctx context.Context, meta session.SessionM
 	return text, nil
 }
 
+// Start may receive an old writer error after another runner claimed the
+// session. Compare the exact observed state when recording this run's failure.
+func (r *Runner) failStartedRunIfCurrent(sessionID string, current session.State, cause error) (RunResult, error) {
+	failed := current
+	failed.Status = session.StatusFailed
+	failed.LastError = cause.Error()
+	saved, err := r.store.SaveStateIfCurrent(sessionID, current, failed)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("record start failure state after %v: %w", cause, err)
+	}
+	if !saved {
+		return RunResult{SessionID: sessionID}, cause
+	}
+	if err := r.appendEvent(sessionID, "session.failed", failed.Phase, map[string]any{"error": cause.Error()}); err != nil {
+		return RunResult{}, fmt.Errorf("record start failure event after %v: %w", cause, err)
+	}
+	_ = writeSessionSummary(r.store, sessionID)
+	_ = writeLongRunCheckpoint(r.store, sessionID)
+	return RunResult{SessionID: sessionID, Status: failed.Status, LastError: failed.LastError}, cause
+}
+
 func (r *Runner) failBeforeRun(sessionID string, state session.State, phase string, err error) (RunResult, error) {
+	if r.approvalPreparation != nil {
+		r.approvalPreparation.LastError = err.Error()
+		if journalErr := r.recordApprovalPreparation("prepare_failed", state); journalErr != nil {
+			err = errors.Join(err, journalErr)
+		}
+	}
 	state.Status = session.StatusFailed
 	state.Phase = phase
 	state.LastError = err.Error()

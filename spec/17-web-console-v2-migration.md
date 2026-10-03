@@ -31,6 +31,7 @@ runtime facade 和 workspace 文件仍是唯一事实源。
 - v2 资源从 `/v2-assets/*` 提供；`/shared-assets/*` 固定映射到已受现有语法与
   module-contract 测试覆盖的 `internal/webconsole/assets/*` 无状态 view/controller 模块，
   不允许另建未受检的 shared 目录。
+- Plan Mode 与 linked mission 审批由共享 controller 捕获实际显示的 id/version/revision target；v2 与 legacy 使用相同请求契约和 coverage override 重试目标。stale conflict 在桌面/移动与 `zh-CN`/`en` 都要求重新审阅，不从 v2 entrypoint 默默升级到 latest。
 - `/legacy/` 与 `/legacy/index.html` 只在 `web.legacy_ui_enabled: true` 时提供旧页面。
 - `web.legacy_ui_enabled` 默认 `false`；禁用时 legacy 页面与 legacy-only asset route
   返回 `404`，不得通过 SPA fallback 绕过。

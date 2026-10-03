@@ -442,7 +442,7 @@ Settings API：
 - active handle status（是否被当前 server 托管）
 - `active_handle_owner`：区分 `current_process`、`running_not_owned`、`settled`，并暴露最近的 `process_start_id`、`pid`、`started_at`、`released_at` 线索
 - `goal?`：当前 `goal.json` snapshot，缺失时为空
-- `plan_mode?`：当前 `planmode.json` snapshot，缺失时为空
+- `plan_mode?`：当前 Plan Mode 审批 snapshot，缺失时为空；`approval_revision` 对应本响应中实际返回的 Plan Mode 与 linked goal 审批内容，`goal` 与它必须在同一协调读边界获取
 
 #### 7.4.1 `GET /api/sessions/{id}/context`
 
@@ -574,7 +574,7 @@ Settings API：
 
 `POST /api/sessions/{id}/mission/plan/approve`
 
-- 将 goal 内部 plan 标记为 approved；若存在 linked Plan Mode，走 Plan Mode approval / continue 路径；请求体可带 `override_coverage:true` 显式越过 validation coverage 阻断
+- 将 goal 内部 plan 标记为 approved；若存在 linked Plan Mode，作为 Plan Mode approval / continue 的执行别名，必须携带同一 `plan_mode_id`、`plan_version`、`expected_revision`，不能绕过审批目标比较。linked executing 的历史事实修复同样要求完整的已审阅 target，并在同一协调锁内按 fresh gate 校验；合法请求仍返回 200、不启动 provider，历史 revision 缺失仍为 unknown。没有 linked gate 的纯 mission facts approval 保留原有不启动 provider 的行为。请求体可带 `override_coverage:true` 显式越过 validation coverage 阻断
 
 `PATCH /api/sessions/{id}/mission/validation`
 
@@ -587,11 +587,15 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 `GET /api/sessions/{id}/planmode`
 
-- 返回当前 Plan Mode snapshot；不存在时返回 404
+- 返回 flat Plan Mode snapshot，以及服务器生成的 `approval_revision`；存在 linked goal 时附带同一协调读边界的 `linked_goal` snapshot。不存在 Plan Mode 时返回 404。revision 必须绑定实际返回的审批内容，不能分别读取 plan/goal 后拼接
 
 `POST /api/sessions/{id}/planmode/approve`
 
-- 批准 latest plan version，并通过 runtime continue path 追加 `planmode_approval` user message 后开始执行
+- 输入 `{ "plan_mode_id": "...", "plan_version": 1, "expected_revision": "...", "override_coverage": false }`，批准用户已审阅的审批内容，并通过 runtime continue path 追加 `planmode_approval` user message 后开始执行。这是原 latest 契约的增强，不表示旧 latest 实现违背旧 spec
+- revision 覆盖 Plan Mode 身份、objective、正文及审批展示内容；linked goal 身份与存在性、mission requirements/features/milestones/validation contract/role plan/artifact 约定，以及影响 coverage 的 `claimed_assertions` / `validation_ids` 映射都属于审批 scope。只有不影响审批语义的 usage、progress/evidence、状态展示、ApprovedAt 和无关更新时间可排除
+- 权威 target 比较与 durable prepare/run claim 协调必须在 HTTP 202 和 `webconsole.handle.acquired` 等执行接纳事实之前同步完成；provider/agent 执行仍异步。stale、替换、取消或内容变化返回 409，缺少目标要求重新加载/升级；都不得偷偷替换成 latest，不写 approval/history/message、不启动 provider，也不把原可恢复 session 标成 failed
+- 前端捕获实际显示的 target；coverage override 确认与重试沿用同一 target。确认期间内容变化必须重新审阅，两种语言都明确显示“计划已更新，请重新审阅” / “The plan has changed. Please review it again.”，不自动批准
+- revision 是并发条件，不是权限令牌；只绑定审批语义 projection，不冻结 provider 配置、工作目录或所有 runtime 输入。旧审批事实缺 revision 时保持 legacy/unknown，不倒填当前 revision
 
 `POST /api/sessions/{id}/planmode/revise`
 

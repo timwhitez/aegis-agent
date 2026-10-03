@@ -10,6 +10,9 @@ import (
 
 type StartRequest = runtime.StartRequest
 type ContinueRequest = runtime.ContinueRequest
+type ApprovalTarget = session.ApprovalTarget
+type ApprovalSnapshot = session.ApprovalSnapshot
+type PreparedApproval = runtime.PreparedApproval
 type SteerRequest = runtime.SteerRequest
 type SteerResult = runtime.SteerResult
 type RunResult = runtime.RunResult
@@ -38,6 +41,18 @@ func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, 
 	return r.core.Continue(ctx, req)
 }
 
+func (r *Runner) PrepareApprovalContinue(ctx context.Context, req ContinueRequest) (*PreparedApproval, error) {
+	return r.core.PrepareApprovalContinue(ctx, req)
+}
+
+func (r *Runner) RunPreparedApproval(ctx context.Context, prepared *PreparedApproval) (RunResult, error) {
+	return r.core.RunPreparedApproval(ctx, prepared)
+}
+
+func (r *Runner) AbortPreparedApproval(prepared *PreparedApproval, cause error) error {
+	return r.core.AbortPreparedApproval(prepared, cause)
+}
+
 func (r *Runner) Steer(ctx context.Context, req SteerRequest) (SteerResult, error) {
 	return r.core.Steer(ctx, req)
 }
@@ -48,6 +63,11 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 
 func (r *Runner) Interrupt(sessionID string) error {
 	return r.core.Interrupt(sessionID)
+}
+
+// Approval reads one coordinated approval snapshot for operator review.
+func (r *Runner) Approval(sessionID string) (ApprovalSnapshot, error) {
+	return r.core.Approval(sessionID)
 }
 
 func (r *Runner) State(sessionID string) (SessionState, error) {

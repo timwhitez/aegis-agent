@@ -30,6 +30,8 @@ type Store struct {
 	dirMode  fs.FileMode
 	fileMode fs.FileMode
 	mu       sync.Mutex
+	// approvalScope is private to a synchronous WithApprovalLock callback.
+	approvalScope *approvalScope
 	// jsonlValidated tracks the byte offset through which this Store instance
 	// has already validated append-only JSONL files. It is guarded by mu.
 	jsonlValidated map[string]int64
@@ -365,6 +367,9 @@ func (s *Store) saveStateLocked(sessionID string, state State) error {
 		if err := readJSONFile(path, &current); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
+		if state.RunGeneration != current.RunGeneration {
+			return errors.New("session run generation changed; refusing stale state update")
+		}
 		state.LoadedSkills = mergeLoadedSkills(current.LoadedSkills, state.LoadedSkills)
 		if err := validateState(state); err != nil {
 			return fmt.Errorf("validate state.json: %w", err)
@@ -480,6 +485,7 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 			claimed.PauseReason = ""
 			claimed.ProviderAutoResumeCount = 0
 			claimed.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			claimed.RunGeneration = "run_" + rand.Text()
 			if err := validateState(claimed); err != nil {
 				return fmt.Errorf("validate state.json: %w", err)
 			}

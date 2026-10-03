@@ -25,6 +25,18 @@ func (r *CoreRunner) Continue(ctx context.Context, req ContinueRequest) (RunResu
 	return r.runner.Continue(ctx, req)
 }
 
+func (r *CoreRunner) PrepareApprovalContinue(ctx context.Context, req ContinueRequest) (*PreparedApproval, error) {
+	return r.runner.PrepareApprovalContinue(ctx, req)
+}
+
+func (r *CoreRunner) RunPreparedApproval(ctx context.Context, prepared *PreparedApproval) (RunResult, error) {
+	return r.runner.RunPreparedApproval(ctx, prepared)
+}
+
+func (r *CoreRunner) AbortPreparedApproval(prepared *PreparedApproval, cause error) error {
+	return r.runner.AbortPreparedApproval(prepared, cause)
+}
+
 func (r *CoreRunner) Steer(ctx context.Context, req SteerRequest) (SteerResult, error) {
 	return r.runner.Steer(ctx, req)
 }
@@ -35,6 +47,12 @@ func (r *CoreRunner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, 
 
 func (r *CoreRunner) Interrupt(sessionID string) error {
 	return r.runner.Interrupt(sessionID)
+}
+
+// Approval returns the coherent content and target that a caller must review
+// before passing ApprovalTarget to Continue or PrepareApprovalContinue.
+func (r *CoreRunner) Approval(sessionID string) (session.ApprovalSnapshot, error) {
+	return r.runner.store.LoadApprovalSnapshot(sessionID)
 }
 
 func (r *CoreRunner) State(sessionID string) (session.State, error) {

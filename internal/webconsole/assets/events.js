@@ -224,6 +224,7 @@ function describeEventDescriptor(eventType, data, phase, eventID) {
         title: goalPlanEventTitle(eventType),
         copy: data?.plan_status ? `Goal plan is ${humanizeStatus(data.plan_status)}.` : 'Goal plan state changed.',
         meta: data?.goal_id ? shortId(data.goal_id) : phaseHeadline(phase),
+        metaIsRaw: Boolean(data?.goal_id),
         tone: eventType === 'mission.plan.approved' ? 'live' : 'neutral',
         data: data ? prettyJSON(data) : ''
       };

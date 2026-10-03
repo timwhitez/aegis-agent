@@ -193,6 +193,11 @@
 - pending Plan Mode 下 provider schema 和 CompletionController 双层门禁必须一致：只允许 read/search/load_skill、只读 goal/todo/task/feature-list、`get_plan_mode`、`request_user_input`、`submit_plan`
 - `request_user_input` 保存 `pending_request.tool_call_id`，使 Web active runner、server restart fallback、取消和回答都能补齐 provider replay 所需 tool result
 - 以 pending Plan Mode session 为 parent 的 child/delegate/queue 提交必须拒绝；独立新 session 或无 parent queue job 不受影响
+- #125 是从 latest 到“已审阅审批内容”的契约增强；审批 target 由 `plan_mode_id`、`plan_version`、`expected_revision` 组成。coherent snapshot 必须同时绑定 Plan Mode 与 linked mission 审批语义，包括经 progress 改写的 coverage mappings；revision 不是权限令牌，也不冻结无关运行时输入
+- Web 202 / handle 接纳事件之前同步完成权威 CAS 与 durable prepare/claim；仅异步 runner 事后比较不能满足契约。stale target 不得审批、写 replay/history、调用 provider 或把可恢复 session 标成 failed；coverage override 必须保持原 target
+- 跨 Store/跨进程固定锁序为 `approval.lock -> scoped Store.mu -> single-file lock`，公开 plan/goal 语义 mutation 共用协调边界，内部 helper 避免非重入锁嵌套。多文件 prepare 恢复协议不是原子事务；验证必须覆盖部分失败与既有 handle generation settling
+- 普通与审批 claim 都分配 durable `run_generation`；queued Steer 的计数或时间变化不冒充新 generation；执行接纳、abort、重新待审的完整状态 CAS 若输给观察性更新，必须重新读取并证明同代、未推进且其他字段匹配后才重试，通用状态 CAS 保持严格。legacy 缺身份仍需明确恢复。CLI goal pause/resume/complete/clear 的事件失败回滚与完整 mutation 同处协调边界，不覆盖 peer 新审批内容；缺失/未关联 gate 的审批 fallback 同样必须 fresh 重判并联合 snapshot/ensure/event/rollback，保护 peer plan/markdown/history。budget wrap-up helper 采用 fresh goal 前必须同锁验证匹配 snapshot，不能让 A→B→A 的瞬态 B 进入实际 provider prompt
+- 成功事实与 retry/dedup identity 保存实际匹配的 `approved_revision`；旧事实缺 revision 保留 legacy/unknown，不用当前 scope 倒填。CLI 脚本必须明确 target 或显式 `--approve-latest`，交互入口携带展示 target；linked executing 的 Web/CLI 历史事实修复仍要求完整 target、同锁 fresh gate 校验，合法目标保持 200/不执行及历史 unknown。普通 continue 保持原行为
 
 ### 2.12 Context budget 与 lineage observability
 

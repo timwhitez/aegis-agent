@@ -250,6 +250,7 @@ type MissionPlan struct {
 	KnowledgeArtifacts  []string             `json:"knowledge_artifacts,omitempty"`
 	PlanStatus          string               `json:"plan_status,omitempty"`
 	ApprovedAt          string               `json:"approved_at,omitempty"`
+	ApprovedRevision    string               `json:"approved_revision,omitempty"`
 	CreateTasksFromPlan bool                 `json:"create_tasks_from_plan,omitempty"`
 }
 
@@ -330,6 +331,7 @@ type MissionPlanApprovalInput struct {
 	CoverageOverride bool
 	PlanModeID       string
 	ApprovedVersion  int
+	ApprovedRevision string
 }
 
 type GoalPatchInput struct {
@@ -791,6 +793,13 @@ func (s *Store) LoadGoal(sessionID string) (SessionGoal, error) {
 }
 
 func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.saveGoalApprovalLocked(sessionID, goal)
+	})
+	return err
+}
+
+func (s *Store) saveGoalApprovalLocked(sessionID string, goal SessionGoal) error {
 	prepareGoalForSave(sessionID, &goal)
 	if err := ValidateGoal(goal); err != nil {
 		return err
@@ -805,6 +814,17 @@ func (s *Store) SaveGoal(sessionID string, goal SessionGoal) error {
 }
 
 func (s *Store) MutateGoal(sessionID string, mutate func(*SessionGoal) error) (SessionGoal, bool, error) {
+	var value0 SessionGoal
+	var value1 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.mutateGoalApprovalLocked(sessionID, mutate)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) mutateGoalApprovalLocked(sessionID string, mutate func(*SessionGoal) error) (SessionGoal, bool, error) {
 	path, err := s.sessionPath(sessionID, "goal.json")
 	if err != nil {
 		return SessionGoal{}, false, err
@@ -866,6 +886,16 @@ func prepareGoalForSave(sessionID string, goal *SessionGoal) {
 }
 
 func (s *Store) CreateGoal(sessionID string, draft GoalDraft) (SessionGoal, error) {
+	var value0 SessionGoal
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.createGoalApprovalLocked(sessionID, draft)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) createGoalApprovalLocked(sessionID string, draft GoalDraft) (SessionGoal, error) {
 	if existing, err := s.LoadGoal(sessionID); err == nil && existing.GoalID != "" {
 		return SessionGoal{}, errors.New("session already has a current goal")
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -950,6 +980,17 @@ func goalNeedsPendingPlanApproval(goal SessionGoal) bool {
 }
 
 func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source string) (PlanModeState, bool, error) {
+	var value0 PlanModeState
+	var value1 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.ensurePlanModeForGoalApprovalLocked(sessionID, goal, source)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) ensurePlanModeForGoalApprovalLocked(sessionID string, goal SessionGoal, source string) (PlanModeState, bool, error) {
 	if !GoalRequiresPlanApproval(goal) {
 		return PlanModeState{}, false, nil
 	}
@@ -1002,6 +1043,16 @@ func (s *Store) EnsurePlanModeForGoal(sessionID string, goal SessionGoal, source
 }
 
 func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (SessionGoal, error) {
+	var value0 SessionGoal
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.completeGoalApprovalLocked(sessionID, input)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) completeGoalApprovalLocked(sessionID string, input GoalCompletionInput) (SessionGoal, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rollback, err := s.goalRollbackSnapshot(sessionID)
 	if err != nil {
@@ -1058,6 +1109,16 @@ func (s *Store) CompleteGoal(sessionID string, input GoalCompletionInput) (Sessi
 }
 
 func (s *Store) SetGoalStatus(sessionID, status, source string) (SessionGoal, error) {
+	var value0 SessionGoal
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.setGoalStatusApprovalLocked(sessionID, status, source)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) setGoalStatusApprovalLocked(sessionID, status, source string) (SessionGoal, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
@@ -1087,6 +1148,16 @@ func (s *Store) SetGoalStatus(sessionID, status, source string) (SessionGoal, er
 }
 
 func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalInput) (SessionGoal, error) {
+	var value0 SessionGoal
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.approveMissionPlanApprovalLocked(sessionID, input)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) approveMissionPlanApprovalLocked(sessionID string, input MissionPlanApprovalInput) (SessionGoal, error) {
 	approvedAt := strings.TrimSpace(input.ApprovedAt)
 	if approvedAt == "" {
 		approvedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -1104,6 +1175,7 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 		}
 		goal.Mission.PlanStatus = MissionPlanStatusApproved
 		goal.Mission.ApprovedAt = approvedAt
+		goal.Mission.ApprovedRevision = input.ApprovedRevision
 		return nil
 	})
 	if err != nil {
@@ -1126,6 +1198,7 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 			"approved_source":   approvedSource,
 			"plan_mode_id":      input.PlanModeID,
 			"approved_version":  input.ApprovedVersion,
+			"approved_revision": input.ApprovedRevision,
 			"coverage_override": input.CoverageOverride,
 		},
 	}); err != nil {
@@ -1138,6 +1211,16 @@ func (s *Store) ApproveMissionPlan(sessionID string, input MissionPlanApprovalIn
 }
 
 func (s *Store) PatchGoal(sessionID string, input GoalPatchInput) (SessionGoal, error) {
+	var value0 SessionGoal
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.patchGoalApprovalLocked(sessionID, input)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) patchGoalApprovalLocked(sessionID string, input GoalPatchInput) (SessionGoal, error) {
 	goal, mutated, err := s.MutateGoal(sessionID, func(goal *SessionGoal) error {
 		if goal.GoalID == "" {
 			return errors.New("session has no current goal")
@@ -1167,6 +1250,18 @@ func (s *Store) PatchGoal(sessionID string, input GoalPatchInput) (SessionGoal, 
 }
 
 func (s *Store) SyncMissionPlanTasks(sessionID string) (SessionGoal, []Task, bool, error) {
+	var value0 SessionGoal
+	var value1 []Task
+	var value2 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, value2, callErr = scoped.syncMissionPlanTasksApprovalLocked(sessionID)
+		return callErr
+	})
+	return value0, value1, value2, err
+}
+
+func (s *Store) syncMissionPlanTasksApprovalLocked(sessionID string) (SessionGoal, []Task, bool, error) {
 	goal, err := s.LoadGoal(sessionID)
 	if err != nil {
 		return SessionGoal{}, nil, false, err
@@ -1273,6 +1368,16 @@ func taskIDs(tasks []Task) []string {
 }
 
 func (s *Store) ClearGoal(sessionID string) (bool, error) {
+	var value0 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, callErr = scoped.clearGoalApprovalLocked(sessionID)
+		return callErr
+	})
+	return value0, err
+}
+
+func (s *Store) clearGoalApprovalLocked(sessionID string) (bool, error) {
 	path, err := s.sessionPath(sessionID, "goal.json")
 	if err != nil {
 		return false, err
@@ -1300,6 +1405,13 @@ func (s *Store) ClearGoal(sessionID string) (bool, error) {
 }
 
 func (s *Store) AppendGoalHistory(sessionID string, entry GoalHistoryEntry) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.appendGoalHistoryApprovalLocked(sessionID, entry)
+	})
+	return err
+}
+
+func (s *Store) appendGoalHistoryApprovalLocked(sessionID string, entry GoalHistoryEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry.SchemaVersion == 0 {
@@ -1413,6 +1525,13 @@ func (s *Store) LoadGoalHistory(sessionID string) ([]GoalHistoryEntry, error) {
 }
 
 func (s *Store) RestoreGoalHistory(sessionID string, entries []GoalHistoryEntry) error {
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		return scoped.restoreGoalHistoryApprovalLocked(sessionID, entries)
+	})
+	return err
+}
+
+func (s *Store) restoreGoalHistoryApprovalLocked(sessionID string, entries []GoalHistoryEntry) error {
 	path, err := s.sessionPath(sessionID, "artifacts", "goal-history.jsonl")
 	if err != nil {
 		return err
@@ -1452,6 +1571,17 @@ func validateGoalHistoryEntry(entry GoalHistoryEntry) error {
 }
 
 func (s *Store) UpdateGoalAccounting(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
+	var value0 SessionGoal
+	var value1 bool
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.updateGoalAccountingApprovalLocked(sessionID, delta)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) updateGoalAccountingApprovalLocked(sessionID string, delta GoalUsageDelta) (SessionGoal, bool, error) {
 	budgetLimited := false
 	rollback, err := s.goalRollbackSnapshot(sessionID)
 	if err != nil {

@@ -61,6 +61,18 @@ func hostProcessOwnerAlive(pid int, expectedIdentity string) bool {
 	return actual == expectedIdentity
 }
 
+// ProcessIdentity provides the same boot-scoped identity used by session
+// leases. A false result requires conservative PID-only owner checks.
+func ProcessIdentity(pid int) (string, bool) {
+	return hostProcessIdentity(pid)
+}
+
+// ProcessOwnerAlive conservatively checks durable control-operation owners.
+// Unavailable host identity information never proves an owner is dead.
+func ProcessOwnerAlive(pid int, expectedIdentity string) bool {
+	return hostProcessOwnerAlive(pid, expectedIdentity)
+}
+
 // pidFromProcessStartID extracts the PID prefix from a "<pid>:<started_at>"
 // process start identity token. It returns 0 when the token is empty or
 // malformed.

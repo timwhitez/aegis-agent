@@ -129,6 +129,17 @@ func CheckMissionPlanCoverage(goal SessionGoal) MissionPlanCoverage {
 }
 
 func (s *Store) RecordGoalProgress(sessionID string, input GoalProgressInput) (SessionGoal, GoalProgressRecord, error) {
+	var value0 SessionGoal
+	var value1 GoalProgressRecord
+	err := s.WithApprovalLock(sessionID, func(scoped *Store) error {
+		var callErr error
+		value0, value1, callErr = scoped.recordGoalProgressApprovalLocked(sessionID, input)
+		return callErr
+	})
+	return value0, value1, err
+}
+
+func (s *Store) recordGoalProgressApprovalLocked(sessionID string, input GoalProgressInput) (SessionGoal, GoalProgressRecord, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	source := normalizeGoalSource(input.Source)
 	planChanged := false

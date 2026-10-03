@@ -338,6 +338,7 @@ type State struct {
 	Phase                        string   `json:"phase"`
 	Turn                         int      `json:"turn"`
 	UpdatedAt                    string   `json:"updated_at"`
+	RunGeneration                string   `json:"run_generation,omitempty"`
 	CurrentTask                  string   `json:"current_task,omitempty"`
 	LastError                    string   `json:"last_error,omitempty"`
 	IncompleteReason             string   `json:"incomplete_reason,omitempty"`

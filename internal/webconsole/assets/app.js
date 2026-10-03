@@ -2190,6 +2190,34 @@ function isPendingPlanMode(status) {
   return ['planning', 'awaiting_user_input', 'awaiting_approval'].includes(status || '');
 }
 
+function displayedApprovalTarget() {
+  const plan = currentPlanMode();
+  const id = String(plan?.plan_mode_id || '').trim();
+  const revision = String(plan?.approval_revision || '').trim();
+  const version = plan?.plan_version;
+  if (!id || !revision || !Number.isInteger(version) || version < 1) {
+    throw new Error('Reload the plan and review it before approving.');
+  }
+  return { plan_mode_id: id, plan_version: version, expected_revision: revision };
+}
+
+function isDisplayedApprovalTarget(target) {
+  const plan = currentPlanMode();
+  return plan?.plan_mode_id === target?.plan_mode_id && plan?.plan_version === target?.plan_version &&
+    plan?.approval_revision === target?.expected_revision;
+}
+
+function isStaleApprovalTarget(err) {
+  const text = [err?.code, err?.message, err?.detail].filter(Boolean).join(' ').toLowerCase();
+  return err?.status === 409 && (text.includes('approval_target') || text.includes('approval target') ||
+    text.includes('approval_conflict') || text.includes('approval content changed') || text.includes('review the current plan') ||
+    text.includes('revision') || text.includes('plan has changed') || text.includes('plan updated'));
+}
+
+function approvalActionError(err, fallback) {
+  return isStaleApprovalTarget(err) ? 'The plan has changed. Please review it again.' : err?.message || fallback;
+}
+
 function isCoverageApprovalBlock(err) {
   const haystack = [
     err?.message,
@@ -2261,7 +2289,8 @@ function currentPlanModeActionIdentity() {
     planMode.plan_id || '',
     planMode.plan_version || '',
     planMode.approved_version || '',
-    planMode.linked_goal_id || ''
+    planMode.linked_goal_id || '',
+    planMode.approval_revision || ''
   ].map((part) => String(part || '')).join('\n');
 }
 
@@ -2423,8 +2452,9 @@ async function handlePlanModeAction(button) {
   button.disabled = true;
   try {
     if (action === 'approve') {
+      const target = displayedApprovalTarget();
       try {
-        await approvePlanMode(sessionID);
+        await approvePlanMode(sessionID, target);
       } catch (err) {
         if (state.sessionId !== sessionID) {
           return;
@@ -2432,7 +2462,8 @@ async function handlePlanModeAction(button) {
         if (!isCoverageApprovalBlock(err)) {
           throw err;
         }
-        if (!isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
+        if (!isDisplayedApprovalTarget(target)) {
+          showToast('The plan has changed. Please review it again.', 'error');
           return;
         }
         if (!await confirmCoverageOverride()) {
@@ -2441,10 +2472,14 @@ async function handlePlanModeAction(button) {
           }
           return;
         }
-        if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
+        if (state.sessionId !== sessionID) {
           return;
         }
-        await approvePlanMode(sessionID, { override_coverage: true });
+        if (!isDisplayedApprovalTarget(target)) {
+          showToast('The plan has changed. Please review it again.', 'error');
+          return;
+        }
+        await approvePlanMode(sessionID, { ...target, override_coverage: true });
       }
       if (state.sessionId !== sessionID || !isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
         return;
@@ -2471,8 +2506,8 @@ async function handlePlanModeAction(button) {
       queueOverviewRefresh(180);
     }
   } catch (err) {
-    if (state.sessionId === sessionID && isCurrentPlanModeActionIdentity(actionPlanModeIdentity)) {
-      showToast(err.message || 'Plan Mode action failed.', 'error');
+    if (state.sessionId === sessionID && (isCurrentPlanModeActionIdentity(actionPlanModeIdentity) || isStaleApprovalTarget(err))) {
+      showToast(approvalActionError(err, 'Plan Mode action failed.'), 'error');
     }
   } finally {
     if (document.body.contains(button)) {
@@ -2605,15 +2640,21 @@ async function handleGoalAction(button) {
       }
       showToast('Goal cleared.', 'success');
     } else if (action === 'approve-plan') {
+      const linked = Boolean(currentPlanMode()?.linked_goal_id);
+      const target = linked ? displayedApprovalTarget() : {};
       let response = null;
       try {
-        response = await approveMissionPlan(sessionID);
+        response = await approveMissionPlan(sessionID, target);
       } catch (err) {
         if (state.sessionId !== sessionID) {
           return;
         }
         if (!isCoverageApprovalBlock(err)) {
           throw err;
+        }
+        if (linked && !isDisplayedApprovalTarget(target)) {
+          showToast('The plan has changed. Please review it again.', 'error');
+          return;
         }
         if (!isCurrentGoalActionIdentity(actionGoalIdentity)) {
           return;
@@ -2624,10 +2665,17 @@ async function handleGoalAction(button) {
           }
           return;
         }
-        if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
+        if (state.sessionId !== sessionID) {
           return;
         }
-        response = await approveMissionPlan(sessionID, { override_coverage: true });
+        if (linked && !isDisplayedApprovalTarget(target)) {
+          showToast('The plan has changed. Please review it again.', 'error');
+          return;
+        }
+        if (!isCurrentGoalActionIdentity(actionGoalIdentity)) {
+          return;
+        }
+        response = await approveMissionPlan(sessionID, { ...target, override_coverage: true });
       }
       if (state.sessionId !== sessionID || !isCurrentGoalActionIdentity(actionGoalIdentity)) {
         return;
@@ -2646,8 +2694,8 @@ async function handleGoalAction(button) {
       queueOverviewRefresh(160);
     }
   } catch (err) {
-    if (state.sessionId === sessionID && isCurrentGoalActionIdentity(actionGoalIdentity)) {
-      showToast(err.message || 'Goal action failed.', 'error');
+    if (state.sessionId === sessionID && (isCurrentGoalActionIdentity(actionGoalIdentity) || isStaleApprovalTarget(err))) {
+      showToast(approvalActionError(err, 'Goal action failed.'), 'error');
     }
   } finally {
     if (document.body.contains(button)) {
