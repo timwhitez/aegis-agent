@@ -19,6 +19,7 @@ const selectors = {
   retry: '[data-approval-operation-action="retry"]'
 };
 const pendingStorageKey = 'aegis-agent.webconsole.approval-operations.v1';
+const detailAbortDiagnostics = new WeakMap();
 
 // Only transport failures and an old, real detail GET are intercepted. All
 // approval POSTs that reach the server, receipt queries, and provider runs use
@@ -249,8 +250,19 @@ async function sameViewLateResponseIsolation(env) {
       const old = await delayed.fetched;
       assert.equal(old.status, 202, old.text);
       fixture.assertApprovalPost(old.body, reviewed);
+      const originalView = await a.evaluate(() => ({ session_id: state.sessionId, epoch: approvalViewEpoch,
+        request_id: document.querySelector('#approval-operation-notice')?.getAttribute('data-approval-request-id') }));
+      assert.equal(originalView.session_id, id);
+      assert.equal(originalView.request_id, old.body.approval_request_id);
       const original = await completed(context, baseURL, id);
+      // Awaiting-input views do not poll before the held acceptance arrives.
+      // A real History click on this same session refreshes current facts and
+      // preserves the original approval view token and pending operation.
+      await openSessionUI(a, id, 'plan');
       await loadedState(a, id, original.state.run_generation, 'completed');
+      assert.deepEqual(await a.evaluate(() => ({ session_id: state.sessionId, epoch: approvalViewEpoch,
+        request_id: document.querySelector('#approval-operation-notice')?.getAttribute('data-approval-request-id') })),
+      originalView, 'same-session History refresh must preserve the original view and request identity');
       await assertNotGenerating(a);
       await assertNotice(a, env.profile.locale, old.body.approval_request_id);
       await assertCurrentNoticeStatus(a, env.profile.locale, 'completed');
@@ -284,6 +296,9 @@ async function sameViewLateResponseIsolation(env) {
       }
       await until(() => a.locator(selectors.check).isEnabled(), 'same-view old response must finish processing');
       await loadedState(a, id, current.state.run_generation, 'completed');
+      assert.deepEqual(await a.evaluate(() => ({ session_id: state.sessionId, epoch: approvalViewEpoch,
+        request_id: document.querySelector('#approval-operation-notice')?.getAttribute('data-approval-request-id') })),
+      originalView, 'late same-view acceptance must retain its original view and request identity');
       await assertNotGenerating(a);
       assert.deepEqual(await generationWatch.stop(), [], 'old accepted envelope must never revive a settled or later generation');
       await assertNotice(a, env.profile.locale, old.body.approval_request_id);
@@ -311,11 +326,11 @@ async function sameViewLateResponseIsolation(env) {
       evidence.push({ scenario: ordinaryFollowup ? 'loaded-later-generation-and-refresh-failure' : 'loaded-completed-same-generation',
         session_id: id, request_id: old.body.approval_request_id, reviewed,
         response_status: old.status, original_execution: originalExecution, ordinary_execution: ordinaryExecution,
-        current_generation: current.state.run_generation, current_notice_status: 'completed',
+        current_generation: current.state.run_generation, current_notice_status: 'completed', original_view: originalView,
         canonical_operations: 1, admitted_execution_generations: 1,
         provider_delta: ordinaryFollowup ? 2 : 1, ui_approval_posts: traffic.posts.length,
         receipt_queries: traffic.queries, ...(aborted ? { intentional_detail_refresh_failure: aborted } : {}),
-        control_flow: 'real Approve accepted by server, natural detail polling, delayed transport released, real Check of historical receipt',
+        control_flow: 'real Approve accepted by server, real History click on the same session refreshes Completed facts while preserving its view token, delayed transport released, real Check of historical receipt',
         ...(ordinaryFollowup ? { unverified_browser_intermediate_state: 'Running notice while an ordinary follow-up is still active: fixed local finish marker has no deterministic hold window; covered by actual UI handler unit tests' } : {}) });
     } finally {
       delayed.release();
@@ -348,6 +363,7 @@ async function abortNextDetailRefresh(page, baseURL, id, expectedFailures) {
   let armed = false, released = false, intercepted = false;
   let armedAt = null, releasedAt = null;
   let observed = null, failure = null;
+  let closeDiagnosticWindow = () => {};
   const reason = 'one exact detail GET observed after the delayed accepted transport release; request initiator is not inferred';
   const handler = async (route) => {
     if (!armed || !released || intercepted) return route.continue();
@@ -356,6 +372,7 @@ async function abortNextDetailRefresh(page, baseURL, id, expectedFailures) {
       const request = route.request();
       allowApprovalDetailRefreshFailure(request, id, reason);
       expectedFailures.add(url);
+      closeDiagnosticWindow = beginDetailAbortDiagnosticWindow(page, request);
       await route.abort('failed');
       observed = { method: request.method(), url: request.url(), session_id: id, reason,
         armed_after_setup: true, observed_after_release_boundary: true,
@@ -368,7 +385,25 @@ async function abortNextDetailRefresh(page, baseURL, id, expectedFailures) {
     arm: () => { assert.equal(armed, false); armedAt = performance.now(); armed = true; },
     markReleased: () => { assert.equal(armed, true); assert.equal(released, false); releasedAt = performance.now(); released = true; },
     observed: () => { if (failure) throw failure; return observed; },
-    dispose: () => page.unroute(url, handler) };
+    dispose: async () => { closeDiagnosticWindow(); await page.unroute(url, handler); } };
+}
+
+function beginDetailAbortDiagnosticWindow(page, request) {
+  const collection = detailAbortDiagnostics.get(page);
+  assert.ok(collection && !collection.current, 'one explicit intentional detail-abort case window per page');
+  assert.equal(collection.audit.isExpectedTransport(request), true);
+  const intent = collection.audit.transportEvidence(request);
+  assert.equal(intent.classification, 'intentional_detail_refresh_failure');
+  const window = { request, intent, failedRequests: [], opened_order: ++collection.order, closed: false };
+  collection.current = window;
+  collection.windows.push(window);
+  return () => {
+    if (window.closed) return;
+    assert.equal(collection.current, window);
+    window.closed = true;
+    window.closed_order = ++collection.order;
+    collection.current = null;
+  };
 }
 
 async function sameSessionPeerIsolation(env) {
@@ -1041,13 +1076,86 @@ async function until(predicate, message, timeout = 25_000) {
 
 function collectErrors(page, baseURL, scenario, tab, expectedFailures, errors, expectedTransportFailures) {
   const audit = createApprovalProtocolAudit({ page, baseURL, scenario, tab });
-  page.on('pageerror', (error) => errors.page.push({ scenario, tab, message: error.message }));
-  page.on('requestfailed', (request) => {
+  const consoleEvents = [];
+  const collection = { audit, current: null, windows: [], order: 0 };
+  detailAbortDiagnostics.set(page, collection);
+  let completed;
+  const onConsole = (message) => {
+    if (message.type() === 'error') consoleEvents.push({ order: ++collection.order, window: collection.current,
+      message: message.text(), location: message.location() });
+  };
+  const onPageError = (error) => errors.page.push({ scenario, tab, message: error.message });
+  const onFailed = (request) => {
+    const requestOrder = ++collection.order;
+    if (collection.current) collection.current.failedRequests.push(request);
     const entry = { scenario, tab, url: request.url(), error: request.failure()?.errorText };
     if (expectedFailures.has(request.url()) && audit.isExpectedTransport(request)) {
-      expectedTransportFailures.push({ ...entry, ...audit.transportEvidence(request) });
+      const intent = audit.transportEvidence(request);
+      expectedTransportFailures.push({ ...entry, ...intent });
+      if (intent.classification === 'intentional_detail_refresh_failure') {
+        if (collection.current?.request === request) {
+          collection.current.failure = { request, intent, order: requestOrder, url: request.url(), error: entry.error };
+        }
+      }
     }
     else errors.request.push(entry);
+  };
+  page.on('console', onConsole);
+  page.on('pageerror', onPageError);
+  page.on('requestfailed', onFailed);
+  return { ...audit, async complete() {
+    if (completed) return completed;
+    page.off('console', onConsole);
+    page.off('pageerror', onPageError);
+    page.off('requestfailed', onFailed);
+    const result = await audit.complete();
+    completed = pairExpectedDetailRefreshDiagnostics(result, consoleEvents, { page, baseURL, scenario, tab });
+    return completed;
+  } };
+}
+
+function pairExpectedDetailRefreshDiagnostics(result, events, { page, baseURL, scenario, tab }) {
+  // This is the exact application diagnostic observed in the retained 40e
+  // browser run for the deliberately failed post-release ?limit=40 GET. A
+  // changed call site or stack is unexpected until independently observed.
+  const expectedMessage = 'session detail error TypeError: Failed to fetch\n' +
+    `    at requestJSON (${baseURL}/shared-assets/api.js:37:26)\n` +
+    `    at refreshCurrentSession (${baseURL}/shared-assets/app.js:3301:26)\n` +
+    `    at ${baseURL}/shared-assets/app.js:2930:5`;
+  const consumedFailures = new Set(), consumedResources = new Set(), expected = [...result.expected];
+  const console = result.console.filter((entry) => {
+    if (entry.scenario !== scenario || entry.tab !== tab || entry.message !== expectedMessage ||
+      entry.location.url !== `${baseURL}/shared-assets/app.js` ||
+      entry.location.lineNumber !== 3364 || entry.location.columnNumber !== 12) return true;
+    const application = events.find((event) => event.message === entry.message &&
+      event.location.url === entry.location.url && event.location.lineNumber === entry.location.lineNumber &&
+      event.location.columnNumber === entry.location.columnNumber && !consumedResources.has(event));
+    if (!application) return true;
+    const window = application.window, failure = window?.failure;
+    if (!window?.closed || !failure || consumedFailures.has(failure) ||
+      window.failedRequests.length !== 1 || window.failedRequests[0] !== window.request || failure.request !== window.request ||
+      failure.request.frame().page() !== page || failure.request.method() !== 'GET' || failure.error !== 'net::ERR_FAILED' ||
+      failure.url !== `${baseURL}/api/sessions/${encodeURIComponent(failure.intent.session_id)}?limit=40` ||
+      failure.intent.method !== 'GET' || !failure.intent.reason) return true;
+    const resources = result.expected.filter((resource) => resource.scenario === scenario && resource.tab === tab &&
+      resource.classification === 'intentional_detail_refresh_failure' && resource.method === 'GET' &&
+      resource.session_id === failure.intent.session_id && resource.reason === failure.intent.reason &&
+      resource.location.url === failure.url && resource.message === 'Failed to load resource: net::ERR_FAILED');
+    if (resources.length !== 1) return true;
+    const resourceEvents = events.filter((event) => event.window === window && event.message === resources[0].message &&
+      event.location.url === resources[0].location.url && !consumedResources.has(event));
+    if (resourceEvents.length !== 1) return true;
+    const resourceEvent = resourceEvents[0];
+    consumedFailures.add(failure);
+    consumedResources.add(resourceEvent);
+    consumedResources.add(application);
+    expected.push({ ...entry, classification: 'intentional_detail_refresh_application_diagnostic',
+      cause: { method: 'GET', url: failure.url, session_id: failure.intent.session_id, reason: failure.intent.reason,
+        case_window_open_order: window.opened_order, case_window_close_order: window.closed_order,
+        failed_request_order: failure.order, resource_console_order: resourceEvent.order,
+        application_console_order: application.order,
+        association: 'unique declared failed Request plus two strict diagnostics in this post-release case window; console carries no request identity' } });
+    return false;
   });
-  return audit;
+  return { ...result, console, expected };
 }
