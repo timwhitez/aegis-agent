@@ -101,16 +101,6 @@ func decodeOptionalPlanModeApproveRequest(w http.ResponseWriter, r *http.Request
 	return req, true
 }
 
-// Keep a root helper for existing callers; coordinated handlers resolve the
-// method on goalMutationService and use the scoped Store instead.
-func (s *Service) approveMissionPlanWithEvent(sessionID string, input session.MissionPlanApprovalInput, extra map[string]any) (goal session.SessionGoal, err error) {
-	err = s.store.WithApprovalLock(sessionID, func(store *session.Store) error {
-		goal, err = (&goalMutationService{Service: s, store: store}).approveMissionPlanWithEvent(sessionID, input, extra)
-		return err
-	})
-	return
-}
-
 // Reconciliation shares the approval boundary so a run claim between prepare
 // and handle acquisition cannot be mistaken for a prior settled generation.
 func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (changed bool, err error) {

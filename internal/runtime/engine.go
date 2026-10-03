@@ -1443,16 +1443,6 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	}
 }
 
-func (e *Engine) restoreBudgetWrapUpTurnStartAfterEventError(sessionID string, previousGoal session.SessionGoal, previousHistory []session.GoalHistoryEntry, cause error) error {
-	if err := e.store.SaveGoal(sessionID, previousGoal); err != nil {
-		return fmt.Errorf("restore goal after budget wrap-up turn event error %v: %w", cause, err)
-	}
-	if err := e.store.RestoreGoalHistory(sessionID, previousHistory); err != nil {
-		return fmt.Errorf("restore goal history after budget wrap-up turn event error %v: %w", cause, err)
-	}
-	return nil
-}
-
 const (
 	ephemeralInlineMaxLines = 3
 	ephemeralInlineMaxChars = 2000
