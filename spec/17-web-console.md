@@ -574,7 +574,7 @@ Settings API：
 
 `POST /api/sessions/{id}/mission/plan/approve`
 
-- 将 goal 内部 plan 标记为 approved；若存在 linked Plan Mode，作为 Plan Mode approval / continue 的执行别名，必须携带同一 `plan_mode_id`、`plan_version`、`expected_revision`，不能绕过审批目标比较。没有 linked gate 的纯 mission facts approval 保留原有不启动 provider 的行为。请求体可带 `override_coverage:true` 显式越过 validation coverage 阻断
+- 将 goal 内部 plan 标记为 approved；若存在 linked Plan Mode，作为 Plan Mode approval / continue 的执行别名，必须携带同一 `plan_mode_id`、`plan_version`、`expected_revision`，不能绕过审批目标比较。linked executing 的历史事实修复同样要求完整的已审阅 target，并在同一协调锁内按 fresh gate 校验；合法请求仍返回 200、不启动 provider，历史 revision 缺失仍为 unknown。没有 linked gate 的纯 mission facts approval 保留原有不启动 provider 的行为。请求体可带 `override_coverage:true` 显式越过 validation coverage 阻断
 
 `PATCH /api/sessions/{id}/mission/validation`
 

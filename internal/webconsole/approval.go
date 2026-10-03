@@ -69,13 +69,15 @@ func (s *Service) handleMissionPlanApprove(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.withGoalMutation(w, sessionID, func(view *goalMutationService) {
+		current, err := view.store.LoadApprovalSnapshot(sessionID)
+		if err != nil {
+			writeError(w, planModeActionStatus(err), err)
+			return
+		}
 		// Executing is a fact-repair alias, never an execution admission.
-		if plan.Status == session.PlanModeStatusExecuting && req.ExpectedRevision != "" {
-			current, err := view.store.LoadApprovalSnapshot(sessionID)
-			if err == nil {
-				err = session.ValidateApprovalTarget(current, req.ApprovalTarget)
-			}
-			if err != nil {
+		currentPlan := current.PlanMode
+		if current.Goal != nil && currentPlan.Enabled && currentPlan.LinkedGoalID == current.Goal.GoalID && currentPlan.Status == session.PlanModeStatusExecuting {
+			if err := session.ValidateApprovalTarget(current, req.ApprovalTarget); err != nil {
 				writeError(w, planModeActionStatus(err), err)
 				return
 			}

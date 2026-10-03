@@ -2361,7 +2361,7 @@ func TestServiceMissionApproveExecutingPlanModeAppendsApprovalFact(t *testing.T)
 	defer ts.Close()
 
 	var approved session.SessionGoal
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", map[string]any{}, http.StatusOK, &approved)
+	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/mission/plan/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusOK, &approved)
 	if approved.GoalID != goal.GoalID || approved.Mission == nil || approved.Mission.PlanStatus != session.MissionPlanStatusApproved {
 		t.Fatalf("expected executing plan approval to sync mission snapshot, got %#v", approved.Mission)
 	}

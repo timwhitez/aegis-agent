@@ -3,12 +3,16 @@ package webconsole
 import (
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/runtime"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +21,11 @@ import (
 
 func newApprovalTargetFixture(t *testing.T) (*Service, string) {
 	t.Helper()
-	provider := newFinishServer()
+	return newApprovalTargetFixtureWithProvider(t, newFinishServer())
+}
+
+func newApprovalTargetFixtureWithProvider(t *testing.T, provider *httptest.Server) (*Service, string) {
+	t.Helper()
 	t.Cleanup(provider.Close)
 	svc, err := New(testConfig(t, provider.URL), Options{WorkerCount: 0})
 	if err != nil {
@@ -418,6 +426,120 @@ func TestExecutingMissionFactRepairCannotApproveDifferentScope(t *testing.T) {
 			for _, event := range events {
 				if event.Type == "webconsole.handle.acquired" || strings.HasPrefix(event.Type, "provider.") {
 					t.Fatal("fact repair launched execution")
+				}
+			}
+		})
+	}
+}
+
+func TestExecutingMissionFactRepairRequiresReviewedTarget(t *testing.T) {
+	for _, testCase := range []struct {
+		name                             string
+		legacy, missing, coverageBlocked bool
+	}{
+		{name: "known_same_missing_target", missing: true},
+		{name: "legacy_unknown_missing_target", legacy: true, missing: true},
+		{name: "uncovered_missing_target", missing: true, coverageBlocked: true},
+		{name: "known_same_complete_target"},
+		{name: "legacy_unknown_complete_target", legacy: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var providerCalls atomic.Int32
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				providerCalls.Add(1)
+				http.Error(w, "fact repair must not call the provider", http.StatusInternalServerError)
+			}))
+			svc, id := newApprovalTargetFixtureWithProvider(t, provider)
+			draft := session.GoalDraft{Enabled: true, Mode: session.GoalModeMission, Objective: "Linked executing mission"}
+			if testCase.coverageBlocked {
+				draft.Features = []string{"Uncovered feature"}
+				draft.ValidationPlan = []string{"go test"}
+			}
+			goal, err := svc.store.CreateGoal(id, draft)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := svc.store.LoadPlanMode(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan.LinkedGoalID = goal.GoalID
+			if err := svc.store.SavePlanMode(id, plan); err != nil {
+				t.Fatal(err)
+			}
+			target := reviewedApprovalPayload(t, svc.store, id, false)
+			wantRevision := target.ExpectedRevision
+			if testCase.legacy {
+				_, err = svc.store.ApprovePlanMode(id, session.PlanModeSourceWeb)
+				wantRevision = ""
+			} else {
+				_, err = svc.store.ApprovePlanModeTarget(id, session.PlanModeSourceWeb, target.ApprovalTarget, testCase.coverageBlocked)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.store.MarkPlanModeExecuting(id, session.PlanModeSourceWeb); err != nil {
+				t.Fatal(err)
+			}
+			capture := func() map[string][]byte {
+				t.Helper()
+				facts := make(map[string][]byte)
+				for _, name := range []string{"goal.json", "artifacts/goal-history.jsonl", "planmode.json", "artifacts/planmode-history.jsonl", "messages.jsonl", "state.json", "events.jsonl"} {
+					data, err := os.ReadFile(filepath.Join(svc.store.SessionDir(id), name))
+					if err != nil && !os.IsNotExist(err) {
+						t.Fatal(err)
+					}
+					facts[name] = data
+				}
+				return facts
+			}
+			before := capture()
+			body := `{}`
+			if !testCase.missing {
+				payload, err := json.Marshal(reviewedApprovalPayload(t, svc.store, id, false))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(payload)
+			}
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/api/sessions/"+id+"/mission/plan/approve", strings.NewReader(body))
+			r.Host = "127.0.0.1"
+			r.Header.Set("X-Aegis-Agent-Web", "1")
+			r.Header.Set("Content-Type", "application/json")
+			svc.ServeHTTP(w, r)
+			svc.Close()
+			after := capture()
+			if providerCalls.Load() != 0 {
+				t.Errorf("executing mission fact repair called provider %d times", providerCalls.Load())
+			}
+			if testCase.missing {
+				if w.Code != http.StatusBadRequest {
+					t.Errorf("missing executing review target must return 400: got %d %s", w.Code, w.Body)
+				}
+				if !strings.Contains(w.Body.String(), session.ErrMissingApprovalTarget.Error()) {
+					t.Error("missing target response did not request reload/upgrade")
+				}
+				for name, data := range before {
+					if !bytes.Equal(data, after[name]) {
+						t.Errorf("missing target changed durable %s", name)
+					}
+				}
+				return
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("complete executing review target must retain 200 fact repair: got %d %s", w.Code, w.Body)
+			}
+			var approved session.SessionGoal
+			if err := json.Unmarshal(w.Body.Bytes(), &approved); err != nil {
+				t.Fatal(err)
+			}
+			if approved.Mission == nil || approved.Mission.PlanStatus != session.MissionPlanStatusApproved || approved.Mission.ApprovedRevision != wantRevision {
+				t.Fatalf("complete target lost original historical revision: goal=%#v want=%s", approved, wantRevision)
+			}
+			for _, name := range []string{"planmode.json", "artifacts/planmode-history.jsonl", "messages.jsonl", "state.json"} {
+				if !bytes.Equal(before[name], after[name]) {
+					t.Errorf("fact repair changed prior approval/execution durable %s", name)
 				}
 			}
 		})
