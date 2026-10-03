@@ -2274,16 +2274,42 @@ function approvalController() {
 }
 
 function currentApprovalViewToken() {
-  return `${state.sessionId}\n${approvalViewEpoch}`;
+  const observed = state.sessionDetail?.state;
+  return {
+    sessionID: state.sessionId,
+    epoch: approvalViewEpoch,
+    observed: {
+      generation: String(observed?.run_generation || ''),
+      status: observed?.status || '',
+      updatedAt: observed?.updated_at || ''
+    }
+  };
 }
 
 function isCurrentApprovalViewToken(token) {
-  return token === currentApprovalViewToken();
+  return token?.sessionID === state.sessionId && token.epoch === approvalViewEpoch;
 }
 
 function isNewApprovalAdmission(response) {
   return response?.status === 'accepted' && response?.approval?.lookup?.receipt?.stage === 'admitted' &&
     response.approval.replay === false && response.approval.recovery_required !== true;
+}
+
+function canPresentApprovalAdmission(response, viewToken) {
+  const generation = String(response?.approval?.lookup?.receipt?.recovery?.run_generation || '');
+  const loaded = state.sessionDetail?.state;
+  if (!generation || !loaded) return false;
+  const returned = response?.current_state;
+  const returnedGeneration = String(returned?.run_generation || '');
+  if (returnedGeneration && returnedGeneration !== generation) return false;
+  if (returnedGeneration === generation && returned.status && returned.status !== 'running') return false;
+  const loadedGeneration = String(loaded.run_generation || '');
+  if (loadedGeneration === generation) return loaded.status === 'running';
+  // A fresh claim can arrive while the view still shows its pre-claim state.
+  // Once a newer state has been loaded, the receipt is history; it must not
+  // revive a settled generation or impersonate an ordinary follow-up turn.
+  return loadedGeneration === viewToken.observed.generation &&
+    loaded.status === viewToken.observed.status && (loaded.updated_at || '') === viewToken.observed.updatedAt;
 }
 
 async function executeReviewedApproval(sessionID, entrypoint, target, viewToken, goalIdentity = '') {
@@ -2321,7 +2347,7 @@ function presentApprovalResponse(response, viewToken) {
   }
   if (response && response.approval?.lookup?.binding?.approval_request_id !==
     approvalController().get(state.sessionId)?.approval_request_id) return;
-  if (isNewApprovalAdmission(response)) {
+  if (isNewApprovalAdmission(response) && canPresentApprovalAdmission(response, viewToken)) {
     setGenerating(true, {
       title: 'Executing approved plan',
       copy: 'The approved Plan Mode plan is now running as the next durable turn.',
@@ -2371,7 +2397,7 @@ function renderApprovalOperationNotice() {
   const busy = controller.busy(state.sessionId);
   const canRetry = ['not_found', 'prepared'].includes(phase) ||
     (phase === 'recovery_required' && response?.approval?.lookup?.receipt?.stage === 'prepared');
-  const current = response?.current_state?.status || state.sessionDetail?.state?.status;
+  const current = state.sessionDetail?.state?.status || response?.current_state?.status;
   node.hidden = false;
   node.setAttribute('data-approval-operation-phase', phase);
   node.setAttribute('data-approval-request-id', record.approval_request_id);

@@ -54,12 +54,111 @@ function harness({ linked = false, reply = response(), storage } = {}) {
   }
   vm.createContext(ctx);
   for (const name of ['displayedApprovalTarget', 'isDisplayedApprovalTarget', 'isStaleApprovalTarget', 'approvalActionError', 'isCoverageApprovalBlock', 'currentGoalActionIdentity', 'isCurrentGoalActionIdentity', 'currentPlanModeActionIdentity', 'isCurrentPlanModeActionIdentity',
-    'approvalController', 'currentApprovalViewToken', 'isCurrentApprovalViewToken', 'isNewApprovalAdmission', 'executeReviewedApproval', 'presentApprovalResponse', 'handlePlanModeAction', 'handleGoalAction']) {
+    'approvalController', 'currentApprovalViewToken', 'isCurrentApprovalViewToken', 'isNewApprovalAdmission', 'canPresentApprovalAdmission', 'executeReviewedApproval', 'presentApprovalResponse', 'handlePlanModeAction', 'handleGoalAction']) {
     vm.runInContext(sourceFunction(name), ctx, { filename: `app.js:${name}` });
   }
   return { ctx, calls, generating, toasts, queries, values };
 }
 const button = action => ({ disabled: false, getAttribute: () => action });
+
+function admittedResponse(payload, generation, status = 'running') {
+  const result = receipt(payload);
+  result.status = 'accepted';
+  result.approval.replay = false;
+  result.approval.lookup.receipt.recovery = { run_generation: generation };
+  result.current_state = { status, run_generation: generation };
+  return result;
+}
+
+test('late actual 202 never revives the same approval generation already loaded as completed', async () => {
+  const pending = deferred();
+  const h = harness({ reply: () => pending.promise });
+  h.ctx.state.sessionDetail.state = { status: 'awaiting_input', run_generation: 'run_before_approval', updated_at: 'before' };
+  const action = h.ctx.handlePlanModeAction(button('approve'));
+  h.ctx.state.sessionDetail.state = { status: 'completed', run_generation: 'run_approved', updated_at: 'settled' };
+  h.ctx.state.sessionDetail.plan_mode.status = 'executing';
+  pending.resolve(admittedResponse(h.calls[0].payload, 'run_approved'));
+  await action;
+  assert.deepEqual(h.generating, [], 'loaded terminal facts must outrank the delayed accepted envelope');
+  assert.equal(h.ctx.approvalController().response('session_a').approval.lookup.receipt.recovery.run_generation, 'run_approved');
+});
+
+test('late actual 202 cannot overwrite ordinary Continue generation even when the follow-up refresh fails', async () => {
+  const pending = deferred();
+  const h = harness({ reply: () => pending.promise });
+  let refreshFailed = 0, activity = 'Ordinary follow-up';
+  h.ctx.refreshCurrentSession = async () => { throw new TypeError('session refresh unavailable'); };
+  h.ctx.queueSessionRefresh = () => { h.ctx.refreshCurrentSession().catch(() => refreshFailed++); };
+  h.ctx.setGenerating = (value, next) => { h.generating.push(value); activity = next.title; };
+  h.ctx.state.sessionDetail.state = { status: 'awaiting_input', run_generation: 'run_before_approval', updated_at: 'before' };
+  const action = h.ctx.handlePlanModeAction(button('approve'));
+  h.ctx.state.sessionDetail.state = { status: 'running', run_generation: 'run_ordinary_followup', updated_at: 'followup' };
+  h.ctx.state.sessionDetail.plan_mode.status = 'executing';
+  pending.resolve(admittedResponse(h.calls[0].payload, 'run_approved'));
+  await action;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(refreshFailed, 1);
+  assert.deepEqual(h.generating, [], 'old admission cannot present itself as the current follow-up run');
+  assert.equal(activity, 'Ordinary follow-up');
+});
+
+test('fresh accepted approval legitimately displays its new claim before the next detail refresh', async () => {
+  const h = harness({ reply: payload => admittedResponse(payload, 'run_new_approval') });
+  h.ctx.state.sessionDetail.state = { status: 'completed', run_generation: 'run_previous_turn', updated_at: 'before' };
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.deepEqual(h.generating, [true]);
+});
+
+test('accepted response for the actual loaded running generation remains a legitimate execution control', async () => {
+  const pending = deferred();
+  const h = harness({ reply: () => pending.promise });
+  const action = h.ctx.handlePlanModeAction(button('approve'));
+  h.ctx.state.sessionDetail.state = { status: 'running', run_generation: 'run_approved' };
+  pending.resolve(admittedResponse(h.calls[0].payload, 'run_approved'));
+  await action;
+  assert.deepEqual(h.generating, [true]);
+});
+
+test('a newly admitted receipt already returned as completed never manufactures a pending execution stage', async () => {
+  const h = harness({ reply: payload => admittedResponse(payload, 'run_already_settled', 'completed') });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.deepEqual(h.generating, []);
+});
+
+test('accepted envelope without a provable receipt generation never invents a new running identity', async () => {
+  const h = harness({ reply: payload => admittedResponse(payload, '') });
+  await h.ctx.handlePlanModeAction(button('approve'));
+  assert.deepEqual(h.generating, []);
+});
+
+function noticeMarkup(h) {
+  const attributes = {}, node = { setAttribute: (name, value) => attributes[name] = value, innerHTML: '', hidden: true };
+  h.ctx.document.getElementById = () => node;
+  h.ctx.escapeHTML = String;
+  h.ctx.humanizeStatus = status => status.charAt(0).toUpperCase() + status.slice(1);
+  vm.runInContext(sourceFunction('renderApprovalOperationNotice'), h.ctx);
+  h.ctx.renderApprovalOperationNotice();
+  return { html: node.innerHTML, attributes };
+}
+
+for (const [cached, live, liveGeneration] of [['running', 'completed', 'run_approved'], ['completed', 'running', 'run_ordinary_followup']]) {
+  test(`receipt history ${cached} never overrides the loaded current session ${live}`, async () => {
+    const h = harness({ reply: payload => {
+      const result = admittedResponse(payload, 'run_approved', cached);
+      result.status = 'admitted'; result.approval.replay = true;
+      return result;
+    } });
+    await h.ctx.handlePlanModeAction(button('approve'));
+    h.ctx.state.sessionDetail.state = { status: live, run_generation: liveGeneration };
+    const notice = noticeMarkup(h);
+    assert.match(notice.html, new RegExp(`<span>Current session</span>: <span>${live.charAt(0).toUpperCase() + live.slice(1)}</span>`));
+    assert.equal(notice.attributes['data-approval-operation-phase'], 'admitted');
+    assert.match(notice.html, /This approval was already admitted/);
+    assert.equal(h.ctx.approvalController().response('session_a').current_state.status, cached);
+    assert.equal(h.ctx.approvalController().response('session_a').approval.lookup.receipt.recovery.run_generation, 'run_approved');
+    assert.deepEqual(h.generating, []);
+  });
+}
 
 test('actual Approve handler persists an ID and immutable target before its first request', async () => {
   const h = harness();
