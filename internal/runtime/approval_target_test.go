@@ -52,7 +52,7 @@ func newApprovalTargetFixture(t *testing.T) (*Runner, string, *atomic.Int32) {
 
 func TestContinueApprovalRequiresReviewedTargetBeforeClaim(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	_, err := r.Continue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true})
+	_, err := r.Continue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_")})
 	if err == nil || !strings.Contains(err.Error(), "approval target") {
 		t.Fatalf("missing target must request reload/upgrade: %v", err)
 	}
@@ -102,7 +102,7 @@ func assertApprovalRejectedWithoutFacts(t *testing.T, r *Runner, id string, call
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target, OverrideGoalCoverage: true})
+	_, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target, OverrideGoalCoverage: true})
 	if !errors.Is(err, session.ErrApprovalConflict) {
 		t.Fatalf("expected synchronous stale conflict: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestPrepareApprovalRejectsChangedLinkedScopeAndKeepsOverrideTarget(t *testi
 func TestPrepareApprovalPersistsRevisionAndReplayBeforeProvider(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)
-	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestPrepareApprovalPersistsRevisionAndReplayBeforeProvider(t *testing.T) {
 		t.Fatalf("wrong replay: %#v", messages)
 	}
 	var journal approvalPreparationRecord
-	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &journal); err != nil {
+	if err := readApprovalPreparationForTest(r, id, &journal); err != nil {
 		t.Fatal(err)
 	}
 	if journal.Phase != "prepared" || journal.Target != *target || journal.Snapshot.Revision != target.ExpectedRevision || journal.OriginalState.Status != session.StatusAwaitingInput {
@@ -243,7 +243,7 @@ func TestPrepareApprovalPersistsRevisionAndReplayBeforeProvider(t *testing.T) {
 func TestPreparedApprovalAbortRestoresClaimAndRetryDeduplicatesRevision(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)
-	req := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target}
+	req := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target}
 	prepared, err := r.PrepareApprovalContinue(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -258,11 +258,10 @@ func TestPreparedApprovalAbortRestoresClaimAndRetryDeduplicatesRevision(t *testi
 	if state.Status != session.StatusAwaitingInput || state.Phase != "plan_approval" {
 		t.Fatalf("abort failed to restore original state: %#v", state)
 	}
-	prepared, err = r.PrepareApprovalContinue(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
+	replay, err := r.PrepareApprovalOperation(context.Background(), req)
+	if err != nil || replay.Prepared != nil || !replay.Replay || replay.Lookup.Receipt.Stage != session.ApprovalReceiptAdmitted {
+		t.Fatalf("aborted admission must replay without execution: prepared=%v error=%v", replay.Prepared != nil, err)
 	}
-	defer r.AbortPreparedApproval(prepared, nil)
 	messages, err := r.store.LoadMessages(id)
 	if err != nil {
 		t.Fatal(err)
@@ -279,7 +278,7 @@ func TestPreparedApprovalRefusesChangedSnapshotBeforeProvider(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	goal := linkApprovalMissionForTest(t, r, id)
 	target := approvalTargetForTest(t, r, id)
-	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +296,7 @@ func TestPreparedApprovalGuardsScopeAfterContextAssembly(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	goal := linkApprovalMissionForTest(t, r, id)
 	target := approvalTargetForTest(t, r, id)
-	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,12 +319,12 @@ func TestPreparedApprovalGuardsScopeAfterContextAssembly(t *testing.T) {
 func TestApprovalPreparationJournalFailureDoesNotClaim(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)
-	path := filepath.Join(r.store.SessionDir(id), "artifacts", approvalPreparationArtifact)
+	path := filepath.Join(r.store.SessionDir(id), "approval-operations.json")
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
-	if err == nil || !strings.Contains(err.Error(), "approval preparation") {
+	_, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
+	if err == nil || !errors.Is(err, session.ErrApprovalReceiptUnverifiable) {
 		t.Fatalf("expected synchronous journal failure: %v", err)
 	}
 	state, err := r.store.LoadState(id)
@@ -356,7 +355,7 @@ func TestApprovalPreparationRecoversDeadOwnerFromDurableSnapshot(t *testing.T) {
 	if _, err := r.store.ClaimSessionRunWithGeneration(id, generation, session.StatusAwaitingInput); err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +373,7 @@ func TestApprovalFactsDifferentRevisionSameVersionRemainDistinct(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	linkApprovalMissionForTest(t, r, id)
 	original := approvalTargetForTest(t, r, id)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: original})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: original})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +392,7 @@ func TestApprovalFactsDifferentRevisionSameVersionRemainDistinct(t *testing.T) {
 	if updated.PlanVersion != original.PlanVersion || updated.ExpectedRevision == original.ExpectedRevision {
 		t.Fatal("fixture must change scope at same plan version")
 	}
-	p, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: updated})
+	p, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: "second-reviewed-scope", ApprovalTarget: updated})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +429,7 @@ func TestApprovalPreparationOwnerGuardRequiresValidDurableJournal(t *testing.T) 
 	if allowed, err := CanReconcileApprovalPreparation(r.store, id); err != nil || !allowed {
 		t.Fatalf("absent journal should allow ordinary reconciliation: %v %v", allowed, err)
 	}
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +461,7 @@ func TestApprovalPreparationOwnerGuardRequiresValidDurableJournal(t *testing.T) 
 
 func TestPreparedApprovalAbortDoesNotRestoreAnotherRunGeneration(t *testing.T) {
 	r, id, _ := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +491,7 @@ func TestPreparedApprovalAbortDoesNotRestoreAnotherRunGeneration(t *testing.T) {
 
 func TestPreparedApprovalRunDoesNotStartAnotherRunGeneration(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +520,7 @@ func TestPreparedApprovalRunDoesNotStartAnotherRunGeneration(t *testing.T) {
 
 func TestPreparedApprovalAcceptsQueuedSteerBeforeExecution(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +539,7 @@ func TestPreparedApprovalAcceptsQueuedSteerBeforeExecution(t *testing.T) {
 
 func TestPreparedApprovalAbortPreservesQueuedSteer(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -576,7 +575,7 @@ func newPreparedApprovalWindowFixture(t *testing.T) (*Runner, *PreparedApproval,
 	if _, err := r.store.SubmitPlanMode(id, session.PlanModeSubmitInput{Title: "Reviewed", Summary: "Reviewed scope", PlanMarkdown: "# Reviewed scope", Verification: []string{"unit tests"}}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +686,7 @@ func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
 				t.Fatalf("prepared %s lost recovery or queued steer: %#v", operation, state)
 			}
 			var record approvalPreparationRecord
-			if err := r.store.ReadArtifact(p.meta.ID, approvalPreparationArtifact, &record); err != nil {
+			if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil {
 				t.Fatal(err)
 			}
 			wantPhase := "executing"
@@ -757,7 +756,7 @@ func TestPreparedApprovalCASWindowRejectsReplacementOrAdvancedState(t *testing.T
 					t.Fatal(err)
 				}
 				var record approvalPreparationRecord
-				if err := peer.ReadArtifact(p.meta.ID, approvalPreparationArtifact, &record); err != nil {
+				if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil {
 					t.Fatal(err)
 				}
 				if state.Status != session.StatusRunning || record.Phase != "prepared" || change == "generation" && state.RunGeneration == p.state.RunGeneration || change == "phase" && state.Phase != "provider" || change == "turn" && state.Turn != p.state.Turn+1 || change == "semantic" && state.LastError == "" {
@@ -771,7 +770,7 @@ func TestPreparedApprovalCASWindowRejectsReplacementOrAdvancedState(t *testing.T
 func TestApprovalRecoveryPreservesQueuedSteerInSameGeneration(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	p, err := r.prepareLegacyApprovalForTest(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -788,11 +787,11 @@ func TestApprovalRecoveryPreservesQueuedSteerInSameGeneration(t *testing.T) {
 	if allowed, err := CanReconcileApprovalPreparation(r.store, id); err != nil || !allowed {
 		t.Fatalf("queued steer prevented dead-owner reconciliation: %v %v", allowed, err)
 	}
-	retried, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
-	if err != nil {
-		t.Fatalf("queued steer prevented same-generation recovery: %v", err)
+	if err := r.store.WithApprovalLock(id, func(scoped *session.Store) error {
+		return r.newApprovalPreparationRunner(scoped).recoverApprovalPreparation(id)
+	}); err != nil {
+		t.Fatalf("explicit legacy recovery failed: %v", err)
 	}
-	defer r.AbortPreparedApproval(retried, nil)
 	state, err := r.store.LoadState(id)
 	if err != nil || state.PendingSteerCount != 1 || calls.Load() != 0 {
 		t.Fatalf("recovery did not preserve queued steer: %#v %v calls=%d", state, err, calls.Load())
@@ -827,7 +826,7 @@ func TestApprovalRecoveryDoesNotInferLegacyIdentityFromMatchingTimestamp(t *test
 	if allowed, err := CanReconcileApprovalPreparation(r.store, id); allowed || !errors.Is(err, session.ErrApprovalConflict) {
 		t.Fatalf("matching timestamp forged legacy claim ownership: %v %v", allowed, err)
 	}
-	if _, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target}); !errors.Is(err, session.ErrApprovalConflict) {
+	if _, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target}); !errors.Is(err, session.ErrApprovalConflict) {
 		t.Fatalf("legacy journal silently recovered: %v", err)
 	}
 	actual, err := r.store.LoadState(id)
@@ -922,13 +921,13 @@ func TestRunnerContinueErrorDoesNotFailAnotherRunGeneration(t *testing.T) {
 
 func TestApprovalSettlementDoesNotAdoptAnotherRunGeneration(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.releaseRunSlot()
 	var original approvalPreparationRecord
-	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &original); err != nil {
+	if err := readApprovalPreparationForTest(r, id, &original); err != nil {
 		t.Fatal(err)
 	}
 	paused := p.state
@@ -945,7 +944,7 @@ func TestApprovalSettlementDoesNotAdoptAnotherRunGeneration(t *testing.T) {
 		t.Fatalf("old settlement adopted peer state into its journal: %v", err)
 	}
 	var after approvalPreparationRecord
-	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &after); err != nil {
+	if err := readApprovalPreparationForTest(r, id, &after); err != nil {
 		t.Fatal(err)
 	}
 	state, err := r.store.LoadState(id)
@@ -956,7 +955,7 @@ func TestApprovalSettlementDoesNotAdoptAnotherRunGeneration(t *testing.T) {
 
 func TestApprovalSettlementAcceptsItsOwnTerminalGeneration(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
-	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, r, id)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -971,7 +970,7 @@ func TestApprovalSettlementAcceptsItsOwnTerminalGeneration(t *testing.T) {
 		t.Fatalf("own terminal generation should settle: %v", err)
 	}
 	var record approvalPreparationRecord
-	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &record); err != nil {
+	if err := readApprovalPreparationForTest(r, id, &record); err != nil {
 		t.Fatal(err)
 	}
 	if record.Phase != "settled" || record.PreparedState.Status != session.StatusCompleted || record.PreparedState.RunGeneration != p.state.RunGeneration || calls.Load() != 0 {
@@ -984,7 +983,7 @@ func TestApprovalRecoveryRejectsOldJournalOverNewRunGeneration(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			r, id, calls := newApprovalTargetFixture(t)
 			target := approvalTargetForTest(t, r, id)
-			old, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+			old, err := r.prepareLegacyApprovalForTest(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1015,11 +1014,11 @@ func TestApprovalRecoveryRejectsOldJournalOverNewRunGeneration(t *testing.T) {
 			if allowed, err := CanReconcileApprovalPreparation(r.store, id); allowed || !errors.Is(err, session.ErrApprovalConflict) {
 				t.Fatalf("automatic reconciliation accepted stale generation: %v %v", allowed, err)
 			}
-			retried, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+			retried, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 			if retried != nil {
 				defer r.AbortPreparedApproval(retried, nil)
 			}
-			if !errors.Is(err, session.ErrApprovalConflict) {
+			if !errors.Is(err, session.ErrApprovalReceiptUnverifiable) {
 				t.Fatalf("old %s journal reclaimed a different live run generation: %v", phase, err)
 			}
 			actual, err := r.store.LoadState(id)
@@ -1038,7 +1037,7 @@ func TestApprovalRecoveryAcceptsProvenUnadvancedDeadOwnerGeneration(t *testing.T
 		t.Run(phase, func(t *testing.T) {
 			r, id, calls := newApprovalTargetFixture(t)
 			target := approvalTargetForTest(t, r, id)
-			old, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+			old, err := r.prepareLegacyApprovalForTest(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1053,11 +1052,11 @@ func TestApprovalRecoveryAcceptsProvenUnadvancedDeadOwnerGeneration(t *testing.T
 			if allowed, err := CanReconcileApprovalPreparation(r.store, id); err != nil || !allowed {
 				t.Fatalf("proven dead-owner preparation should allow reconciliation: %v %v", allowed, err)
 			}
-			recovered, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
-			if err != nil {
-				t.Fatalf("matching generation should be recoverable: %v", err)
+			if err := r.store.WithApprovalLock(id, func(scoped *session.Store) error {
+				return r.newApprovalPreparationRunner(scoped).recoverApprovalPreparation(id)
+			}); err != nil {
+				t.Fatalf("explicit legacy recovery failed: %v", err)
 			}
-			defer r.AbortPreparedApproval(recovered, nil)
 			if calls.Load() != 0 {
 				t.Fatal("recovery started provider")
 			}
@@ -1070,7 +1069,7 @@ func TestApprovalRecoveryRejectsAmbiguousOrAdvancedDeadOwnerState(t *testing.T) 
 		t.Run(ambiguous, func(t *testing.T) {
 			r, id, calls := newApprovalTargetFixture(t)
 			target := approvalTargetForTest(t, r, id)
-			old, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+			old, err := r.prepareLegacyApprovalForTest(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1096,8 +1095,8 @@ func TestApprovalRecoveryRejectsAmbiguousOrAdvancedDeadOwnerState(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
-			if !errors.Is(err, session.ErrApprovalConflict) {
+			_, err = r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
+			if !errors.Is(err, session.ErrApprovalReceiptUnverifiable) {
 				t.Fatalf("ambiguous recovery was admitted: %v", err)
 			}
 			after, err := r.store.LoadState(id)
@@ -1138,7 +1137,7 @@ func TestApprovalClaimPublicationErrorRecoversOnlyItsGeneration(t *testing.T) {
 				}
 				return session.State{}, publicationError
 			}
-			prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+			prepared, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
 			if prepared != nil || !errors.Is(err, publicationError) || calls.Load() != 0 {
 				t.Fatalf("publication failure was not synchronous: %#v %v calls=%d", prepared, err, calls.Load())
 			}
@@ -1155,18 +1154,17 @@ func TestApprovalClaimPublicationErrorRecoversOnlyItsGeneration(t *testing.T) {
 					t.Fatalf("published claim was stranded: %#v", state)
 				}
 				var record approvalPreparationRecord
-				if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &record); err != nil {
+				if err := readApprovalPreparationForTest(r, id, &record); err != nil {
 					t.Fatal(err)
 				}
 				if record.Phase != "prepare_failed" || record.CompletedPhase != "claim_pending" || !strings.Contains(record.LastError, publicationError.Error()) {
 					t.Fatalf("claim failure did not retain its durable recovery phase: %#v", record)
 				}
 				r.approvalRunClaim = nil
-				retried, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
-				if err != nil {
-					t.Fatalf("recovered claim cannot be retried: %v", err)
+				retry, err := r.PrepareApprovalOperation(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: target})
+				if err != nil || retry.Prepared != nil || !retry.RecoveryRequired {
+					t.Fatalf("restored generation cannot be automatically re-claimed: prepared=%v recovery=%v error=%v", retry.Prepared != nil, retry.RecoveryRequired, err)
 				}
-				defer r.AbortPreparedApproval(retried, nil)
 			}
 		})
 	}

@@ -128,9 +128,9 @@ func TestContinuePlanModeRejectsConflictingControlsBeforeClaim(t *testing.T) {
 
 	result, err := runner.Continue(context.Background(), ContinueRequest{
 		SessionID:   sessionID,
-		ApprovePlan: true,
-		CancelPlan:  true,
-		Source:      session.PlanModeSourceCLI,
+		ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"),
+		CancelPlan: true,
+		Source:     session.PlanModeSourceCLI,
 	})
 	if err == nil || !strings.Contains(err.Error(), "conflicting plan mode controls") {
 		t.Fatalf("expected conflicting Plan Mode controls error, got result=%#v err=%v", result, err)
@@ -338,11 +338,12 @@ func TestContinuePlanModeRejectsApprovalWithMessageBeforeClaim(t *testing.T) {
 
 	result, err := runner.Continue(context.Background(), ContinueRequest{
 		SessionID:   sessionID,
-		ApprovePlan: true,
-		Message:     "also change the plan while approving",
-		Provider:    "anthropic",
-		Model:       "claude-custom",
-		Source:      session.PlanModeSourceCLI,
+		ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"),
+		ApprovalTarget: approvalTargetForTest(t, runner, sessionID),
+		Message:        "also change the plan while approving",
+		Provider:       "anthropic",
+		Model:          "claude-custom",
+		Source:         session.PlanModeSourceCLI,
 	})
 	if err == nil || !strings.Contains(err.Error(), "plan mode approval cannot include ordinary message") {
 		t.Fatalf("expected approval/message conflict, got result=%#v err=%v", result, err)
@@ -1831,7 +1832,7 @@ func TestApprovePlanModeReportsPlanApprovedEventAppendError(t *testing.T) {
 	}
 	blockRuntimeEventsPath(t, runner.store, sessionID)
 
-	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
 		t.Fatalf("expected plan mode approval event append error, got result=%#v err=%v", result, err)
 	}
@@ -1914,7 +1915,7 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 		t.Fatalf("submit plan mode: %v", err)
 	}
 	blockRuntimeMessagesPath(t, runner.store, sessionID)
-	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
+	result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err == nil {
 		t.Fatalf("expected approval replay message append error, got result=%#v err=%v", result, err)
 	}
@@ -1937,7 +1938,7 @@ func TestApprovePlanModeRetryAfterApprovalMessageFailureAppendsApprovalMessage(t
 	if err := os.RemoveAll(messagesPath); err != nil {
 		t.Fatalf("remove blocked messages path: %v", err)
 	}
-	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
+	retried, err := runner.Continue(context.Background(), ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: approvalTargetForTest(t, runner, sessionID), Source: session.PlanModeSourceCLI})
 	if err != nil {
 		t.Fatalf("retry plan approval: result=%#v err=%v", retried, err)
 	}

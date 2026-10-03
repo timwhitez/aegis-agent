@@ -89,7 +89,7 @@ func TestApprovalBudgetWrapUpUsesMatchedWebGoalSnapshot(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := snapshot.Target()
-			prepared, err := runner.PrepareApprovalContinue(context.Background(), agentruntime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target})
+			prepared, err := runner.PrepareApprovalContinue(context.Background(), agentruntime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalRequestID: strings.ReplaceAll(t.Name(), "/", "_"), ApprovalTarget: &target})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -32,9 +32,12 @@ type Runner struct {
 	bus                 *events.Bus
 	control             *runControl
 	engine              *Engine
+	approvalOperation   *approvalOperationContext
 	approvalPreparation *approvalPreparationRecord
 	// Set only by package tests to force run-claim publication failures.
 	approvalRunClaim func(*session.Store, string, string, ...string) (session.State, error)
+	// Set only by package tests to exercise reported admission commit outcomes.
+	approvalAdmit func(*session.Store, string, string, string) (session.ApprovalReceipt, error)
 
 	activeMu        sync.Mutex
 	activeSessionID string
@@ -267,6 +270,7 @@ type ContinueRequest struct {
 	PlanInputHandler       PlanInputHandler
 	ApprovePlan            bool
 	ApprovalTarget         *session.ApprovalTarget
+	ApprovalRequestID      string
 	OverrideGoalCoverage   bool
 	CancelPlan             bool
 	PlanInputRequestID     string
@@ -930,11 +934,18 @@ func resolvedChildProviderOptions(cfg *config.Config, parentMeta *session.Sessio
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
 	if req.ApprovePlan {
-		prepared, err := r.PrepareApprovalContinue(ctx, req)
+		result, err := r.PrepareApprovalOperation(ctx, req)
 		if err != nil {
-			return RunResult{}, err
+			return approvalReceiptRunResult(result), err
 		}
-		return r.RunPreparedApproval(ctx, prepared)
+		if result.Prepared == nil {
+			return approvalReceiptRunResult(result), nil
+		}
+		run, err := r.RunPreparedApproval(ctx, result.Prepared)
+		if run.Approval == nil {
+			run.Approval = result.sidecar()
+		}
+		return run, err
 	}
 	return r.continueWithPreparation(ctx, req, nil)
 }
@@ -954,10 +965,18 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	if strings.TrimSpace(meta.ParentSessionID) != "" && state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && !req.BudgetExtensionApplied {
 		return RunResult{}, fmt.Errorf("child session %s is paused by %s; only its parent can resume it with an explicit budget extension", meta.ID, state.PauseReason)
 	}
-	if err := ValidateContinueTarget(meta, state); err != nil {
-		return RunResult{}, err
+	if r.approvalOperation == nil || !r.approvalOperation.ResumeClaim {
+		if err := ValidateContinueTarget(meta, state); err != nil {
+			return RunResult{}, err
+		}
 	}
 	resumedFrom := state.Status
+	if r.approvalOperation != nil {
+		resumedFrom = r.approvalPreparation.OriginalState.Status
+		if r.approvalOperation.ResumeClaim && r.approvalOperation.Payload.Metadata != nil {
+			meta = *r.approvalOperation.Payload.Metadata
+		}
+	}
 	if ensureChildEffectiveBudget(r.cfg, &meta, state, session.BudgetSourceLegacyResume) {
 		if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 			return RunResult{}, err
@@ -970,30 +989,32 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 		}
 		defer releaseRunSlot()
 	}
-	providerNameOverride := normalizeProviderOverride(req.Provider)
-	modelOverride := normalizeModelOverride(req.Model)
-	if providerNameOverride != "" {
-		providerName := providerNameOverride
-		providerCfg, err := r.cfg.ProviderConfig(providerName)
-		if err != nil {
-			return RunResult{}, WrapConfigError(err)
+	if r.approvalOperation == nil || r.approvalOperation.Payload.Metadata == nil {
+		providerNameOverride := normalizeProviderOverride(req.Provider)
+		modelOverride := normalizeModelOverride(req.Model)
+		if providerNameOverride != "" {
+			providerName := providerNameOverride
+			providerCfg, err := r.cfg.ProviderConfig(providerName)
+			if err != nil {
+				return RunResult{}, WrapConfigError(err)
+			}
+			if modelOverride != "" {
+				providerCfg.Model = modelOverride
+			}
+			providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
+			if err != nil {
+				return RunResult{}, err
+			}
+			meta.Provider = providerName
+			meta.Model = providerCfg.Model
+			meta.ProviderOptions = providerOptions
 		}
 		if modelOverride != "" {
-			providerCfg.Model = modelOverride
+			meta.Model = modelOverride
 		}
-		providerOptions, err := resolvedProviderOptions(providerName, providerCfg, req.ProviderOptions)
-		if err != nil {
-			return RunResult{}, err
+		if providerNameOverride == "" && req.ProviderOptions != (session.ProviderOptions{}) {
+			meta.ProviderOptions = mergeProviderOptions(meta.ProviderOptions, req.ProviderOptions)
 		}
-		meta.Provider = providerName
-		meta.Model = providerCfg.Model
-		meta.ProviderOptions = providerOptions
-	}
-	if modelOverride != "" {
-		meta.Model = modelOverride
-	}
-	if providerNameOverride == "" && req.ProviderOptions != (session.ProviderOptions{}) {
-		meta.ProviderOptions = mergeProviderOptions(meta.ProviderOptions, req.ProviderOptions)
 	}
 	req.PlanInputRequestID = strings.TrimSpace(req.PlanInputRequestID)
 	source := strings.TrimSpace(req.Source)
@@ -1007,7 +1028,7 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	if err != nil {
 		return RunResult{}, err
 	}
-	if !req.CancelPlan {
+	if !req.CancelPlan && (r.approvalOperation == nil || r.approvalOperation.Payload.Metadata == nil) {
 		mergedProviderOptions, err := r.mergedSessionProviderOptions(meta.Provider, meta.ProviderOptions)
 		if err != nil {
 			return RunResult{}, err
@@ -1016,10 +1037,16 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 			meta.ProviderOptions = mergedProviderOptions
 		}
 	}
+	if r.approvalOperation != nil {
+		captured := meta
+		r.approvalOperation.Payload.Metadata = &captured
+	}
 	if err := r.recordApprovalPreparation("claim_pending", state); err != nil {
 		return RunResult{}, err
 	}
-	if r.approvalPreparation != nil {
+	if r.approvalOperation != nil && r.approvalOperation.ResumeClaim {
+		// The receipt proved this original claim; no second claim is created.
+	} else if r.approvalPreparation != nil {
 		if r.approvalRunClaim != nil {
 			state, err = r.approvalRunClaim(r.store, meta.ID, r.approvalPreparation.ClaimUpdatedAt, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
 		} else {
@@ -1161,7 +1188,7 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 		if err := r.recordApprovalPreparation("prepared", state); err != nil {
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
-		*prepared = &PreparedApproval{meta: meta, state: state, req: req, preparation: r.approvalPreparation}
+		*prepared = &PreparedApproval{meta: meta, state: state, req: req, preparation: r.approvalPreparation, operation: r.approvalOperation}
 		return RunResult{}, nil
 	}
 	releaseActiveRegistration := registerActiveSessionRunner(r.store, meta.ID, r)
@@ -2852,15 +2879,21 @@ func (r *Runner) failStartedRunIfCurrent(sessionID string, current session.State
 func (r *Runner) failBeforeRun(sessionID string, state session.State, phase string, err error) (RunResult, error) {
 	if r.approvalPreparation != nil {
 		r.approvalPreparation.LastError = err.Error()
-		if journalErr := r.recordApprovalPreparation("prepare_failed", state); journalErr != nil {
-			err = errors.Join(err, journalErr)
-		}
 	}
 	state.Status = session.StatusFailed
 	state.Phase = phase
 	state.LastError = err.Error()
 	if saveErr := r.store.SaveState(sessionID, state); saveErr != nil {
 		return RunResult{}, fmt.Errorf("record pre-run failure state after %v: %w", err, saveErr)
+	}
+	if r.approvalPreparation != nil {
+		current, loadErr := r.store.LoadState(sessionID)
+		if loadErr != nil {
+			return RunResult{}, errors.Join(err, loadErr)
+		}
+		if journalErr := r.recordApprovalPreparation("prepare_failed", current); journalErr != nil {
+			err = errors.Join(err, journalErr)
+		}
 	}
 	if appendErr := r.appendEvent(sessionID, "session.failed", phase, map[string]any{"error": err.Error()}); appendErr != nil {
 		return RunResult{}, fmt.Errorf("record pre-run failure event after %v: %w", err, appendErr)
@@ -2875,6 +2908,9 @@ func (r *Runner) failBeforeRun(sessionID string, state session.State, phase stri
 }
 
 func (r *Runner) appendEvent(sessionID, eventType, phase string, data map[string]any) error {
+	if r.approvalOperation != nil {
+		return r.appendApprovalOperationEvent(sessionID, eventType, phase, data)
+	}
 	evt := events.New(sessionID, eventType, phase, data)
 	if err := r.store.AppendEvent(sessionID, evt); err != nil {
 		return err

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"reflect"
 	"sync"
 	"time"
@@ -26,6 +25,7 @@ type PreparedApproval struct {
 	req            ContinueRequest
 	releaseRunSlot func()
 	preparation    *approvalPreparationRecord
+	operation      *approvalOperationContext
 	consumed       bool
 }
 
@@ -57,71 +57,14 @@ func (p *PreparedApproval) consume(r *Runner) error {
 // invoked here. The Store callback owns the cross-process approval coordination
 // lock and never holds Store.mu while invoking another public Store method.
 func (r *Runner) PrepareApprovalContinue(ctx context.Context, req ContinueRequest) (*PreparedApproval, error) {
-	if !req.ApprovePlan {
-		return nil, errors.New("approval preparation requires approve_plan")
-	}
-	if req.ApprovalTarget != nil {
-		captured := *req.ApprovalTarget
-		req.ApprovalTarget = &captured
-	}
-	var prepared *PreparedApproval
-	var releaseRunSlot func()
-	err := r.store.WithApprovalLock(req.SessionID, func(scoped *session.Store) error {
-		prep := r.newApprovalPreparationRunner(scoped)
-		// Run request validation before even the in-memory run slot; stale/invalid
-		// requests keep the original recoverable session and produce no run facts.
-		if err := prep.preflightPlanModeControl(req.SessionID, req); err != nil {
-			return err
-		}
-		if err := prep.recoverApprovalPreparation(req.SessionID); err != nil {
-			return err
-		}
-		originalState, err := scoped.LoadState(req.SessionID)
-		if err != nil {
-			return err
-		}
-		meta, err := scoped.LoadMetadata(req.SessionID)
-		if err != nil {
-			return err
-		}
-		if err := ValidateContinueTarget(meta, originalState); err != nil {
-			return err
-		}
-		releaseRunSlot, err = r.acquireRunSlot(req.SessionID)
-		if err != nil {
-			return err
-		}
-		snapshot, err := scoped.LoadApprovalSnapshot(req.SessionID)
-		if err != nil {
-			return err
-		}
-		identity, _ := session.ProcessIdentity(os.Getpid())
-		prep.approvalPreparation = &approvalPreparationRecord{SchemaVersion: 1, SessionID: req.SessionID, Target: *req.ApprovalTarget, Snapshot: snapshot, OriginalState: originalState, ClaimUpdatedAt: time.Now().UTC().Format(time.RFC3339Nano), OwnerPID: os.Getpid(), OwnerIdentity: identity}
-		if err := prep.recordApprovalPreparation("validated", originalState); err != nil {
-			return err
-		}
-		_, err = prep.continueWithPreparation(ctx, req, &prepared)
-		if err != nil {
-			return err
-		}
-		if prepared == nil {
-			return errors.New("approval preparation produced no continuation")
-		}
-		prepared.runner = r
-		prepared.originalState = originalState
-		prepared.releaseRunSlot = releaseRunSlot
-		// Capture a value, not a caller-owned mutable pointer.
-		target := *req.ApprovalTarget
-		prepared.req.ApprovalTarget = &target
-		return nil
-	})
+	result, err := r.PrepareApprovalOperation(ctx, req)
 	if err != nil {
-		if releaseRunSlot != nil {
-			releaseRunSlot()
-		}
 		return nil, err
 	}
-	return prepared, nil
+	if result.Prepared == nil {
+		return nil, &ApprovalPreparationOutcomeError{Result: result}
+	}
+	return result.Prepared, nil
 }
 
 // newApprovalPreparationRunner deliberately constructs a new runner and engine;
@@ -137,11 +80,14 @@ func (r *Runner) newApprovalPreparationRunner(scoped *session.Store) *Runner {
 	prep.engine.beforeAppendEvent = r.engine.beforeAppendEvent
 	prep.engine.SetRunner(prep)
 	prep.approvalRunClaim = r.approvalRunClaim
+	prep.approvalAdmit = r.approvalAdmit
+	prep.approvalOperation = r.approvalOperation
+	prep.approvalPreparation = r.approvalPreparation
 	return prep
 }
 
 // AbortPreparedApproval releases an admitted run when the adapter cannot create
-// its handle. Approval facts remain durable and retryable; state is restored to
+// its handle. Approval facts remain admitted; state is restored to
 // its pre-claim recovery point, and the abort records which revision was prepared.
 func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 	if err := p.consume(r); err != nil {
@@ -164,6 +110,7 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 		}
 		prep := r.newApprovalPreparationRunner(scoped)
 		prep.approvalPreparation = p.preparation
+		prep.approvalOperation = p.operation
 		if err := prep.recordApprovalPreparation("aborted", committed); err != nil {
 			return err
 		}
@@ -177,7 +124,15 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 // RunPreparedApproval uses the root Store and rechecks the prepared scope before
 // active-run registration. Every provider turn also consumes one coherent
 // approval snapshot and refuses a changed scope without approving newer content.
-func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (RunResult, error) {
+func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (result RunResult, runErr error) {
+	defer func() {
+		if p != nil && p.operation != nil {
+			lookup, err := r.store.GetApprovalReceipt(p.meta.ID, p.req.ApprovalRequestID)
+			if err == nil {
+				result.Approval = &ApprovalResult{Lookup: lookup}
+			}
+		}
+	}()
 	if err := p.consume(r); err != nil {
 		return RunResult{}, err
 	}
@@ -211,6 +166,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 			reviewResult = RunResult{SessionID: p.meta.ID, Status: pending.Status, LastError: targetErr.Error()}
 			prep := r.newApprovalPreparationRunner(scoped)
 			prep.approvalPreparation = p.preparation
+			prep.approvalOperation = p.operation
 			prep.approvalPreparation.LastError = targetErr.Error()
 			var recoveryErrs []error
 			if err := prep.recordApprovalPreparation("review_required", pending); err != nil {
@@ -232,6 +188,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 		p.state = committed
 		prep := r.newApprovalPreparationRunner(scoped)
 		prep.approvalPreparation = p.preparation
+		prep.approvalOperation = p.operation
 		return prep.recordApprovalPreparation("executing", p.state)
 	})
 	if err != nil {
@@ -249,7 +206,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 	if err := r.notifySessionActive(p.meta); err != nil {
 		return r.failBeforeRun(p.meta.ID, p.state, "prepare", err)
 	}
-	result, err := r.runExisting(ctx, p.meta, p.state, p.req.SystemOverride, p.req.PlanInputHandler)
+	result, err = r.runExisting(ctx, p.meta, p.state, p.req.SystemOverride, p.req.PlanInputHandler)
 	r.notifySessionInactive(p.meta, result, err)
 	if err != nil && result.SessionID == "" {
 		result, err = r.failBeforeRun(p.meta.ID, p.state, "prepare", err)
@@ -266,6 +223,9 @@ func approvalRevisionFromData(data map[string]any) string {
 }
 
 func (r *Runner) appendApprovalUserMessageOnce(ctx context.Context, meta session.SessionMetadata, text string, extra map[string]any) error {
+	if r.approvalOperation != nil {
+		return r.appendApprovalOperationReplay(ctx, meta, text, extra)
+	}
 	messages, err := r.store.LoadMessages(meta.ID)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
@@ -354,6 +314,9 @@ type approvalPreparationRecord struct {
 }
 
 func (r *Runner) recordApprovalPreparation(phase string, state session.State) error {
+	if r.approvalOperation != nil {
+		return r.checkpointApprovalOperation(phase, state)
+	}
 	record := r.approvalPreparation
 	if record == nil {
 		return nil
@@ -377,6 +340,7 @@ func (r *Runner) recordPreparedApprovalPhase(p *PreparedApproval, phase string, 
 		}
 		prep := r.newApprovalPreparationRunner(scoped)
 		prep.approvalPreparation = p.preparation
+		prep.approvalOperation = p.operation
 		state, err := scoped.LoadState(p.meta.ID)
 		if err != nil {
 			return err
@@ -518,18 +482,43 @@ func (r *Runner) recoverApprovalPreparation(sessionID string) error {
 	if previousPhase == "" {
 		previousPhase = record.Phase
 	}
-	r.approvalPreparation = &record
-	if err := r.recordApprovalPreparation("recovered", state); err != nil {
-		return err
-	}
-	r.approvalPreparation = nil
 	return r.appendEvent(sessionID, "planmode.approval_prepare_recovered", "prepare", map[string]any{"plan_mode_id": record.Target.PlanModeID, "approved_revision": record.Target.ExpectedRevision, "previous_phase": previousPhase, "owner_pid": record.OwnerPID})
 }
 
 // ApprovalPreparationOwnerAlive protects the interval between durable runtime
 // preparation and attaching an adapter handle. A corrupt journal is an error,
 // never evidence that its still-running claim can safely be reclaimed.
-func ApprovalPreparationOwnerAlive(store *session.Store, sessionID string) (bool, error) {
+func ApprovalPreparationOwnerAlive(store *session.Store, sessionID string) (alive bool, err error) {
+	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		if err := validateApprovalOperationPayloads(scoped, sessionID); err != nil {
+			return err
+		}
+		var err error
+		alive, err = approvalPreparationOwnerAliveScoped(scoped, sessionID)
+		return err
+	})
+	return alive, err
+}
+func approvalPreparationOwnerAliveScoped(store *session.Store, sessionID string) (bool, error) {
+	state, err := store.LoadState(sessionID)
+	if err != nil {
+		return false, err
+	}
+	lookup, err := store.LookupApprovalOperationByGeneration(sessionID, state.RunGeneration)
+	if err == nil {
+		if _, err := decodeApprovalRecovery(lookup.Receipt); err != nil {
+			return false, err
+		}
+		switch lookup.Receipt.Phase {
+		case "settled", "aborted", "recovered", "review_required":
+			return false, nil
+		}
+		return session.ProcessOwnerAlive(lookup.Receipt.Recovery.OwnerPID, lookup.Receipt.Recovery.OwnerIdentity), nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false, err
+	}
+
 	var record approvalPreparationRecord
 	if err := store.ReadArtifact(sessionID, approvalPreparationArtifact, &record); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -544,6 +533,9 @@ func ApprovalPreparationOwnerAlive(store *session.Store, sessionID string) (bool
 	case "settled", "aborted", "recovered", "review_required":
 		return false, nil
 	}
+	if record.ClaimUpdatedAt != state.RunGeneration {
+		return false, nil
+	}
 	return session.ProcessOwnerAlive(record.OwnerPID, record.OwnerIdentity), nil
 }
 
@@ -554,6 +546,38 @@ func ApprovalPreparationOwnerAlive(store *session.Store, sessionID string) (bool
 // A malformed journal is a different error and remains closed to reconciliation.
 func CanReconcileApprovalPreparation(store *session.Store, sessionID string) (canReconcile bool, err error) {
 	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		if err := validateApprovalOperationPayloads(scoped, sessionID); err != nil {
+			return err
+		}
+		currentState, err := scoped.LoadState(sessionID)
+		if err != nil {
+			return err
+		}
+		lookup, err := scoped.LookupApprovalOperationByGeneration(sessionID, currentState.RunGeneration)
+		if err == nil {
+			payload, err := decodeApprovalRecovery(lookup.Receipt)
+			if err != nil {
+				return err
+			}
+			switch lookup.Receipt.Phase {
+			case "settled", "aborted", "recovered", "review_required":
+				canReconcile = true
+				return nil
+			}
+			if session.ProcessOwnerAlive(lookup.Receipt.Recovery.OwnerPID, lookup.Receipt.Recovery.OwnerIdentity) {
+				return nil
+			}
+			if currentState.Status == session.StatusRunning {
+				if err := approvalPreparationOwnsState(payload.Preparation, currentState); err != nil {
+					return err
+				}
+			}
+			canReconcile = true
+			return nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 		var record approvalPreparationRecord
 		if err := scoped.ReadArtifact(sessionID, approvalPreparationArtifact, &record); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -607,6 +631,23 @@ func validateApprovalPreparationRecord(sessionID string, record approvalPreparat
 }
 
 func validateCurrentPreparedClaim(store *session.Store, p *PreparedApproval) error {
+	if p.operation != nil {
+		if err := validateApprovalOperationPayloads(store, p.meta.ID); err != nil {
+			return err
+		}
+		lookup, err := store.GetApprovalReceipt(p.meta.ID, p.operation.Receipt.OperationID)
+		if err != nil {
+			return err
+		}
+		if _, err := decodeApprovalRecovery(lookup.Receipt); err != nil {
+			return err
+		}
+		if lookup.Receipt.Stage != session.ApprovalReceiptAdmitted || lookup.Receipt.Target != p.operation.Receipt.Target || lookup.Receipt.Recovery.RunGeneration != p.state.RunGeneration {
+			return session.ErrApprovalConflict
+		}
+		return nil
+	}
+
 	var current approvalPreparationRecord
 	if err := store.ReadArtifact(p.meta.ID, approvalPreparationArtifact, &current); err != nil {
 		return fmt.Errorf("read prepared claim identity: %w", err)

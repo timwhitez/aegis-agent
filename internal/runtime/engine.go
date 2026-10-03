@@ -240,6 +240,7 @@ type RunResult struct {
 	Status    string
 	FinalText string
 	LastError string
+	Approval  *ApprovalResult `json:"approval,omitempty"`
 }
 
 const modelDegenerationNoProgressReason = "model_degeneration_no_progress"
