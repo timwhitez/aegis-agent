@@ -48,6 +48,7 @@ var (
 	sharedV2AssetNames     = map[string]struct{}{
 		"api.js":                    {},
 		"app.js":                    {},
+		"approval-operations.mjs":   {},
 		"events.js":                 {},
 		"file-change-disclosure.js": {},
 		"icons.js":                  {},

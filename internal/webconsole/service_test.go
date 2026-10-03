@@ -6675,6 +6675,36 @@ func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 	}
 }
 
+func TestServiceServesApprovalModuleThroughSharedAssets(t *testing.T) {
+	svc, err := New(testConfig(t, ""), Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	for _, asset := range []struct {
+		name   string
+		marker string
+	}{
+		{"app.js", "approval-operations.mjs"},
+		{"approval-operations.mjs", "export class ApprovalOperationController"},
+	} {
+		t.Run(asset.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			svc.ServeHTTP(rec, newLocalWebRequest(http.MethodGet, "/shared-assets/"+asset.name, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("actual shared asset status=%d body=%s, want 200", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+				t.Fatalf("shared asset Content-Type=%q, want JavaScript MIME", got)
+			}
+			if !strings.Contains(rec.Body.String(), asset.marker) {
+				t.Fatalf("shared asset body missing %q", asset.marker)
+			}
+			t.Logf("actual shared asset status=%d MIME=%s marker=%q", rec.Code, rec.Header().Get("Content-Type"), asset.marker)
+		})
+	}
+}
+
 func TestServiceServesEmbeddedShellAndAssets(t *testing.T) {
 	cfg := testConfig(t, "")
 	svc, err := New(cfg, Options{WorkerCount: 0})
