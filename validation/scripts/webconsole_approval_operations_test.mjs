@@ -548,3 +548,49 @@ test('ordinary unlinked mission facts control keeps its existing target-free app
   assert.deepEqual(h.calls[0].payload, {});
   assert.deepEqual(h.generating, []);
 });
+
+test('intentional detail diagnostic matches current production sites and only its unique owned failed GET', () => {
+  const collectorSource = readFileSync(new URL('./webconsole_approval_receipts_e2e.mjs', import.meta.url), 'utf8');
+  const collectorStart = collectorSource.indexOf('function pairExpectedDetailRefreshDiagnostics(');
+  assert.ok(collectorStart >= 0);
+  const pair = new Function(`${collectorSource.slice(collectorStart)}; return pairExpectedDetailRefreshDiagnostics;`)();
+  function position(name, needle) {
+    const body = sourceFunction(name), offset = body.indexOf(needle);
+    assert.ok(offset >= 0 && body.lastIndexOf(needle) === offset, 'source site must be unique within its function');
+    const absolute = appSource.indexOf(body) + offset;
+    return { line: appSource.slice(0, absolute).split('\n').length, column: absolute - appSource.lastIndexOf('\n', absolute - 1) };
+  }
+  const fetch = position('refreshCurrentSession', 'requestJSON(`/api/sessions/');
+  const queued = position('queueSessionRefresh', 'refreshCurrentSession();');
+  const diagnostic = position('refreshCurrentSession', "console.error('session detail error', err)");
+  const baseURL = 'http://127.0.0.1:3940', scenario = 'zh-CN-desktop', tab = 'A', page = {};
+  function fixture() {
+    const url = `${baseURL}/api/sessions/session_fixture?limit=40`;
+    const request = { frame: () => ({ page: () => page }), method: () => 'GET' };
+    const intent = { session_id: 'session_fixture', method: 'GET', reason: 'owned post-release GET deliberately aborted' };
+    const window = { closed: true, opened_order: 1, closed_order: 5, request, failedRequests: [request],
+      failure: { request, intent, order: 2, url, error: 'net::ERR_FAILED' } };
+    const application = { scenario, tab, message: 'session detail error TypeError: Failed to fetch\n' +
+      `    at requestJSON (${baseURL}/shared-assets/api.js:37:26)\n` +
+      `    at refreshCurrentSession (${baseURL}/shared-assets/app.js:${fetch.line}:${fetch.column})\n` +
+      `    at ${baseURL}/shared-assets/app.js:${queued.line}:${queued.column}`,
+      location: { url: `${baseURL}/shared-assets/app.js`, lineNumber: diagnostic.line - 1, columnNumber: diagnostic.column - 1 + 'console.'.length } };
+    const resource = { scenario, tab, classification: 'intentional_detail_refresh_failure', ...intent,
+      message: 'Failed to load resource: net::ERR_FAILED', location: { url } };
+    return { window, application, result: { console: [application], expected: [resource] },
+      events: [{ ...resource, window, order: 3 }, { ...application, window, order: 4 }] };
+  }
+  const own = fixture();
+  assert.equal(pair(own.result, own.events, { page, baseURL, scenario, tab }).console.length, 0);
+  for (const damage of ['stack', 'site', 'unpaired', 'duplicate_diagnostic', 'unrelated_request', 'multiple_failed_requests', 'outside_window']) {
+    const f = fixture();
+    if (damage === 'stack') f.application.message += '\n    at unrelatedCaller';
+    if (damage === 'site') f.application.location.lineNumber--;
+    if (damage === 'unpaired') f.result.expected = [];
+    if (damage === 'duplicate_diagnostic') f.result.console.push({ ...f.application });
+    if (damage === 'unrelated_request') f.window.failure.request = {};
+    if (damage === 'multiple_failed_requests') f.window.failedRequests.push({});
+    if (damage === 'outside_window') f.events[1].window = null;
+    assert.equal(pair(f.result, f.events, { page, baseURL, scenario, tab }).console.length, 1, damage);
+  }
+});

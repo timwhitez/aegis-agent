@@ -1229,18 +1229,18 @@ function collectErrors(page, baseURL, scenario, tab, expectedFailures, errors, e
 }
 
 function pairExpectedDetailRefreshDiagnostics(result, events, { page, baseURL, scenario, tab }) {
-  // This is the exact application diagnostic observed in the retained 40e
-  // browser run for the deliberately failed post-release ?limit=40 GET. A
+  // This is the exact application diagnostic observed in the retained c65
+  // four-profile browser run after the UUID helper moved the unchanged sites. A
   // changed call site or stack is unexpected until independently observed.
   const expectedMessage = 'session detail error TypeError: Failed to fetch\n' +
     `    at requestJSON (${baseURL}/shared-assets/api.js:37:26)\n` +
-    `    at refreshCurrentSession (${baseURL}/shared-assets/app.js:3301:26)\n` +
-    `    at ${baseURL}/shared-assets/app.js:2930:5`;
+    `    at refreshCurrentSession (${baseURL}/shared-assets/app.js:3315:26)\n` +
+    `    at ${baseURL}/shared-assets/app.js:2944:5`;
   const consumedFailures = new Set(), consumedResources = new Set(), expected = [...result.expected];
   const console = result.console.filter((entry) => {
     if (entry.scenario !== scenario || entry.tab !== tab || entry.message !== expectedMessage ||
       entry.location.url !== `${baseURL}/shared-assets/app.js` ||
-      entry.location.lineNumber !== 3364 || entry.location.columnNumber !== 12) return true;
+      entry.location.lineNumber !== 3378 || entry.location.columnNumber !== 12) return true;
     const application = events.find((event) => event.message === entry.message &&
       event.location.url === entry.location.url && event.location.lineNumber === entry.location.lineNumber &&
       event.location.columnNumber === entry.location.columnNumber && !consumedResources.has(event));
