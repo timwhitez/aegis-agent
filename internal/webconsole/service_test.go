@@ -3387,72 +3387,67 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	}
 }
 
-func TestServicePlanModeApproveAcceptsExecutingRecovery(t *testing.T) {
-	server := newFinishServer()
-	defer server.Close()
-
-	cfg := testConfig(t, server.URL)
-	svc, err := New(cfg, Options{WorkerCount: 0})
+func TestServicePlanModeApproveLegacyExecutingRequiresExplicitRecovery(t *testing.T) {
+	svc, id, calls := webReceiptFixture(t)
+	state, err := svc.store.LoadState(id)
 	if err != nil {
-		t.Fatalf("new service: %v", err)
+		t.Fatal(err)
 	}
-	defer svc.Close()
-	meta := testSessionMetadata(t, "session_planmode_approve_executing")
-	meta.Mode = session.ModeExec
-	meta.CompletionPolicy = session.CompletionPolicyAutonomous
-	meta.RootSessionID = meta.ID
-	if err := svc.store.Create(meta, session.State{Status: session.StatusFailed, Phase: "plan_execution", LastError: "previous process exited after approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatalf("create session: %v", err)
+	state.Status, state.Phase, state.LastError = session.StatusFailed, "plan_execution", "previous process exited after approval"
+	if err := svc.store.SaveState(id, state); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Recover approved execution", Source: session.PlanModeSourceWeb}); err != nil {
-		t.Fatalf("create plan mode: %v", err)
+	if _, err := svc.store.ApprovePlanMode(id, session.PlanModeSourceWeb); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
-		Title:        "Plan",
-		Summary:      "Already approved and executing.",
-		PlanMarkdown: "# Plan\n\nRecover execution.",
-		Verification: []string{"go test ./internal/webconsole"},
-		Source:       session.PlanModeSourceTool,
-	}); err != nil {
-		t.Fatalf("submit plan: %v", err)
+	if _, err := svc.store.MarkPlanModeExecuting(id, session.PlanModeSourceWeb); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
-		t.Fatalf("approve plan: %v", err)
-	}
-	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
-		t.Fatalf("mark executing: %v", err)
-	}
+	before := captureExecutingRepairFacts(t, svc.store, id)
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
-
+	rejection := postJSONError(t, ts.URL+"/api/sessions/"+id+"/planmode/approve", reviewedApprovalPayload(t, svc.store, id, false), http.StatusConflict)
+	if rejection.Code != "APPROVAL_RECOVERY_REQUIRED" || !strings.Contains(rejection.Action, "ordinary continue") || calls.Load() != 0 || svc.hasActiveHandle(id) {
+		t.Fatalf("legacy approval silently recovered: %#v calls=%d", rejection, calls.Load())
+	}
+	after := captureExecutingRepairFacts(t, svc.store, id)
+	for name, raw := range before {
+		if !bytes.Equal(raw, after[name]) {
+			t.Errorf("legacy approval changed %s", name)
+		}
+	}
+	if _, err := svc.store.GetApprovalReceipt(id, "reviewed_"+reviewedApprovalPayload(t, svc.store, id, false).PlanModeID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy approval synthesized a receipt: %v", err)
+	}
 	var launch LaunchResponse
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusAccepted, &launch)
+	postJSON(t, ts.URL+"/api/sessions/"+id+"/continue", ContinueSessionRequest{Message: "Explicitly recover the prior execution"}, http.StatusAccepted, &launch)
 	waitFor(t, 4*time.Second, func() bool {
-		state, err := svc.store.LoadState(meta.ID)
+		state, err := svc.store.LoadState(id)
 		return err == nil && state.Status == session.StatusCompleted
-	}, func() string {
-		state, err := svc.store.LoadState(meta.ID)
-		if err != nil {
-			return err.Error()
-		}
-		data, marshalErr := json.Marshal(state)
-		if marshalErr != nil {
-			return marshalErr.Error()
-		}
-		return string(data)
-	})
-	messages, err := svc.store.LoadMessages(meta.ID)
+	}, func() string { state, _ := svc.store.LoadState(id); return fmt.Sprintf("%#v", state) })
+	if calls.Load() != 1 {
+		t.Fatalf("ordinary recovery provider_calls=%d", calls.Load())
+	}
+	plan, err := svc.store.LoadPlanMode(id)
 	if err != nil {
-		t.Fatalf("load messages: %v", err)
+		t.Fatal(err)
 	}
-	var foundApproval bool
+	if plan.ApprovedRevision != "" {
+		t.Fatalf("ordinary recovery backfilled legacy revision: %q", plan.ApprovedRevision)
+	}
+	messages, err := svc.store.LoadMessages(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit := false
 	for _, msg := range messages {
-		if msg.Role == "user" && msg.Meta["source"] == "planmode_approval" && msg.Meta["plan_mode_id"] != "" {
-			foundApproval = true
+		if msg.Meta["source"] == "planmode_approval" {
+			t.Fatal("ordinary continue wrote a new approval replay")
 		}
+		explicit = explicit || msg.Text == "Explicitly recover the prior execution"
 	}
-	if !foundApproval {
-		t.Fatalf("expected recovered executing approve to append replayable approval message, got %#v", messages)
+	if !explicit {
+		t.Fatal("ordinary recovery lost explicit follow-up")
 	}
 }
 

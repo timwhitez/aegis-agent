@@ -1,6 +1,9 @@
 package webconsole
 
-import "aegis-agent/internal/session"
+import (
+	"aegis-agent/internal/runtime"
+	"aegis-agent/internal/session"
+)
 
 const (
 	errorCodeUnknownProvider            = "UNKNOWN_PROVIDER"
@@ -78,12 +81,37 @@ type MissionPlanPatchRequest struct {
 
 type PlanModeApproveRequest struct {
 	session.ApprovalTarget
-	OverrideCoverage bool `json:"override_coverage,omitempty"`
+	ApprovalRequestID string                  `json:"approval_request_id,omitempty"`
+	OverrideCoverage  bool                    `json:"override_coverage,omitempty"`
+	Message           string                  `json:"message,omitempty"`
+	Provider          string                  `json:"provider,omitempty"`
+	Model             string                  `json:"model,omitempty"`
+	ProviderOptions   session.ProviderOptions `json:"provider_options,omitempty"`
+	SystemOverride    string                  `json:"system,omitempty"`
 }
 
 type MissionPlanApproveRequest struct {
 	session.ApprovalTarget
-	OverrideCoverage bool `json:"override_coverage,omitempty"`
+	ApprovalRequestID string                  `json:"approval_request_id,omitempty"`
+	OverrideCoverage  bool                    `json:"override_coverage,omitempty"`
+	Message           string                  `json:"message,omitempty"`
+	Provider          string                  `json:"provider,omitempty"`
+	Model             string                  `json:"model,omitempty"`
+	ProviderOptions   session.ProviderOptions `json:"provider_options,omitempty"`
+	SystemOverride    string                  `json:"system,omitempty"`
+}
+
+// The receipt describes the old operation; CurrentState describes the session
+// now and may belong to a later run generation.
+type ApprovalResponse struct {
+	SessionID         string                  `json:"session_id"`
+	Status            string                  `json:"status"`
+	Approval          *runtime.ApprovalResult `json:"approval,omitempty"`
+	CurrentState      *session.State          `json:"current_state"`
+	CurrentStateError string                  `json:"current_state_error,omitempty"`
+	Error             string                  `json:"error,omitempty"`
+	Code              string                  `json:"code,omitempty"`
+	Action            string                  `json:"action,omitempty"`
 }
 
 type ContinueSessionRequest struct {

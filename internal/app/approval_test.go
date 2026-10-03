@@ -92,7 +92,7 @@ func TestContinueApproveLatestExplicitlyCapturesCurrentTarget(t *testing.T) {
 	storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) { return fake, config.Default(), nil }
 	defer func() { runnerLoader, storeRunnerLoader = restoreRunner, restoreStore }()
 	var stdout, stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"continue", id, "--approve-latest", "--json"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"continue", id, "--approve-latest", "--approval-request-id", "capture-latest", "--json"}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.continueCalls) != 1 || !fake.continueCalls[0].ApprovePlan || fake.continueCalls[0].ApprovalTarget == nil || *fake.continueCalls[0].ApprovalTarget != seen.Target() {
@@ -157,7 +157,7 @@ func TestLinkedMissionCLIShowsAndForwardsReviewedTarget(t *testing.T) {
 	if err := Run(context.Background(), []string{"goal", "plan", "approve", id, "--json"}, io.Discard, io.Discard); err == nil || len(fake.continueCalls) != 0 {
 		t.Fatalf("linked mission missing target entered runtime: %v %#v", err, fake.continueCalls)
 	}
-	if err := Run(context.Background(), []string{"goal", "plan", "approve", id, "--json", "--plan-mode-id", shown.Target.PlanModeID, "--plan-version", "1", "--expected-revision", shown.Target.ExpectedRevision}, io.Discard, io.Discard); err != nil {
+	if err := Run(context.Background(), []string{"goal", "plan", "approve", id, "--json", "--approval-request-id", "reviewed-linked", "--plan-mode-id", shown.Target.PlanModeID, "--plan-version", "1", "--expected-revision", shown.Target.ExpectedRevision}, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.continueCalls) != 1 || fake.continueCalls[0].ApprovalTarget == nil || *fake.continueCalls[0].ApprovalTarget != shown.Target {

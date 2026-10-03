@@ -153,7 +153,8 @@ type Service struct {
 	// goal mutation persistence failures after earlier side facts have been recorded.
 	beforeAppendGoalMutation func(sessionID string, goal session.SessionGoal, eventType string) error
 	// Set only by tests to interleave a semantic update before authoritative admission.
-	beforeApprovalPrepare func(sessionID string)
+	beforeApprovalPrepare   func(sessionID string)
+	beforeApprovalPreflight func(sessionID string)
 	// beforeQueueReaperPass is set only by package tests after historyMu is held,
 	// allowing clear-history/reaper ordering to be exercised deterministically.
 	beforeQueueReaperPass func()
@@ -845,6 +846,23 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := parts[0]
+	// Approval receipts remain readable before current metadata/goal checks.
+	if len(parts) == 3 && parts[1] == "approval-receipts" {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		s.handleApprovalReceipt(w, r, sessionID, parts[2])
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "planmode" && parts[2] == "approve" {
+		s.handlePlanModeApprove(w, r, sessionID)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 4 && parts[1] == "mission" && parts[2] == "plan" && parts[3] == "approve" {
+		s.handleMissionPlanApprove(w, r, sessionID)
+		return
+	}
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
@@ -2680,17 +2698,19 @@ func (s *Service) handlePlanModeApprove(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	if err := s.launchPlanModeContinue(r.Context(), sessionID, runtime.ContinueRequest{
+	s.respondApproval(w, r, runtime.ContinueRequest{
 		SessionID:            sessionID,
 		ApprovePlan:          true,
 		ApprovalTarget:       &req.ApprovalTarget,
+		ApprovalRequestID:    req.ApprovalRequestID,
+		Message:              req.Message,
+		Provider:             req.Provider,
+		Model:                req.Model,
+		ProviderOptions:      req.ProviderOptions,
+		SystemOverride:       req.SystemOverride,
 		OverrideGoalCoverage: req.OverrideCoverage,
 		Source:               session.PlanModeSourceWeb,
-	}); err != nil {
-		writeError(w, planModeActionStatus(err), err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, LaunchResponse{SessionID: sessionID, Status: "accepted"})
+	})
 }
 
 func (s *Service) handlePlanModeRevise(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -2855,6 +2875,9 @@ func (s *Service) waitForActivePlanInput(ctx context.Context, handle *launchHand
 }
 
 func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, req runtime.ContinueRequest) error {
+	if req.ApprovePlan {
+		return errors.New("approval operations require the receipt-aware launcher")
+	}
 	meta, err := s.store.LoadMetadata(sessionID)
 	if err != nil {
 		return err
@@ -2887,33 +2910,13 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	}
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
-	var prepared *runtime.PreparedApproval
-	if req.ApprovePlan {
-		if s.beforeApprovalPrepare != nil {
-			s.beforeApprovalPrepare(sessionID)
-		}
-		prepared, err = runner.PrepareApprovalContinue(runCtx, req)
-		if err != nil {
-			cancel()
-			return err
-		}
-	}
 	handle := newLaunchHandle(sessionID, runner, cancel)
 	if err := s.addHandle(handle); err != nil {
 		cancel()
-		if prepared != nil {
-			return errors.Join(err, runner.AbortPreparedApproval(prepared, err))
-		}
 		return err
 	}
 	s.trackLaunch(func() {
-		var result runtime.RunResult
-		var err error
-		if prepared != nil {
-			result, err = runner.RunPreparedApproval(runCtx, prepared)
-		} else {
-			result, err = runner.Continue(runCtx, req)
-		}
+		result, err := runner.Continue(runCtx, req)
 		s.finishHandle(handle, launchOutcome{result: result, err: err})
 	})
 	return nil
@@ -2951,6 +2954,15 @@ func planModeActionStatus(err error) int {
 		return http.StatusConflict
 	}
 	if errors.Is(err, session.ErrMissingApprovalTarget) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, session.ErrMissingApprovalRequestID) {
+		return http.StatusBadRequest
+	}
+	if errors.Is(err, session.ErrApprovalReceiptUnverifiable) || errors.Is(err, session.ErrApprovalReceiptCapacity) {
+		return http.StatusConflict
+	}
+	if isStoreIDClientError(err) || strings.Contains(err.Error(), "invalid approval request id") {
 		return http.StatusBadRequest
 	}
 	var webErr webError
@@ -9043,6 +9055,18 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	}
 	if errors.Is(err, session.ErrMissingApprovalTarget) {
 		resp.Code = "APPROVAL_TARGET_REQUIRED"
+	}
+	if errors.Is(err, session.ErrMissingApprovalRequestID) {
+		resp.Code = "APPROVAL_REQUEST_ID_REQUIRED"
+		resp.Action = "Upgrade the client and supply an explicit approval_request_id."
+	}
+	if errors.Is(err, session.ErrApprovalRequestConflict) {
+		resp.Code = "APPROVAL_REQUEST_CONFLICT"
+		resp.Action = "Keep the original request parameters, or explicitly start a new approval operation."
+	}
+	if errors.Is(err, session.ErrApprovalReceiptUnverifiable) {
+		resp.Code = "APPROVAL_RECOVERY_REQUIRED"
+		resp.Action = "Review durable facts, explicitly stop any uncertain run, and use ordinary continue for recovery."
 	}
 	var coded webError
 	if errors.As(err, &coded) {
