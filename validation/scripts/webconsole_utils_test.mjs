@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
+import { ApprovalOperationController } from '../../internal/webconsole/assets/approval-operations.mjs';
 
 const utilsSource = readFileSync(new URL('../../internal/webconsole/assets/utils.js', import.meta.url), 'utf8');
 const i18nSource = readFileSync(new URL('../../internal/webconsole/assets/i18n.js', import.meta.url), 'utf8');
@@ -314,11 +315,14 @@ function createAppHarnessContext(initialStorage = {}) {
     }
   };
   const appContext = {
+    URL,
+    crypto: { randomUUID: () => `approval_fixture_${Math.random().toString(16).slice(2)}` },
     console: {
       error() {},
       warn() {}
     },
     window: {
+      AegisApprovalOperations: { ApprovalOperationController },
       location: {
         protocol: 'http:',
         host: '127.0.0.1:8080'
@@ -394,6 +398,9 @@ function createAppHarnessContext(initialStorage = {}) {
       return new Promise((resolve, reject) => {
         pendingRequests.push({ url, formData, options, resolve, reject });
       });
+    },
+    getApprovalReceipt(sessionID, requestID) {
+      return appContext.requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/approval-receipts/' + encodeURIComponent(requestID));
     }
   };
   vm.createContext(appContext);
@@ -2292,10 +2299,11 @@ test('clearHistory ignores stale confirmation after history refresh', async () =
 });
 
 function installPlanModeAPITestWrappers(appContext) {
+  appContext.approvalFixtureRequest = approvalFixtureRequest;
   vm.runInContext(`
     approvePlanMode = function(sessionID, payload = {}) {
       const suffix = payload.override_coverage ? '?override=1' : '';
-      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST', payload });
+      return approvalFixtureRequest(requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/approve' + suffix, { method: 'POST', payload }), sessionID, payload);
     };
     answerPlanModeInput = function(sessionID, payload = {}) {
       return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/planmode/input', {
@@ -2307,6 +2315,7 @@ function installPlanModeAPITestWrappers(appContext) {
 }
 
 function installGoalAPITestWrappers(appContext) {
+  appContext.approvalFixtureRequest = approvalFixtureRequest;
   vm.runInContext(`
     pauseGoal = function(sessionID) {
       return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/goal/pause', { method: 'POST' });
@@ -2322,9 +2331,26 @@ function installGoalAPITestWrappers(appContext) {
     };
     approveMissionPlan = function(sessionID, payload = {}) {
       const suffix = payload.override_coverage ? '?override=1' : '';
-      return requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/mission/plan/approve' + suffix, { method: 'POST', payload });
+      return approvalFixtureRequest(requestJSON('/api/sessions/' + encodeURIComponent(sessionID) + '/mission/plan/approve' + suffix, { method: 'POST', payload }), sessionID, payload);
     };
   `, appContext);
+}
+
+// Existing renderer controls now model the receipt DTO for executable approvals.
+// Unlinked facts-only requests retain their original response contract.
+function approvalFixtureRequest(promise, sessionID, payload) {
+  const withReceipt = (response, stage = 'admitted') => {
+    if (!payload.approval_request_id || response?.approval) return response;
+    return { ...response, session_id: sessionID, approval: { replay: false, recovery_required: false,
+      lookup: { found: true, binding: { approval_request_id: payload.approval_request_id },
+        receipt: { stage, rejection: stage === 'rejected' ? 'validation coverage blocks approval' : '' } } } };
+  };
+  return promise.then(response => withReceipt(response)).catch(err => {
+    if (payload.approval_request_id && err.status === 409 && /coverage/.test(err.message)) {
+      err.payload = withReceipt({ error: err.message, code: 'APPROVAL_REJECTED' }, 'rejected');
+    }
+    throw err;
+  });
 }
 
 function installChatActionAPITestWrappers(appContext) {
@@ -8014,11 +8040,15 @@ for (const route of ['plan', 'linked-mission']) {
     `, appContext);
     assert.equal(appContext.pendingRequests.length, 1);
     const target = { plan_mode_id: 'plan_reviewed', plan_version: 1, expected_revision: 'revision_reviewed' };
-    assert.deepEqual(sameRealm(appContext.pendingRequests[0].payload.payload), target);
+    const firstPayload = sameRealm(appContext.pendingRequests[0].payload.payload);
+    assert.ok(firstPayload.approval_request_id);
+    assert.deepEqual(firstPayload, { ...target, override_coverage: false, approval_request_id: firstPayload.approval_request_id });
     appContext.pendingRequests[0].reject({ status: 409, message: 'validation coverage blocks approval' });
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(appContext.pendingRequests.length, 2);
-    assert.deepEqual(sameRealm(appContext.pendingRequests[1].payload.payload), { ...target, override_coverage: true });
+    const nextPayload = sameRealm(appContext.pendingRequests[1].payload.payload);
+    assert.notEqual(nextPayload.approval_request_id, firstPayload.approval_request_id);
+    assert.deepEqual(nextPayload, { ...target, override_coverage: true, approval_request_id: nextPayload.approval_request_id });
     appContext.pendingRequests[1].resolve({ session_id: 'session_reviewed', status: 'accepted' });
     await approval;
   });

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -3149,7 +3150,17 @@ func TestServiceQueueSubmitRejectsUnsupportedWaitMode(t *testing.T) {
 }
 
 func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
-	server := newSubmitPlanServer()
+	diagnostic := newWebTimingDiagnostic()
+	responseWritten := make(chan struct{}, 1)
+	server := newSubmitPlanServer(func(phase string) {
+		diagnostic.record(phase)
+		if phase == "mock provider response written" {
+			select {
+			case responseWritten <- struct{}{}:
+			default:
+			}
+		}
+	})
 	defer server.Close()
 
 	cfg := testConfig(t, server.URL)
@@ -3157,12 +3168,21 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	defer svc.Close()
+	var result LaunchResponse
+	defer func() {
+		if t.Failed() {
+			diagnostic.dump(t, svc.store.SessionDir(result.SessionID))
+		}
+		diagnostic.record("service close started")
+		svc.Close() // Cancel and drain the launch before its temporary directory is removed.
+		diagnostic.record("service drained")
+		t.Logf("plan start timing (request timeout=%ds retries=%d): %s", cfg.Providers["openai"].RequestTimeoutSec, cfg.Providers["openai"].Retry.MaxAttempts, diagnostic.summary())
+	}()
 
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
-	var result LaunchResponse
+	diagnostic.record("start request sent")
 	postJSON(t, ts.URL+"/api/sessions/start", map[string]any{
 		"prompt": "Plan this change before editing.",
 		"mode":   "exec",
@@ -3171,8 +3191,32 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 		},
 	}, http.StatusAccepted, &result)
 
+	diagnostic.record("start accepted")
+	// The assertion concerns submit_plan persistence after an actual response,
+	// not provider startup/transport latency. Failed preparation still exits
+	// early; the package deadline bounds setup when no response is produced.
+	setupTicker := time.NewTicker(40 * time.Millisecond)
+	defer setupTicker.Stop()
+	responseReady := false
+	for !responseReady {
+		select {
+		case <-responseWritten:
+			responseReady = true
+		case <-setupTicker.C:
+			state, err := svc.store.LoadState(result.SessionID)
+			if err == nil && state.Status == session.StatusFailed {
+				t.Fatalf("mock response was not written: engine ended early status=%s phase=%s err=%s", state.Status, state.Phase, state.LastError)
+			}
+		case <-t.Context().Done():
+			t.Fatal("mock response was not written before test cancellation")
+		}
+	}
+	diagnostic.record("mock response observed")
 	waitFor(t, 4*time.Second, func() bool {
 		state, err := svc.store.LoadState(result.SessionID)
+		if err == nil && state.Status == session.StatusFailed {
+			t.Fatalf("condition was not satisfied: engine ended early status=%s phase=%s err=%s", state.Status, state.Phase, state.LastError)
+		}
 		return err == nil && state.Status == session.StatusAwaitingInput && state.Phase == "plan_approval"
 	}, func() string {
 		state, err := svc.store.LoadState(result.SessionID)
@@ -3185,6 +3229,7 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 		}
 		return string(data)
 	})
+	diagnostic.record("plan approval observed")
 	planMode, err := svc.store.LoadPlanMode(result.SessionID)
 	if err != nil {
 		t.Fatalf("load plan mode: %v", err)
@@ -3387,72 +3432,67 @@ func TestServicePlanModeApproveAppendsReplayableUserMessage(t *testing.T) {
 	}
 }
 
-func TestServicePlanModeApproveAcceptsExecutingRecovery(t *testing.T) {
-	server := newFinishServer()
-	defer server.Close()
-
-	cfg := testConfig(t, server.URL)
-	svc, err := New(cfg, Options{WorkerCount: 0})
+func TestServicePlanModeApproveLegacyExecutingRequiresExplicitRecovery(t *testing.T) {
+	svc, id, calls := webReceiptFixture(t)
+	state, err := svc.store.LoadState(id)
 	if err != nil {
-		t.Fatalf("new service: %v", err)
+		t.Fatal(err)
 	}
-	defer svc.Close()
-	meta := testSessionMetadata(t, "session_planmode_approve_executing")
-	meta.Mode = session.ModeExec
-	meta.CompletionPolicy = session.CompletionPolicyAutonomous
-	meta.RootSessionID = meta.ID
-	if err := svc.store.Create(meta, session.State{Status: session.StatusFailed, Phase: "plan_execution", LastError: "previous process exited after approval", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatalf("create session: %v", err)
+	state.Status, state.Phase, state.LastError = session.StatusFailed, "plan_execution", "previous process exited after approval"
+	if err := svc.store.SaveState(id, state); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{Enabled: true, Objective: "Recover approved execution", Source: session.PlanModeSourceWeb}); err != nil {
-		t.Fatalf("create plan mode: %v", err)
+	if _, err := svc.store.ApprovePlanMode(id, session.PlanModeSourceWeb); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
-		Title:        "Plan",
-		Summary:      "Already approved and executing.",
-		PlanMarkdown: "# Plan\n\nRecover execution.",
-		Verification: []string{"go test ./internal/webconsole"},
-		Source:       session.PlanModeSourceTool,
-	}); err != nil {
-		t.Fatalf("submit plan: %v", err)
+	if _, err := svc.store.MarkPlanModeExecuting(id, session.PlanModeSourceWeb); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := svc.store.ApprovePlanMode(meta.ID, session.PlanModeSourceWeb); err != nil {
-		t.Fatalf("approve plan: %v", err)
-	}
-	if _, err := svc.store.MarkPlanModeExecuting(meta.ID, session.PlanModeSourceWeb); err != nil {
-		t.Fatalf("mark executing: %v", err)
-	}
+	before := captureExecutingRepairFacts(t, svc.store, id)
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
-
+	rejection := postJSONError(t, ts.URL+"/api/sessions/"+id+"/planmode/approve", reviewedApprovalPayload(t, svc.store, id, false), http.StatusConflict)
+	if rejection.Code != "APPROVAL_RECOVERY_REQUIRED" || !strings.Contains(rejection.Action, "ordinary continue") || calls.Load() != 0 || svc.hasActiveHandle(id) {
+		t.Fatalf("legacy approval silently recovered: %#v calls=%d", rejection, calls.Load())
+	}
+	after := captureExecutingRepairFacts(t, svc.store, id)
+	for name, raw := range before {
+		if !bytes.Equal(raw, after[name]) {
+			t.Errorf("legacy approval changed %s", name)
+		}
+	}
+	if _, err := svc.store.GetApprovalReceipt(id, "reviewed_"+reviewedApprovalPayload(t, svc.store, id, false).PlanModeID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy approval synthesized a receipt: %v", err)
+	}
 	var launch LaunchResponse
-	postJSON(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/approve", reviewedApprovalPayload(t, svc.store, meta.ID, false), http.StatusAccepted, &launch)
+	postJSON(t, ts.URL+"/api/sessions/"+id+"/continue", ContinueSessionRequest{Message: "Explicitly recover the prior execution"}, http.StatusAccepted, &launch)
 	waitFor(t, 4*time.Second, func() bool {
-		state, err := svc.store.LoadState(meta.ID)
+		state, err := svc.store.LoadState(id)
 		return err == nil && state.Status == session.StatusCompleted
-	}, func() string {
-		state, err := svc.store.LoadState(meta.ID)
-		if err != nil {
-			return err.Error()
-		}
-		data, marshalErr := json.Marshal(state)
-		if marshalErr != nil {
-			return marshalErr.Error()
-		}
-		return string(data)
-	})
-	messages, err := svc.store.LoadMessages(meta.ID)
+	}, func() string { state, _ := svc.store.LoadState(id); return fmt.Sprintf("%#v", state) })
+	if calls.Load() != 1 {
+		t.Fatalf("ordinary recovery provider_calls=%d", calls.Load())
+	}
+	plan, err := svc.store.LoadPlanMode(id)
 	if err != nil {
-		t.Fatalf("load messages: %v", err)
+		t.Fatal(err)
 	}
-	var foundApproval bool
+	if plan.ApprovedRevision != "" {
+		t.Fatalf("ordinary recovery backfilled legacy revision: %q", plan.ApprovedRevision)
+	}
+	messages, err := svc.store.LoadMessages(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit := false
 	for _, msg := range messages {
-		if msg.Role == "user" && msg.Meta["source"] == "planmode_approval" && msg.Meta["plan_mode_id"] != "" {
-			foundApproval = true
+		if msg.Meta["source"] == "planmode_approval" {
+			t.Fatal("ordinary continue wrote a new approval replay")
 		}
+		explicit = explicit || msg.Text == "Explicitly recover the prior execution"
 	}
-	if !foundApproval {
-		t.Fatalf("expected recovered executing approve to append replayable approval message, got %#v", messages)
+	if !explicit {
+		t.Fatal("ordinary recovery lost explicit follow-up")
 	}
 }
 
@@ -6677,6 +6717,36 @@ func TestSensitiveWebActionsEmitAuditEvents(t *testing.T) {
 		if !hasWebAuditEvent(events, eventType) {
 			t.Fatalf("expected audit event %s, got %#v", eventType, events)
 		}
+	}
+}
+
+func TestServiceServesApprovalModuleThroughSharedAssets(t *testing.T) {
+	svc, err := New(testConfig(t, ""), Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	for _, asset := range []struct {
+		name   string
+		marker string
+	}{
+		{"app.js", "approval-operations.mjs"},
+		{"approval-operations.mjs", "export class ApprovalOperationController"},
+	} {
+		t.Run(asset.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			svc.ServeHTTP(rec, newLocalWebRequest(http.MethodGet, "/shared-assets/"+asset.name, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("actual shared asset status=%d body=%s, want 200", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "javascript") {
+				t.Fatalf("shared asset Content-Type=%q, want JavaScript MIME", got)
+			}
+			if !strings.Contains(rec.Body.String(), asset.marker) {
+				t.Fatalf("shared asset body missing %q", asset.marker)
+			}
+			t.Logf("actual shared asset status=%d MIME=%s marker=%q", rec.Code, rec.Header().Get("Content-Type"), asset.marker)
+		})
 	}
 }
 
@@ -14835,10 +14905,13 @@ func newFinishServer() *httptest.Server {
 	}))
 }
 
-func newSubmitPlanServer() *httptest.Server {
+func newSubmitPlanServer(observers ...func(string)) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, observe := range observers {
+			observe("mock provider request entered")
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"id":"resp_plan_1",
 			"status":"completed",
 			"output":[
@@ -14846,6 +14919,15 @@ func newSubmitPlanServer() *httptest.Server {
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
+		if err != nil {
+			for _, observe := range observers {
+				observe("mock provider response failed: " + err.Error())
+			}
+			return
+		}
+		for _, observe := range observers {
+			observe("mock provider response written")
+		}
 	}))
 }
 
@@ -15336,4 +15418,59 @@ func TestServeEmbeddedFileETagAndGzip(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only the timing regression fixtures opt into this recorder. The original
+// deadlines and assertions remain unchanged; failure output captures the stage
+// before cancellation/draining can change it.
+type webTimingDiagnostic struct {
+	started time.Time
+	mu      sync.Mutex
+	phases  []string
+}
+
+func newWebTimingDiagnostic() *webTimingDiagnostic {
+	return &webTimingDiagnostic{started: time.Now()}
+}
+
+func (d *webTimingDiagnostic) record(phase string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.phases) < 16 {
+		d.phases = append(d.phases, fmt.Sprintf("%.3fms %s", float64(time.Since(d.started))/float64(time.Millisecond), phase))
+	}
+}
+
+func (d *webTimingDiagnostic) summary() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strings.Join(d.phases, "; ")
+}
+
+func (d *webTimingDiagnostic) dump(t *testing.T, sessionDir string) {
+	t.Helper()
+	t.Logf("web fixture failure timing: %s", d.summary())
+	for _, name := range []string{"state.json", "events.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(sessionDir, name))
+		if err != nil {
+			t.Logf("%s: %v", name, err)
+			continue
+		}
+		if name == "events.jsonl" {
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) > 6 {
+				lines = lines[len(lines)-6:]
+			}
+			for _, line := range lines {
+				var event events.Event
+				if err := json.Unmarshal([]byte(line), &event); err == nil {
+					t.Logf("last event: time=%s type=%s phase=%s", event.Time, event.Type, event.Phase)
+				}
+			}
+		} else {
+			t.Logf("%s: %s", name, data)
+		}
+	}
+	stacks := make([]byte, 32<<10)
+	t.Logf("bounded failure stacks:\n%s", stacks[:goruntime.Stack(stacks, true)])
 }

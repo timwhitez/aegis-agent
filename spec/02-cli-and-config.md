@@ -198,6 +198,8 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 - `--approve-plan`
 - `--plan-mode-id` / `--plan-version` / `--expected-revision`
 - `--approve-latest`（显式捕获当前审批内容的脚本快捷语义）
+- `--approval-request-id`（审批执行的 session 内操作身份；同 ID 同参先查回执）
+- `--approval-receipt`（只读查询对应 request ID 的绑定、回执和当前 durable 状态）
 - `--cancel-plan`
 
 Plan Mode 行为：
@@ -206,6 +208,7 @@ Plan Mode 行为：
 - `--approve-plan` 批准显式 target 对应的已审阅内容，并追加 `meta.source=planmode_approval` 与实际 `approved_revision` 的 user message 后恢复执行；三项 target 参数必须完整提供。TTY 未提供 target 时展示一致审批 snapshot 并确认，确认后携带展示 target；非交互缺 target 给出明确错误
 - `--approve-latest` 显式选择当前内容并捕获其 target 后审批，不与显式 target 参数混用；后续内容改变仍被 CAS 拒绝。`goal plan show` 展示审批 target，linked `goal plan approve` 使用相同参数/确认语义；没有 linked gate 的纯 facts approval 不启动执行
 - `--cancel-plan` 取消 pending Plan Mode；如果存在待补偿的 `request_user_input.tool_call_id`，runtime 先写入取消 tool result
+- 所有实际执行审批必须提供 request ID；缺 ID 明确提示升级，不自动生成新身份重发。新操作的 `--approve-latest` 同样要求显式 `--approval-request-id`，捕获一次 target 并在执行前输出身份/target；已有 ID 的重试先按原参数查回执，不能重新捕获当前 latest。同 ID 改 target、override 或显式 provider/model/options/system/message 返回 conflict。coverage 拒绝保存 rejected 参数绑定，确认 override 使用新 ID。查询只读，不启动 run；普通 continue 保持主动 follow-up。基础 config 可用于定位 Store，但命中回执不解析当前 provider 默认值。
 - 当 `planmode.status=awaiting_approval` 且传入普通 `--message` 时，该 message 视为 plan revision，事件源标记为 `planmode_revision`
 
 ### 5.6 `sessions`

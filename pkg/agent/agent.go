@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
 )
@@ -13,6 +14,31 @@ type ContinueRequest = runtime.ContinueRequest
 type ApprovalTarget = session.ApprovalTarget
 type ApprovalSnapshot = session.ApprovalSnapshot
 type PreparedApproval = runtime.PreparedApproval
+type ApprovalPreparationResult = runtime.ApprovalPreparationResult
+type ApprovalResult = runtime.ApprovalResult
+type ApprovalPreparationOutcomeError = runtime.ApprovalPreparationOutcomeError
+type ApprovalReceiptLookup = session.ApprovalReceiptLookup
+type ApprovalReceipt = session.ApprovalReceipt
+type ApprovalParameters = session.ApprovalParameters
+type ApprovalReceiptStage = session.ApprovalReceiptStage
+type ApprovalReceiptCommitError = session.ApprovalReceiptCommitError
+type AtomicCommitOutcome = fileutil.AtomicCommitOutcome
+
+var ErrApprovalConflict = session.ErrApprovalConflict
+var ErrMissingApprovalTarget = session.ErrMissingApprovalTarget
+var ErrMissingApprovalRequestID = session.ErrMissingApprovalRequestID
+var ErrApprovalRequestConflict = session.ErrApprovalRequestConflict
+var ErrApprovalReceiptUnverifiable = session.ErrApprovalReceiptUnverifiable
+
+const (
+	ApprovalReceiptRejected          = session.ApprovalReceiptRejected
+	ApprovalReceiptPrepared          = session.ApprovalReceiptPrepared
+	ApprovalReceiptAdmitted          = session.ApprovalReceiptAdmitted
+	AtomicCommitNotPublished         = fileutil.AtomicCommitNotPublished
+	AtomicCommitPublishedUnconfirmed = fileutil.AtomicCommitPublishedUnconfirmed
+	AtomicCommitCommitted            = fileutil.AtomicCommitCommitted
+)
+
 type SteerRequest = runtime.SteerRequest
 type SteerResult = runtime.SteerResult
 type RunResult = runtime.RunResult
@@ -39,6 +65,16 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 
 func (r *Runner) Continue(ctx context.Context, req ContinueRequest) (RunResult, error) {
 	return r.core.Continue(ctx, req)
+}
+
+func (r *Runner) PrepareApprovalOperation(ctx context.Context, req ContinueRequest) (ApprovalPreparationResult, error) {
+	return r.core.PrepareApprovalOperation(ctx, req)
+}
+func (r *Runner) LookupApprovalContinue(req ContinueRequest) (ApprovalReceiptLookup, error) {
+	return r.core.LookupApprovalContinue(req)
+}
+func (r *Runner) ApprovalReceipt(sessionID, requestID string) (ApprovalReceiptLookup, error) {
+	return r.core.ApprovalReceipt(sessionID, requestID)
 }
 
 func (r *Runner) PrepareApprovalContinue(ctx context.Context, req ContinueRequest) (*PreparedApproval, error) {

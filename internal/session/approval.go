@@ -31,6 +31,20 @@ func (snapshot ApprovalSnapshot) Target() ApprovalTarget {
 	return ApprovalTarget{PlanModeID: snapshot.PlanMode.PlanModeID, PlanVersion: snapshot.PlanMode.PlanVersion, ExpectedRevision: snapshot.Revision}
 }
 
+// ValidateApprovalSnapshotRevision verifies the declared revision against the
+// snapshot's semantic content. It reads no current session facts and does not
+// establish that the snapshot is current or that its content was approved.
+func ValidateApprovalSnapshotRevision(snapshot ApprovalSnapshot) error {
+	revision, err := approvalRevision(snapshot)
+	if err != nil {
+		return fmt.Errorf("compute approval snapshot revision: %w", err)
+	}
+	if snapshot.Revision != revision {
+		return errors.New("approval snapshot revision does not match its semantic content")
+	}
+	return nil
+}
+
 var ErrApprovalConflict = errors.New("plan approval content changed; review the current plan")
 var ErrMissingApprovalTarget = errors.New("approval target is required; reload the plan or upgrade the client")
 var ErrApprovalScopeClosed = errors.New("approval store scope is no longer active")
@@ -68,6 +82,7 @@ func (s *Store) WithApprovalLock(sessionID string, fn func(*Store) error) error 
 		// live Store or toggling a bypass flag on it would race other callers.
 		scoped := NewStoreWithDirMode(s.root, s.dirMode)
 		scoped.beforePlanModeMarkdownWrite = s.beforePlanModeMarkdownWrite
+		scoped.beforeApprovalReceiptCommit = s.beforeApprovalReceiptCommit
 		scoped.beforeQueueClaimRename = s.beforeQueueClaimRename
 		scoped.beforeQueueClaimLeaseWrite = s.beforeQueueClaimLeaseWrite
 		scoped.beforeQueueReapCommit = s.beforeQueueReapCommit

@@ -25,6 +25,16 @@ func (r *CoreRunner) Continue(ctx context.Context, req ContinueRequest) (RunResu
 	return r.runner.Continue(ctx, req)
 }
 
+func (r *CoreRunner) PrepareApprovalOperation(ctx context.Context, req ContinueRequest) (ApprovalPreparationResult, error) {
+	return r.runner.PrepareApprovalOperation(ctx, req)
+}
+func (r *CoreRunner) LookupApprovalContinue(req ContinueRequest) (session.ApprovalReceiptLookup, error) {
+	return r.runner.LookupApprovalContinue(req)
+}
+func (r *CoreRunner) ApprovalReceipt(sessionID, requestID string) (session.ApprovalReceiptLookup, error) {
+	return r.runner.ApprovalReceipt(sessionID, requestID)
+}
+
 func (r *CoreRunner) PrepareApprovalContinue(ctx context.Context, req ContinueRequest) (*PreparedApproval, error) {
 	return r.runner.PrepareApprovalContinue(ctx, req)
 }

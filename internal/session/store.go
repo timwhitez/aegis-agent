@@ -41,6 +41,8 @@ type Store struct {
 
 	// Set only by package tests to force deterministic Plan Mode artifact failures.
 	beforePlanModeMarkdownWrite func(sessionID string, state PlanModeState) error
+	// Instance-only seam for approval receipt durability failures.
+	beforeApprovalReceiptCommit func(fileutil.AtomicCommitStage) error
 	// Set only by package tests to force deterministic queue claim rename races.
 	beforeQueueClaimRename func(from, to string, job QueueJob) error
 	// Set only by package tests to force deterministic queue claim lease write failures.
@@ -1648,19 +1650,46 @@ func (s *Store) RestoreOpenSteerRequests(sessionID string, requests []SteerReque
 }
 
 func (s *Store) RefreshPendingSteerCount(sessionID string) (State, error) {
-	requests, err := s.LoadSteerRequests(sessionID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.sessionPath(sessionID, "state.json")
 	if err != nil {
 		return State{}, err
 	}
-	state, err := s.LoadState(sessionID)
+	lockPath, err := s.sessionPath(sessionID, "state.lock")
 	if err != nil {
 		return State{}, err
 	}
-	state.PendingSteerCount = CountOpenSteerRequests(requests)
-	if err := s.SaveState(sessionID, state); err != nil {
+	var committed State
+	err = s.withExistingFileLock(lockPath, func() error {
+		var current State
+		if err := readJSONFile(path, &current); err != nil {
+			return fmt.Errorf("load state.json: %w", err)
+		}
+		if err := validateState(current); err != nil {
+			return fmt.Errorf("validate state.json: %w", err)
+		}
+		// This observational update must read the current state under its lock.
+		// Rewriting an earlier whole-state snapshot can undo a same-generation
+		// pause, failure, or prepared approval transition. Steer file writers
+		// release steer.lock before any state update, so this count read cannot
+		// wait on a writer that is waiting for state.lock.
+		count, _, err := s.pendingSteerCountLocked(sessionID)
+		if err != nil {
+			return err
+		}
+		current.PendingSteerCount = count
+		current.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := s.writeJSONFile(path, current); err != nil {
+			return err
+		}
+		committed = current
+		return nil
+	})
+	if err != nil {
 		return State{}, err
 	}
-	return state, nil
+	return committed, nil
 }
 
 func (s *Store) AppendBackgroundNotification(sessionID string, notification BackgroundNotification) error {

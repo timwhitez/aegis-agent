@@ -95,7 +95,7 @@ func reviewedApprovalPayload(t *testing.T, store *session.Store, id string, over
 	if err != nil {
 		t.Fatal(err)
 	}
-	return PlanModeApproveRequest{ApprovalTarget: snapshot.Target(), OverrideCoverage: override}
+	return PlanModeApproveRequest{ApprovalTarget: snapshot.Target(), ApprovalRequestID: "reviewed_" + snapshot.PlanMode.PlanModeID, OverrideCoverage: override}
 }
 
 func assertApprovalUnaccepted(t *testing.T, svc *Service, id string) {
@@ -228,7 +228,7 @@ func TestApprovalTargetCoherentDisplayAndAdmissionControl(t *testing.T) {
 	if display.ApprovalRevision != snapshot.Revision || display.PlanMarkdown != snapshot.PlanMode.PlanMarkdown {
 		t.Fatalf("display mismatched snapshot: %#v", display)
 	}
-	body, err := json.Marshal(PlanModeApproveRequest{ApprovalTarget: snapshot.Target()})
+	body, err := json.Marshal(PlanModeApproveRequest{ApprovalTarget: snapshot.Target(), ApprovalRequestID: "coherent-display"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestApprovalPreparationClaimSurvivesPeerReaperBeforeHandle(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := snapshot.Target()
-	prepared, err := runner.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target})
+	prepared, err := runner.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target, ApprovalRequestID: "claim_owner"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestApprovalPreparationClaimSurvivesPeerReaperBeforeHandle(t *testing.T) {
 		t.Fatalf("live claim was overwritten: %#v", state)
 	}
 	second := runtime.NewRunner(svc.cfg)
-	if _, err := second.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target}); err == nil {
+	if _, err := second.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target, ApprovalRequestID: "claim_peer"}); err == nil {
 		t.Fatal("peer reaper permitted duplicate claim")
 	}
 }
@@ -546,23 +546,34 @@ func TestExecutingMissionFactRepairRequiresReviewedTarget(t *testing.T) {
 	}
 }
 
-func TestApprovalReaperAmbiguityRequiresExplicitStop(t *testing.T) {
+func TestLegacyApprovalReaperAmbiguityRequiresExplicitStop(t *testing.T) {
 	for _, reason := range []string{queueReaperPauseReason, "manual_stop"} {
 		t.Run(reason, func(t *testing.T) {
 			svc, id := newApprovalTargetFixture(t)
 			runner := runtime.NewRunner(svc.cfg)
 			target := reviewedApprovalPayload(t, svc.store, id, false).ApprovalTarget
-			prepared, err := runner.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target})
+			prepared, err := runner.PrepareApprovalContinue(context.Background(), runtime.ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: &target, ApprovalRequestID: "reaper_owner"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer runner.AbortPreparedApproval(prepared, nil)
-			var journal map[string]any
-			if err := svc.store.ReadArtifact(id, "approval-preparation.json", &journal); err != nil {
+			lookup, err := runner.ApprovalReceipt(id, "reaper_owner")
+			if err != nil {
 				t.Fatal(err)
 			}
+			var payload map[string]any
+			if err := json.Unmarshal(lookup.Receipt.Recovery.Data, &payload); err != nil {
+				t.Fatal(err)
+			}
+			// This temporary fixture represents an old #125 host: only its
+			// schema-v1 journal exists, so generation lookup cannot select a
+			// modern operation. New production operations never write both.
+			journal := payload["preparation"].(map[string]any)
 			journal["owner_pid"] = 999999999
 			if _, err := svc.store.WriteArtifact(id, "approval-preparation.json", journal); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(svc.store.Root(), id, "approval-operations.json")); err != nil {
 				t.Fatal(err)
 			}
 			state, err := svc.store.LoadState(id)

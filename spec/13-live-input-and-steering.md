@@ -71,6 +71,8 @@
 - `deferred`
 - `rejected`
 
+刷新 pending steer count 时，Store 必须在 `state.lock` 内读取当前状态并只更新计数与时间戳，保留当前 run generation、status、phase、turn 及其它语义事实；计数更新不能将等待锁前的旧 running 快照写回，撤销已提交的暂停、失败或审批恢复状态。这是基于当前权威 state 的窄观测写，不使 JSONL 与 state 成为多文件事务，也不改变 JSONL 的 fsync 契约。
+
 说明：
 
 - `source` 当前可取 `cli`、`web` 或 `agent`；`agent` 表示 parent agent 通过 multi-agent 控制工具向 child session 追加 prompt

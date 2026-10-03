@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"aegis-agent/internal/session"
 )
 
 type providerState struct {
@@ -24,12 +26,14 @@ type providerState struct {
 }
 
 type sessionScriptState struct {
-	Calls                 int
-	DirectChildID         string
-	BackgroundJobID       string
-	CommandArtifactPath   string
-	HistoryMessageID      string
-	HistoryNextByteOffset int64
+	Calls                  int
+	DirectChildID          string
+	BackgroundJobID        string
+	CommandArtifactPath    string
+	HistoryMessageID       string
+	HistoryNextByteOffset  int64
+	ReceiptGoal            session.SessionGoal
+	ReceiptCommandEvidence string
 }
 
 type responseRequest struct {
@@ -195,6 +199,9 @@ func (s *providerState) handleResponses(w http.ResponseWriter, r *http.Request) 
 }
 
 func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int) (scriptedToolCall, error) {
+	if strings.Contains(facts.InputText, "E2E_UI_PLAN_RECEIPT_MISSION") {
+		return receiptMissionCall(facts, state, callNumber)
+	}
 	if strings.Contains(facts.InputText, "E2E_UI_PLAN_REVISE") {
 		switch callNumber {
 		case 1:
@@ -413,6 +420,54 @@ func scriptedCall(facts requestFacts, state *sessionScriptState, callNumber int)
 	}
 }
 
+// This marker is limited to receipt browser fixtures with an active linked
+// mission. Its completion audit consumes real tool results; it never changes
+// reviewed coverage mappings or bypasses a runtime completion gate.
+func receiptMissionCall(facts requestFacts, state *sessionScriptState, callNumber int) (scriptedToolCall, error) {
+	switch callNumber {
+	case 1:
+		return scriptedToolCall{Name: "submit_plan", Arguments: map[string]any{
+			"title": "Receipt mission plan", "summary": "Review approval receipts and execute the local validation command.",
+			"plan_markdown": "# Receipt mission plan\n\n1. Review the linked scope.\n2. Run its local validation command.\n3. Record actual validation and completion evidence.",
+			"verification":  []string{"Run printf approval-cas and inspect the result", "Persist the Goal completion audit before finishing"},
+		}}, nil
+	case 2:
+		return scriptedToolCall{Name: "get_goal", Arguments: map[string]any{}}, nil
+	case 3:
+		goal := state.ReceiptGoal
+		if goal.SessionID != facts.SessionID || goal.Status != session.GoalStatusActive || goal.Mission == nil || len(goal.Mission.Features) != 1 || goal.Mission.Features[0].ID != "feature_scope" || len(goal.Mission.Milestones) != 1 || goal.Mission.Milestones[0].ID != "milestone_scope" || len(goal.Mission.ValidationContract) != 1 || goal.Mission.ValidationContract[0].ID != "validation_scope" || goal.Mission.ValidationContract[0].Command != "printf approval-cas" {
+			return scriptedToolCall{}, errors.New("receipt mission get_goal did not expose the expected active local validation fixture")
+		}
+		return scriptedToolCall{Name: "shell", Arguments: map[string]any{"command": goal.Mission.ValidationContract[0].Command}}, nil
+	case 4:
+		if state.ReceiptCommandEvidence == "" {
+			return scriptedToolCall{}, errors.New("receipt mission validation has no actual successful shell result")
+		}
+		evidence := []string{state.ReceiptCommandEvidence}
+		return scriptedToolCall{Name: "record_goal_progress", Arguments: map[string]any{
+			"kind": "progress", "summary": "The approved local validation command completed with the expected output.", "evidence": evidence,
+			"commands":           []map[string]any{{"command": "printf approval-cas", "exit_code": 0, "summary": "Observed output: approval-cas"}},
+			"feature_updates":    []map[string]any{{"id": "feature_scope", "status": "completed", "evidence": evidence}},
+			"milestone_updates":  []map[string]any{{"id": "milestone_scope", "status": "completed", "evidence": evidence}},
+			"validation_updates": []map[string]any{{"id": "validation_scope", "status": "verified", "evidence": evidence}},
+		}}, nil
+	case 5:
+		goal := state.ReceiptGoal
+		if goal.Mission == nil || len(goal.Mission.Features) != 1 || len(goal.Mission.Milestones) != 1 || len(goal.Mission.ValidationContract) != 1 || goal.Mission.Features[0].Status != "completed" || goal.Mission.Milestones[0].Status != "completed" || goal.Mission.ValidationContract[0].Status != "verified" || len(goal.Progress) == 0 {
+			return scriptedToolCall{}, errors.New("receipt mission progress was not persisted by the real tool")
+		}
+		return scriptedToolCall{Name: "update_goal", Arguments: map[string]any{
+			"status": "complete", "completion_summary": "Receipt mission executed its approved local validation command and recorded the observed result.",
+			"evidence": []string{state.ReceiptCommandEvidence},
+		}}, nil
+	default:
+		if state.ReceiptGoal.Status != session.GoalStatusComplete || state.ReceiptGoal.CompletionAudit == nil || len(state.ReceiptGoal.CompletionAudit.Evidence) == 0 {
+			return scriptedToolCall{}, errors.New("receipt mission has no real Goal completion audit")
+		}
+		return scriptedToolCall{Name: "finish", Arguments: map[string]any{"message": "Receipt mission completed with actual local validation evidence"}}, nil
+	}
+}
+
 func inputText(input []any) string {
 	payload, _ := json.Marshal(input)
 	return string(payload)
@@ -444,9 +499,18 @@ func captureToolReferences(input []any, state *sessionScriptState) {
 			continue
 		}
 		captureCommandArtifactPath(output, state)
+		if header, body, ok := strings.Cut(output, "\n"); ok && strings.HasPrefix(header, "[command_result tool=shell ") && strings.Contains(header, " exit_code=0 ") && strings.TrimSpace(body) == "approval-cas" {
+			state.ReceiptCommandEvidence = output
+		}
 		var value map[string]any
 		if err := json.Unmarshal([]byte(output), &value); err != nil {
 			continue
+		}
+		if metadataString(value, "goal_id") != "" {
+			var goal session.SessionGoal
+			if err := json.Unmarshal([]byte(output), &goal); err == nil {
+				state.ReceiptGoal = goal
+			}
 		}
 		if sessionID := metadataString(value, "session_id"); sessionID != "" {
 			state.DirectChildID = sessionID

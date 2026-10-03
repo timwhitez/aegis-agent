@@ -32,6 +32,8 @@ import (
 type coreRunner interface {
 	Start(context.Context, runtime.StartRequest) (runtime.RunResult, error)
 	Continue(context.Context, runtime.ContinueRequest) (runtime.RunResult, error)
+	LookupApprovalContinue(runtime.ContinueRequest) (session.ApprovalReceiptLookup, error)
+	ApprovalReceipt(string, string) (session.ApprovalReceiptLookup, error)
 	Steer(context.Context, runtime.SteerRequest) (runtime.SteerResult, error)
 	Probe(context.Context, runtime.ProbeRequest) (runtime.ProbeResult, error)
 	Interrupt(string) error
@@ -549,7 +551,7 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage"})
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage", "approval-receipt"})
 	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -584,16 +586,20 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return err
 	}
 	var approvalTarget *session.ApprovalTarget
-	if *approvePlan {
-		var store *session.Store
-		if !approvalFlags.hasTarget() && (approvalFlags.latest || stdinIsTerminal()) {
-			storeRunner, _, err := storeRunnerLoader(*configPath, cwd)
-			if err != nil {
-				return err
-			}
-			store = storeRunner.Store()
+	var approvalStore *session.Store
+	if *approvePlan || approvalFlags.receipt {
+		storeView, _, err := storeRunnerLoader(*configPath, cwd)
+		if err != nil {
+			return err
 		}
-		approvalTarget, err = resolveCLIApprovalTarget(ctx, store, fs.Arg(0), approvalFlags, os.Stdin, stderr)
+		approvalStore = storeView.Store()
+		if approvalFlags.receipt {
+			if *planMode || *cancelPlan || *overrideGoalCoverage || *message != "" || *provider != "" || *model != "" || *system != "" {
+				return errors.New("--approval-receipt accepts only session, request ID, config and output flags")
+			}
+			return queryCLIApprovalReceipt(runner, approvalStore, fs.Arg(0), approvalFlags.requestID, *jsonMode, stdout)
+		}
+		approvalTarget, err = resolveCLIApprovalOperationTarget(ctx, runner, approvalStore, fs.Arg(0), approvalFlags, os.Stdin, stderr)
 		if err != nil {
 			return err
 		}
@@ -632,12 +638,19 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		PlanInputHandler:     cliPlanInputHandler(os.Stdin, stderr),
 		ApprovePlan:          *approvePlan,
 		ApprovalTarget:       approvalTarget,
+		ApprovalRequestID:    approvalFlags.requestID,
 		OverrideGoalCoverage: *overrideGoalCoverage,
 		CancelPlan:           *cancelPlan,
 		Source:               session.PlanModeSourceCLI,
 	})
 	cancelRender()
 	<-done
+	if result.Approval != nil {
+		if result.SessionID == "" {
+			result.SessionID = fs.Arg(0)
+		}
+		return printCLIApprovalResult(stdout, *jsonMode, result, approvalStore, err)
+	}
 	if err != nil {
 		return err
 	}
@@ -893,7 +906,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return flag.ErrHelp
 	}
 	subcommand := args[0]
-	subArgs := normalizeInterspersedFlags(args[1:], []string{"config", "plan-mode-id", "plan-version", "expected-revision"}, []string{"json", "override-coverage", "approve-latest"})
+	subArgs := normalizeInterspersedFlags(args[1:], []string{"config", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "override-coverage", "approve-latest", "approval-receipt"})
 	fs := flag.NewFlagSet("goal plan "+subcommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "")
@@ -903,10 +916,16 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if err := fs.Parse(subArgs); err != nil {
 		return err
 	}
+	if approvalFlags.receipt && subcommand != "approve" {
+		return errors.New("--approval-receipt is supported by goal plan approve")
+	}
+	if approvalFlags.receipt && *overrideCoverage {
+		return errors.New("--approval-receipt cannot change coverage parameters")
+	}
 	if fs.NArg() < 1 {
 		return fmt.Errorf("goal plan %s requires <session-id>", subcommand)
 	}
-	if err := approvalFlags.validate(subcommand == "approve"); err != nil {
+	if err := approvalFlags.validate(subcommand == "approve" && !approvalFlags.receipt); err != nil {
 		return err
 	}
 	sessionID := fs.Arg(0)
@@ -996,24 +1015,53 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		return err
 	}
 	store := storeRunner.Store()
+	var receiptRunner coreRunner
+	var receiptTarget *session.ApprovalTarget
+	if approvalFlags.requestID != "" || approvalFlags.receipt {
+		receiptRunner, _, err = runnerLoader(configPath, cwd)
+		if err != nil {
+			return err
+		}
+		if approvalFlags.receipt {
+			return queryCLIApprovalReceipt(receiptRunner, store, sessionID, approvalFlags.requestID, jsonMode, stdout)
+		}
+		receiptTarget, err = resolveCLIApprovalOperationTarget(ctx, receiptRunner, store, sessionID, approvalFlags, os.Stdin, stderr)
+		if err != nil {
+			return err
+		}
+		req := runtime.ContinueRequest{SessionID: sessionID, ApprovePlan: true, ApprovalTarget: receiptTarget, ApprovalRequestID: approvalFlags.requestID, OverrideGoalCoverage: overrideCoverage, Source: session.PlanModeSourceCLI}
+		lookup, err := receiptRunner.LookupApprovalContinue(req)
+		if err != nil {
+			return err
+		}
+		if lookup.Found {
+			result, err := receiptRunner.Continue(ctx, req)
+			if result.SessionID == "" {
+				result.SessionID = sessionID
+			}
+			return printCLIApprovalResult(stdout, jsonMode, result, store, err)
+		}
+	}
 	goal, err := loadCLIGoal(store, sessionID)
 	if err != nil {
 		return err
 	}
-	if err := approveMissionCoverage(goal, overrideCoverage); err != nil {
-		return err
-	}
 	planMode, planModeErr := store.LoadPlanMode(sessionID)
 	if planModeErr == nil && planMode.Enabled && planMode.LinkedGoalID == goal.GoalID {
-		var approvalTarget *session.ApprovalTarget
+		approvalTarget := receiptTarget
 		if planMode.Status == session.PlanModeStatusAwaitingApproval || planMode.Status == session.PlanModeStatusApproved || planMode.Status == session.PlanModeStatusExecuting {
-			approvalTarget, err = resolveCLIApprovalTarget(ctx, store, sessionID, approvalFlags, os.Stdin, stderr)
+			if approvalTarget == nil {
+				approvalTarget, err = resolveCLIApprovalTarget(ctx, store, sessionID, approvalFlags, os.Stdin, stderr)
+			}
 			if err != nil {
 				return err
 			}
 		}
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
+			if approvalFlags.requestID == "" {
+				return session.ErrMissingApprovalRequestID
+			}
 			runner, _, err := runnerLoader(configPath, cwd)
 			if err != nil {
 				return err
@@ -1022,17 +1070,14 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 				SessionID:            sessionID,
 				ApprovePlan:          true,
 				ApprovalTarget:       approvalTarget,
+				ApprovalRequestID:    approvalFlags.requestID,
 				OverrideGoalCoverage: overrideCoverage,
 				Source:               session.PlanModeSourceCLI,
 			})
-			if err != nil {
-				return err
+			if result.SessionID == "" {
+				result.SessionID = sessionID
 			}
-			if jsonMode {
-				return json.NewEncoder(stdout).Encode(result)
-			}
-			_, _ = fmt.Fprintf(stdout, "goal plan approval accepted: %s (%s)\n", result.SessionID, result.Status)
-			return nil
+			return printCLIApprovalResult(stdout, jsonMode, result, store, err)
 		case session.PlanModeStatusPlanning, session.PlanModeStatusAwaitingUserInput:
 			return errors.New("linked Plan Mode is not awaiting approval; submit the plan before approving the mission plan")
 		case session.PlanModeStatusExecuting:
@@ -2483,6 +2528,9 @@ func readPromptStdin(stdin io.Reader) (string, error) {
 }
 
 func printResult(w io.Writer, jsonMode bool, result runtime.RunResult, exitCode int) error {
+	if result.Approval != nil {
+		return printCLIApprovalResult(w, jsonMode, result, nil, nil)
+	}
 	if jsonMode {
 		payload := map[string]any{
 			"session_id": result.SessionID,

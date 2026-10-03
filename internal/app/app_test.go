@@ -144,6 +144,24 @@ func (f *fakeRunner) Continue(_ context.Context, req runtime.ContinueRequest) (r
 	return f.continueResult, nil
 }
 
+func (f *fakeRunner) LookupApprovalContinue(req runtime.ContinueRequest) (session.ApprovalReceiptLookup, error) {
+	if f.store == nil {
+		return session.ApprovalReceiptLookup{}, nil
+	}
+	cfg := config.Default()
+	cfg.Session.Dir = f.store.Root()
+	return runtime.NewCoreRunner(cfg).LookupApprovalContinue(req)
+}
+
+func (f *fakeRunner) ApprovalReceipt(id, requestID string) (session.ApprovalReceiptLookup, error) {
+	if f.store == nil {
+		return session.ApprovalReceiptLookup{}, os.ErrNotExist
+	}
+	cfg := config.Default()
+	cfg.Session.Dir = f.store.Root()
+	return runtime.NewCoreRunner(cfg).ApprovalReceipt(id, requestID)
+}
+
 func (f *fakeRunner) Steer(_ context.Context, req runtime.SteerRequest) (runtime.SteerResult, error) {
 	f.steerCalls = append(f.steerCalls, req)
 	return f.steerResult, f.steerErr
@@ -803,7 +821,7 @@ func TestContinueCommandParsesPlanApproval(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"continue", "s1", "--json", "--approve-plan", "--plan-mode-id", "plan_reviewed", "--plan-version", "1", "--expected-revision", "rev_reviewed"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"continue", "s1", "--json", "--approve-plan", "--approval-request-id", "reviewed-parser", "--plan-mode-id", "plan_reviewed", "--plan-version", "1", "--expected-revision", "rev_reviewed"}, &stdout, &stderr); err != nil {
 		t.Fatalf("continue: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
 	if len(fake.continueCalls) != 1 {
@@ -4224,7 +4242,7 @@ func TestContinueCommandRequiresReviewedApprovalTarget(t *testing.T) {
 	stdinIsTerminal = func() bool { return false }
 	defer func() { stdinIsTerminal = restoreTTY }()
 	var stdout, stderr bytes.Buffer
-	err := Run(context.Background(), []string{"continue", "s1", "--approve-plan"}, &stdout, &stderr)
+	err := Run(context.Background(), []string{"continue", "s1", "--approve-plan", "--approval-request-id", "missing-target"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "expected-revision") {
 		t.Fatalf("missing reviewed target must fail explicitly, got %v", err)
 	}

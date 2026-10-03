@@ -33,7 +33,8 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-for js_file in internal/webconsole/assets/*.js internal/webconsole/assets-v2/*.js; do
+for js_file in internal/webconsole/assets/*.js internal/webconsole/assets/*.mjs internal/webconsole/assets-v2/*.js; do
+  [[ -f "$js_file" ]] || continue
   node --check "$js_file"
 done
 

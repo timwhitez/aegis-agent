@@ -173,6 +173,7 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 - operator-owned 静态/动态文案、toast/dialog、ARIA、placeholder/title、日期和数字必须覆盖 `zh-CN` 与 `en`；默认 `zh-CN`
 - local preference 只保存在浏览器中；用户消息、tool/provider 原文、文件内容、路径和 durable session facts 保持原样
 - operator-owned fallback label 必须随 locale 翻译，但自定义 agent name/role 等 durable facts 必须保持原文；不能用整块 raw-content 排除规则掩盖同一节点中的 fallback
+- Goal progress 工具的调用预览、调用正文、结果预览与最新进度卡片必须将模型/用户提供的 summary、kind 和身份值放在独立 raw descendant；固定操作标题、kind label、计数、计划状态及缺失事实时的 fallback 仍参与语言审计，不能翻译原始进度内容或整块跳过卡片。
 - Context inspector 的 heading、metric label、bounded-view copy 与 empty/loading state 属于 operator-owned 文案；deterministic browser acceptance 必须让 populated Context panel 分别保持可见并产出一张 `zh-CN` 和一张 `en` 截图
 - Task/Todo fallback、Skill author prefix 与 background-notification fallback 必须和 durable value 分离成独立 DOM text node；i18n audit 只能跳过显式标记的 raw descendant，不能排除整个 Task/Skill/notification container
 - 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
@@ -591,11 +592,21 @@ Session detail 必须返回从 `goal.json` / `goal-history.jsonl` 派生的 Goal
 
 `POST /api/sessions/{id}/planmode/approve`
 
-- 输入 `{ "plan_mode_id": "...", "plan_version": 1, "expected_revision": "...", "override_coverage": false }`，批准用户已审阅的审批内容，并通过 runtime continue path 追加 `planmode_approval` user message 后开始执行。这是原 latest 契约的增强，不表示旧 latest 实现违背旧 spec
+- 输入 `{ "approval_request_id": "...", "plan_mode_id": "...", "plan_version": 1, "expected_revision": "...", "override_coverage": false }`，批准用户已审阅的审批内容，并通过 runtime continue path 追加 `planmode_approval` user message 后开始执行。这是原 latest 契约的增强，不表示旧 latest 实现违背旧 spec
 - revision 覆盖 Plan Mode 身份、objective、正文及审批展示内容；linked goal 身份与存在性、mission requirements/features/milestones/validation contract/role plan/artifact 约定，以及影响 coverage 的 `claimed_assertions` / `validation_ids` 映射都属于审批 scope。只有不影响审批语义的 usage、progress/evidence、状态展示、ApprovedAt 和无关更新时间可排除
-- 权威 target 比较与 durable prepare/run claim 协调必须在 HTTP 202 和 `webconsole.handle.acquired` 等执行接纳事实之前同步完成；provider/agent 执行仍异步。stale、替换、取消或内容变化返回 409，缺少目标要求重新加载/升级；都不得偷偷替换成 latest，不写 approval/history/message、不启动 provider，也不把原可恢复 session 标成 failed
+- 权威 target 比较与 durable prepare/run claim 协调必须在 HTTP 202 和 `webconsole.handle.acquired` 等执行接纳事实之前同步完成；provider/agent 执行仍异步。没有既有回执的新操作遇到 stale、替换、取消或内容变化返回 409，缺少目标要求重新加载/升级；不得偷偷替换成 latest，不写 approval/history/message、不启动 provider，也不把原可恢复 session 标成 failed
 - 前端捕获实际显示的 target；coverage override 确认与重试沿用同一 target。确认期间内容变化必须重新审阅，两种语言都明确显示“计划已更新，请重新审阅” / “The plan has changed. Please review it again.”，不自动批准
 - revision 是并发条件，不是权限令牌；只绑定审批语义 projection，不冻结 provider 配置、工作目录或所有 runtime 输入。旧审批事实缺 revision 时保持 legacy/unknown，不倒填当前 revision
+
+审批执行入口先按 session 内 request ID 查完整、已校验的 ledger：同 ID 同参回原 receipt（当前 target/状态已变化也可），改参 conflict；新 ID 命中已 admitted target 只保存 alias 并回原 receipt。新 admission 202 前完成 receipt commit，重放返回 200，不增 handle/claim/replay/provider；linked mission executing 保留原有事实修复 200。缺 ID 要求客户端升级；corrupt/ambiguous receipt 明确恢复且不能换 ID 绕过。coverage false→true 是新 ID，不能把拒绝记成 admitted。
+
+`GET /api/sessions/{id}/approval-receipts/{requestID}` 提供只读绑定、canonical receipt 与单独标注的当前 durable 状态。UI 保存 pending ID/target/参数，未知响应先查询，不自动换 ID 重发；刷新、切 session 和旧响应不能污染新操作；完成回执重放不得假显示 generating。
+
+浏览器审批 ID 使用安全随机 UUID：优先原生 `crypto.randomUUID`，可信 LAN HTTP 等未提供该方法的环境使用 `crypto.getRandomValues` 生成 UUID v4。仍须在 POST 前保存原 ID 与参数；缺少安全随机能力时明确失败，不用弱随机 ID 或发送无身份审批。
+
+同一会话内晚到的新 admission 202 同样不能覆盖已加载的 terminal 状态或 ordinary continue 的后续 generation；前端按请求开始时的已观测状态、receipt 的实际 run generation 与最新会话状态判断是否显示执行中，允许新 claim 在页面仍显示原 pre-claim 状态时正常呈现。回执始终描述原操作，当前会话状态优先取最新已加载的 session facts，不能用历史响应中的状态长期替代。
+
+只读 receipt 查询未命中不能覆盖已有明确未接纳的失败结果；用户重新审阅新 target 后可以创建新的审批请求，网络结果未知且查询 404 的请求仍保留原 ID 与参数。linked executing 的合法 mission facts 修复返回 200 / SessionGoal、无 receipt，只完成并释放同 ID 的浏览器意图，不显示 generating，后续新 target 可以重新审阅审批；direct 执行入口不得把无 receipt 的响应当作成功接纳。
 
 `POST /api/sessions/{id}/planmode/revise`
 

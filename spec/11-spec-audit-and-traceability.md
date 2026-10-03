@@ -199,6 +199,8 @@
 - 普通与审批 claim 都分配 durable `run_generation`；queued Steer 的计数或时间变化不冒充新 generation；执行接纳、abort、重新待审的完整状态 CAS 若输给观察性更新，必须重新读取并证明同代、未推进且其他字段匹配后才重试，通用状态 CAS 保持严格。legacy 缺身份仍需明确恢复。CLI goal pause/resume/complete/clear 的事件失败回滚与完整 mutation 同处协调边界，不覆盖 peer 新审批内容；缺失/未关联 gate 的审批 fallback 同样必须 fresh 重判并联合 snapshot/ensure/event/rollback，保护 peer plan/markdown/history。budget wrap-up helper 采用 fresh goal 前必须同锁验证匹配 snapshot，不能让 A→B→A 的瞬态 B 进入实际 provider prompt
 - 成功事实与 retry/dedup identity 保存实际匹配的 `approved_revision`；旧事实缺 revision 保留 legacy/unknown，不用当前 scope 倒填。CLI 脚本必须明确 target 或显式 `--approve-latest`，交互入口携带展示 target；linked executing 的 Web/CLI 历史事实修复仍要求完整 target、同锁 fresh gate 校验，合法目标保持 200/不执行及历史 unknown。普通 continue 保持原行为
 
+审批操作回执 gate：session 内 versioned ledger 全文件先校验，request-ID lookup 先于当前 CAS；同参重放和 target alias 不再接纳执行，新目标不被旧 receipt 阻塞。临时文件 sync、atomic publish、parent sync 的 admitted commit 先于执行；JSONL 不因此声称断电持久。回执保存必要控制事实恢复 payload，hook 消息可空；admitted/ambiguous/legacy executing 不自动重跑，显式普通 continue 可恢复。所有实际 CLI/SDK/Web 执行别名共用协议，UI 未知响应查询且重放不假 generating。
+
 ### 2.12 Context budget 与 lineage observability
 
 来源：
