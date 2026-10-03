@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { approvalE2EFixtures as fixture, createApprovalProtocolAudit, allowApprovalProtocolError,
-  allowMissingApprovalReceipt, allowApprovalTransportFailure } from './webconsole_approval_cas_e2e.mjs';
+  allowMissingApprovalReceipt, allowApprovalTransportFailure,
+  allowApprovalDetailRefreshFailure } from './webconsole_approval_cas_e2e.mjs';
 
 const profiles = [
   { locale: 'zh-CN', size: 'desktop', viewport: { width: 1440, height: 1000 } },
@@ -217,11 +218,12 @@ async function lateResponseIsolation(env) {
     await openInspector(a, 'plan');
     await assertNotice(a, env.profile.locale, pendingB.approval_request_id);
     const sameSessionPeer = await sameSessionPeerIsolation(env);
+    const sameViewLateResponse = await sameViewLateResponseIsolation(env);
     return { session_id: idB, late_session_id: idA, request_id: pendingB.approval_request_id,
       late_request_id: old.body.approval_request_id, ui_approval_posts: { A: 1, B: 1 },
       provider_delta: { A: 1, B: 0 }, preserved_draft: draft,
       control_flow: 'double-click A, real history click B, B pending, release actual A response',
-      shared_session_peer: sameSessionPeer };
+      shared_session_peer: sameSessionPeer, same_view_late_response: sameViewLateResponse };
   } finally {
     delayed.release();
     await delayed.dispose();
@@ -229,6 +231,144 @@ async function lateResponseIsolation(env) {
     trafficA.dispose();
     trafficB.dispose();
   }
+}
+
+async function sameViewLateResponseIsolation(env) {
+  const evidence = [];
+  for (const ordinaryFollowup of [false, true]) {
+    const { a, context, baseURL, sessionRoot, providerLogPath } = env;
+    const id = await create(env, ordinaryFollowup ? 'same-view-late-followup' : 'same-view-late-completed');
+    await openSessionUI(a, id, 'plan');
+    const reviewed = await fixture.displayedTarget(a);
+    const beforeCalls = await providerCalls(providerLogPath, id);
+    const traffic = observe(a, baseURL, id);
+    const delayed = await delayNextApproval(a, baseURL, id);
+    let refreshFailure;
+    try {
+      await a.locator(selectors.approve).click();
+      const old = await delayed.fetched;
+      assert.equal(old.status, 202, old.text);
+      fixture.assertApprovalPost(old.body, reviewed);
+      const original = await completed(context, baseURL, id);
+      await loadedState(a, id, original.state.run_generation, 'completed');
+      await assertNotGenerating(a);
+      await assertNotice(a, env.profile.locale, old.body.approval_request_id);
+      await assertCurrentNoticeStatus(a, env.profile.locale, 'completed');
+      const originalExecution = await providerExecution(env, id, original, beforeCalls, ['finish']);
+      let current = original;
+      let ordinaryExecution = null;
+      if (ordinaryFollowup) {
+        // This is the real composer Send control. No new approval operation is
+        // allocated for an ordinary continuation of the settled session.
+        await ordinaryContinue(a, baseURL, id, 'Explicit same-view ordinary follow-up while the old approval transport is delayed.');
+        current = await completed(context, baseURL, id);
+        assert.notEqual(current.state.run_generation, original.state.run_generation);
+        await loadedState(a, id, current.state.run_generation, 'completed');
+        await assertNotGenerating(a);
+        await assertCurrentNoticeStatus(a, env.profile.locale, 'completed');
+        ordinaryExecution = await providerExecution(env, id, current, beforeCalls + 1, ['finish']);
+        refreshFailure = await abortNextDetailRefresh(a, baseURL, id, env.expectedFailures);
+      }
+      const beforeLate = await fixture.durableFacts(sessionRoot, id);
+      const generationWatch = await watchGenerating(a);
+      // No await separates arming and the release boundary. Earlier natural
+      // polling is continued and cannot consume the one permitted failure.
+      refreshFailure?.arm();
+      delayed.release();
+      refreshFailure?.markReleased();
+      await delayed.done;
+      let aborted = null;
+      if (refreshFailure) {
+        await until(() => refreshFailure.observed(), 'one exact post-release detail GET must be aborted');
+        aborted = refreshFailure.observed();
+      }
+      await until(() => a.locator(selectors.check).isEnabled(), 'same-view old response must finish processing');
+      await loadedState(a, id, current.state.run_generation, 'completed');
+      await assertNotGenerating(a);
+      assert.deepEqual(await generationWatch.stop(), [], 'old accepted envelope must never revive a settled or later generation');
+      await assertNotice(a, env.profile.locale, old.body.approval_request_id);
+      await assertCurrentNoticeStatus(a, env.profile.locale, 'completed');
+      assert.deepEqual(await fixture.durableFacts(sessionRoot, id), beforeLate, 'late transport delivery cannot write new execution facts');
+      assert.equal(await providerCalls(providerLogPath, id), beforeCalls + (ordinaryFollowup ? 2 : 1));
+      assert.equal(traffic.posts.length, 1);
+      const ledger = await readLedger(sessionRoot, id);
+      assert.equal(Object.keys(ledger.operations).length, 1);
+      assert.equal(Object.keys(ledger.target_admissions).length, 1);
+      const query = a.waitForResponse((response) => response.request().method() === 'GET' &&
+        response.url() === `${baseURL}/api/sessions/${id}/approval-receipts/${old.body.approval_request_id}`);
+      await a.locator(selectors.check).click();
+      const checked = await query;
+      assert.equal(checked.status(), 200, await checked.text());
+      const receipt = await checked.json();
+      assertReceipt(receipt, old.body, 'admitted');
+      assert.equal(receipt.approval.lookup.receipt.recovery.run_generation, original.state.run_generation);
+      assert.equal(receipt.current_state.run_generation, current.state.run_generation);
+      assert.equal(receipt.current_state.status, 'completed');
+      await until(() => a.locator(selectors.check).isEnabled(), 'real Check must finish processing');
+      await assertNotGenerating(a);
+      await assertCurrentNoticeStatus(a, env.profile.locale, 'completed');
+      assert.equal(await providerCalls(providerLogPath, id), beforeCalls + (ordinaryFollowup ? 2 : 1));
+      evidence.push({ scenario: ordinaryFollowup ? 'loaded-later-generation-and-refresh-failure' : 'loaded-completed-same-generation',
+        session_id: id, request_id: old.body.approval_request_id, reviewed,
+        response_status: old.status, original_execution: originalExecution, ordinary_execution: ordinaryExecution,
+        current_generation: current.state.run_generation, current_notice_status: 'completed',
+        canonical_operations: 1, admitted_execution_generations: 1,
+        provider_delta: ordinaryFollowup ? 2 : 1, ui_approval_posts: traffic.posts.length,
+        receipt_queries: traffic.queries, ...(aborted ? { intentional_detail_refresh_failure: aborted } : {}),
+        control_flow: 'real Approve accepted by server, natural detail polling, delayed transport released, real Check of historical receipt',
+        ...(ordinaryFollowup ? { unverified_browser_intermediate_state: 'Running notice while an ordinary follow-up is still active: fixed local finish marker has no deterministic hold window; covered by actual UI handler unit tests' } : {}) });
+    } finally {
+      delayed.release();
+      await delayed.dispose();
+      await refreshFailure?.dispose();
+      traffic.dispose();
+    }
+  }
+  return evidence;
+}
+
+async function loadedState(page, id, generation, status) {
+  await page.waitForFunction(({ id, generation, status }) => state.sessionId === id &&
+    state.sessionDetail?.metadata?.id === id && state.sessionDetail?.state?.run_generation === generation &&
+    state.sessionDetail?.state?.status === status && !state.sessionDetail?.active_handle,
+  { id, generation, status });
+}
+
+async function assertCurrentNoticeStatus(page, locale, status) {
+  const row = page.locator(`${selectors.notice}:visible > div`).filter({
+    hasText: locale === 'zh-CN' ? /^当前会话:/ : /^Current session:/
+  });
+  assert.equal(await row.count(), 1);
+  assert.equal((await row.innerText()).trim(), locale === 'zh-CN' ? '当前会话: 已完成' : 'Current session: Completed');
+  assert.equal(status, 'completed');
+}
+
+async function abortNextDetailRefresh(page, baseURL, id, expectedFailures) {
+  const url = `${baseURL}/api/sessions/${encodeURIComponent(id)}?limit=40`;
+  let armed = false, released = false, intercepted = false;
+  let armedAt = null, releasedAt = null;
+  let observed = null, failure = null;
+  const reason = 'one exact detail GET observed after the delayed accepted transport release; request initiator is not inferred';
+  const handler = async (route) => {
+    if (!armed || !released || intercepted) return route.continue();
+    intercepted = true;
+    try {
+      const request = route.request();
+      allowApprovalDetailRefreshFailure(request, id, reason);
+      expectedFailures.add(url);
+      await route.abort('failed');
+      observed = { method: request.method(), url: request.url(), session_id: id, reason,
+        armed_after_setup: true, observed_after_release_boundary: true,
+        armed_at: armedAt, released_at: releasedAt, observed_at: performance.now(),
+        request_identity: 'the exact intercepted Playwright Request object registered with the protocol audit' };
+    } catch (error) { failure = error; }
+  };
+  await page.route(url, handler);
+  return {
+    arm: () => { assert.equal(armed, false); armedAt = performance.now(); armed = true; },
+    markReleased: () => { assert.equal(armed, true); assert.equal(released, false); releasedAt = performance.now(); released = true; },
+    observed: () => { if (failure) throw failure; return observed; },
+    dispose: () => page.unroute(url, handler) };
 }
 
 async function sameSessionPeerIsolation(env) {
@@ -358,17 +498,20 @@ async function coverageNewID(env) {
     fixture.assertApprovalPost(newRequest, reviewed, true);
     assert.notEqual(newRequest.approval_request_id, original.approval_request_id);
     assertReceipt(await approved.json(), newRequest, 'admitted');
-    await completed(context, baseURL, id);
+    const settled = await completed(context, baseURL, id);
     const ledger = await readLedger(env.sessionRoot, id);
     assert.equal(Object.values(ledger.operations).filter((op) => op.stage === 'rejected').length, 1);
     assert.equal(Object.values(ledger.operations).filter((op) => op.stage === 'admitted').length, 1);
     assert.equal(Object.keys(ledger.target_admissions).length, 1);
-    assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 1);
+    assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 5);
+    const execution = await providerExecution(env, id, settled, beforeCalls,
+      ['get_goal', 'shell', 'record_goal_progress', 'update_goal', 'finish']);
     assert.equal(traffic.posts.length, 2);
     await assertNotGenerating(a);
     await assertNotice(a, env.profile.locale, newRequest.approval_request_id);
     return { session_id: id, rejected_request_id: original.approval_request_id,
-      request_id: newRequest.approval_request_id, reviewed, provider_delta: 1,
+      request_id: newRequest.approval_request_id, reviewed, provider_delta: 5,
+      admitted_execution_generations: 1, execution,
       api_checks: ['same ID plus changed override conflicts'],
       companion_browser_scope_change_checks: 'approval_cas coverage_confirmation and coverage_display_changed' };
   } finally {
@@ -386,6 +529,7 @@ async function completedAlias(env) {
   const beforeCalls = await providerCalls(providerLogPath, id);
   let canonicalRequest;
   let operationID;
+  let originalExecution;
   try {
     await openSessionUI(a, id, 'plan');
     await openSessionUI(b, id, 'goal');
@@ -396,7 +540,9 @@ async function completedAlias(env) {
     canonicalRequest = response.request().postDataJSON();
     fixture.assertApprovalPost(canonicalRequest, reviewed);
     operationID = (await response.json()).approval.lookup.receipt.operation_id;
-    await completed(context, baseURL, id);
+    const settled = await completed(context, baseURL, id);
+    originalExecution = await providerExecution(env, id, settled, beforeCalls,
+      ['get_goal', 'shell', 'record_goal_progress', 'update_goal', 'finish']);
     const originalReceipt = (await queryReceipt(context, baseURL, id,
       canonicalRequest.approval_request_id)).approval.lookup.receipt;
     const beforeAlias = await fixture.durableFacts(sessionRoot, id);
@@ -414,7 +560,7 @@ async function completedAlias(env) {
     assert.equal(result.approval.lookup.receipt.operation_id, operationID);
     assert.deepEqual(stableReceipt(result.approval.lookup.receipt), stableReceipt(originalReceipt));
     assert.deepEqual(withoutLedger(await fixture.durableFacts(sessionRoot, id)), withoutLedger(beforeAlias));
-    assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 1);
+    assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 5);
     await assertNotGenerating(a);
     assert.deepEqual(await generationWatch.stop(), [], 'completed alias must never show a generating message');
     await assertNotice(a, env.profile.locale, aliasRequest.approval_request_id);
@@ -430,7 +576,9 @@ async function completedAlias(env) {
   assert.equal(query.approval.lookup.receipt.operation_id, operationID);
   assert.notEqual(query.current_state.run_generation, query.approval.lookup.receipt.recovery.run_generation);
   assert.equal(query.current_state.run_generation, later.state.run_generation);
-  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 2);
+  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 6);
+  const ordinaryExecution = await providerExecution(env, id, later, beforeCalls + 5, ['finish']);
+  assert.notEqual(ordinaryExecution.run_generation, originalExecution.run_generation);
   await fixture.patchMission(b, baseURL, id, { requirements: [{ id: 'requirement_scope', text: 'Settings must remain unchanged: later linked scope.' }] });
   const changed = await fixture.coherentSnapshot(context, baseURL, id);
   assert.notEqual(changed.plan_mode.approval_revision, reviewed.expected_revision);
@@ -440,7 +588,7 @@ async function completedAlias(env) {
   assertReceipt(replay.json, canonicalRequest, 'admitted', true);
   assert.equal(replay.json.approval.lookup.receipt.operation_id, operationID);
   assert.deepEqual(await fixture.durableFacts(sessionRoot, id), beforeReplay);
-  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 2);
+  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 6);
   await seedNewTarget(sessionRoot, id);
   await openSessionUI(a, id, 'plan');
   const newTarget = await fixture.displayedTarget(a);
@@ -452,8 +600,11 @@ async function completedAlias(env) {
   const freshRequest = fresh.request().postDataJSON();
   fixture.assertApprovalPost(freshRequest, newTarget);
   assert.notEqual(freshRequest.approval_request_id, canonicalRequest.approval_request_id);
-  await completed(context, baseURL, id);
-  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 3);
+  const freshSettled = await completed(context, baseURL, id);
+  assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 7);
+  const freshExecution = await providerExecution(env, id, freshSettled, beforeCalls + 6, ['finish']);
+  assert.notEqual(freshExecution.run_generation, originalExecution.run_generation);
+  assert.notEqual(freshExecution.run_generation, ordinaryExecution.run_generation);
   const ledger = await readLedger(sessionRoot, id);
   assert.equal(Object.values(ledger.operations).filter((op) => op.stage === 'admitted').length, 2);
   assert.equal(Object.keys(ledger.target_admissions).length, 2);
@@ -461,7 +612,9 @@ async function completedAlias(env) {
   await assertNotice(a, env.profile.locale, freshRequest.approval_request_id);
   return { session_id: id, request_id: canonicalRequest.approval_request_id, operation_id: operationID,
     reviewed, new_target: newTarget, new_request_id: freshRequest.approval_request_id,
-    provider_delta: { original_admission: 1, completed_alias_and_replay: 0, ordinary_continue: 1, new_target_admission: 1 },
+    provider_delta: { original_admission: 5, completed_alias_and_replay: 0, ordinary_continue: 1, new_target_admission: 1 },
+    admitted_execution_generations: 2,
+    executions: { original_admission: originalExecution, ordinary_continue: ordinaryExecution, new_target_admission: freshExecution },
     api_checks: ['same-ID linked replay after semantic change', 'old receipt query separates later generation'],
     fixture_setup: 'new pending plan seeded only after settled ordinary continue; existing historical revisions preserved' };
 }
@@ -552,19 +705,22 @@ async function legacyRecovery(env) {
   assert.notEqual(freshRequest.approval_request_id, repairRequest.approval_request_id,
     'completed non-executing repair must not block a newly reviewed target');
   assertReceipt(await response.json(), freshRequest, 'admitted');
-  await completed(context, baseURL, linked);
+  const linkedSettled = await completed(context, baseURL, linked);
   const ledger = await readLedger(sessionRoot, linked);
   assert.equal(Object.keys(ledger.operations).length, 1);
   assert.equal(Object.keys(ledger.target_admissions).length, 1);
   assert.equal(ledger.requests[repairRequest.approval_request_id], undefined);
-  assert.equal(await providerCalls(providerLogPath, linked), linkedBefore + 1);
+  assert.equal(await providerCalls(providerLogPath, linked), linkedBefore + 5);
+  const linkedExecution = await providerExecution(env, linked, linkedSettled, linkedBefore,
+    ['get_goal', 'shell', 'record_goal_progress', 'update_goal', 'finish']);
   assert.equal(linkedTraffic.posts.length, 2, 'fact repair must not automatically retry or block the one fresh approval');
   linkedTraffic.dispose();
   await assertNotGenerating(a);
   await assertNotice(a, env.profile.locale, freshRequest.approval_request_id);
   return { session_id: id, linked_session_id: linked, linked_repair_request_id: repairRequest.approval_request_id,
     linked_fresh_request_id: freshRequest.approval_request_id, linked_ui_posts: linkedTraffic.posts,
-    provider_delta: { legacy_approval: 0, explicit_ordinary_continue: 1, linked_fact_repair: 0, linked_fresh_target_admission: 1 },
+    provider_delta: { legacy_approval: 0, explicit_ordinary_continue: 1, linked_fact_repair: 0, linked_fresh_target_admission: 5 },
+    linked_admitted_execution_generations: 1, linked_execution: linkedExecution,
     ui_controls: ['old real Approve returns explicit recovery', 'composer Send performs ordinary continue',
       'old real Goal Approve repairs executing facts without admission', 'newly reviewed linked V2 starts a new operation'],
     api_checks: ['linked executing missing target: HTTP 400', 'linked executing complete target replay: HTTP 200, no receipt/provider, unknown revision remains unknown',
@@ -600,7 +756,8 @@ async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
 }
 
 function create(env, label, linked = false) {
-  return fixture.createFixture(env.context, env.baseURL, `receipt ${label} ${env.suffix}`, linked, 'E2E_UI_PLAN');
+  return fixture.createFixture(env.context, env.baseURL, `receipt ${label} ${env.suffix}`, linked,
+    linked ? 'E2E_UI_PLAN_RECEIPT_MISSION' : 'E2E_UI_PLAN');
 }
 
 function completed(context, baseURL, id) {
@@ -754,6 +911,17 @@ async function providerCalls(file, id) {
   return (text || '').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((row) => row.session_id === id).length;
 }
 
+async function providerExecution(env, id, detail, beforeCalls, expectedTools) {
+  const text = await readFile(env.providerLogPath, 'utf8');
+  const turns = text.split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((row) => row.session_id === id).slice(beforeCalls);
+  assert.deepEqual(turns.map((row) => row.tool), expectedTools, 'actual provider tool sequence for this settled generation');
+  assert.ok(detail.state.run_generation, 'settled execution has a durable generation identity');
+  return { run_generation: detail.state.run_generation, provider_turns: turns.length,
+    tool_sequence: turns.map((row) => row.tool), provider_call_numbers: turns.map((row) => row.call),
+    session_status: detail.state.status, goal_status: detail.goal?.status || null };
+}
+
 function withoutLedger(facts) {
   const copy = { ...facts };
   delete copy['approval-operations.json'];
@@ -876,7 +1044,9 @@ function collectErrors(page, baseURL, scenario, tab, expectedFailures, errors, e
   page.on('pageerror', (error) => errors.page.push({ scenario, tab, message: error.message }));
   page.on('requestfailed', (request) => {
     const entry = { scenario, tab, url: request.url(), error: request.failure()?.errorText };
-    if (expectedFailures.has(request.url()) && audit.isExpectedTransport(request)) expectedTransportFailures.push(entry);
+    if (expectedFailures.has(request.url()) && audit.isExpectedTransport(request)) {
+      expectedTransportFailures.push({ ...entry, ...audit.transportEvidence(request) });
+    }
     else errors.request.push(entry);
   });
   return audit;

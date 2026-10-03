@@ -515,9 +515,18 @@ export function createApprovalProtocolAudit({ page, baseURL, scenario, tab }) {
       assert.equal(request.method(), 'POST');
       const body = request.postDataJSON();
       assert.ok(body.approval_request_id);
-      allowedTransport.set(request, { request_id: body.approval_request_id, reason: 'intentionally lost approval transport' });
+      allowedTransport.set(request, { classification: 'intentional_transport_failure', method: 'POST',
+        request_id: body.approval_request_id, reason: 'intentionally lost approval transport' });
+    },
+    allowDetailRefreshFailure(request, sessionID, reason) {
+      assert.ok(sessionID && typeof reason === 'string' && reason.trim());
+      assert.equal(request.method(), 'GET');
+      assert.equal(request.url(), `${baseURL}/api/sessions/${encodeURIComponent(sessionID)}?limit=40`);
+      allowedTransport.set(request, { classification: 'intentional_detail_refresh_failure', method: 'GET',
+        session_id: sessionID, reason });
     },
     isExpectedTransport(request) { return allowedTransport.has(request); },
+    transportEvidence(request) { return allowedTransport.get(request); },
     async complete() {
       if (completedResult) return completedResult;
       page.off('console', onConsole);
@@ -535,10 +544,10 @@ export function createApprovalProtocolAudit({ page, baseURL, scenario, tab }) {
           continue;
         }
         const failure = /^Failed to load resource: net::ERR_FAILED\b/.test(entry.message) &&
-          failed.find((value) => value.url === entry.location.url && value.method === 'POST' && value.intent && !consumedFailures.has(value));
+          failed.find((value) => value.url === entry.location.url && value.intent?.method === value.method && !consumedFailures.has(value));
         if (failure) {
           consumedFailures.add(failure);
-          expected.push({ ...entry, classification: 'intentional_transport_failure', request_id: failure.intent.request_id });
+          expected.push({ ...entry, ...failure.intent });
           continue;
         }
         unmatchedConsole.push({ ...entry, ...(item ? { response: protocolResponseEvidence(item) } : {}) });
@@ -593,6 +602,12 @@ export function allowApprovalTransportFailure(request) {
   const audit = protocolAudits.get(request.frame().page());
   assert.ok(audit);
   audit.allowTransport(request);
+}
+
+export function allowApprovalDetailRefreshFailure(request, sessionID, reason) {
+  const audit = protocolAudits.get(request.frame().page());
+  assert.ok(audit);
+  audit.allowDetailRefreshFailure(request, sessionID, reason);
 }
 
 async function assertUnaccepted(context, baseURL, root, id, before, version) {
