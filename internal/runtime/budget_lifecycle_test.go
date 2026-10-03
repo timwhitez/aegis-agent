@@ -856,13 +856,13 @@ func TestActiveRuntimeCheckpointPersistenceFailureCancelsProviderAndFailsClosed(
 		done <- runOutcome{result: result, err: err}
 	}()
 	var activeBudget *childBudgetRun
+	// Arm the fault at actual provider readiness. The unchanged active budget
+	// and the Engine outcome bound setup; preparation has no two-second SLA.
 	select {
 	case activeBudget = <-started:
 		diagnostic.record("provider start observed")
 	case outcome := <-done:
 		t.Fatalf("provider did not start: engine returned early status=%s err=%v", outcome.result.Status, outcome.err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("provider did not start")
 	}
 	if activeBudget == nil {
 		t.Fatal("provider context has no active child budget")

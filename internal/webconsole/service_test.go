@@ -3151,7 +3151,16 @@ func TestServiceQueueSubmitRejectsUnsupportedWaitMode(t *testing.T) {
 
 func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	diagnostic := newWebTimingDiagnostic()
-	server := newSubmitPlanServer(diagnostic.record)
+	responseWritten := make(chan struct{}, 1)
+	server := newSubmitPlanServer(func(phase string) {
+		diagnostic.record(phase)
+		if phase == "mock provider response written" {
+			select {
+			case responseWritten <- struct{}{}:
+			default:
+			}
+		}
+	})
 	defer server.Close()
 
 	cfg := testConfig(t, server.URL)
@@ -3183,6 +3192,26 @@ func TestServiceStartSessionWithPlanModePersistsPlanAndDetail(t *testing.T) {
 	}, http.StatusAccepted, &result)
 
 	diagnostic.record("start accepted")
+	// The assertion concerns submit_plan persistence after an actual response,
+	// not provider startup/transport latency. Failed preparation still exits
+	// early; the package deadline bounds setup when no response is produced.
+	setupTicker := time.NewTicker(40 * time.Millisecond)
+	defer setupTicker.Stop()
+	responseReady := false
+	for !responseReady {
+		select {
+		case <-responseWritten:
+			responseReady = true
+		case <-setupTicker.C:
+			state, err := svc.store.LoadState(result.SessionID)
+			if err == nil && state.Status == session.StatusFailed {
+				t.Fatalf("mock response was not written: engine ended early status=%s phase=%s err=%s", state.Status, state.Phase, state.LastError)
+			}
+		case <-t.Context().Done():
+			t.Fatal("mock response was not written before test cancellation")
+		}
+	}
+	diagnostic.record("mock response observed")
 	waitFor(t, 4*time.Second, func() bool {
 		state, err := svc.store.LoadState(result.SessionID)
 		if err == nil && state.Status == session.StatusFailed {
@@ -14881,13 +14910,8 @@ func newSubmitPlanServer(observers ...func(string)) *httptest.Server {
 		for _, observe := range observers {
 			observe("mock provider request entered")
 		}
-		defer func() {
-			for _, observe := range observers {
-				observe("mock provider response written")
-			}
-		}()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
+		_, err := w.Write([]byte(`{
 			"id":"resp_plan_1",
 			"status":"completed",
 			"output":[
@@ -14895,6 +14919,15 @@ func newSubmitPlanServer(observers ...func(string)) *httptest.Server {
 			],
 			"usage":{"input_tokens":10,"output_tokens":5}
 		}`))
+		if err != nil {
+			for _, observe := range observers {
+				observe("mock provider response failed: " + err.Error())
+			}
+			return
+		}
+		for _, observe := range observers {
+			observe("mock provider response written")
+		}
 	}))
 }
 

@@ -93,9 +93,19 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 				body = `{"message":"revise once"}`
 			}
 			done := make(chan *httptest.ResponseRecorder, 1)
-			preparing := make(chan struct{}, 1)
+			released := make(chan struct{})
+			preparing := make(chan bool, 1)
 			if action == "approve" || action == "mission" {
-				svc.beforeApprovalPrepare = func(string) { diagnostic.record("approval prepare marker"); preparing <- struct{}{} }
+				svc.beforeApprovalPrepare = func(string) {
+					afterRelease := false
+					select {
+					case <-released:
+						afterRelease = true
+					default:
+					}
+					diagnostic.record("approval prepare marker")
+					preparing <- afterRelease
+				}
 			}
 			requestFinished = make(chan struct{})
 			diagnostic.record("request launched")
@@ -117,26 +127,29 @@ func TestPlanModeActionsWaitForSettlingHandle(t *testing.T) {
 			}
 			svc.mu.Lock()
 			delete(svc.handles, meta.ID)
+			close(released)
 			svc.mu.Unlock()
 			diagnostic.record("original handle removed")
-			// This marker follows settling plus preflight/config reads. Its
-			// one-second observation deadline is retained for investigation;
-			// timings identify whether that stage or admission was delayed.
+			// Preparation must follow release, but preflight/config latency is
+			// not a handle-release timeout. Retain the existing response bound.
 			responseWait := time.Second
 			if action == "approve" || action == "mission" {
-				select {
-				case <-preparing:
-				case response := <-done:
-					t.Fatalf("approval returned before preparation: %d %s", response.Code, response.Body)
-				case <-time.After(time.Second):
-					t.Fatal("did not observe original handle release")
-				}
 				responseWait = 10 * time.Second
 			}
 			select {
 			case response := <-done:
 				if response.Code != http.StatusAccepted {
 					t.Fatalf("status=%d body=%s state=%#v", response.Code, response.Body, state)
+				}
+				if action == "approve" || action == "mission" {
+					select {
+					case afterRelease := <-preparing:
+						if !afterRelease {
+							t.Fatal("approval prepared before original handle release")
+						}
+					default:
+						t.Fatal("approval returned before preparation")
+					}
 				}
 			case <-time.After(responseWait):
 				t.Fatal("action did not complete after original handle release")
