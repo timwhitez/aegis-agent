@@ -8122,6 +8122,7 @@ test('linked mission approval i18n covers its inspector labels and status facts 
     ['Goal plan', '目标计划'], ['Plan needs_approval', '计划等待审批'],
     ['Goal plan updated', '目标计划已更新'], ['Goal plan is Needs approval.', '目标计划等待审批。'],
     ['session Awaiting input', '会话等待输入'],
+    ['Running · session_reviewed · e2e/e2e-model · workspace', '运行中 · session_reviewed · e2e/e2e-model · workspace'],
     ['Latest Mission plan updated · 2026/10/3 15:17:13', '最近事件：目标计划已更新 · 2026/10/3 15:17:13'],
     ['latest Mission plan updated · 2026/10/3 15:17:13', '最近目标计划已更新 · 2026/10/3 15:17:13'],
     ['session Awaiting input · Plan approval · tokens 2 · provider time 1s · latest Mission plan updated · 2026/10/3 15:17:13', '会话等待输入 · 计划审批 · Token 2 · 提供商耗时 1s · 最近目标计划已更新 · 2026/10/3 15:17:13']

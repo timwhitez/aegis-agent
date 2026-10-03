@@ -462,9 +462,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 		EffectiveBudget:  effectiveBudget,
 	}
 	state := session.State{
-		Status:    session.StatusRunning,
-		Phase:     "prepare",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		Status:        session.StatusRunning,
+		Phase:         "prepare",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		RunGeneration: createdAt.Format(time.RFC3339Nano),
 	}
 	if err := r.store.Create(meta, state); err != nil {
 		return RunResult{}, err
@@ -506,8 +507,8 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	r.notifySessionInactive(meta, result, err)
 	if err != nil {
 		currentState, loadErr := r.store.LoadState(meta.ID)
-		if loadErr == nil && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {
-			return r.failBeforeRun(meta.ID, currentState, currentState.Phase, err)
+		if loadErr == nil && state.RunGeneration != "" && currentState.RunGeneration == state.RunGeneration && currentState.Status == session.StatusRunning && strings.TrimSpace(currentState.LastError) == "" {
+			return r.failStartedRunIfCurrent(meta.ID, currentState, err)
 		}
 	}
 	return result, err
@@ -2825,6 +2826,27 @@ func (r *Runner) transformUserMessage(ctx context.Context, meta session.SessionM
 		return value, nil
 	}
 	return text, nil
+}
+
+// Start may receive an old writer error after another runner claimed the
+// session. Compare the exact observed state when recording this run's failure.
+func (r *Runner) failStartedRunIfCurrent(sessionID string, current session.State, cause error) (RunResult, error) {
+	failed := current
+	failed.Status = session.StatusFailed
+	failed.LastError = cause.Error()
+	saved, err := r.store.SaveStateIfCurrent(sessionID, current, failed)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("record start failure state after %v: %w", cause, err)
+	}
+	if !saved {
+		return RunResult{SessionID: sessionID}, cause
+	}
+	if err := r.appendEvent(sessionID, "session.failed", failed.Phase, map[string]any{"error": cause.Error()}); err != nil {
+		return RunResult{}, fmt.Errorf("record start failure event after %v: %w", cause, err)
+	}
+	_ = writeSessionSummary(r.store, sessionID)
+	_ = writeLongRunCheckpoint(r.store, sessionID)
+	return RunResult{SessionID: sessionID, Status: failed.Status, LastError: failed.LastError}, cause
 }
 
 func (r *Runner) failBeforeRun(sessionID string, state session.State, phase string, err error) (RunResult, error) {

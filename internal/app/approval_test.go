@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/runtime"
@@ -289,6 +293,161 @@ func TestCLIExecutingMissionRepairPreservesHistoricalApprovalScope(t *testing.T)
 			}
 			if len(fake.continueCalls) != 0 {
 				t.Fatalf("fact repair launched provider execution: %#v", fake.continueCalls)
+			}
+		})
+	}
+}
+
+func TestCLIGoalControlRollbackRetainsConcurrentApprovedScope(t *testing.T) {
+	for _, control := range []struct{ command, event string }{
+		{"pause", "goal.paused"}, {"resume", "goal.resumed"}, {"complete", "goal.completed"}, {"clear", "goal.cleared"},
+	} {
+		t.Run(control.command, func(t *testing.T) {
+			store, id := cliApprovalFixture(t)
+			peer := session.NewStore(store.Root())
+			goal, err := store.CreateGoal(id, session.GoalDraft{Enabled: true, Mode: session.GoalModeMission, Objective: "Original mission", Source: session.GoalSourceCLI})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if control.command == "resume" {
+				goal, err = store.SetGoalStatus(id, session.GoalStatusPaused, session.GoalSourceCLI)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan, err := store.LoadPlanMode(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan.LinkedGoalID = goal.GoalID
+			if err := store.SavePlanMode(id, plan); err != nil {
+				t.Fatal(err)
+			}
+			beforeHistory, err := store.LoadGoalHistory(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(filepath.Join(store.SessionDir(id), "events.jsonl"), os.O_CREATE|os.O_RDWR, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			defer unix.Flock(int(file.Fd()), unix.LOCK_UN)
+			fake := newFakeRunner()
+			fake.store = store
+			restore := storeRunnerLoader
+			storeRunnerLoader = func(string, string) (storeRunner, *config.Config, error) { return fake, config.Default(), nil }
+			defer func() { storeRunnerLoader = restore }()
+			cliDone := make(chan error, 1)
+			go func() {
+				cliDone <- Run(context.Background(), []string{"goal", control.command, id}, io.Discard, io.Discard)
+			}()
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				history, err := peer.LoadGoalHistory(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if appGoalHistoryContainsType(history, control.event) {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("CLI did not reach blocked event write")
+				}
+				time.Sleep(time.Millisecond)
+			}
+			type peerResult struct {
+				revision string
+				err      error
+			}
+			peerStarted := make(chan struct{})
+			peerDone := make(chan peerResult, 1)
+			go func() {
+				close(peerStarted)
+				result := peerResult{}
+				result.err = peer.WithApprovalLock(id, func(scoped *session.Store) error {
+					current, err := scoped.LoadGoal(id)
+					if errors.Is(err, os.ErrNotExist) {
+						current, err = goal, nil
+					}
+					if err != nil {
+						return err
+					}
+					current.Mission.Requirements = append(current.Mission.Requirements, session.MissionRequirement{ID: "concurrent", Text: "New independently reviewed requirement"})
+					if err := scoped.SaveGoal(id, current); err != nil {
+						return err
+					}
+					snapshot, err := scoped.LoadApprovalSnapshot(id)
+					if err != nil {
+						return err
+					}
+					approved, err := scoped.ApprovePlanModeTarget(id, session.PlanModeSourceWeb, snapshot.Target(), false)
+					result.revision = approved.ApprovedRevision
+					return err
+				})
+				peerDone <- result
+			}()
+			<-peerStarted
+			var result peerResult
+			peerCrossed := false
+			select {
+			case result = <-peerDone:
+				peerCrossed = true
+			case <-time.After(50 * time.Millisecond):
+			}
+			corruption := []byte("{\"bogus\":true}\n")
+			if _, err := file.WriteAt(corruption, 0); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Truncate(int64(len(corruption))); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Flock(int(file.Fd()), unix.LOCK_UN); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-cliDone:
+				if err == nil || !strings.Contains(err.Error(), "events.jsonl") {
+					t.Fatalf("expected CLI event persistence failure: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("CLI rollback deadlocked")
+			}
+			if !peerCrossed {
+				select {
+				case result = <-peerDone:
+				case <-time.After(3 * time.Second):
+					t.Fatal("peer CAS deadlocked after CLI rollback")
+				}
+			}
+			if result.err != nil {
+				t.Fatalf("peer approval failed: %v", result.err)
+			}
+			final, err := peer.LoadApprovalSnapshot(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if final.Goal == nil || len(final.Goal.Mission.Requirements) != 1 || final.Goal.Mission.Requirements[0].Text != "New independently reviewed requirement" || final.Revision != result.revision {
+				t.Errorf("CLI rollback erased independently approved scope: approved_revision=%s actual_revision=%s goal=%#v", result.revision, final.Revision, final.Goal)
+			}
+			if peerCrossed {
+				t.Error("peer approval crossed incomplete CLI control/rollback boundary")
+			}
+			if final.Goal != nil && final.Goal.Status != goal.Status {
+				t.Errorf("failed control did not restore original status: got %s want %s", final.Goal.Status, goal.Status)
+			}
+			afterHistory, err := peer.LoadGoalHistory(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeHistory, afterHistory) {
+				t.Errorf("failed CLI control left or erased goal history: before=%#v after=%#v", beforeHistory, afterHistory)
+			}
+			if len(fake.continueCalls) != 0 {
+				t.Fatalf("goal control started provider execution: %#v", fake.continueCalls)
 			}
 		})
 	}

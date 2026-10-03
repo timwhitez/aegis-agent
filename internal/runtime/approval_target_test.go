@@ -473,6 +473,9 @@ func TestPreparedApprovalAbortDoesNotRestoreAnotherRunGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Align the mutable observation timestamp: the durable claim identity
+	// must independently prevent restoration of this different ordinary run.
+	p.state.UpdatedAt = second.UpdatedAt
 	if err := r.AbortPreparedApproval(p, nil); !errors.Is(err, session.ErrApprovalConflict) {
 		t.Fatalf("expected generation conflict: %v", err)
 	}
@@ -500,6 +503,7 @@ func TestPreparedApprovalRunDoesNotStartAnotherRunGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.state.UpdatedAt = second.UpdatedAt
 	_, err = r.RunPreparedApproval(context.Background(), p)
 	if !errors.Is(err, session.ErrApprovalConflict) || calls.Load() != 0 {
 		t.Fatalf("expected generation conflict before provider: %v calls=%d", err, calls.Load())
@@ -510,6 +514,254 @@ func TestPreparedApprovalRunDoesNotStartAnotherRunGeneration(t *testing.T) {
 	}
 	if actual.UpdatedAt != second.UpdatedAt || actual.Status != session.StatusRunning {
 		t.Fatalf("old prepared run overwrote another generation: %#v", actual)
+	}
+}
+
+func TestPreparedApprovalAcceptsQueuedSteerBeforeExecution(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Steer(context.Background(), SteerRequest{SessionID: id, Message: "Keep the approved scope and report progress"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := r.RunPreparedApproval(context.Background(), p)
+	if err != nil || result.Status != session.StatusCompleted || calls.Load() == 0 {
+		t.Fatalf("queued steer stranded prepared execution: %#v err=%v calls=%d", result, err, calls.Load())
+	}
+	state, err := r.store.LoadState(id)
+	if err != nil || state.PendingSteerCount != 0 {
+		t.Fatalf("queued steer was not consumed: %#v %v", state, err)
+	}
+}
+
+func TestPreparedApprovalAbortPreservesQueuedSteer(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Steer(context.Background(), SteerRequest{SessionID: id, Message: "Keep the approved scope and report progress"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.AbortPreparedApproval(p, nil); err != nil {
+		t.Fatalf("queued steer prevented claim release: %v", err)
+	}
+	state, err := r.store.LoadState(id)
+	if err != nil || state.Status != session.StatusAwaitingInput || state.PendingSteerCount != 1 || calls.Load() != 0 {
+		t.Fatalf("abort did not preserve recoverable queued steer: %#v %v calls=%d", state, err, calls.Load())
+	}
+}
+
+func TestApprovalRecoveryPreservesQueuedSteerInSameGeneration(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	target := approvalTargetForTest(t, r, id)
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Steer(context.Background(), SteerRequest{SessionID: id, Message: "Keep the approved scope and report progress"}); err != nil {
+		t.Fatal(err)
+	}
+	p.releaseRunSlot()
+	record := *p.preparation
+	record.OwnerPID = 999999999
+	record.OwnerIdentity = ""
+	if _, err := r.store.WriteArtifact(id, approvalPreparationArtifact, record); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := CanReconcileApprovalPreparation(r.store, id); err != nil || !allowed {
+		t.Fatalf("queued steer prevented dead-owner reconciliation: %v %v", allowed, err)
+	}
+	retried, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target})
+	if err != nil {
+		t.Fatalf("queued steer prevented same-generation recovery: %v", err)
+	}
+	defer r.AbortPreparedApproval(retried, nil)
+	state, err := r.store.LoadState(id)
+	if err != nil || state.PendingSteerCount != 1 || calls.Load() != 0 {
+		t.Fatalf("recovery did not preserve queued steer: %#v %v calls=%d", state, err, calls.Load())
+	}
+}
+
+func TestApprovalRecoveryDoesNotInferLegacyIdentityFromMatchingTimestamp(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	target := approvalTargetForTest(t, r, id)
+	original, err := r.store.LoadState(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := r.store.LoadApprovalSnapshot(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := original
+	legacy.Status = session.StatusRunning
+	legacy.Phase = "prepare"
+	if err := r.store.SaveState(id, legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err = r.store.LoadState(id)
+	if err != nil || legacy.RunGeneration != "" {
+		t.Fatalf("fixture must retain unknown legacy identity: %#v %v", legacy, err)
+	}
+	record := approvalPreparationRecord{SchemaVersion: 1, SessionID: id, Target: *target, Snapshot: snapshot, OriginalState: original, ClaimUpdatedAt: legacy.UpdatedAt, Phase: "claim_pending", OwnerPID: 999999999}
+	if _, err := r.store.WriteArtifact(id, approvalPreparationArtifact, record); err != nil {
+		t.Fatal(err)
+	}
+	if allowed, err := CanReconcileApprovalPreparation(r.store, id); allowed || !errors.Is(err, session.ErrApprovalConflict) {
+		t.Fatalf("matching timestamp forged legacy claim ownership: %v %v", allowed, err)
+	}
+	if _, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: target}); !errors.Is(err, session.ErrApprovalConflict) {
+		t.Fatalf("legacy journal silently recovered: %v", err)
+	}
+	actual, err := r.store.LoadState(id)
+	if err != nil || !reflect.DeepEqual(actual, legacy) || calls.Load() != 0 {
+		t.Fatalf("legacy state changed or provider started: %#v %v calls=%d", actual, err, calls.Load())
+	}
+}
+
+func TestRunnerStartKeepsItsInitialRunIdentityThroughExecution(t *testing.T) {
+	r, _, calls := newApprovalTargetFixture(t)
+	var initial string
+	r.beforeStartSessionCreatedEvent = func(id string) {
+		state, err := r.store.LoadState(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		initial = state.RunGeneration
+	}
+	result, err := r.Start(context.Background(), StartRequest{Prompt: "Report completion", Workdir: t.TempDir()})
+	if err != nil || result.Status != session.StatusCompleted || calls.Load() == 0 {
+		t.Fatalf("initial execution failed: %#v %v calls=%d", result, err, calls.Load())
+	}
+	state, err := r.store.LoadState(result.SessionID)
+	if err != nil || initial == "" || state.RunGeneration != initial {
+		t.Fatalf("initial local/durable run identity was missing or changed: initial=%q state=%#v err=%v", initial, state, err)
+	}
+}
+
+func TestRunnerStartErrorDoesNotFailAnotherRunGeneration(t *testing.T) {
+	r, _, calls := newApprovalTargetFixture(t)
+	var peer session.State
+	var sessionID string
+	r.beforeStartSessionCreatedEvent = func(id string) {
+		sessionID = id
+		paused, err := r.store.LoadState(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paused.Status = session.StatusPaused
+		other := session.NewStore(r.store.Root())
+		if err := other.SaveState(id, paused); err != nil {
+			t.Fatal(err)
+		}
+		peer, err = other.ClaimSessionRun(id, session.StatusPaused)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := r.Start(context.Background(), StartRequest{Prompt: "Report completion", Workdir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "run generation changed") {
+		t.Fatalf("old start must observe stale writer failure: %v", err)
+	}
+	actual, err := r.store.LoadState(sessionID)
+	if err != nil || !reflect.DeepEqual(actual, peer) || calls.Load() != 0 {
+		t.Fatalf("old Start error adopted and failed the peer claim: %#v err=%v calls=%d", actual, err, calls.Load())
+	}
+}
+
+func TestRunnerContinueErrorDoesNotFailAnotherRunGeneration(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	if _, err := r.store.CancelPlanMode(id, session.PlanModeSourceCLI); err != nil {
+		t.Fatal(err)
+	}
+	var peer session.State
+	r.engine.beforeAppendEvent = func(evt events.Event) {
+		if evt.Type != "session.context.loaded" {
+			return
+		}
+		paused, err := r.store.LoadState(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paused.Status = session.StatusPaused
+		other := session.NewStore(r.store.Root())
+		if err := other.SaveState(id, paused); err != nil {
+			t.Fatal(err)
+		}
+		peer, err = other.ClaimSessionRun(id, session.StatusPaused)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := r.Continue(context.Background(), ContinueRequest{SessionID: id})
+	if err == nil || !strings.Contains(err.Error(), "run generation changed") {
+		t.Fatalf("old continue must observe stale writer failure: %v", err)
+	}
+	actual, err := r.store.LoadState(id)
+	if err != nil || !reflect.DeepEqual(actual, peer) || calls.Load() != 0 {
+		t.Fatalf("old Continue error failed the peer claim: %#v err=%v calls=%d", actual, err, calls.Load())
+	}
+}
+
+func TestApprovalSettlementDoesNotAdoptAnotherRunGeneration(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.releaseRunSlot()
+	var original approvalPreparationRecord
+	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &original); err != nil {
+		t.Fatal(err)
+	}
+	paused := p.state
+	paused.Status = session.StatusPaused
+	other := session.NewStore(r.store.Root())
+	if err := other.SaveState(id, paused); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := other.ClaimSessionRun(id, session.StatusPaused)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.recordPreparedApprovalPhase(p, "settled", errors.New("old run failed")); !errors.Is(err, session.ErrApprovalConflict) {
+		t.Fatalf("old settlement adopted peer state into its journal: %v", err)
+	}
+	var after approvalPreparationRecord
+	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &after); err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.store.LoadState(id)
+	if err != nil || !reflect.DeepEqual(original, after) || !reflect.DeepEqual(state, peer) || calls.Load() != 0 {
+		t.Fatalf("old settlement changed journal or peer state: %#v %#v err=%v", after, state, err)
+	}
+}
+
+func TestApprovalSettlementAcceptsItsOwnTerminalGeneration(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	p, err := r.PrepareApprovalContinue(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.releaseRunSlot()
+	terminal := p.state
+	terminal.Status = session.StatusCompleted
+	terminal.Phase = "done"
+	if err := r.store.SaveState(id, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.recordPreparedApprovalPhase(p, "settled", nil); err != nil {
+		t.Fatalf("own terminal generation should settle: %v", err)
+	}
+	var record approvalPreparationRecord
+	if err := r.store.ReadArtifact(id, approvalPreparationArtifact, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Phase != "settled" || record.PreparedState.Status != session.StatusCompleted || record.PreparedState.RunGeneration != p.state.RunGeneration || calls.Load() != 0 {
+		t.Fatalf("own terminal state was not recorded: %#v", record)
 	}
 }
 

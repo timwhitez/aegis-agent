@@ -61,6 +61,7 @@ func (s *Store) ClaimSessionRunWithGeneration(sessionID, generation string, allo
 			claimed.PauseReason = ""
 			claimed.ProviderAutoResumeCount = 0
 			claimed.UpdatedAt = generation
+			claimed.RunGeneration = generation
 			if err := validateState(claimed); err != nil {
 				return fmt.Errorf("validate state.json: %w", err)
 			}

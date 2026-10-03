@@ -152,7 +152,14 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 		if err := validateCurrentPreparedClaim(scoped, p); err != nil {
 			return err
 		}
-		saved, err := scoped.SaveStateIfCurrent(p.meta.ID, p.state, p.originalState)
+		current, err := scoped.LoadState(p.meta.ID)
+		if err != nil {
+			return err
+		}
+		if !samePreparedRun(p.state, current) {
+			return fmt.Errorf("%w: prepared run generation changed; cannot restore its claim", session.ErrApprovalConflict)
+		}
+		committed, saved, err := scoped.SwapStateIfCurrent(p.meta.ID, current, p.originalState)
 		if err != nil {
 			return fmt.Errorf("restore run claim after approval prepare abort: %w", err)
 		}
@@ -165,7 +172,7 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 		}
 		prep := r.newApprovalPreparationRunner(scoped)
 		prep.approvalPreparation = p.preparation
-		if err := prep.recordApprovalPreparation("aborted", p.originalState); err != nil {
+		if err := prep.recordApprovalPreparation("aborted", committed); err != nil {
 			return err
 		}
 		if err := prep.appendEvent(p.meta.ID, "planmode.approval_prepare_aborted", "prepare", data); err != nil {
@@ -194,16 +201,16 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 		if err != nil {
 			return err
 		}
-		if !reflect.DeepEqual(current, p.state) {
+		if !samePreparedRun(p.state, current) {
 			return fmt.Errorf("%w: prepared run generation changed", session.ErrApprovalConflict)
 		}
 		if targetErr := r.engine.newApprovalScopedEngine(scoped).checkApprovalExecutionTarget(ctx, p.meta.ID); targetErr != nil {
-			pending := p.state
+			pending := current
 			pending.Status = session.StatusAwaitingInput
 			pending.Phase = "plan_approval"
 			pending.IdleReason = "approval_content_changed"
 			pending.LastError = targetErr.Error()
-			saved, err := scoped.SaveStateIfCurrent(p.meta.ID, p.state, pending)
+			saved, err := scoped.SaveStateIfCurrent(p.meta.ID, current, pending)
 			if err != nil {
 				return err
 			}
@@ -226,7 +233,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 		}
 		// CAS marks execution intent before registering an active provider.
 		// An unrelated state writer cannot replace a newer run generation.
-		committed, saved, err := scoped.SwapStateIfCurrent(p.meta.ID, p.state, p.state)
+		committed, saved, err := scoped.SwapStateIfCurrent(p.meta.ID, current, current)
 		if err != nil {
 			return err
 		}
@@ -381,12 +388,15 @@ func (r *Runner) recordPreparedApprovalPhase(p *PreparedApproval, phase string, 
 		}
 		prep := r.newApprovalPreparationRunner(scoped)
 		prep.approvalPreparation = p.preparation
-		if cause != nil {
-			prep.approvalPreparation.LastError = cause.Error()
-		}
 		state, err := scoped.LoadState(p.meta.ID)
 		if err != nil {
 			return err
+		}
+		if p.state.RunGeneration == "" || state.RunGeneration != p.state.RunGeneration {
+			return fmt.Errorf("%w: approval settlement belongs to another run generation", session.ErrApprovalConflict)
+		}
+		if cause != nil {
+			prep.approvalPreparation.LastError = cause.Error()
 		}
 		return prep.recordApprovalPreparation(phase, state)
 	})
@@ -401,7 +411,7 @@ func (r *Runner) restoreApprovalClaimAfterError(sessionID string, cause error) e
 	if err != nil {
 		return errors.Join(cause, fmt.Errorf("inspect failed approval run claim: %w", err))
 	}
-	if current.Status == session.StatusRunning && current.Phase == "prepare" && current.UpdatedAt == record.ClaimUpdatedAt {
+	if approvalPreparationOwnsState(*record, current) == nil {
 		committed, saved, err := r.store.SwapStateIfCurrent(sessionID, current, record.OriginalState)
 		if err != nil {
 			return errors.Join(cause, fmt.Errorf("restore failed approval run claim: %w", err))
@@ -416,14 +426,30 @@ func (r *Runner) restoreApprovalClaimAfterError(sessionID string, cause error) e
 	return errors.Join(cause, r.recordApprovalPreparation("prepare_failed", current))
 }
 
-func approvalPreparationOwnsState(record approvalPreparationRecord, current session.State) error {
-	proven := record.ClaimUpdatedAt != "" && current.Status == session.StatusRunning
-	if record.Phase == "claim_pending" {
-		proven = proven && current.UpdatedAt == record.ClaimUpdatedAt && current.Phase == "prepare"
-	} else {
-		proven = proven && reflect.DeepEqual(current, record.PreparedState)
+// Queue counts, their timestamp, and learned skill names may change while a
+// prepared claim waits for its adapter. They do not replace the durable run
+// identity or advance the engine. Every other prepared-state field must match.
+func samePreparedRun(expected, current session.State) bool {
+	if expected.RunGeneration == "" || current.RunGeneration != expected.RunGeneration || expected.Status != session.StatusRunning || current.Status != session.StatusRunning || expected.Phase != "prepare" || current.Phase != "prepare" || current.Turn != expected.Turn {
+		return false
 	}
-	if !proven {
+	current.UpdatedAt = expected.UpdatedAt
+	current.PendingSteerCount = expected.PendingSteerCount
+	current.LoadedSkills = expected.LoadedSkills
+	return reflect.DeepEqual(expected, current)
+}
+
+func approvalPreparationOwnsState(record approvalPreparationRecord, current session.State) error {
+	expected := record.PreparedState
+	if record.Phase == "claim_pending" {
+		expected = record.OriginalState
+		expected.Status = session.StatusRunning
+		expected.Phase = "prepare"
+		expected.PauseReason = ""
+		expected.ProviderAutoResumeCount = 0
+		expected.RunGeneration = record.ClaimUpdatedAt
+	}
+	if record.ClaimUpdatedAt == "" || expected.RunGeneration != record.ClaimUpdatedAt || !samePreparedRun(expected, current) {
 		return fmt.Errorf("%w: approval preparation cannot prove ownership of the current run; explicitly stop the lost run before ordinary continue", session.ErrApprovalConflict)
 	}
 	return nil
@@ -458,7 +484,7 @@ func (r *Runner) recoverApprovalPreparation(sessionID string) error {
 	// A dead owner is not evidence that the current running state belongs to
 	// this journal: an ordinary continuation may already own a later claim.
 	// claim_pending carries its generation before the claim write; subsequent
-	// phases additionally retain the complete state observed at their commit.
+	// phases retain the same durable identity and unadvanced prepared state.
 	if err := approvalPreparationOwnsState(record, observedState); err != nil {
 		return err
 	}

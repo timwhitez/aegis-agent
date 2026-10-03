@@ -18,7 +18,7 @@ func TestClaimSessionRunWithGenerationKeepsPreparedStamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if claimed.UpdatedAt != stamp || claimed.Status != StatusRunning || claimed.Phase != "prepare" || claimed.PendingSteerCount != 1 {
+	if claimed.UpdatedAt != stamp || claimed.RunGeneration != stamp || claimed.Status != StatusRunning || claimed.Phase != "prepare" || claimed.PendingSteerCount != 1 {
 		t.Fatalf("prepared generation was not retained: %#v", claimed)
 	}
 	if _, err := NewStore(store.Root()).ClaimSessionRunWithGeneration(id, time.Now().UTC().Format(time.RFC3339Nano), StatusAwaitingInput); err == nil {

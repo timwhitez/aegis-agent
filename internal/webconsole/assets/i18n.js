@@ -712,6 +712,7 @@
     [/^(\d+) files?$/, '$1 个文件'],
     [/^(\d+) results?$/, '$1 个结果'],
     [/^Completed · (.+)$/, '已完成 · $1'],
+    [/^Running · (.+)$/, '运行中 · $1'],
     [/^Paused · (.+)$/, '已暂停 · $1'],
     [/^Awaiting plan approval · (.+)$/, '等待计划审批 · $1'],
     [/^Continue (.+) session: next send resumes this durable session\.$/, '继续$1会话：下次发送将恢复此持久化会话。'],

@@ -833,20 +833,21 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	case "complete":
 		return mutateGoalStatus(stdout, store, sessionID, session.GoalStatusComplete, "goal.completed", "complete", *jsonMode)
 	case "clear":
-		goal, err := loadCLIGoal(store, sessionID)
-		if err != nil {
-			return err
-		}
-		previousHistory, err := store.LoadGoalHistory(sessionID)
-		if err != nil {
-			return err
-		}
-		cleared, err := store.ClearGoal(sessionID)
-		if err != nil {
-			return err
-		}
-		if cleared {
-			if err := store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+		var cleared bool
+		err := store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+			goal, err := loadCLIGoal(scoped, sessionID)
+			if err != nil {
+				return err
+			}
+			previousHistory, err := scoped.LoadGoalHistory(sessionID)
+			if err != nil {
+				return err
+			}
+			cleared, err = scoped.ClearGoal(sessionID)
+			if err != nil || !cleared {
+				return err
+			}
+			if err := scoped.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
 				GoalID: goal.GoalID,
 				Type:   "goal.cleared",
 				Source: session.GoalSourceCLI,
@@ -855,23 +856,27 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 					"previous_status": goal.Status,
 				},
 			}); err != nil {
-				if restoreErr := store.SaveGoal(sessionID, goal); restoreErr != nil {
+				if restoreErr := scoped.SaveGoal(sessionID, goal); restoreErr != nil {
 					return fmt.Errorf("restore goal after clear history error %v: %w", err, restoreErr)
 				}
 				return err
 			}
-			if err := store.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
+			if err := scoped.AppendEvent(sessionID, events.New(sessionID, "goal.cleared", "goal", map[string]any{
 				"goal_id":         goal.GoalID,
 				"previous_status": goal.Status,
 			})); err != nil {
-				if restoreErr := store.SaveGoal(sessionID, goal); restoreErr != nil {
+				if restoreErr := scoped.SaveGoal(sessionID, goal); restoreErr != nil {
 					return fmt.Errorf("restore goal after clear event error %v: %w", err, restoreErr)
 				}
-				if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+				if restoreErr := scoped.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
 					return fmt.Errorf("restore goal history after clear event error %v: %w", err, restoreErr)
 				}
 				return err
 			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 		if *jsonMode {
 			return json.NewEncoder(stdout).Encode(map[string]any{"session_id": sessionID, "cleared": cleared})
@@ -1257,41 +1262,48 @@ func loadCLIGoal(store *session.Store, sessionID string) (session.SessionGoal, e
 }
 
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
-	previous, err := loadCLIGoal(store, sessionID)
-	if err != nil {
-		return err
-	}
-	previousHistory, err := store.LoadGoalHistory(sessionID)
-	if err != nil {
-		return err
-	}
-	goal, err := store.SetGoalStatus(sessionID, status, session.GoalSourceCLI)
-	if err != nil {
-		return err
-	}
-	if err := store.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
-		GoalID: goal.GoalID,
-		Type:   eventType,
-		Source: session.GoalSourceCLI,
-		Status: goal.Status,
-	}); err != nil {
-		if restoreErr := store.SaveGoal(sessionID, previous); restoreErr != nil {
-			return fmt.Errorf("restore goal after status history error %v: %w", err, restoreErr)
+	var goal session.SessionGoal
+	err := store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		previous, err := loadCLIGoal(scoped, sessionID)
+		if err != nil {
+			return err
 		}
-		return err
-	}
-	if err := store.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
-		"goal_id":   goal.GoalID,
-		"status":    goal.Status,
-		"mode":      goal.Mode,
-		"objective": goal.Objective,
-	})); err != nil {
-		if restoreErr := store.SaveGoal(sessionID, previous); restoreErr != nil {
-			return fmt.Errorf("restore goal after status event error %v: %w", err, restoreErr)
+		previousHistory, err := scoped.LoadGoalHistory(sessionID)
+		if err != nil {
+			return err
 		}
-		if restoreErr := store.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
-			return fmt.Errorf("restore goal history after status event error %v: %w", err, restoreErr)
+		goal, err = scoped.SetGoalStatus(sessionID, status, session.GoalSourceCLI)
+		if err != nil {
+			return err
 		}
+		if err := scoped.AppendGoalHistory(sessionID, session.GoalHistoryEntry{
+			GoalID: goal.GoalID,
+			Type:   eventType,
+			Source: session.GoalSourceCLI,
+			Status: goal.Status,
+		}); err != nil {
+			if restoreErr := scoped.SaveGoal(sessionID, previous); restoreErr != nil {
+				return fmt.Errorf("restore goal after status history error %v: %w", err, restoreErr)
+			}
+			return err
+		}
+		if err := scoped.AppendEvent(sessionID, events.New(sessionID, eventType, "goal", map[string]any{
+			"goal_id":   goal.GoalID,
+			"status":    goal.Status,
+			"mode":      goal.Mode,
+			"objective": goal.Objective,
+		})); err != nil {
+			if restoreErr := scoped.SaveGoal(sessionID, previous); restoreErr != nil {
+				return fmt.Errorf("restore goal after status event error %v: %w", err, restoreErr)
+			}
+			if restoreErr := scoped.RestoreGoalHistory(sessionID, previousHistory); restoreErr != nil {
+				return fmt.Errorf("restore goal history after status event error %v: %w", err, restoreErr)
+			}
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	if jsonMode {

@@ -44,6 +44,14 @@ func (s *Store) SwapStateIfCurrent(sessionID string, expected, next State) (comm
 		if !reflect.DeepEqual(current, expected) {
 			return nil
 		}
+		// Running state updates retain the claimed identity. A CAS restoring a
+		// nonrunning preclaim snapshot may explicitly restore its old identity.
+		if next.Status == StatusRunning {
+			if next.RunGeneration != "" && next.RunGeneration != current.RunGeneration {
+				return fmt.Errorf("session run generation changed; refusing replacement running state")
+			}
+			next.RunGeneration = current.RunGeneration
+		}
 		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		next.LoadedSkills = mergeLoadedSkills(current.LoadedSkills, next.LoadedSkills)
 		if hasCount {
