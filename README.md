@@ -41,8 +41,12 @@ Requirements: Go 1.26.7+ on Linux, macOS, or WSL.
 ./build.sh
 
 ./bin/aegis-agent init --force
-./bin/aegis-agent web --listen 127.0.0.1:3940
+./bin/aegis-agent web --config .aegis-agent/config.yaml --listen 127.0.0.1:3940
 ```
+
+`init` writes a configuration file. Select it explicitly with `--config`, as
+above; generating it does not authorize implicit workspace loading. See
+[configuration loading](./spec/02-cli-and-config.md#7-配置文件) for the trust boundary.
 
 Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
 `workspace/` directory, which is intentionally ignored by Git.
@@ -63,11 +67,11 @@ operator data are preserved verbatim rather than translated.
 For a CLI-only workflow:
 
 ```sh
-./bin/aegis-agent run --provider openai --model gpt-5.4 \
+./bin/aegis-agent run --config .aegis-agent/config.yaml \
   "Inspect this repository and suggest the smallest safe fix."
 
-./bin/aegis-agent steer <session-id> --message "Focus on failing tests first."
-./bin/aegis-agent continue <session-id> --message "Proceed with the next step."
+./bin/aegis-agent steer <session-id> --config .aegis-agent/config.yaml --message "Focus on failing tests first."
+./bin/aegis-agent continue <session-id> --config .aegis-agent/config.yaml --message "Proceed with the next step."
 ```
 
 `run` is interactive and supports `Esc` to pause. `exec` is suitable for
@@ -84,8 +88,13 @@ local `.env` file.
 
 ```sh
 export OPENAI_API_KEY=...
-./bin/aegis-agent doctor --provider openai --skip-probe
+./bin/aegis-agent doctor --config .aegis-agent/config.yaml --skip-probe
 ```
+
+For a gateway that rejects request metadata, set `send_metadata: false` in that
+provider profile. Automatic unsupported-metadata fallback is remembered for the
+adapter lifetime; a new process can discover it again. See the
+[provider contract](./spec/03-provider-contracts.md) for the existing compatibility options.
 
 The default configuration keeps provider-side storage disabled where supported
 so that local session files remain the source of truth.

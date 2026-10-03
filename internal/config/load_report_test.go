@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestLoadReportParityAndObservedSources(t *testing.T) {
+func TestLoadReportSelectionAndObservedSources(t *testing.T) {
 	for _, scenario := range []string{
 		"defaults", "home", "workspace_skipped", "marker_not_authority", "trusted_workspace",
 		"env_same_workspace", "env_other", "trusted_layers", "cli_over_env", "missing_cli",
@@ -124,6 +124,9 @@ func TestLoadReportParityAndObservedSources(t *testing.T) {
 			if !wantError && got.Providers["openai"].Model != wantModel {
 				t.Fatalf("effective model=%q want=%q", got.Providers["openai"].Model, wantModel)
 			}
+			if !wantError && got.Session.Dir != filepath.Join(cwd, ".aegis-agent", "sessions") {
+				t.Fatalf("session directory was not normalized against cwd: %q", got.Session.Dir)
+			}
 			encoded, err := json.Marshal(report)
 			if err != nil {
 				t.Fatal(err)
@@ -132,6 +135,44 @@ func TestLoadReportParityAndObservedSources(t *testing.T) {
 				t.Fatalf("report retained configuration values: %s", encoded)
 			}
 		})
+	}
+}
+
+func TestLoadReportSnapshotIsImmutableAndNotSerialized(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	if err := os.WriteFile(path, []byte("providers:\n  openai:\n    model: snapshot-model\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, returned, err := LoadWithReport(path, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	returned.Sources[0].Outcome = "missing"
+	accessed := cfg.LoadReport()
+	accessed.Sources[0].Path = "tampered"
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := cfg.LoadReport()
+	if !snapshot.Complete || len(snapshot.Sources) != 1 || snapshot.Sources[0].Outcome != "loaded" || snapshot.Sources[0].Path != path {
+		t.Fatalf("load facts were mutated or reread: %#v", snapshot)
+	}
+	yamlBytes, err := MarshalYAML(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonBytes, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{yamlBytes, jsonBytes} {
+		if strings.Contains(string(data), path) || strings.Contains(string(data), "loadReport") || strings.Contains(string(data), "sources") {
+			t.Fatalf("transient report leaked into serialized config: %s", data)
+		}
+	}
+	if report := Default().LoadReport(); report.Complete || len(report.Sources) != 0 {
+		t.Fatalf("directly constructed config fabricated a source report: %#v", report)
 	}
 }
 

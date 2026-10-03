@@ -61,6 +61,9 @@ providers:
 
   openai-compatible:
     api_provider: openai-compatible
+    # For a gateway that rejects request metadata, explicitly disable it here.
+    # Automatic fallback is adapter-local and can repeat in a new process.
+    # send_metadata: false
     api_key_env: OPENAI_API_KEY
     base_url: http://localhost:3000/v1
     model: gpt-5.4

@@ -29,9 +29,8 @@ type LoadReport struct {
 	Complete bool         `json:"complete"`
 }
 
-// LoadWithReport is a staged prototype for #127. It is not yet used by Load or
-// the CLI. On integration, Load must delegate here so there is one authoritative
-// loading loop; doctor must consume the report from that same load operation.
+// LoadWithReport loads the same layers as Load and records their actual outcomes.
+// The report is also retained on the returned configuration for diagnostics.
 func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 	cfg := Default()
 	report := LoadReport{Sources: []LoadSource{}}
@@ -89,5 +88,21 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 	}
 	normalizeConfig(cfg, cwd)
 	report.Complete = true
+	cfg.loadReport = cloneLoadReport(report)
 	return cfg, report, nil
+}
+
+// LoadReport returns a copy of the source facts from this configuration's load.
+// Configurations constructed directly, without a load, have an incomplete empty
+// report. This method never reads files or infers source facts from their paths.
+func (cfg *Config) LoadReport() LoadReport {
+	if cfg == nil {
+		return LoadReport{}
+	}
+	return cloneLoadReport(cfg.loadReport)
+}
+
+func cloneLoadReport(report LoadReport) LoadReport {
+	report.Sources = append([]LoadSource(nil), report.Sources...)
+	return report
 }

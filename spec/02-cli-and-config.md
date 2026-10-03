@@ -112,6 +112,7 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 - 未显式传入 `--session-dir` 时，`init` 生成的配置应优先满足 session root owner-only 约束。
 - 如果当前工作目录位于 WSL `/mnt/...` 这类通常无法可靠执行 POSIX owner-only 权限的挂载路径，`init` 应默认把 `session.dir` 写到用户 home 下的 `.aegis-agent/sessions`。
 - 显式 `--session-dir` 必须按用户输入写入；后续由 `doctor` 报告该目录是否真正支持 owner-only 权限。
+- `init` 不授权工作区配置；生成的 doctor / probe / run 指引必须显式选择生成文件，并对 shell 参数中的路径安全引用。
 
 ### 5.2 `run`
 
@@ -326,6 +327,8 @@ next: aegis-agent continue 20260319-101530-ab12cd --message "..."
 - `--json` 模式下的事件流保持 JSONL
 
 ## 7. 配置文件
+
+加载诊断必须来自同一次实际加载记录：按优先级列出已加载、缺失或因工作区未受信而跳过的配置层；不得根据持久化目标、文件存在性或重新读取推断 `loaded`。`doctor` 的主配置路径取实际最后加载的层；没有已加载层时显示最后尝试的路径及跳过/缺失原因。跳过的层未读取，不声称其文件存在。加载记录不包含配置内容或凭据，也不写回 YAML 配置。
 
 默认位置：
 

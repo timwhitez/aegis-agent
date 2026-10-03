@@ -1,9 +1,7 @@
-//go:build e2e_config_guidance
-
 package app
 
-// These opt-in regressions for #127/#128 intentionally fail on the audited
-// baseline. Remove the build tag when the coordinated production fixes land.
+// Regressions for #127/#128. They were RED on the audited baseline before the
+// coordinated production fixes were integrated.
 
 import (
 	"bytes"
