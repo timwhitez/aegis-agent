@@ -40,6 +40,41 @@ func receiptBaselineRunFacts(t *testing.T, r *Runner, id string) (session.State,
 	return state, resumed, countPlanModeApprovalMessages(messages)
 }
 
+func TestApprovalReceiptAncestorSyncFailureNeverStartsProvider(t *testing.T) {
+	r, id, calls := newApprovalTargetFixture(t)
+	request := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "ancestor-sync-failure"}
+	cause := errors.New("injected ancestor directory sync failure")
+	r.approvalAdmit = func(store *session.Store, id, operationID, generation string) (session.ApprovalReceipt, error) {
+		path := filepath.Join(store.SessionDir(id), "approval-operations.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return session.ApprovalReceipt{}, err
+		}
+		// Inject the real opt-in writer before the actual Store admission. Store
+		// package tests independently verify that its production writer opts in.
+		options := fileutil.AtomicCommitOptions{SyncParentChain: true, BeforeStage: func(stage fileutil.AtomicCommitStage) error {
+			if stage == fileutil.AtomicCommitBeforeParentChainSync {
+				return cause
+			}
+			return nil
+		}}
+		outcome, err := fileutil.AtomicCommitFileNoSymlink(path, data, 0600, options)
+		if err != nil {
+			return session.ApprovalReceipt{}, &session.ApprovalReceiptCommitError{Outcome: outcome, Err: err}
+		}
+		return store.AdmitApprovalOperation(id, operationID, generation)
+	}
+	_, err := r.Continue(context.Background(), request)
+	var commitErr *session.ApprovalReceiptCommitError
+	if !errors.As(err, &commitErr) || commitErr.Outcome != fileutil.AtomicCommitNotPublished || !errors.Is(err, cause) || calls.Load() != 0 {
+		t.Fatalf("ancestor sync failure admitted execution: error=%v provider=%d", err, calls.Load())
+	}
+	lookup, err := r.store.GetApprovalReceipt(id, request.ApprovalRequestID)
+	if err != nil || lookup.Receipt.Stage != session.ApprovalReceiptPrepared {
+		t.Fatalf("ancestor failure advanced canonical operation: %#v %v", lookup, err)
+	}
+}
+
 func TestApprovalReceiptSameRequestDoesNotReadmit(t *testing.T) {
 	r, id, calls := newApprovalTargetFixture(t)
 	target := approvalTargetForTest(t, r, id)

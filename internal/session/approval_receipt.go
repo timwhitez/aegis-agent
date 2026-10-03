@@ -549,7 +549,7 @@ func (s *Store) writeApprovalOperations(ledger approvalOperations) error {
 	if err != nil {
 		return err
 	}
-	outcome, err := fileutil.AtomicCommitFileNoSymlink(path, data, s.fileMode, fileutil.AtomicCommitOptions{BeforeStage: s.beforeApprovalReceiptCommit})
+	outcome, err := fileutil.AtomicCommitFileNoSymlink(path, data, s.fileMode, fileutil.AtomicCommitOptions{BeforeStage: s.beforeApprovalReceiptCommit, SyncParentChain: true})
 	if err != nil {
 		return &ApprovalReceiptCommitError{Outcome: outcome, Err: err}
 	}

@@ -27,6 +27,108 @@ func newReceiptTestRequest(t *testing.T, store *Store, id, requestID string) App
 	return ApprovalOperationRequest{RequestID: requestID, Parameters: ApprovalParameters{Target: snapshot.Target()}}
 }
 
+func newReceiptDurabilityStore(t *testing.T) (*Store, string) {
+	t.Helper()
+	store := NewStore(filepath.Join(t.TempDir(), "new-a", "new-b", "sessions"))
+	id := NewSessionID()
+	meta := SessionMetadata{SchemaVersion: 1, ID: id, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Workdir: t.TempDir(), Mode: ModeExec, Provider: "fake", Model: "fake", CompletionPolicy: CompletionPolicyAutonomous}
+	if err := store.Create(meta, State{Status: StatusAwaitingInput, Phase: "plan_approval"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePlanMode(id, PlanModeDraft{Enabled: true, Objective: "Review durable directory publication"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SubmitPlanMode(id, PlanModeSubmitInput{Title: "Durable publication", Summary: "Reviewed directory durability", PlanMarkdown: "# Reviewed plan", Verification: []string{"go test"}}); err != nil {
+		t.Fatal(err)
+	}
+	return store, id
+}
+
+func TestApprovalReceiptParentChainSyncPrecedesPublication(t *testing.T) {
+	store, id := newReceiptDurabilityStore(t)
+	want := 0
+	for path := store.SessionDir(id); ; path = filepath.Dir(path) {
+		want++
+		if filepath.Dir(path) == path {
+			break
+		}
+	}
+	syncs := 0
+	var beforeWrites []int
+	store.beforeApprovalReceiptCommit = func(stage fileutil.AtomicCommitStage) error {
+		if stage == fileutil.AtomicCommitBeforeParentChainSync {
+			syncs++
+		}
+		if stage == fileutil.AtomicCommitBeforeWrite {
+			beforeWrites = append(beforeWrites, syncs)
+			syncs = 0
+		}
+		return nil
+	}
+	request := newReceiptTestRequest(t, store, id, "directory-durable")
+	receipt := prepareReceiptForTest(t, store, id, request)
+	if len(beforeWrites) != 1 || beforeWrites[0] != want {
+		t.Fatalf("prepared receipt committed without ancestor syncs: %v want=%d", beforeWrites, want)
+	}
+	if _, err := store.CheckpointApprovalOperation(id, receipt.OperationID, "run_receipt", "prepared", receipt.Recovery); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AdmitApprovalOperation(id, receipt.OperationID, "run_receipt"); err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeWrites) != 3 || beforeWrites[1] != want || beforeWrites[2] != want {
+		t.Fatalf("later receipt commit skipped ancestor syncs: %v", beforeWrites)
+	}
+}
+
+func TestApprovalReceiptParentChainSyncFailurePreservesCanonical(t *testing.T) {
+	for _, phase := range []string{"prepare", "admit"} {
+		t.Run(phase, func(t *testing.T) {
+			store, id := newReceiptDurabilityStore(t)
+			request := newReceiptTestRequest(t, store, id, "directory-failure")
+			var before []byte
+			var prepared ApprovalReceipt
+			if phase == "admit" {
+				prepared = prepareReceiptForTest(t, store, id, request)
+				if _, err := store.CheckpointApprovalOperation(id, prepared.OperationID, "run_receipt", "prepared", prepared.Recovery); err != nil {
+					t.Fatal(err)
+				}
+				before = receiptLedgerBytes(t, store, id)
+			}
+			cause := errors.New("injected ancestor synchronization error")
+			store.beforeApprovalReceiptCommit = func(stage fileutil.AtomicCommitStage) error {
+				if stage == fileutil.AtomicCommitBeforeParentChainSync {
+					return cause
+				}
+				return nil
+			}
+			var err error
+			if phase == "prepare" {
+				_, err = store.PrepareApprovalOperation(id, request, receiptRecovery("run_receipt"))
+			} else {
+				_, err = store.AdmitApprovalOperation(id, prepared.OperationID, "run_receipt")
+			}
+			var commitErr *ApprovalReceiptCommitError
+			if !errors.As(err, &commitErr) || commitErr.Outcome != fileutil.AtomicCommitNotPublished || !errors.Is(err, cause) {
+				t.Fatalf("ancestor sync failure permitted receipt commit: %v", err)
+			}
+			if phase == "prepare" {
+				if _, err := os.Stat(filepath.Join(store.SessionDir(id), approvalOperationsFile)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("failed preparation created a canonical receipt")
+				}
+			} else {
+				if !bytes.Equal(before, receiptLedgerBytes(t, store, id)) {
+					t.Fatal("failed ancestor synchronization changed admission")
+				}
+				lookup, err := NewStore(store.Root()).GetApprovalReceipt(id, request.RequestID)
+				if err != nil || lookup.Receipt.Stage != ApprovalReceiptPrepared {
+					t.Fatalf("failed ancestor sync became admitted: %#v %v", lookup, err)
+				}
+			}
+		})
+	}
+}
+
 func TestApprovalReceiptCorruptLedgerBlocksEveryIDAndWriter(t *testing.T) {
 	cases := map[string]func(*approvalOperations){
 		"schema":  func(l *approvalOperations) { l.SchemaVersion = 2 },
