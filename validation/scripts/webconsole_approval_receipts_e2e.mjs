@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { approvalE2EFixtures as fixture, createApprovalProtocolAudit, allowApprovalProtocolError,
   allowMissingApprovalReceipt, allowApprovalTransportFailure,
@@ -1073,7 +1074,7 @@ async function seedNewTarget(root, id, { expectedStatus = 'executing', runGenera
   plan.plan_markdown = (plan.plan_markdown || '# Fresh reviewed plan') + '\n\n# Fresh review\n\nApprove this newly captured target explicitly.';
   plan.updated_at = new Date().toISOString();
   delete plan.approval_revision;
-  await writeFile(file, JSON.stringify(plan) + '\n', { mode: 0o600 });
+  await publishPlanFixture(file, plan);
   const after = await fixture.durableFacts(root, id);
   delete before['planmode.json'];
   delete after['planmode.json'];
@@ -1091,7 +1092,18 @@ async function seedLegacyExecuting(root, id) {
   plan.updated_at = new Date().toISOString();
   delete plan.approval_revision;
   delete plan.approved_revision;
-  await writeFile(file, JSON.stringify(plan) + '\n', { mode: 0o600 });
+  await publishPlanFixture(file, plan);
+}
+
+async function publishPlanFixture(file, plan) {
+  // Live overview readers must see a complete old or new fixture document.
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(plan) + '\n', { flag: 'wx', mode: 0o600 });
+    await rename(temporary, file);
+  } finally {
+    await unlink(temporary).catch((error) => { if (error.code !== 'ENOENT') throw error; });
+  }
 }
 
 function observe(page, baseURL, id) {
