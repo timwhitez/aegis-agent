@@ -867,9 +867,21 @@ async function completed(env, id) {
 }
 
 async function closeInspector(page) {
+  const deadline = Date.now() + 25_000;
   if (await page.locator('#inspector-slide-out').getAttribute('aria-hidden') === 'false') {
-    await page.locator('#inspector-slide-out [data-close-inspector]').click();
+    await page.locator('#inspector-slide-out [data-close-inspector]').click({ timeout: Math.max(1, deadline - Date.now()) });
   }
+  // Closing clears aria-hidden/isolation before the CSS transform finishes.
+  // Wait for the real drawer to leave the viewport before checking the notice.
+  await page.waitForFunction(() => {
+    const drawer = document.getElementById('inspector-slide-out');
+    const backdrop = document.getElementById('inspector-backdrop');
+    const app = document.getElementById('app');
+    return drawer?.getAttribute('aria-hidden') === 'true' && !drawer.classList.contains('is-open') &&
+      drawer.getBoundingClientRect().left >= window.innerWidth &&
+      backdrop && getComputedStyle(backdrop).display === 'none' &&
+      app && !app.inert && app.getAttribute('aria-hidden') !== 'true';
+  }, undefined, { timeout: Math.max(1, deadline - Date.now()) });
 }
 
 async function openSessionUI(page, id, tab) {
