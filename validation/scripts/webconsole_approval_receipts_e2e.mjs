@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { approvalE2EFixtures as fixture } from './webconsole_approval_cas_e2e.mjs';
+import { approvalE2EFixtures as fixture, createApprovalProtocolAudit, allowApprovalProtocolError,
+  allowMissingApprovalReceipt, allowApprovalTransportFailure } from './webconsole_approval_cas_e2e.mjs';
 
 const profiles = [
   { locale: 'zh-CN', size: 'desktop', viewport: { width: 1440, height: 1000 } },
@@ -28,11 +29,15 @@ export async function runApprovalReceiptsE2E({ browser, baseURL, sessionRoot, pr
   const evidence = [];
   const browserErrors = { page: [], console: [], request: [] };
   const expectedTransportFailures = [];
+  const expectedProtocolErrors = [];
+  const unexpectedHTTP = [];
+  const protocolResponses = [];
   for (const profile of profiles) {
     const suffix = `${profile.locale}-${profile.size}`;
     const contexts = [];
     const pages = [];
     const expectedFailures = new Set();
+    const audits = [];
     try {
       // Separate browser storage makes the old tab's new-ID alias a real
       // independent client operation rather than an inherited pending ID.
@@ -42,7 +47,7 @@ export async function runApprovalReceiptsE2E({ browser, baseURL, sessionRoot, pr
         await context.addInitScript((locale) => localStorage.setItem('aegis-agent.locale.v1', locale), profile.locale);
         const page = await context.newPage();
         pages.push(page);
-        collectErrors(page, suffix, tab, expectedFailures, browserErrors, expectedTransportFailures);
+        audits.push(collectErrors(page, baseURL, suffix, tab, expectedFailures, browserErrors, expectedTransportFailures));
         await page.goto(baseURL, { waitUntil: 'networkidle' });
         await page.waitForFunction((locale) => window.AegisI18n?.locale?.() === locale, profile.locale);
         assert.equal(await page.locator('html').getAttribute('lang'), profile.locale);
@@ -50,7 +55,7 @@ export async function runApprovalReceiptsE2E({ browser, baseURL, sessionRoot, pr
       const [a, b] = pages;
       const context = contexts[0];
       const shared = { a, b, context, baseURL, sessionRoot, providerLogPath, profile, suffix,
-        expectedFailures, browserErrors, expectedTransportFailures };
+        expectedFailures, browserErrors, expectedTransportFailures, protocolAudits: audits };
       const run = async (name, fn) => check(`approval receipts: ${name} (${suffix})`, async () => {
         const result = await fn(shared);
         evidence.push({ scenario: name, locale: profile.locale, viewport: profile.size, ...result });
@@ -63,12 +68,22 @@ export async function runApprovalReceiptsE2E({ browser, baseURL, sessionRoot, pr
       await run('completed-alias', completedAlias);
       await run('legacy-recovery', legacyRecovery);
     } finally {
+      for (const audit of audits) {
+        const result = await audit.complete();
+        browserErrors.console.push(...result.console);
+        expectedProtocolErrors.push(...result.expected);
+        unexpectedHTTP.push(...result.unexpected_http);
+        protocolResponses.push(...result.responses);
+      }
       for (const context of contexts.reverse()) await context.close();
     }
   }
+  process.stdout.write(`approval receipt HTTP 404 diagnostics: ${JSON.stringify(protocolResponses.filter((item) => item.status === 404))}\n`);
+  assert.deepEqual(unexpectedHTTP, [], 'unexpected approval receipt HTTP protocol errors');
   assert.deepEqual(browserErrors, { page: [], console: [], request: [] }, 'unexpected approval receipt browser errors');
   return { scenarios: evidence.length, profiles: profiles.length, evidence,
-    browser_errors: browserErrors, expected_transport_failures: expectedTransportFailures };
+    browser_errors: browserErrors, expected_transport_failures: expectedTransportFailures,
+    expected_protocol_errors: expectedProtocolErrors, http_error_responses: protocolResponses };
 }
 
 async function unknownResponse(env) {
@@ -224,7 +239,7 @@ async function sameSessionPeerIsolation(env) {
   const beforeCalls = await providerCalls(providerLogPath, id);
   const trafficA = observe(a, baseURL, id);
   const delayed = await delayNextApproval(a, baseURL, id);
-  let peer, trafficPeer;
+  let peer, trafficPeer, peerAudit;
   try {
     await a.locator(selectors.approve).click();
     const old = await delayed.fetched;
@@ -234,8 +249,9 @@ async function sameSessionPeerIsolation(env) {
     // This page shares the actual browser context and localStorage with A.
     // Its restored intent and Check control query the real old receipt.
     peer = await context.newPage();
-    collectErrors(peer, `${env.suffix}-shared-session`, 'Peer', env.expectedFailures,
+    peerAudit = collectErrors(peer, baseURL, `${env.suffix}-shared-session`, 'Peer', env.expectedFailures,
       env.browserErrors, env.expectedTransportFailures);
+    env.protocolAudits.push(peerAudit);
     trafficPeer = observe(peer, baseURL, id);
     await peer.goto(baseURL, { waitUntil: 'networkidle' });
     await openSessionUI(peer, id, 'plan');
@@ -305,6 +321,7 @@ async function sameSessionPeerIsolation(env) {
     await delayed.dispose();
     trafficA.dispose();
     trafficPeer?.dispose();
+    if (peerAudit) await peerAudit.complete();
     if (peer) await peer.close();
   }
 }
@@ -325,6 +342,7 @@ async function coverageNewID(env) {
     const original = blocked.request().postDataJSON();
     fixture.assertApprovalPost(original, reviewed);
     assertReceipt(await blocked.json(), original, 'rejected');
+    await allowApprovalProtocolError(blocked, { status: 409, code: 'APPROVAL_REJECTED', classification: 'coverage_rejected' });
     assert.equal(await providerCalls(providerLogPath, id), beforeCalls);
     const changedParams = await apiApproval(context, baseURL, id, { ...original, override_coverage: true });
     assert.equal(changedParams.status, 409, changedParams.text);
@@ -466,6 +484,9 @@ async function legacyRecovery(env) {
     fixture.assertApprovalPost(response.request().postDataJSON(), fixture.target(old));
     assert.deepEqual(await fixture.durableFacts(sessionRoot, id), before);
     assert.equal(await providerCalls(providerLogPath, id), beforeCalls);
+    await allowApprovalProtocolError(response, { status: 409, code: 'APPROVAL_RECOVERY_REQUIRED', classification: 'legacy_explicit_recovery' });
+    allowMissingApprovalReceipt(a, id, response.request().postDataJSON().approval_request_id,
+      'the settled legacy executing fixture has no receipt ledger');
     const copy = a.locator('#toast-rack .toast, #approval-operation-notice').filter({ hasText: env.profile.locale === 'zh-CN' ? /恢复|继续/ : /recovery|ordinary continue/i }).last();
     await copy.waitFor();
     assert.match(await copy.innerText(), env.profile.locale === 'zh-CN' ? /恢复|继续/ : /recovery|ordinary continue/i);
@@ -803,6 +824,9 @@ async function loseNextApproval(page, baseURL, id, expectedFailures, afterCommit
     expectedFailures.add(url);
     try {
       const body = route.request().postDataJSON();
+      allowApprovalTransportFailure(route.request());
+      if (!afterCommit) allowMissingApprovalReceipt(page, id, body.approval_request_id,
+        'this approval POST was deliberately aborted before reaching the server');
       let status = null, text = '';
       if (afterCommit) {
         const response = await route.fetch();
@@ -847,19 +871,13 @@ async function until(predicate, message, timeout = 25_000) {
   assert.fail(message);
 }
 
-function collectErrors(page, scenario, tab, expectedFailures, errors, expectedTransportFailures) {
+function collectErrors(page, baseURL, scenario, tab, expectedFailures, errors, expectedTransportFailures) {
+  const audit = createApprovalProtocolAudit({ page, baseURL, scenario, tab });
   page.on('pageerror', (error) => errors.page.push({ scenario, tab, message: error.message }));
   page.on('requestfailed', (request) => {
     const entry = { scenario, tab, url: request.url(), error: request.failure()?.errorText };
-    if (expectedFailures.has(request.url()) && request.method() === 'POST') expectedTransportFailures.push(entry);
+    if (expectedFailures.has(request.url()) && audit.isExpectedTransport(request)) expectedTransportFailures.push(entry);
     else errors.request.push(entry);
   });
-  page.on('console', (message) => {
-    if (message.type() !== 'error') return;
-    const text = message.text();
-    const url = message.location().url;
-    if (/^Failed to load resource: the server responded with a status of (400|404|409)\b/.test(text) && /\/api\/sessions\//.test(url)) return;
-    if (/^Failed to load resource: net::ERR_FAILED\b/.test(text) && expectedFailures.has(url)) return;
-    errors.console.push({ scenario, tab, message: text, url });
-  });
+  return audit;
 }

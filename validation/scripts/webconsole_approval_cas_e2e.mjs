@@ -10,6 +10,7 @@ const viewports = {
   desktop: { width: 1440, height: 1000 },
   mobile: { width: 390, height: 844 }
 };
+const protocolAudits = new WeakMap();
 
 // The only intercepted requests are tab A's detail GETs. Approval, revision,
 // mission mutations, and provider execution use the real deterministic service.
@@ -19,6 +20,9 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
   assert.equal(typeof capture, 'function');
   const evidence = [];
   const browserErrors = { page: [], console: [], request: [] };
+  const expectedProtocolErrors = [];
+  const unexpectedHTTP = [];
+  const protocolResponses = [];
   for (const locale of ['zh-CN', 'en']) {
     for (const [size, viewport] of Object.entries(viewports)) {
       const context = await browser.newContext({ viewport });
@@ -27,15 +31,12 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
       const b = await context.newPage();
       const pageErrors = [];
       const suffix = `${locale}-${size}`;
+      const audits = [];
       for (const [tab, page] of [['A', a], ['B', b]]) {
+        audits.push(createApprovalProtocolAudit({ page, baseURL, scenario: suffix, tab }));
         page.on('pageerror', (error) => {
           pageErrors.push(error.message);
           browserErrors.page.push({ scenario: suffix, tab, message: error.message });
-        });
-        page.on('console', (message) => {
-          if (message.type() === 'error' && !/^Failed to load resource: the server responded with a status of 409\b/.test(message.text())) {
-            browserErrors.console.push({ scenario: suffix, tab, message: message.text() });
-          }
         });
         page.on('requestfailed', (request) => {
           browserErrors.request.push({ scenario: suffix, tab, url: request.url(), error: request.failure()?.errorText });
@@ -151,6 +152,7 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
             const blockedRequest = blocked.request().postDataJSON();
             assertApprovalPost(blockedRequest, reviewed);
             assert.equal((await blocked.json()).approval.lookup.receipt.stage, 'rejected');
+            await allowApprovalProtocolError(blocked, { status: 409, code: 'APPROVAL_REJECTED', classification: 'coverage_rejected' });
             assert.match(JSON.stringify(await blocked.json()), /coverage/i);
             const dialog = a.locator('.confirm-dialog');
             await dialog.waitFor();
@@ -195,7 +197,10 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
           const posts = approvalPosts(a, baseURL, id);
           const first = nextPost(a, baseURL, id, 'planmode/approve');
           await a.locator('#inspector-slide-out [data-plan-action="approve"]').click();
-          assert.equal((await first).status(), 409);
+          const blocked = await first;
+          assert.equal(blocked.status(), 409);
+          assert.equal((await blocked.json()).approval.lookup.receipt.stage, 'rejected');
+          await allowApprovalProtocolError(blocked, { status: 409, code: 'APPROVAL_REJECTED', classification: 'coverage_rejected' });
           const dialog = a.locator('.confirm-dialog');
           await dialog.waitFor();
           await patchMission(b, baseURL, id, {
@@ -216,12 +221,22 @@ export async function runApprovalCASE2E({ browser, baseURL, sessionRoot, check, 
         });
         assert.deepEqual(pageErrors, [], `browser runtime errors (${suffix})`);
       } finally {
+        for (const audit of audits) {
+          const result = await audit.complete();
+          browserErrors.console.push(...result.console);
+          expectedProtocolErrors.push(...result.expected);
+          unexpectedHTTP.push(...result.unexpected_http);
+          protocolResponses.push(...result.responses);
+        }
         await context.close();
       }
     }
   }
+  process.stdout.write(`approval CAS HTTP 404 diagnostics: ${JSON.stringify(protocolResponses.filter((item) => item.status === 404))}\n`);
+  assert.deepEqual(unexpectedHTTP, [], 'approval CAS unexpected HTTP protocol errors');
   assert.deepEqual(browserErrors, { page: [], console: [], request: [] }, 'approval CAS browser runtime errors');
-  return { scenarios: evidence.length, evidence, browser_errors: browserErrors };
+  return { scenarios: evidence.length, evidence, browser_errors: browserErrors,
+    expected_protocol_errors: expectedProtocolErrors, http_error_responses: protocolResponses };
 }
 
 async function createFixture(context, baseURL, label, linked = false, marker = 'E2E_UI_PLAN_REVISE') {
@@ -372,6 +387,11 @@ async function assertStaleResponse(response, reviewed) {
   assert.equal(response.status(), 409, await response.text());
   assert.equal((await response.json()).code, 'APPROVAL_TARGET_CONFLICT');
   assertApprovalPost(response.request().postDataJSON(), reviewed, reviewed.override_coverage === true);
+  await allowApprovalProtocolError(response, { status: 409, code: 'APPROVAL_TARGET_CONFLICT', classification: 'stale_target' });
+  const request = response.request();
+  const sessionID = decodeURIComponent(new URL(request.url()).pathname.split('/')[3]);
+  allowMissingApprovalReceipt(request.frame().page(), sessionID, request.postDataJSON().approval_request_id,
+    'this exact stale target was rejected before any receipt admission');
 }
 
 function assertApprovalPost(payload, reviewed, overrideCoverage = false) {
@@ -435,6 +455,145 @@ export const approvalE2EFixtures = {
   coherentSnapshot, freezeDetail, target, displayedTarget, nextPost,
   approvalPosts, assertApprovalPost, durableFacts, assertStaleUI, toastIDs
 };
+
+// Match resource-console diagnostics to the exact observed response. A receipt
+// miss is permitted only for an explicitly declared session/request identity
+// and the server's structured missing-binding error, never for arbitrary 404s.
+export function createApprovalProtocolAudit({ page, baseURL, scenario, tab }) {
+  const consoleMessages = [], responses = [], failed = [], pendingReads = new Set();
+  const allowedHTTP = new Map(), allowedMissing = new Map(), allowedTransport = new Map();
+  let completedResult;
+  const onConsole = (message) => {
+    if (message.type() === 'error') consoleMessages.push({ scenario, tab, message: message.text(), location: message.location() });
+  };
+  const onResponse = (response) => {
+    if (response.status() < 400) return;
+    const item = { scenario, tab, request: response.request(), url: response.url(),
+      method: response.request().method(), status: response.status(), content_type: response.headers()['content-type'] || '' };
+    responses.push(item);
+    const read = (async () => {
+      try {
+        const text = await response.text();
+        try { item.json = JSON.parse(text); }
+        catch { item.body_text = text.slice(0, 1000); }
+      } catch (error) { item.body_read_error = error.message; }
+    })();
+    pendingReads.add(read);
+    read.finally(() => pendingReads.delete(read)).catch(() => {});
+  };
+  const onFailed = (request) => failed.push({ request, url: request.url(), method: request.method(),
+    error: request.failure()?.errorText, intent: allowedTransport.get(request) });
+  page.on('console', onConsole);
+  page.on('response', onResponse);
+  page.on('requestfailed', onFailed);
+  const classify = (item) => {
+    const declared = allowedHTTP.get(item.request);
+    if (declared && item.status === declared.status && item.json?.code === declared.code) return declared.classification;
+    const missing = allowedMissing.get(item.url);
+    if (missing && item.method === 'GET' && item.status === 404 && item.content_type.startsWith('application/json') &&
+      item.json?.error === `approval receipt ${missing.request_id}: file does not exist` &&
+      item.json.code === undefined && item.json.approval === undefined) return 'receipt_missing';
+    return null;
+  };
+  const audit = {
+    allowHTTP(request, declaration) {
+      const knownStatus = { APPROVAL_TARGET_CONFLICT: 409, APPROVAL_REQUEST_CONFLICT: 409,
+        APPROVAL_REJECTED: 409, APPROVAL_RECOVERY_REQUIRED: 409,
+        APPROVAL_TARGET_REQUIRED: 400, APPROVAL_REQUEST_ID_REQUIRED: 400 };
+      assert.equal(typeof declaration.code, 'string');
+      assert.ok(Object.hasOwn(knownStatus, declaration.code), 'protocol errors require an explicit known code');
+      assert.equal(declaration.status, knownStatus[declaration.code]);
+      assert.ok(typeof declaration.classification === 'string' && declaration.classification);
+      allowedHTTP.set(request, declaration);
+    },
+    allowMissing(sessionID, requestID, reason) {
+      assert.ok(sessionID && requestID && reason);
+      allowedMissing.set(`${baseURL}/api/sessions/${encodeURIComponent(sessionID)}/approval-receipts/${encodeURIComponent(requestID)}`,
+        { session_id: sessionID, request_id: requestID, reason });
+    },
+    allowTransport(request) {
+      assert.equal(request.method(), 'POST');
+      const body = request.postDataJSON();
+      assert.ok(body.approval_request_id);
+      allowedTransport.set(request, { request_id: body.approval_request_id, reason: 'intentionally lost approval transport' });
+    },
+    isExpectedTransport(request) { return allowedTransport.has(request); },
+    async complete() {
+      if (completedResult) return completedResult;
+      page.off('console', onConsole);
+      page.off('response', onResponse);
+      page.off('requestfailed', onFailed);
+      await Promise.all([...pendingReads]);
+      const unmatchedConsole = [], expected = [];
+      const consumedResponses = new Set(), consumedFailures = new Set();
+      for (const entry of consoleMessages) {
+        const match = entry.message.match(/^Failed to load resource: the server responded with a status of (\d{3})\b/);
+        const item = match && responses.find((value) => value.url === entry.location.url && value.status === Number(match[1]) && !consumedResponses.has(value));
+        if (item && classify(item)) {
+          consumedResponses.add(item);
+          expected.push({ ...entry, classification: classify(item), response: protocolResponseEvidence(item) });
+          continue;
+        }
+        const failure = /^Failed to load resource: net::ERR_FAILED\b/.test(entry.message) &&
+          failed.find((value) => value.url === entry.location.url && value.method === 'POST' && value.intent && !consumedFailures.has(value));
+        if (failure) {
+          consumedFailures.add(failure);
+          expected.push({ ...entry, classification: 'intentional_transport_failure', request_id: failure.intent.request_id });
+          continue;
+        }
+        unmatchedConsole.push({ ...entry, ...(item ? { response: protocolResponseEvidence(item) } : {}) });
+      }
+      completedResult = { console: unmatchedConsole, expected,
+        unexpected_http: responses.filter((item) => !classify(item)).map(protocolResponseEvidence),
+        responses: responses.map((item) => ({ ...protocolResponseEvidence(item), classification: classify(item),
+          ...(allowedMissing.has(item.url) ? { declared_missing: allowedMissing.get(item.url) } : {}),
+          console_locations: consoleMessages.filter((entry) => entry.location.url === item.url).map((entry) => entry.location) })) };
+      return completedResult;
+    }
+  };
+  protocolAudits.set(page, audit);
+  return audit;
+}
+
+function protocolResponseEvidence(item) {
+  const body = item.json;
+  const lookup = body?.approval?.lookup;
+  return { scenario: item.scenario, tab: item.tab, method: item.method, url: item.url, status: item.status,
+    content_type: item.content_type, server_code: body?.code ?? null,
+    ...(body ? { json: { ...body, ...(body.approval ? { approval: {
+      replay: body.approval.replay, recovery_required: body.approval.recovery_required,
+      lookup: { found: lookup?.found, binding: { approval_request_id: lookup?.binding?.approval_request_id,
+        operation_id: lookup?.binding?.operation_id }, receipt: { stage: lookup?.receipt?.stage,
+        operation_id: lookup?.receipt?.operation_id, target: lookup?.receipt?.target } }
+    } } : {}) } } : {}), ...(item.body_text ? { body_text: item.body_text } : {}),
+    ...(item.body_read_error ? { body_read_error: item.body_read_error } : {}) };
+}
+
+export async function allowApprovalProtocolError(response, declaration) {
+  assert.equal(response.status(), declaration.status);
+  const json = await response.json();
+  assert.equal(json.code, declaration.code);
+  if (declaration.code === 'APPROVAL_REJECTED') {
+    assert.equal(json.approval.lookup.receipt.stage, 'rejected');
+    assert.equal(json.approval.lookup.binding.approval_request_id, response.request().postDataJSON().approval_request_id);
+  }
+  const request = response.request();
+  const audit = protocolAudits.get(request.frame().page());
+  assert.ok(audit, 'the actual response must belong to an audited browser page');
+  audit.allowHTTP(request, declaration);
+}
+
+export function allowMissingApprovalReceipt(page, sessionID, requestID, reason) {
+  const audit = protocolAudits.get(page);
+  assert.ok(audit);
+  audit.allowMissing(sessionID, requestID, reason);
+}
+
+export function allowApprovalTransportFailure(request) {
+  const audit = protocolAudits.get(request.frame().page());
+  assert.ok(audit);
+  audit.allowTransport(request);
+}
 
 async function assertUnaccepted(context, baseURL, root, id, before, version) {
   const detail = await getJSON(context, `${baseURL}/api/sessions/${encodeURIComponent(id)}`);
