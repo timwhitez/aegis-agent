@@ -2585,6 +2585,9 @@ func TestCheckWorkspaceWriteRejectsSymlinkedWorkspaceBeforeTempCreate(t *testing
 
 func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.T) {
 	cwd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AEGIS_AGENT_CONFIG", "")
+	t.Setenv("AEGIS_AGENT_TRUST_WORKSPACE_CONFIG", "")
 	configDir := filepath.Join(cwd, ".aegis-agent")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
@@ -2594,12 +2597,16 @@ func TestDoctorConfigFileCheckReportsUntrustedWorkspaceConfigSkipped(t *testing.
 		t.Fatalf("write config: %v", err)
 	}
 
-	check := doctorConfigFileCheck("", cwd, configPath)
+	_, report, err := config.LoadWithReport("", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := doctorConfigFileCheck(report)
 	if check.Status != "warn" {
 		t.Fatalf("unexpected status: %#v", check)
 	}
-	if check.Details["present"] != true || check.Details["loaded"] != false {
-		t.Fatalf("expected present but not loaded, got %#v", check.Details)
+	if _, claimedPresence := check.Details["present"]; claimedPresence || check.Details["loaded"] != false {
+		t.Fatalf("expected unread source with unknown presence and not loaded, got %#v", check.Details)
 	}
 	if check.Details["reason"] != "workspace_config_not_trusted" {
 		t.Fatalf("expected untrusted reason, got %#v", check.Details)

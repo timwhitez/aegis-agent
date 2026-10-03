@@ -1764,12 +1764,14 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return err
 	}
 
+	configCheck := doctorConfigFileCheck(cfg.LoadReport())
+	loadedPath, _ := configCheck.Details["path"].(string)
 	report := doctorReport{
-		ConfigPath:      defaultString(*configPath, filepath.Join(cwd, ".aegis-agent", "config.yaml")),
+		ConfigPath:      loadedPath,
 		DefaultProvider: cfg.DefaultProvider,
 	}
 
-	report.Checks = append(report.Checks, doctorConfigFileCheck(*configPath, cwd, report.ConfigPath))
+	report.Checks = append(report.Checks, configCheck)
 
 	selectedProvider := defaultString(*providerName, cfg.DefaultProvider)
 	providerCfg, providerErr := cfg.ProviderConfig(selectedProvider)
@@ -1921,39 +1923,39 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	return renderDoctorReport(stdout, report, *jsonMode, hasDoctorFailure(report.Checks))
 }
 
-func doctorConfigFileCheck(explicitPath, cwd, reportPath string) doctorCheck {
-	configStatus := "ok"
-	configDetails := map[string]any{
-		"path":   reportPath,
-		"loaded": true,
+func doctorConfigFileCheck(report config.LoadReport) doctorCheck {
+	check := doctorCheck{Name: "config.file", Status: "warn", Details: map[string]any{
+		"loaded": false, "sources": report.Sources,
+	}}
+	if len(report.Sources) == 0 {
+		check.Status = "skip"
+		check.Details["reason"] = "source_report_unavailable"
+		return check
 	}
-	if strings.TrimSpace(explicitPath) == "" {
-		workspacePath := filepath.Join(cwd, ".aegis-agent", "config.yaml")
-		if filepath.Clean(reportPath) == filepath.Clean(workspacePath) && !config.WorkspaceConfigTrusted(cwd) {
-			configStatus = "warn"
-			configDetails["loaded"] = false
-			configDetails["reason"] = "workspace_config_not_trusted"
-			configDetails["advice"] = "Pass --config explicitly or create .aegis-agent/trusted if this workspace config should be used."
+	selected := report.Sources[len(report.Sources)-1]
+	for _, source := range report.Sources {
+		if source.Outcome == "loaded" {
+			selected = source
 		}
 	}
-	if info, err := os.Stat(reportPath); err != nil {
-		if os.IsNotExist(err) {
-			configStatus = "warn"
-			configDetails["present"] = false
-		} else {
-			configStatus = "fail"
-			configDetails["loaded"] = false
-			configDetails["error"] = err.Error()
-		}
-	} else {
-		configDetails["present"] = true
-		configDetails["mode"] = info.Mode().Perm().String()
+	check.Details["path"] = selected.Path
+	switch selected.Outcome {
+	case "loaded":
+		check.Status = "ok"
+		check.Details["loaded"] = true
+		check.Details["present"] = true
+		check.Details["mode"] = selected.Mode
+	case "missing":
+		check.Details["present"] = false
+		check.Details["reason"] = "config_file_missing"
+	case "skipped_untrusted":
+		check.Details["reason"] = "workspace_config_not_trusted"
+		check.Details["advice"] = "Pass --config explicitly to select this file, or set AEGIS_AGENT_TRUST_WORKSPACE_CONFIG=1 in the parent process to authorize implicit workspace loading."
+	default:
+		check.Status = "fail"
+		check.Details["reason"] = selected.Outcome
 	}
-	return doctorCheck{
-		Name:    "config.file",
-		Status:  configStatus,
-		Details: configDetails,
-	}
+	return check
 }
 
 func renderDoctorReport(stdout io.Writer, report doctorReport, jsonMode, failed bool) error {
@@ -2335,7 +2337,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		cfg.Hooks.SessionComplete = []config.HookDefinition{
 			{
 				Name:    "log-session-complete",
-				Command: []string{"/bin/sh", ".aegis-agent/hooks/session-complete.sh"},
+				Command: generatedInitHookCommand(filepath.Join(cwd, ".aegis-agent", "hooks", "session-complete.sh")),
 			},
 		}
 	}
@@ -2388,10 +2390,28 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	_, _ = fmt.Fprintf(stdout, "wrote config to %s\n", target)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent doctor --config %s --skip-probe\n", target)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent probe-provider --config %s\n", target)
-	_, _ = fmt.Fprintln(stdout, "next: ./bin/aegis-agent run \"Describe the current repository.\"")
+	quotedTarget := quoteShellArgument(target)
+	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent doctor --config %s --skip-probe\n", quotedTarget)
+	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent probe-provider --config %s\n", quotedTarget)
+	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent run --config %s \"Describe the current repository.\"\n", quotedTarget)
 	return nil
+}
+
+func quoteShellArgument(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func generatedInitHookCommand(path string) []string {
+	if !strings.Contains(path, "$") {
+		return []string{"/bin/sh", path}
+	}
+	// Hook substitution precedes shell parsing. Quote dollar-delimited segments
+	// separately so a literal installation path cannot contain a hook token.
+	parts := strings.Split(path, "$")
+	for i := range parts {
+		parts[i] = quoteShellArgument(parts[i])
+	}
+	return []string{"/bin/sh", "-c", "exec /bin/sh " + strings.Join(parts, "'$'")}
 }
 
 func defaultInitSessionDir(cwd, configured string) string {
