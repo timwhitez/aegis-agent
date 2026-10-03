@@ -23,6 +23,12 @@ const ApprovalReceiptSchemaVersion = 1
 const ApprovalReceiptMaxBytes = fileutil.MaxRegularFileReadBytes
 const approvalOperationsFile = "approval-operations.json"
 
+// ValidateApprovalRecoveryState applies the established state.json contract to
+// a captured receipt snapshot without reading or mutating current session facts.
+func ValidateApprovalRecoveryState(state State) error {
+	return validateState(state)
+}
+
 type ApprovalReceiptStage string
 
 const (

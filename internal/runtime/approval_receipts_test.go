@@ -873,6 +873,142 @@ func TestApprovalReceiptRecoverySnapshotsMustMatchRevision(t *testing.T) {
 	}
 }
 
+func TestApprovalReceiptRecoveryStateCorruptionBlocksUnrelatedNewAdmission(t *testing.T) {
+	for _, damage := range []string{"different_prepared_generation", "empty_prepared_generation", "invalid_original_status", "invalid_prepared_status", "negative_original_turn", "negative_prepared_turn", "null_hook_pending", "null_prepared_state"} {
+		t.Run(damage, func(t *testing.T) {
+			r, id, calls := newApprovalTargetFixture(t)
+			old := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "old-state-receipt"}
+			if _, err := r.Continue(context.Background(), old); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(r.cfg.Session.Dir, id, "approval-operations.json")
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ledger map[string]any
+			if err := json.Unmarshal(raw, &ledger); err != nil {
+				t.Fatal(err)
+			}
+			payload := ledger["operations"].(map[string]any)[old.ApprovalRequestID].(map[string]any)["recovery"].(map[string]any)["data"].(map[string]any)
+			preparation := payload["preparation"].(map[string]any)
+			original, prepared := preparation["original_state"].(map[string]any), preparation["prepared_state"].(map[string]any)
+			switch damage {
+			case "different_prepared_generation":
+				prepared["run_generation"] = "run_other"
+			case "empty_prepared_generation":
+				delete(prepared, "run_generation")
+			case "invalid_original_status":
+				original["status"] = "INVALID"
+			case "invalid_prepared_status":
+				prepared["status"] = "INVALID"
+			case "negative_original_turn":
+				original["turn"] = -1
+			case "negative_prepared_turn":
+				prepared["turn"] = -1
+			case "null_hook_pending":
+				payload["hook_pending"] = nil
+			case "null_prepared_state":
+				preparation["prepared_state"] = nil
+			}
+			raw, err = json.Marshal(ledger)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := r.store.MutatePlanMode(id, func(plan *session.PlanModeState) error {
+				plan.PlanVersion++
+				plan.Status = session.PlanModeStatusAwaitingApproval
+				plan.PlanMarkdown = "New reviewed target"
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before, beforeResumed, beforeReplay := receiptBaselineRunFacts(t, r, id)
+			next := ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "new-state-receipt"}
+			_, err = r.Continue(context.Background(), next)
+			after, afterResumed, afterReplay := receiptBaselineRunFacts(t, r, id)
+			t.Logf("damage=%s error=%v provider_calls=%d", damage, err, calls.Load())
+			if !errors.Is(err, session.ErrApprovalReceiptUnverifiable) || calls.Load() != 1 || !reflect.DeepEqual(before, after) || beforeResumed != afterResumed || beforeReplay != afterReplay {
+				t.Fatalf("invalid unrelated recovery did not fail before admission: error=%v provider_calls=%d state_changed=%v", err, calls.Load(), !reflect.DeepEqual(before, after))
+			}
+		})
+	}
+}
+
+func TestApprovalReceiptRecoveryGenerationPhaseControls(t *testing.T) {
+	r, id, _ := newApprovalTargetFixture(t)
+	admitted, err := r.PrepareApprovalOperation(context.Background(), ContinueRequest{SessionID: id, ApprovePlan: true, ApprovalTarget: approvalTargetForTest(t, r, id), ApprovalRequestID: "phase-controls"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.AbortPreparedApproval(admitted.Prepared, nil)
+	for _, tc := range []struct {
+		name, phase, completed, state string
+		complete, claimed             bool
+	}{
+		{"validated original", "validated", "validated", "original", false, false},
+		{"claim pending original", "claim_pending", "claim_pending", "original", false, true},
+		{"claim pending resumed own claim", "claim_pending", "claim_pending", "claim", false, true},
+		{"failed validated original", "prepare_failed", "validated", "original", false, false},
+		{"failed claim restored original", "prepare_failed", "claim_pending", "original", false, true},
+		{"failed claim pending own claim", "prepare_failed", "claim_pending", "failed", false, true},
+		{"failed own claim", "prepare_failed", "run_claimed", "failed", false, true},
+		{"prepared own claim", "prepared", "prepared", "claim", true, true},
+		{"executing own claim", "executing", "executing", "claim", true, true},
+		{"settled own generation", "settled", "settled", "completed", true, true},
+		{"abort restored original", "aborted", "aborted", "original", true, true},
+		{"abort restored original refreshed observations", "aborted", "aborted", "original_observed", true, true},
+		{"uncertain admission aborted own failed claim", "aborted", "aborted", "failed", true, true},
+		{"review required own claim", "review_required", "review_required", "awaiting", true, true},
+		{"recovered original", "recovered", "recovered", "original", true, true},
+		{"recovered own generation", "recovered", "recovered", "awaiting", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := admitted.Lookup.Receipt
+			payload, err := decodeApprovalRecovery(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			receipt.Phase = tc.phase
+			if !tc.complete {
+				receipt.Stage = session.ApprovalReceiptPrepared
+			}
+			if !tc.claimed {
+				receipt.Recovery.RunGeneration = ""
+			}
+			payload.Complete = tc.complete
+			payload.Preparation.Phase, payload.Preparation.CompletedPhase = tc.phase, tc.completed
+			switch tc.state {
+			case "original":
+				payload.Preparation.PreparedState = payload.Preparation.OriginalState
+			case "original_observed":
+				payload.Preparation.PreparedState = payload.Preparation.OriginalState
+				payload.Preparation.PreparedState.UpdatedAt = payload.Preparation.ClaimUpdatedAt
+				payload.Preparation.PreparedState.PendingSteerCount = 2
+				payload.Preparation.PreparedState.LoadedSkills = []string{"loaded-during-preparation"}
+			case "failed":
+				payload.Preparation.PreparedState.Status = session.StatusFailed
+				payload.Preparation.PreparedState.LastError = "captured preparation failure"
+				payload.Preparation.LastError = "captured preparation failure"
+			case "completed":
+				payload.Preparation.PreparedState.Status = session.StatusCompleted
+			case "awaiting":
+				payload.Preparation.PreparedState.Status = session.StatusAwaitingInput
+			}
+			receipt.Recovery.Data, err = json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeApprovalRecovery(receipt); err != nil {
+				t.Fatalf("legitimate captured phase rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestApprovalReceiptLinkedAndReplayFactsAreSelfContained(t *testing.T) {
 	for _, damage := range []string{"mission_history", "mission_event", "replay_identity", "required_field", "unknown_field", "contradictory_phase"} {
 		t.Run(damage, func(t *testing.T) {

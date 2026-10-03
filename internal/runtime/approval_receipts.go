@@ -213,6 +213,9 @@ func decodeApprovalRecovery(receipt session.ApprovalReceipt) (approvalOperationP
 	if receipt.Recovery.RunGeneration != "" && payload.Preparation.ClaimUpdatedAt != receipt.Recovery.RunGeneration {
 		return bad("contradictory recovery run generation")
 	}
+	if err := validateApprovalRecoveryStates(receipt, payload.Preparation); err != nil {
+		return bad(err.Error())
+	}
 	if payload.OriginalMessageIDs == nil || payload.Events == nil || payload.Messages == nil || payload.PlanHistory == nil || payload.GoalHistory == nil {
 		return bad("missing recovery fact arrays")
 	}
@@ -312,6 +315,58 @@ func decodeApprovalRecovery(receipt session.ApprovalReceipt) (approvalOperationP
 	}
 	return payload, nil
 }
+
+func validateApprovalRecoveryStates(receipt session.ApprovalReceipt, record approvalPreparationRecord) error {
+	for _, state := range []session.State{record.OriginalState, record.PreparedState} {
+		if err := session.ValidateApprovalRecoveryState(state); err != nil {
+			return fmt.Errorf("invalid captured recovery state: %w", err)
+		}
+	}
+	if record.Phase != "prepare_failed" && record.Phase != record.CompletedPhase {
+		return errors.New("contradictory completed recovery phase")
+	}
+	// CAS compensation refreshes these observations without changing the
+	// original semantic state. Validate them above, then compare core facts.
+	observedOriginal := record.PreparedState
+	observedOriginal.UpdatedAt = record.OriginalState.UpdatedAt
+	observedOriginal.PendingSteerCount = record.OriginalState.PendingSteerCount
+	observedOriginal.LoadedSkills = record.OriginalState.LoadedSkills
+	original := reflect.DeepEqual(record.OriginalState, observedOriginal)
+	claimed := receipt.Recovery.RunGeneration != "" && record.PreparedState.RunGeneration == receipt.Recovery.RunGeneration
+	switch record.CompletedPhase {
+	case "validated":
+		if original && receipt.Recovery.RunGeneration == "" {
+			return nil
+		}
+	case "claim_pending":
+		// A resumed preparation checkpoints claim_pending again before reusing
+		// its existing claim; its snapshot can be original or already claimed.
+		expected := record.OriginalState
+		expected.Status, expected.Phase = session.StatusRunning, "prepare"
+		expected.PauseReason, expected.ProviderAutoResumeCount = "", 0
+		expected.RunGeneration = record.ClaimUpdatedAt
+		prepared := record.PreparedState
+		if record.Phase == "prepare_failed" && prepared.Status == session.StatusFailed && prepared.LastError == record.LastError {
+			prepared.Status = session.StatusRunning
+			prepared.LastError = record.OriginalState.LastError
+		}
+		if receipt.Recovery.RunGeneration != "" && (original || (claimed && samePreparedRun(expected, prepared))) {
+			return nil
+		}
+	case "aborted", "recovered":
+		// Abort after addHandle failure restores original state; an uncertain
+		// admission write leaves a failed own claim. Both retain the receipt.
+		if receipt.Recovery.RunGeneration != "" && (original || claimed) {
+			return nil
+		}
+	default:
+		if claimed {
+			return nil
+		}
+	}
+	return errors.New("contradictory captured recovery state generation")
+}
+
 func validateRecoveryFields(data []byte, typ reflect.Type) error {
 	if typ == reflect.TypeFor[json.RawMessage]() {
 		return nil
@@ -335,6 +390,13 @@ func validateRecoveryFields(data []byte, typ reflect.Type) error {
 		return nil
 	}
 	if typ.Kind() != reflect.Struct {
+		switch typ.Kind() {
+		case reflect.Bool, reflect.String, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
+			if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+				return errors.New("null recovery scalar")
+			}
+		}
 		return nil
 	}
 	var fields map[string]json.RawMessage
