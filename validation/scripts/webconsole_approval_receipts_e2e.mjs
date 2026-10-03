@@ -565,6 +565,7 @@ async function completedAlias(env) {
   let canonicalRequest;
   let operationID;
   let originalExecution;
+  let originalReceipt;
   try {
     await openSessionUI(a, id, 'plan');
     await openSessionUI(b, id, 'goal');
@@ -578,7 +579,7 @@ async function completedAlias(env) {
     const settled = await completed(context, baseURL, id);
     originalExecution = await providerExecution(env, id, settled, beforeCalls,
       ['get_goal', 'shell', 'record_goal_progress', 'update_goal', 'finish']);
-    const originalReceipt = (await queryReceipt(context, baseURL, id,
+    originalReceipt = (await queryReceipt(context, baseURL, id,
       canonicalRequest.approval_request_id)).approval.lookup.receipt;
     const beforeAlias = await fixture.durableFacts(sessionRoot, id);
     await assertNotGenerating(a);
@@ -616,17 +617,40 @@ async function completedAlias(env) {
   assert.notEqual(ordinaryExecution.run_generation, originalExecution.run_generation);
   await fixture.patchMission(b, baseURL, id, { requirements: [{ id: 'requirement_scope', text: 'Settings must remain unchanged: later linked scope.' }] });
   const changed = await fixture.coherentSnapshot(context, baseURL, id);
+  assert.equal(changed.state.status, 'completed');
+  assert.equal(changed.state.run_generation, later.state.run_generation);
+  assert.ok(!changed.active_handle, 'the semantic edit must leave the ordinary execution settled');
+  assert.equal(changed.goal.mission.plan_status, 'needs_approval');
+  assert.equal(changed.plan_mode.status, 'planning');
+  assert.equal(changed.plan_mode.plan_version || 0, 0);
+  assert.notEqual(changed.plan_mode.plan_mode_id, reviewed.plan_mode_id,
+    'editing the approved linked scope must create a replacement pending gate');
+  assert.equal(changed.plan_mode.linked_goal_id, changed.goal.goal_id);
+  assert.equal(changed.goal_facts.coverage.approval_blocked, false);
   assert.notEqual(changed.plan_mode.approval_revision, reviewed.expected_revision);
   const beforeReplay = await fixture.durableFacts(sessionRoot, id);
   const replay = await apiApproval(context, baseURL, id, canonicalRequest, 'mission/plan/approve');
   assert.equal(replay.status, 200, replay.text);
   assertReceipt(replay.json, canonicalRequest, 'admitted', true);
   assert.equal(replay.json.approval.lookup.receipt.operation_id, operationID);
+  assert.deepEqual(stableReceipt(replay.json.approval.lookup.receipt), stableReceipt(originalReceipt));
   assert.deepEqual(await fixture.durableFacts(sessionRoot, id), beforeReplay);
   assert.equal(await providerCalls(providerLogPath, id), beforeCalls + 6);
-  await seedNewTarget(sessionRoot, id);
+  await seedNewTarget(sessionRoot, id, { expectedStatus: 'planning', runGeneration: later.state.run_generation });
+  const freshDetail = await fixture.coherentSnapshot(context, baseURL, id);
+  assert.equal(freshDetail.plan_mode.status, 'awaiting_approval');
+  assert.equal(freshDetail.plan_mode.plan_version, 1);
+  assert.equal(freshDetail.state.status, 'completed');
+  assert.equal(freshDetail.state.run_generation, later.state.run_generation);
+  assert.ok(!freshDetail.active_handle);
+  assert.equal(freshDetail.goal_facts.coverage.approval_blocked, false);
   await openSessionUI(a, id, 'plan');
   const newTarget = await fixture.displayedTarget(a);
+  assert.equal(newTarget.plan_mode_id, changed.plan_mode.plan_mode_id);
+  assert.notEqual(newTarget.plan_mode_id, reviewed.plan_mode_id);
+  assert.equal(newTarget.plan_version, 1);
+  assert.equal(newTarget.expected_revision, freshDetail.plan_mode.approval_revision);
+  assert.notEqual(newTarget.expected_revision, changed.plan_mode.approval_revision);
   assert.notEqual(newTarget.expected_revision, reviewed.expected_revision);
   const admitted = fixture.nextPost(a, baseURL, id, 'planmode/approve');
   await a.locator(selectors.approve).click();
@@ -651,7 +675,7 @@ async function completedAlias(env) {
     admitted_execution_generations: 2,
     executions: { original_admission: originalExecution, ordinary_continue: ordinaryExecution, new_target_admission: freshExecution },
     api_checks: ['same-ID linked replay after semantic change', 'old receipt query separates later generation'],
-    fixture_setup: 'new pending plan seeded only after settled ordinary continue; existing historical revisions preserved' };
+    fixture_setup: 'the real semantic mission edit creates a replacement planning gate at version zero; only its fresh pending version one is seeded after settled ordinary continue, preserving historical receipts, revisions and JSONL facts' };
 }
 
 async function legacyRecovery(env) {
@@ -768,14 +792,13 @@ async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
   const matches = (url) => url.pathname === pathname;
   const released = deferred();
   const pending = new Set();
+  let holding = true;
   const handler = (route) => {
     assert.equal(route.request().method(), 'GET', 'only real detail polling is delayed');
-    if (allowInitialRead) {
-      allowInitialRead = false;
-      return route.continue();
-    }
+    const shouldHold = holding && !allowInitialRead;
+    allowInitialRead = false;
     const task = (async () => {
-      await released.promise;
+      if (shouldHold) await released.promise;
       await route.continue();
     })();
     pending.add(task);
@@ -784,9 +807,12 @@ async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
   };
   await page.route(matches, handler);
   return async () => {
+    holding = false;
     released.resolve();
+    // Removing an interceptor can itself continue its in-flight routes. Drain
+    // our sole owner first; newly arriving callbacks continue without a wait.
+    while (pending.size) await Promise.all([...pending]);
     await page.unroute(matches, handler);
-    await Promise.all([...pending]);
   };
 }
 
@@ -965,17 +991,39 @@ function withoutLedger(facts) {
 
 // Fixture mutation is limited to these settled temporary sessions. It never
 // invents a receipt, claim, JSONL approval fact, or historical known revision.
-async function seedNewTarget(root, id) {
+async function seedNewTarget(root, id, { expectedStatus = 'executing', runGeneration } = {}) {
+  assert.ok(['executing', 'planning'].includes(expectedStatus));
+  const before = await fixture.durableFacts(root, id);
   const file = path.join(root, id, 'planmode.json');
   const plan = JSON.parse(await readFile(file, 'utf8'));
-  assert.equal(plan.status, 'executing');
+  assert.equal(plan.status, expectedStatus);
+  const version = plan.plan_version || 0;
+  assert.ok(Number.isInteger(version) && version >= 0);
+  if (expectedStatus === 'planning') {
+    assert.ok(runGeneration, 'replacement planning fixture requires a proven settled execution generation');
+    const state = JSON.parse(before['state.json']);
+    assert.equal(state.status, 'completed');
+    assert.equal(state.run_generation, runGeneration);
+    assert.equal(version, 0);
+    assert.equal(plan.approved_version || 0, 0);
+    assert.equal(plan.approved_revision || '', '');
+    assert.equal(plan.approvals?.length || 0, 0);
+    assert.equal(plan.plan_markdown || '', '');
+    plan.verification = ['Browser approves this freshly reviewed target and observes completion'];
+  } else {
+    assert.ok(version > 0, 'existing executing controls must retain a submitted plan version');
+  }
   plan.status = 'awaiting_approval';
-  plan.plan_version += 1;
+  plan.plan_version = version + 1;
   plan.summary = 'Settings must remain unchanged: new plan for a second reviewed admission.';
-  plan.plan_markdown += '\n\n# Fresh review\n\nApprove this newly captured target explicitly.';
+  plan.plan_markdown = (plan.plan_markdown || '# Fresh reviewed plan') + '\n\n# Fresh review\n\nApprove this newly captured target explicitly.';
   plan.updated_at = new Date().toISOString();
   delete plan.approval_revision;
   await writeFile(file, JSON.stringify(plan) + '\n', { mode: 0o600 });
+  const after = await fixture.durableFacts(root, id);
+  delete before['planmode.json'];
+  delete after['planmode.json'];
+  assert.deepEqual(after, before, 'pending fixture setup must preserve historical approval, ledger, goal, generation and JSONL facts');
 }
 
 async function seedLegacyExecuting(root, id) {
