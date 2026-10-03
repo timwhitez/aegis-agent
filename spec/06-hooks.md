@@ -236,11 +236,19 @@ v1 不支持：
 
 ## 11. 安全边界
 
-- hooks 默认在当前工作目录执行
+- hooks 默认在 session 的有效 workdir 执行；自定义相对 command/script 路径也相对此目录解析，不相对 init 目录或配置文件目录
 - 不自动提升权限
 - 不提供任意内存访问接口
 - 不允许直接改 session store 文件
 - `command` 必须是 argv 数组，不接受 shell 字符串
+
+### 11.1 init 生成的示例 hook
+
+- `init` 的示例 completion hook 引用实际生成脚本的绝对路径；普通路径直接作为 script argv，不改变自定义 hook 的相对路径语义。
+- 生成路径含字面量 `$` 时，以分段 shell 字面量引用该路径，避免既定 hook 变量替换改写安装目录。这类示例使用 `sh -c`，不参与静态 script 预检；脚本删除后记录 command 失败，仍按示例的 fail-open 策略继续。
+- 示例脚本把 payload 追加到有效 workdir 下的 `.aegis-agent/hooks/logs/session-complete.jsonl`。
+- 仅移动配置文件且原脚本仍存在时，示例引用继续有效；移动或删除原脚本/安装目录后应更新引用或重新生成。既有用户配置不自动改写。
+- `--example-hook=false` 不生成示例 command 或脚本。
 
 ## 12. 日志与审计
 

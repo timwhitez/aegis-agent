@@ -53,6 +53,10 @@ type Config struct {
 	Runtime         RuntimeConfig       `yaml:"runtime"`
 	Output          OutputConfig        `yaml:"output"`
 	Hooks           HooksConfig         `yaml:"hooks"`
+
+	// Transient facts from the same load that produced this configuration.
+	// Unexported so they cannot be supplied by or persisted into YAML/JSON.
+	loadReport LoadReport
 }
 
 type Provider struct {
@@ -481,52 +485,8 @@ func Default() *Config {
 }
 
 func Load(explicitPath, cwd string) (*Config, error) {
-	cfg := Default()
-
-	type loadCandidate struct {
-		path                   string
-		requiresWorkspaceTrust bool
-	}
-
-	loadOrder := []loadCandidate{}
-	if explicitPath == "" {
-		home, _ := os.UserHomeDir()
-		if home != "" {
-			loadOrder = append(loadOrder, loadCandidate{path: filepath.Join(home, ".aegis-agent", "config.yaml")})
-		}
-		loadOrder = append(loadOrder, loadCandidate{
-			path:                   filepath.Join(cwd, ".aegis-agent", "config.yaml"),
-			requiresWorkspaceTrust: true,
-		})
-		if envPath := os.Getenv("AEGIS_AGENT_CONFIG"); envPath != "" {
-			loadOrder = append(loadOrder, loadCandidate{path: envPath})
-		}
-	} else {
-		loadOrder = append(loadOrder, loadCandidate{path: explicitPath})
-	}
-
-	for _, candidate := range loadOrder {
-		path := candidate.path
-		if path == "" {
-			continue
-		}
-		if candidate.requiresWorkspaceTrust && !workspaceConfigTrusted(cwd) {
-			continue
-		}
-		data, _, err := fileutil.ReadRegularFileNoSymlink(path)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, err
-		}
-		if err := yaml.Unmarshal(data, cfg); err != nil {
-			return nil, err
-		}
-	}
-
-	normalizeConfig(cfg, cwd)
-	return cfg, nil
+	cfg, _, err := LoadWithReport(explicitPath, cwd)
+	return cfg, err
 }
 
 func PersistPath(explicitPath, cwd string) string {
