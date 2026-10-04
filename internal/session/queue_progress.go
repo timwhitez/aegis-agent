@@ -181,6 +181,9 @@ func (s *Store) updateQueueJobRepairIfCurrent(expected QueueJob, repaired *Queue
 	if err := validateStoreID("queue job", expected.ID); err != nil {
 		return QueueJob{}, false, err
 	}
+	if s.beforeQueueJobRepairCheck != nil {
+		s.beforeQueueJobRepairCheck(expected, repaired)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	err = s.withFileLock(filepath.Join(s.queueRoot(), "claim.lock"), func() error {

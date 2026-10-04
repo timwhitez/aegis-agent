@@ -49,6 +49,9 @@ type Store struct {
 	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
 	// Set only by package tests to advance a job immediately before reaper CAS.
 	beforeQueueReapCommit func(candidate, updated QueueJob)
+	// Set once by package tests to advance canonical facts before a reader CAS.
+	// Invoked without Store or claim locks; use a separate Store for writes.
+	beforeQueueJobRepairCheck func(expected QueueJob, repaired *QueueJob)
 }
 
 type harnessReminderIndex struct {
@@ -4435,13 +4438,32 @@ func unlockFileBestEffort(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
 
+const queueJobReconcileAttempts = 8
+
+var errQueueJobRepairConflict = errors.New("queue job changed during reconciliation")
+
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
+	changed := false
+	for attempt := 0; attempt < queueJobReconcileAttempts; attempt++ {
+		current, attemptChanged, err := s.reconcileQueueJobSessionOnce(job)
+		changed = changed || attemptChanged
+		job = current
+		if !errors.Is(err, errQueueJobRepairConflict) {
+			return job, changed, err
+		}
+		// The old attempt has performed no conflict followups. Reconcile the
+		// new canonical fact before exposing a successful full-reader result.
+	}
+	return job, changed, fmt.Errorf("queue job %s reconciliation conflicted after %d attempts; retry the read: %w", job.ID, queueJobReconcileAttempts, errQueueJobRepairConflict)
+}
+
+func (s *Store) reconcileQueueJobSessionOnce(job QueueJob) (QueueJob, bool, error) {
 	current, matches, err := s.updateQueueJobRepairIfCurrent(job, nil)
 	if err != nil {
 		return job, false, err
 	}
 	if !matches {
-		return current, true, nil
+		return current, true, errQueueJobRepairConflict
 	}
 	expected := job
 	originalStatus := job.Status
@@ -4470,7 +4492,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			return job, false, fmt.Errorf("persist stale queue job repair %s: %w", job.ID, err)
 		}
 		if !matches {
-			return committed, true, nil
+			return committed, true, errQueueJobRepairConflict
 		}
 		job = committed
 		if isTerminalQueueStatus(job.Status) {
@@ -4500,7 +4522,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 				return job, false, fmt.Errorf("persist reaped queue job snapshot %s: %w", job.ID, err)
 			}
 			if !matches {
-				return committed, true, nil
+				return committed, true, errQueueJobRepairConflict
 			}
 			job = committed
 		}
@@ -4555,7 +4577,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 		}
 		if !matches {
-			return committed, true, nil
+			return committed, true, errQueueJobRepairConflict
 		}
 		job = committed
 		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
@@ -4639,7 +4661,7 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 	}
 	if !matches {
-		return committed, true, nil
+		return committed, true, errQueueJobRepairConflict
 	}
 	job = committed
 	if isTerminalQueueStatus(job.Status) {
