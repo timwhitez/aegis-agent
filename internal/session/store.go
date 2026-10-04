@@ -4436,6 +4436,14 @@ func unlockFileBestEffort(file *os.File) {
 }
 
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
+	current, matches, err := s.updateQueueJobRepairIfCurrent(job, nil)
+	if err != nil {
+		return job, false, err
+	}
+	if !matches {
+		return current, true, nil
+	}
+	expected := job
 	originalStatus := job.Status
 	now := time.Now().UTC()
 	meta, state, ok, err := s.findSessionForQueueJob(job)
@@ -4457,9 +4465,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		job.Status = QueueStatusFailed
 		job.SessionStatus = StatusFailed
 		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
-		if err := s.SaveJob(job); err != nil {
+		committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+		if err != nil {
 			return job, false, fmt.Errorf("persist stale queue job repair %s: %w", job.ID, err)
 		}
+		if !matches {
+			return committed, true, nil
+		}
+		job = committed
 		if isTerminalQueueStatus(job.Status) {
 			if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 				return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
@@ -4482,9 +4495,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		job.Status = QueueStatusBlocked
 		job.LastError = marker
 		if changed {
-			if err := s.SaveJob(job); err != nil {
+			committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+			if err != nil {
 				return job, false, fmt.Errorf("persist reaped queue job snapshot %s: %w", job.ID, err)
 			}
+			if !matches {
+				return committed, true, nil
+			}
+			job = committed
 		}
 		if err := s.ensureBlockedQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for reaped queue job %s: %w", job.ID, err)
@@ -4532,9 +4550,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			job.LastError = queueError
 			changed = true
 		}
-		if err := s.SaveJob(job); err != nil {
+		committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+		if err != nil {
 			return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 		}
+		if !matches {
+			return committed, true, nil
+		}
+		job = committed
 		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
 		}
@@ -4611,9 +4634,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, false, nil
 	}
-	if err := s.SaveJob(job); err != nil {
+	committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+	if err != nil {
 		return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 	}
+	if !matches {
+		return committed, true, nil
+	}
+	job = committed
 	if isTerminalQueueStatus(job.Status) {
 		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)

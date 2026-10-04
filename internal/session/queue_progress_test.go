@@ -295,3 +295,47 @@ func TestQueueResumeProvisionalClaimRequiresDurableProof(t *testing.T) {
 		}
 	}
 }
+
+func TestQueueRepairRejectsSnapshotCapturedBeforeResumeClaim(t *testing.T) {
+	root := t.TempDir()
+	reader, owner := NewStore(root), NewStore(root)
+	job := QueueJob{SchemaVersion: 1, ID: "job_reader", Status: QueueStatusBlocked, ParentSessionID: "parent", RootSessionID: "parent", SessionID: "child", SessionStatus: StatusPaused, Prompt: "offline", Mode: ModeExec}
+	if err := owner.SaveJob(job); err != nil {
+		t.Fatal(err)
+	}
+	old, err := reader.LoadJobCoordinationSnapshot(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, acquired, err := owner.AcquireQueueChildResumeSlot("parent", job.ID, "child", 0); err != nil || !acquired {
+		t.Fatalf("resume: acquired=%t err=%v", acquired, err)
+	}
+	claimed, err := owner.LoadJobCoordinationSnapshot(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, changed, err := reader.reconcileQueueJobSession(old)
+	if err != nil || !changed || got.Status != QueueStatusRunning || got.ProcessStartID != claimed.ProcessStartID || got.HeartbeatAt != claimed.HeartbeatAt {
+		t.Fatalf("stale reader did not return current lease: %#v changed=%t err=%v", got, changed, err)
+	}
+	// Also exercise drift after reconciliation's initial version check but
+	// before publication: the writer must compare under the durable lock.
+	repair := old
+	repair.LastError = "stale reader repair"
+	current, matches, err := reader.updateQueueJobRepairIfCurrent(old, &repair)
+	if err != nil || matches || current.Status != QueueStatusRunning || current.ClaimedAt != claimed.ClaimedAt {
+		t.Fatalf("late stale repair replaced new lease: %#v matches=%t err=%v", current, matches, err)
+	}
+	if _, matches, err := reader.updateQueueJobRepairIfCurrent(claimed, nil); err != nil || !matches {
+		t.Fatalf("current version not recognized: matches=%t err=%v", matches, err)
+	}
+	settled := claimed
+	settled.Status, settled.SessionStatus, settled.FinalText = QueueStatusCompleted, StatusCompleted, "new terminal result"
+	if err := owner.SaveJob(settled); err != nil {
+		t.Fatal(err)
+	}
+	current, matches, err = reader.updateQueueJobRepairIfCurrent(claimed, &repair)
+	if err != nil || matches || current.Status != QueueStatusCompleted || current.FinalText != "new terminal result" {
+		t.Fatalf("stale reader replaced settled result: %#v matches=%t err=%v", current, matches, err)
+	}
+}

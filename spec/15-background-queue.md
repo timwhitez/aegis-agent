@@ -303,3 +303,5 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 - 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。
 
 - 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。
+
+- 被动 reader 的 repair publication 还需在 claim lock 内对完整 canonical snapshot 做版本比较；reader 在新 resume claim 之前读到旧 blocked，或在计算 repair 时遇到 heartbeat/settlement 推进，不得 Save 旧整份事实。发生冲突时返回最新 canonical job，跳过旧 repair 的后续 coordination/notification。

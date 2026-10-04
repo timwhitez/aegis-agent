@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -114,7 +115,11 @@ func (s *Store) UpdateQueueJobAfterExecution(jobID string, mode QueueExecutionWr
 			job.Status, job.SessionID, job.SessionStatus = previous.Status, previous.SessionID, previous.SessionStatus
 			job.FinalText, job.LastError, job.StopReason = previous.FinalText, previous.LastError, previous.StopReason
 		}
-		return s.saveJobLocked(job)
+		if err := s.saveJobLocked(job); err != nil {
+			return err
+		}
+		job, err = s.loadQueueJobForCoordinationLocked(jobID)
+		return err
 	})
 	return job, err
 }
@@ -167,4 +172,34 @@ func queueResumeClaimIsPendingChildStart(job QueueJob, state State, now time.Tim
 	claimedAt, claimErr := time.Parse(time.RFC3339Nano, job.ClaimedAt)
 	stateAt, stateErr := time.Parse(time.RFC3339Nano, state.UpdatedAt)
 	return claimErr == nil && stateErr == nil && !claimedAt.After(now) && !stateAt.After(claimedAt)
+}
+
+// A reader may have captured its snapshot before a resume/settlement writer.
+// Recheck the complete canonical fact under claim.lock before any repair write.
+// repaired=nil only verifies that reconciliation still starts from current facts.
+func (s *Store) updateQueueJobRepairIfCurrent(expected QueueJob, repaired *QueueJob) (current QueueJob, matches bool, err error) {
+	if err := validateStoreID("queue job", expected.ID); err != nil {
+		return QueueJob{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err = s.withFileLock(filepath.Join(s.queueRoot(), "claim.lock"), func() error {
+		current, err = s.loadQueueJobForCoordinationLocked(expected.ID)
+		if err != nil {
+			return err
+		}
+		matches = reflect.DeepEqual(current, expected)
+		if !matches || repaired == nil {
+			return nil
+		}
+		if repaired.ID != expected.ID {
+			return errors.New("queue job repair changed identity")
+		}
+		if err := s.saveJobLocked(*repaired); err != nil {
+			return err
+		}
+		current, err = s.loadQueueJobForCoordinationLocked(expected.ID)
+		return err
+	})
+	return current, matches, err
 }
