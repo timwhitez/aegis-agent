@@ -122,7 +122,11 @@ New sessions resolve the configured option before their first request; resumed
 sessions retain already recorded provider options, including a default nil
 metadata option. Legacy sessions without an effective options snapshot can fill
 missing options from current config. The CLI reports compatibility guidance
-before execution and observed root-session fallback events on stderr. See the
+before execution and observed root-session fallback events on stderr. Delegated
+sessions report their actual targets and profile guidance; the parent CLI
+selection is not a fresh-session recipe for a child role. Resume templates are
+omitted when CLI normalization cannot reproduce stored profile/model selectors.
+See the
 [provider contract](./spec/03-provider-contracts.md) for the existing compatibility options.
 
 The default configuration keeps provider-side storage disabled where supported

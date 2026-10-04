@@ -38,6 +38,7 @@ func (w *runStderrWriter) Write(p []byte) (int, error) {
 type runDiagnostics struct {
 	mu        sync.Mutex
 	reported  bool
+	primaryID string
 	report    config.LoadReport
 	selection runDiagnosticSelection
 	exe       string
@@ -57,6 +58,7 @@ func (d *runDiagnostics) sessionActive(meta session.SessionMetadata) {
 	defer d.mu.Unlock()
 	if !d.reported {
 		d.reported = true
+		d.primaryID = meta.ID
 		if !d.report.Complete {
 			_, _ = fmt.Fprintln(d.out, "config layer: source report unavailable")
 		}
@@ -76,7 +78,11 @@ func (d *runDiagnostics) sessionActive(meta session.SessionMetadata) {
 		metadata = fmt.Sprint(*meta.ProviderOptions.SendMetadata)
 	}
 	_, _ = fmt.Fprintf(d.out, "execution target: session=%q profile=%q model=%q api_provider=%q endpoint=%q (origin only; path/query/fragment/userinfo hidden) send_metadata=%s\n", meta.ID, meta.Provider, meta.Model, meta.ProviderOptions.APIProvider, safeDiagnosticEndpoint(meta.ProviderOptions.BaseURL), metadata)
-	if d.selection.resume {
+	// Delegated runners inherit this observer, but their role selections cannot
+	// be reproduced by the parent invocation's CLI flags. A directly selected
+	// child session is still primary because it supplies the first callback.
+	primary := meta.ID == d.primaryID
+	if primary && d.selection.resume {
 		_, _ = fmt.Fprintln(d.out, "resume target uses the session's effective provider snapshot; editing a profile does not replace already recorded options.")
 	}
 	if meta.ProviderOptions.APIProvider != "openai-compatible" || (meta.ProviderOptions.SendMetadata != nil && !*meta.ProviderOptions.SendMetadata) {
@@ -84,6 +90,10 @@ func (d *runDiagnostics) sessionActive(meta session.SessionMetadata) {
 	}
 	_, _ = fmt.Fprintln(d.out, "metadata compatibility: enabled; automatic unsupported-metadata fallback is scoped to this adapter instance. A new Start/Continue can discover it again within the same process.")
 	_, _ = fmt.Fprintf(d.out, "For a known rejecting gateway, add send_metadata: false inside the existing complete providers[%q] block; preserve its other fields. Later layers can replace the entire profile.\n", meta.Provider)
+	if !primary {
+		_, _ = fmt.Fprintln(d.out, "Delegated session: the parent CLI selection does not provide a standalone fresh-session recipe for this child role. Verify its actual target after editing the profile.")
+		return
+	}
 	_, _ = fmt.Fprintln(d.out, "Start a new session with the same selection/environment after editing; recorded session options (including default nil) remain a snapshot. The new session resolves current configuration endpoint/options; verify its execution target.")
 	loaded := false
 	var explicit string
@@ -106,8 +116,8 @@ func (d *runDiagnostics) sessionActive(meta session.SessionMetadata) {
 		// A resumed profile/model can differ from today's config defaults. This
 		// is a fresh-session template, not restoration of its durable options.
 		provider, model = meta.Provider, meta.Model
-		if provider != strings.ToLower(strings.TrimSpace(provider)) {
-			_, _ = fmt.Fprintln(d.out, "new session: choose provider/model explicitly; this stored profile name cannot be reproduced by the normalized --provider flag")
+		if provider != strings.ToLower(strings.TrimSpace(provider)) || strings.EqualFold(provider, "default") || model != strings.TrimSpace(model) || strings.EqualFold(model, "default") {
+			_, _ = fmt.Fprintln(d.out, "new session: review the current config and choose provider/model explicitly; these stored selectors cannot be reproduced by normalized CLI flags")
 			return
 		}
 	}

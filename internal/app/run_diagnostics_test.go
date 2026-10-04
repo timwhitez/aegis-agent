@@ -342,6 +342,52 @@ func TestRunDiagnosticsFallbackUsesTypedEscapedProfile(t *testing.T) {
 	}
 }
 
+func TestRunDiagnosticsResumeRequiresRepresentableSelectors(t *testing.T) {
+	for _, tc := range []struct{ provider, model string }{
+		{"default", "model"}, {"DEFAULT", "model"},
+		{"gateway", "default"}, {"gateway", "DeFaUlT"},
+		{"gateway", " model "}, {"MixedCase", "model"},
+	} {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			var out bytes.Buffer
+			d := newRunDiagnostics(config.Default(), runDiagnosticSelection{mode: "exec", resume: true}, &out)
+			d.sessionActive(session.SessionMetadata{ID: "resumed", Provider: tc.provider, Model: tc.model, ProviderOptions: session.ProviderOptions{APIProvider: "openai-compatible"}})
+			if !strings.Contains(out.String(), "cannot be reproduced") || strings.Contains(out.String(), "new session: '") {
+				t.Fatalf("normalized flags cannot select stored values exactly: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestRunDiagnosticsChildTargetDoesNotReuseParentRecipe(t *testing.T) {
+	var out bytes.Buffer
+	d := newRunDiagnostics(config.Default(), runDiagnosticSelection{mode: "exec", provider: "parent", model: "parent-model", resume: true}, &out)
+	// A directly resumed child is the primary CLI session even with a parent ID.
+	d.sessionActive(session.SessionMetadata{ID: "primary", ParentSessionID: "older-parent", Provider: "parent", Model: "parent-model", ProviderOptions: session.ProviderOptions{APIProvider: "openai-compatible"}})
+	if !strings.Contains(out.String(), "resume target") || !strings.Contains(out.String(), "new session:") {
+		t.Fatalf("primary session must keep its guidance: %s", out.String())
+	}
+	out.Reset()
+	d.sessionActive(session.SessionMetadata{ID: "child", ParentSessionID: "primary", Provider: "explorer", Model: "child-model", ProviderOptions: session.ProviderOptions{APIProvider: "openai-compatible"}})
+	if !strings.Contains(out.String(), `profile="explorer"`) || !strings.Contains(out.String(), `model="child-model"`) {
+		t.Fatalf("child's actual target missing: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "metadata compatibility") || !strings.Contains(out.String(), `providers["explorer"]`) || !strings.Contains(out.String(), "does not provide a standalone") {
+		t.Fatalf("child must retain accurate profile guidance: %s", out.String())
+	}
+	if strings.Contains(out.String(), "resume target") || strings.Contains(out.String(), "Start a new session with the same selection") || strings.Contains(out.String(), "new session:") {
+		t.Fatalf("parent CLI selectors are not a child recipe: %s", out.String())
+	}
+	// The child guidance also exists when the primary uses another API family.
+	out.Reset()
+	d = newRunDiagnostics(config.Default(), runDiagnosticSelection{mode: "run"}, &out)
+	d.sessionActive(session.SessionMetadata{ID: "primary", ProviderOptions: session.ProviderOptions{APIProvider: "anthropic"}})
+	d.sessionActive(session.SessionMetadata{ID: "child", Provider: "explorer", ProviderOptions: session.ProviderOptions{APIProvider: "openai-compatible"}})
+	if !strings.Contains(out.String(), "metadata compatibility") || strings.Contains(out.String(), "new session:") {
+		t.Fatalf("child-only OpenAI compatibility guidance missing: %s", out.String())
+	}
+}
+
 func TestRunDiagnosticsDefaultNilAndLegacyResume(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprint(legacy), func(t *testing.T) {
