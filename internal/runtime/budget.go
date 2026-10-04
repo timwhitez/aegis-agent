@@ -494,22 +494,10 @@ func persistEffectiveBudget(store *session.Store, meta session.SessionMetadata, 
 	if strings.TrimSpace(meta.QueueJobID) == "" {
 		return nil
 	}
-	job, err := store.LoadJob(meta.QueueJobID)
-	if err != nil {
+	if err := store.UpdateQueueJobEffectiveBudget(meta.QueueJobID, budget); err != nil {
 		rollback := meta
 		rollback.EffectiveBudget = previous
-		_ = store.SaveMetadata(meta.ID, rollback)
-		return fmt.Errorf("load linked queue job while persisting effective budget: %w", err)
-	}
-	previousJobBudget := session.CloneEffectiveBudget(job.EffectiveBudget)
-	job.EffectiveBudget = session.CloneEffectiveBudget(budget)
-	if err := store.SaveJob(job); err != nil {
-		rollback := meta
-		rollback.EffectiveBudget = previous
-		_ = store.SaveMetadata(meta.ID, rollback)
-		job.EffectiveBudget = previousJobBudget
-		_ = store.SaveJob(job)
-		return fmt.Errorf("persist linked queue job effective budget: %w", err)
+		return errors.Join(err, store.SaveMetadata(meta.ID, rollback))
 	}
 	return nil
 }

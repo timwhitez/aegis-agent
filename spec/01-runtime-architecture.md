@@ -285,6 +285,7 @@ compaction summary 必须保留可操作的 canonical history reference（tool�
 - claim 时写入 durable lease：`claimed_by`、`claimed_at`、`heartbeat_at`、`worker_pid`、`process_start_id`
 - 拉起真实 child session 并回写结果
 - worker 处理 job 期间刷新 `heartbeat_at`，使 running job 的 owner/liveness 可由文件事实解释
+- budget mirror 在 durable `claim.lock` 内只更新最新 canonical job 的 effective budget，不触发 child-state reconcile，不覆盖 status/owner/result；租约刷新与缺失 running snapshot 的 outcome 判定在同一临界区完成。正常 settled outcome 停止刷新；requeued、reaper-reclaimed、foreign owner 或无法读取事实必须 cooperative cancel，并记录 `queue.job.lease_lost`。失去租约的 queue resume 在准备失败 rollback 与执行结果结算时都不得回写旧 job。
 - 在活跃 CLI 进程内提供 auto worker
 - 将 child 完成/失败结果投递回 parent session 的控制通知
 - reconcile running job 时只做文件事实可证明的收敛：已完成/失败的 linked session 可修复为完成/失败；recent heartbeat 且未结算的 job 保持 running；stale 且找不到 linked session 的 job 可标记 failed 并记录 orphan/stale error
@@ -659,3 +660,5 @@ completed(root) -> running
 - 未完成系统调用
 
 恢复只从文件事实重新构建消息与状态。
+
+- queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。

@@ -3735,29 +3735,15 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 	if err := s.ensureQueueDirs(); err != nil {
 		return QueueJob{}, err
 	}
-	path := s.queueJobPath(QueueStatusRunning, jobID)
 	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
 	var job QueueJob
 	// The read-modify-write runs under the durable queue lock so a concurrent
 	// process cannot settle (and delete) running/<job>.json between the read and
 	// the write; otherwise the write would recreate a ghost running copy.
 	err := s.withFileLock(lockPath, func() error {
-		if err := readJSONFile(path, &job); err != nil {
-			return err
-		}
-		if err := validateQueueJob(job); err != nil {
-			return fmt.Errorf("queue job %s: %w", jobID, err)
-		}
-		if err := validateQueueJobStatusDirectory(job, QueueStatusRunning); err != nil {
-			return fmt.Errorf("queue job %s: %w", jobID, err)
-		}
-		if owner := strings.TrimSpace(job.ProcessStartID); owner != "" && owner != queueProcessStartID {
-			return fmt.Errorf("queue job %s is claimed by process %s: %w", jobID, owner, ErrQueueJobLeaseLost)
-		}
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		job.UpdatedAt = now
-		applyQueueLease(&job, now)
-		return s.writeJSONFile(path, job)
+		var err error
+		job, err = s.refreshQueueJobHeartbeatLocked(jobID)
+		return err
 	})
 	if err != nil {
 		return QueueJob{}, err

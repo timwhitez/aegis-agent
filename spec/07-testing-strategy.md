@@ -404,3 +404,11 @@ fixture 内容：
 - spec 与实现对照检查无关键偏差
 
 审批回执阶段必须验证同 ID/同参重放、改参冲突、同 target 换 ID alias、当前目标改变后 receipt-first、新目标新 ID、coverage rejected binding 与新 ID override；实际 CLI/SDK/Web/direct-linked 并发至多一次 admission，linked executing 200 不执行，普通 follow-up 保持。按 write/file-fsync/publish/dir-fsync/after-commit 及 prepared/claim/approval/history/replay/admitted 边界注入失败和重启，验证 corrupt ledger 对任意 ID fail closed、hook 空/替换消息、addHandle 失败和 legacy 显式恢复。运行相关 race、完整 ./test.sh 及 zh-CN/en 桌面/移动实际完成回执重放/未知响应/refresh/session-switch E2E；保留所有实际红例、合法 controls 和历史环境失败。
+
+### Queue budget resume 的 lease 回归
+
+- 用本地 loopback provider 经真实 QueueSubmit → ProcessNextJob budget pause → agent_prompt extension/continue 验证恢复；不调用真实 provider。
+- 确定性覆盖预算镜像保留已取得的 running lease、跨 Store claim 临界区等待、最新 settled/foreign owner/result 保留、正常 settlement 与 requeued/reaper/missing/corrupt/foreign lease loss 的区分，以及 heartbeat 持续刷新。
+- 真正失去 ownership 后，queue resume 的执行 settlement 与准备失败 rollback 都不得覆盖新 owner；保存原始红例、基线/候选 source 与 stage/time 证据。existing budget/cap/cross-parent、reaper、cancel、CLI/SDK/Web 回归与 race gate 保持原预算和断言；单个 focused pass 不替代完整 gate。
+
+- queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。

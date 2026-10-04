@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"os"
+	"errors"
 	"testing"
 	"time"
 
@@ -26,8 +26,8 @@ func TestQueueJobLeaseIsLostForReaperBlockedOutcome(t *testing.T) {
 	if err := store.SaveJob(job); err != nil {
 		t.Fatalf("save reaped job: %v", err)
 	}
-	lost, err := queueJobLeaseIsLost(store, job.ID, os.ErrNotExist)
-	if !lost || err == nil {
-		t.Fatalf("reaper-blocked job must cancel the stale worker: lost=%t err=%v", lost, err)
+	_, active, err := store.RefreshQueueJobLease(job.ID)
+	if active || !errors.Is(err, session.ErrQueueJobLeaseLost) {
+		t.Fatalf("reaper-blocked job must cancel the stale worker: active=%t err=%v", active, err)
 	}
 }

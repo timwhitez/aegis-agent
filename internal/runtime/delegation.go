@@ -771,7 +771,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 		if state.Status == session.StatusPaused && session.IsChildBudgetPauseReason(state.PauseReason) && req.BudgetExtension != nil {
 			effectiveBudget, err = r.extendChildBudget(parentMeta.ID, childSessionID, queueJobID, state, *req.BudgetExtension)
 			if err != nil {
-				return tools.AgentPromptResult{}, errors.Join(err, stopHeartbeat(), r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
+				return tools.AgentPromptResult{}, r.rollbackPromptedChildRunSlot(err, stopHeartbeat, childSessionID, previousJob, directSlotReserved)
 			}
 		}
 		var directCoordinationSnapshot session.ParentCoordinationSnapshot
@@ -786,7 +786,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 				err = addParentChildSession(r.store, parentMeta.ID, childSessionID, parentWaitAll)
 			}
 			if err != nil {
-				return tools.AgentPromptResult{}, errors.Join(err, stopHeartbeat(), r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
+				return tools.AgentPromptResult{}, r.rollbackPromptedChildRunSlot(err, stopHeartbeat, childSessionID, previousJob, directSlotReserved)
 			}
 		}
 		childRunner := NewRunner(r.cfg)
@@ -797,7 +797,12 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 			Source:                 "agent",
 			BudgetExtensionApplied: budgetResumeAuthorized,
 		})
-		continueErr = errors.Join(continueErr, stopHeartbeat())
+		heartbeatErr := stopHeartbeat()
+		continueErr = errors.Join(continueErr, heartbeatErr)
+		if previousJob.ID != "" && (heartbeatErr != nil || errors.Is(continueErr, session.ErrQueueJobLeaseLost)) {
+			// A newer owner is responsible for the durable queue result.
+			return tools.AgentPromptResult{}, continueErr
+		}
 		var settleErr error
 		if directSlotReserved {
 			settleErr = r.store.ReleaseDirectChildSlot(childSessionID)
@@ -811,7 +816,7 @@ func (r *Runner) PromptAgent(ctx context.Context, req tools.AgentPromptRequest) 
 				if continueErr == nil {
 					continueErr = errors.New("child continue returned without a durable session result")
 				}
-				settleErr = errors.Join(settleErr, r.store.SaveJob(previousJob))
+				settleErr = errors.Join(settleErr, r.releasePromptedChildRunSlot(childSessionID, previousJob, false))
 			}
 		} else if result.SessionID != "" && result.Status != "" {
 			if reconcileErr := resolveParentChildSession(r.store, parentMeta.ID, result.SessionID, result.Status); reconcileErr != nil {
@@ -1040,9 +1045,24 @@ func (r *Runner) acquirePromptedChildRunSlot(parent session.SessionMetadata, chi
 	return session.QueueJob{}, true, nil
 }
 
+// Stop the heartbeat before deciding whether rollback still belongs to us.
+func (r *Runner) rollbackPromptedChildRunSlot(cause error, stopHeartbeat func() error, childSessionID string, previousJob session.QueueJob, directSlotReserved bool) error {
+	leaseErr := stopHeartbeat()
+	if previousJob.ID != "" && (leaseErr != nil || errors.Is(cause, session.ErrQueueJobLeaseLost)) {
+		return errors.Join(cause, leaseErr)
+	}
+	return errors.Join(cause, leaseErr, r.releasePromptedChildRunSlot(childSessionID, previousJob, directSlotReserved))
+}
+
 func (r *Runner) releasePromptedChildRunSlot(childSessionID string, previousJob session.QueueJob, directSlotReserved bool) error {
 	if previousJob.ID != "" {
-		return r.store.SaveJob(previousJob)
+		_, err := r.store.UpdateQueueJobAfterExecution(previousJob.ID, true, func(job *session.QueueJob) {
+			*job = previousJob
+		})
+		if errors.Is(err, session.ErrQueueJobLeaseLost) {
+			return errors.Join(err, r.recordQueueJobLeaseFailure(previousJob.ParentSessionID, previousJob.ID, err, 1))
+		}
+		return err
 	}
 	if directSlotReserved {
 		return r.store.ReleaseDirectChildSlot(childSessionID)
@@ -1051,41 +1071,44 @@ func (r *Runner) releasePromptedChildRunSlot(childSessionID string, previousJob 
 }
 
 func (r *Runner) reconcilePromptedChildJob(parentSessionID string, previous session.QueueJob, result RunResult) error {
-	job, err := r.store.LoadJob(previous.ID)
-	if err != nil {
-		return err
-	}
-	job.SessionID = result.SessionID
-	job.SessionStatus = result.Status
-	job.FinalText = result.FinalText
-	job.LastError = result.LastError
-	job.ClaimedBy = ""
-	job.ClaimedAt = ""
-	job.HeartbeatAt = ""
-	job.WorkerPID = 0
-	job.ProcessStartID = ""
-	switch result.Status {
-	case session.StatusCompleted:
-		job.Status = session.QueueStatusCompleted
-		job.StopReason = ""
-	case session.StatusCancelled:
-		job.Status = session.QueueStatusCancelled
-		job.StopReason = session.QueueStopReasonAgentStop
-	case session.StatusFailed:
-		job.Status = session.QueueStatusFailed
-		job.StopReason = ""
-	default:
-		job.Status = session.QueueStatusBlocked
-		job.StopReason = ""
-		if strings.TrimSpace(job.LastError) == "" {
-			job.LastError = "child session is resumable: " + result.Status
+	meta, metaErr := r.store.LoadMetadata(result.SessionID)
+	job, err := r.store.UpdateQueueJobAfterExecution(previous.ID, false, func(current *session.QueueJob) {
+		job := current
+		job.SessionID = result.SessionID
+		job.SessionStatus = result.Status
+		job.FinalText = result.FinalText
+		job.LastError = result.LastError
+		job.ClaimedBy = ""
+		job.ClaimedAt = ""
+		job.HeartbeatAt = ""
+		job.WorkerPID = 0
+		job.ProcessStartID = ""
+		switch result.Status {
+		case session.StatusCompleted:
+			job.Status = session.QueueStatusCompleted
+			job.StopReason = ""
+		case session.StatusCancelled:
+			job.Status = session.QueueStatusCancelled
+			job.StopReason = session.QueueStopReasonAgentStop
+		case session.StatusFailed:
+			job.Status = session.QueueStatusFailed
+			job.StopReason = ""
+		default:
+			job.Status = session.QueueStatusBlocked
+			job.StopReason = ""
+			if strings.TrimSpace(job.LastError) == "" {
+				job.LastError = "child session is resumable: " + result.Status
+			}
 		}
-	}
-	if meta, loadErr := r.store.LoadMetadata(result.SessionID); loadErr == nil {
-		job.EffectiveWorkdir = meta.Workdir
-		job.EffectiveBudget = session.CloneEffectiveBudget(meta.EffectiveBudget)
-	}
-	if err := r.store.SaveJob(job); err != nil {
+		if metaErr == nil {
+			job.EffectiveWorkdir = meta.Workdir
+			job.EffectiveBudget = session.CloneEffectiveBudget(meta.EffectiveBudget)
+		}
+	})
+	if err != nil {
+		if errors.Is(err, session.ErrQueueJobLeaseLost) {
+			return errors.Join(err, r.recordQueueJobLeaseFailure(parentSessionID, previous.ID, err, 1))
+		}
 		return err
 	}
 	if isTerminalQueueStatus(job.Status) {
@@ -1390,21 +1413,15 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		EffectiveBudget:         session.CloneEffectiveBudget(job.EffectiveBudget),
 	})
 	leaseErr := stopHeartbeat()
-	heartbeatJob, heartbeatErr := r.store.RefreshQueueJobHeartbeat(job.ID)
+	heartbeatJob, active, heartbeatErr := r.store.RefreshQueueJobLease(job.ID)
 	switch {
-	case heartbeatErr == nil:
+	case heartbeatErr == nil && active:
 		copyQueueLeaseFields(&job, heartbeatJob)
 	case errors.Is(heartbeatErr, session.ErrQueueJobLeaseLost):
 		leaseFailure := fmt.Errorf("queue job %s lost its durable lease before worker handoff: %w", job.ID, heartbeatErr)
 		leaseErr = errors.Join(leaseErr, leaseFailure, r.recordQueueJobLeaseFailure(job.ParentSessionID, job.ID, leaseFailure, 1))
-	case errors.Is(heartbeatErr, os.ErrNotExist):
-		// The child usually reconciles its own linked job out of running/ before
-		// the worker returns, so a missing snapshot is only a lease failure when
-		// the durable fact still says the job is running (or has vanished).
-		if lost, reason := queueJobLeaseIsLost(r.store, job.ID, heartbeatErr); lost {
-			leaseFailure := fmt.Errorf("queue job %s lost its durable lease before worker handoff: %w", job.ID, reason)
-			leaseErr = errors.Join(leaseErr, leaseFailure, r.recordQueueJobLeaseFailure(job.ParentSessionID, job.ID, leaseFailure, 1))
-		}
+	case heartbeatErr == nil:
+		// The child has already published a normal durable settlement.
 	default:
 		// Transient queue I/O failure on the final refresh: keep the last known
 		// lease fields. The worker clears the lease a few lines below, so a stale
@@ -1471,8 +1488,15 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 	}
 	clearQueueLeaseFields(&job)
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
-		return r.store.SaveJob(job)
+		committed, err := r.store.UpdateQueueJobAfterExecution(job.ID, false, func(current *session.QueueJob) { *current = job })
+		if err == nil {
+			job = committed
+		}
+		return err
 	}); err != nil {
+		if errors.Is(err, session.ErrQueueJobLeaseLost) {
+			return job, true, errors.Join(err, r.recordQueueJobLeaseFailure(job.ParentSessionID, job.ID, err, 1))
+		}
 		return job, true, err
 	}
 	if job.ParentSessionID != "" {
@@ -1594,28 +1618,17 @@ func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID, parentSessio
 				return
 			default:
 			}
-			_, err := r.store.RefreshQueueJobHeartbeat(jobID)
+			_, active, err := r.store.RefreshQueueJobLease(jobID)
 			switch {
-			case err == nil:
+			case err == nil && active:
 				consecutiveFailures = 0
+			case err == nil:
+				// Normal settlement leaves no running lease to renew.
+				return
 			case errors.Is(err, session.ErrQueueJobLeaseLost):
 				leaseErr = fmt.Errorf("queue job %s lost its durable lease during execution: %w", jobID, err)
 				cancelRun()
 				leaseErr = errors.Join(leaseErr, r.recordQueueJobLeaseFailure(parentSessionID, jobID, leaseErr, consecutiveFailures))
-				return
-			case errors.Is(err, os.ErrNotExist):
-				// The running snapshot is gone. That is expected once the linked
-				// child session reconciles its own job into a settled status, but it
-				// also happens when the reaper reclaims this job as an orphan. Only
-				// the second case is a lease failure, so consult the fact source
-				// before deciding.
-				if lost, reason := queueJobLeaseIsLost(r.store, jobID, err); lost {
-					leaseErr = fmt.Errorf("queue job %s lost its durable lease during execution: %w", jobID, reason)
-					cancelRun()
-					leaseErr = errors.Join(leaseErr, r.recordQueueJobLeaseFailure(parentSessionID, jobID, leaseErr, consecutiveFailures))
-				}
-				// The job already carries a durable settled outcome, so there is no
-				// lease left to refresh and nothing to report.
 				return
 			default:
 				consecutiveFailures++
@@ -1639,28 +1652,6 @@ func (r *Runner) startQueueJobHeartbeat(ctx context.Context, jobID, parentSessio
 		cancelRun()
 		return leaseErr
 	}
-}
-
-// queueJobLeaseIsLost decides whether a missing running/ snapshot means the
-// lease was reclaimed by someone else, or simply that the linked child settled
-// the job itself. It returns the error to report when the lease is really lost.
-func queueJobLeaseIsLost(store *session.Store, jobID string, refreshErr error) (bool, error) {
-	job, err := store.LoadJobCoordinationSnapshot(jobID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, fmt.Errorf("running queue job %s disappeared from the queue: %w", jobID, refreshErr)
-		}
-		// The fact source is unreadable, so ownership cannot be confirmed either
-		// way; treat that as a lease failure rather than assuming success.
-		return true, errors.Join(refreshErr, fmt.Errorf("load queue job %s while classifying heartbeat failure: %w", jobID, err))
-	}
-	if session.QueueJobLeaseWasReclaimed(job) {
-		return true, fmt.Errorf("queue job %s was reclaimed by the liveness reaper: %w", jobID, refreshErr)
-	}
-	if job.Status == session.QueueStatusRunning {
-		return true, fmt.Errorf("queue job %s is still running but its lease snapshot is missing: %w", jobID, refreshErr)
-	}
-	return false, nil
 }
 
 // recordQueueJobLeaseFailure persists the lease failure into the parent session
