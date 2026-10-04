@@ -20,6 +20,19 @@ type runDiagnosticSelection struct {
 	resume                         bool
 }
 
+// The renderer and interactive input can write stderr concurrently. Share this
+// wrapper across both, even when the supplied writer is a plain bytes.Buffer.
+type runStderrWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
+
+func (w *runStderrWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.out.Write(p)
+}
+
 // Diagnostics observe the loader's facts and the runtime's resolved metadata.
 // They neither inspect skipped paths nor recompute provider selection.
 type runDiagnostics struct {

@@ -268,6 +268,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
+	stderr = &runStderrWriter{out: stderr}
 	if mode == "run" && !term.IsTerminal(int(os.Stdin.Fd())) && !*jsonMode {
 		_, _ = fmt.Fprintln(stderr, "warning: stdin is not a TTY; Esc interrupt is disabled in run mode. Prefer exec for zero-interaction runs.")
 	}

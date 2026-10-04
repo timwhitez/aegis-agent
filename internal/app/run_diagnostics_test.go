@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -413,5 +415,79 @@ func TestRunDiagnosticsMissingConfigReportWithoutReinspection(t *testing.T) {
 	}
 	if strings.Contains(text, "PRIVATE_AFTER_LOAD") || strings.Contains(text, `outcome="loaded"`) {
 		t.Fatalf("reinspection changed authoritative report: %s", text)
+	}
+}
+
+type runDiagnosticPlanWriter struct {
+	active   atomic.Int32
+	overlap  atomic.Bool
+	question atomic.Bool
+	fallback chan struct{}
+	cancel   context.CancelFunc
+}
+
+func (w *runDiagnosticPlanWriter) Write(p []byte) (int, error) {
+	if w.active.Add(1) > 1 {
+		w.overlap.Store(true)
+	}
+	defer w.active.Add(-1)
+	if strings.Contains(string(p), "metadata fallback:") {
+		close(w.fallback)
+		// Keep the renderer's write open while the successful retry returns an
+		// interactive question. A shared wrapper must queue the question write.
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		<-timer.C
+	}
+	if strings.Contains(string(p), "DIAGNOSTIC_INPUT_QUESTION") {
+		w.question.Store(true)
+		w.cancel()
+	}
+	return len(p), nil
+}
+
+func TestRunDiagnosticsFallbackAndPlanInputShareStderr(t *testing.T) {
+	f := newRunDiagnosticFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	w := &runDiagnosticPlanWriter{fallback: make(chan struct{}), cancel: cancel}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(out http.ResponseWriter, req *http.Request) {
+		defer req.Body.Close()
+		_, _ = io.Copy(io.Discard, req.Body)
+		out.Header().Set("Content-Type", "application/json")
+		if requests.Add(1) == 1 {
+			out.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(out, `{"error":{"code":"unsupported_argument","param":"metadata","message":"Argument not supported: metadata"}}`)
+			return
+		}
+		select {
+		case <-w.fallback:
+		case <-ctx.Done():
+			return
+		}
+		_, _ = io.WriteString(out, `{"id":"diagnostic_plan","status":"completed","output":[{"type":"function_call","call_id":"diagnostic_question","name":"request_user_input","arguments":"{\"questions\":[{\"id\":\"choice\",\"header\":\"Choice\",\"question\":\"DIAGNOSTIC_INPUT_QUESTION\",\"options\":[{\"label\":\"One\",\"description\":\"First choice\"},{\"label\":\"Two\",\"description\":\"Second choice\"}]}]}"}],"usage":{"input_tokens":5,"output_tokens":2}}`)
+	}))
+	defer server.Close()
+	p := f.cfg.Providers["gateway"]
+	p.BaseURL = server.URL
+	f.cfg.Providers["gateway"] = p
+	f.save(t, f.path)
+	restoreTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdinIsTerminal = restoreTTY })
+	stdin, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() { os.Stdin = restoreStdin; _ = stdin.Close() })
+	_ = Run(ctx, []string{"exec", "--config", f.path, "--plan", "--json", "offline plan"}, io.Discard, w)
+	if !w.question.Load() || requests.Load() != 2 {
+		t.Fatalf("counterexample not exercised: question=%v requests=%d", w.question.Load(), requests.Load())
+	}
+	if w.overlap.Load() {
+		t.Fatal("fallback renderer and plan input concurrently wrote stderr")
 	}
 }
