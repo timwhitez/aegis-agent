@@ -227,3 +227,88 @@ func TestPromptedChildFinalWritesRejectUnobservedTakeover(t *testing.T) {
 		t.Fatalf("new owner overwritten: %#v err=%v", current, err)
 	}
 }
+
+func TestQueueResumeClaimSurvivesReadersUntilNewChildOutcome(t *testing.T) {
+	runner, parent, job, _ := pausedQueueBudgetFixture(t)
+	if _, acquired, err := runner.store.AcquireQueueChildResumeSlot(parent, job.ID, job.SessionID, 4); err != nil || !acquired {
+		t.Fatalf("claim: acquired=%t err=%v", acquired, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runCtx, stop := runner.startQueueJobHeartbeat(ctx, job.ID, parent)
+	defer stop()
+	for _, read := range []func() ([]session.QueueJob, error){
+		func() ([]session.QueueJob, error) {
+			got, err := runner.store.LoadJob(job.ID)
+			return []session.QueueJob{got}, err
+		},
+		func() ([]session.QueueJob, error) { return runner.store.ListJobs(-1) },
+		func() ([]session.QueueJob, error) { return runner.store.ListJobsStatusSnapshot(-1) },
+	} {
+		jobs, err := read()
+		if err != nil || len(jobs) != 1 || jobs[0].Status != session.QueueStatusRunning || jobs[0].SessionStatus != session.StatusRunning {
+			t.Fatalf("reader settled provisional resume claim: %#v err=%v", jobs, err)
+		}
+	}
+	current, err := runner.store.LoadJobCoordinationSnapshot(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := current.HeartbeatAt
+	ticks := 0
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for ticks < 2 {
+		current, err = runner.store.LoadJobCoordinationSnapshot(job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.HeartbeatAt != previous {
+			ticks++
+			previous = current.HeartbeatAt
+		}
+		select {
+		case <-runCtx.Done():
+			t.Fatalf("reader stopped resume lease: %v", runCtx.Err())
+		case <-ticker.C:
+		}
+	}
+	// A pause written after the claim is a new durable outcome, even if the
+	// child did not reach a provider. It must still reconcile and stop renewal.
+	state, err := runner.store.LoadState(job.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.store.SaveState(job.SessionID, state); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := runner.store.LoadJob(job.ID)
+	if err != nil || settled.Status != session.QueueStatusBlocked {
+		t.Fatalf("later pause was masked by resume lease: %#v err=%v", settled, err)
+	}
+	if _, active, err := runner.store.RefreshQueueJobLease(job.ID); active || err != nil {
+		t.Fatalf("normal later pause must settle: active=%t err=%v", active, err)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("normal settlement became lease loss: %v", err)
+	}
+}
+
+func TestQueueReaderStillReconcilesOrdinaryWorkerPause(t *testing.T) {
+	runner, parent, job, _ := pausedQueueBudgetFixture(t)
+	if _, acquired, err := runner.store.AcquireQueueChildResumeSlot(parent, job.ID, job.SessionID, 4); err != nil || !acquired {
+		t.Fatalf("claim: acquired=%t err=%v", acquired, err)
+	}
+	current, err := runner.store.LoadJobCoordinationSnapshot(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.ClaimedBy = "worker:ordinary"
+	if err := runner.store.SaveJob(current); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runner.store.LoadJob(job.ID)
+	if err != nil || got.Status != session.QueueStatusBlocked || got.SessionStatus != session.StatusPaused {
+		t.Fatalf("ordinary worker pause no longer reconciles: %#v err=%v", got, err)
+	}
+}

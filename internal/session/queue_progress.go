@@ -153,3 +153,18 @@ func (s *Store) refreshQueueJobHeartbeatLocked(jobID string) (QueueJob, error) {
 	}
 	return job, nil
 }
+
+// A resume reserves capacity and installs its lease before Continue updates the
+// previously paused child. Passive readers must not settle that reservation.
+// A new pause after the claim is a genuine outcome and reconciles normally.
+func queueResumeClaimIsPendingChildStart(job QueueJob, state State, now time.Time) bool {
+	if job.Status != QueueStatusRunning || job.SessionStatus != StatusRunning || job.ParentSessionID == "" || job.SessionID == "" || job.ClaimedBy != "agent_prompt:"+job.ParentSessionID || job.ProcessStartID == "" || job.WorkerPID <= 0 || QueueJobLeaseWasReclaimed(job) || !queueJobHasRecentLease(job, now) {
+		return false
+	}
+	if state.Status != StatusPaused && state.Status != StatusAwaitingInput {
+		return false
+	}
+	claimedAt, claimErr := time.Parse(time.RFC3339Nano, job.ClaimedAt)
+	stateAt, stateErr := time.Parse(time.RFC3339Nano, state.UpdatedAt)
+	return claimErr == nil && stateErr == nil && !claimedAt.After(now) && !stateAt.After(claimedAt)
+}

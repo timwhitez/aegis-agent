@@ -4471,6 +4471,9 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, true, nil
 	}
+	if queueResumeClaimIsPendingChildStart(job, state, now) {
+		return job, false, nil
+	}
 	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {
 		marker := job.LastError
 		stateForSync := state
@@ -4997,6 +5000,9 @@ func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *
 	}
 	state, err := s.LoadState(meta.ID)
 	if err != nil {
+		return job, nil
+	}
+	if queueResumeClaimIsPendingChildStart(job, state, now) {
 		return job, nil
 	}
 	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {

@@ -377,3 +377,5 @@
 - queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。
 
 - 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。
+
+- 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。

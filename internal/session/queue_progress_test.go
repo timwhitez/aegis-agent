@@ -266,3 +266,32 @@ func TestUpdateQueueJobEffectiveBudgetWaitsForClaimAndPreservesLatestFacts(t *te
 		t.Fatalf("latest facts overwritten: %#v err=%v", after, err)
 	}
 }
+
+func TestQueueResumeProvisionalClaimRequiresDurableProof(t *testing.T) {
+	now := time.Now().UTC()
+	job := QueueJob{Status: QueueStatusRunning, SessionStatus: StatusRunning, ParentSessionID: "parent", SessionID: "child", ClaimedBy: "agent_prompt:parent", ClaimedAt: now.Add(-time.Second).Format(time.RFC3339Nano), HeartbeatAt: now.Format(time.RFC3339Nano), ProcessStartID: "another-reader-process", WorkerPID: 1}
+	state := State{Status: StatusPaused, UpdatedAt: now.Add(-2 * time.Second).Format(time.RFC3339Nano)}
+	if !queueResumeClaimIsPendingChildStart(job, state, now) {
+		t.Fatal("valid cross-process provisional claim not recognized")
+	}
+	for _, change := range []func(*QueueJob, *State){
+		func(j *QueueJob, _ *State) { j.ClaimedBy = "worker:ordinary" },
+		func(j *QueueJob, _ *State) { j.ClaimedAt = "invalid" },
+		func(_ *QueueJob, s *State) { s.UpdatedAt = "" },
+		func(_ *QueueJob, s *State) { s.UpdatedAt = now.Format(time.RFC3339Nano) },
+		func(j *QueueJob, _ *State) {
+			j.HeartbeatAt = now.Add(-queueRunningStaleAfter - time.Second).Format(time.RFC3339Nano)
+		},
+		func(j *QueueJob, _ *State) {
+			j.Status = QueueStatusBlocked
+			j.LastError = "queue lease reclaimed: owner process exited"
+		},
+		func(j *QueueJob, _ *State) { j.Status = QueueStatusBlocked },
+	} {
+		changedJob, changedState := job, state
+		change(&changedJob, &changedState)
+		if queueResumeClaimIsPendingChildStart(changedJob, changedState, now) {
+			t.Fatalf("invented provisional proof: job=%#v state=%#v", changedJob, changedState)
+		}
+	}
+}
