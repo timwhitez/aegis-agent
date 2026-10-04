@@ -291,6 +291,15 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	planDraft := planModeDraftFromCLI(*planModeEnabled || *planOnly, prompt)
 
 	streamMode := *outputFormat == "stream-json"
+	diagnostics := newRunDiagnostics(cfg, runDiagnosticSelection{mode: mode, provider: *providerName, model: *model, workdir: *workdir, resume: *resumeSession != ""}, stderr)
+	if lifecycle, ok := runner.(interface {
+		SetRunLifecycleHooks(runtime.RunLifecycleHooks)
+	}); ok {
+		lifecycle.SetRunLifecycleHooks(runtime.RunLifecycleHooks{OnSessionActive: func(meta session.SessionMetadata, _ *runtime.Runner) error {
+			diagnostics.sessionActive(meta)
+			return nil // A diagnostic writer failure must not change execution.
+		}})
+	}
 	var sjAdapter *streamjson.Adapter
 	renderer := output.New(*jsonMode, stdout)
 	if streamMode {
@@ -314,6 +323,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	}
 	renderCtx, cancelRender := context.WithCancel(renderParent)
 	done := renderEventsUntilDone(renderCtx, sub, func(evt events.Event) {
+		diagnostics.handle(evt)
 		if evt.Type == "session.started" {
 			sessionMu.Lock()
 			sessionID = evt.SessionID

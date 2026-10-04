@@ -77,6 +77,10 @@ For a CLI-only workflow:
 `run` is interactive and supports `Esc` to pause. `exec` is suitable for
 scripts and CI and requires the model to call `finish` before reporting
 success. Use `--plan` or `--plan-only` to enter the durable Plan Mode gate.
+Before provider execution, `run` / `exec` report configuration layer outcomes
+and the resolved session profile, model and endpoint origin on stderr. A skipped
+workspace candidate has not been inspected; review the complete file before
+choosing it with `--config`. JSON and stream-json records remain on stdout.
 
 ## Provider configuration
 
@@ -91,9 +95,34 @@ export OPENAI_API_KEY=...
 ./bin/aegis-agent doctor --config .aegis-agent/config.yaml --skip-probe
 ```
 
-For a gateway that rejects request metadata, set `send_metadata: false` in that
-provider profile. Automatic unsupported-metadata fallback is remembered for the
-adapter lifetime; a new process can discover it again. See the
+For a gateway that rejects request metadata, add this field inside its existing
+complete `providers.<profile>` block, preserving its endpoint, model and other
+options:
+
+```yaml
+send_metadata: false
+```
+
+Start a **new session** with the same config selection and environment. For
+example, when using the generated config and its `openai-compatible` profile:
+
+```sh
+./bin/aegis-agent doctor --config .aegis-agent/config.yaml --skip-probe
+./bin/aegis-agent exec --config .aegis-agent/config.yaml --provider openai-compatible "Your prompt here."
+```
+
+Check the printed execution target. With layered configuration, edit the
+complete profile in the appropriate layer and retain that layering; a later
+layer replaces the whole profile entry. Selecting one layer via `--config`
+changes which files load.
+
+Automatic unsupported-metadata fallback is remembered for one **adapter
+instance**. A new Start/Continue can discover it again within the same process.
+New sessions resolve the configured option before their first request; resumed
+sessions retain already recorded provider options, including a default nil
+metadata option. Legacy sessions without an effective options snapshot can fill
+missing options from current config. The CLI reports compatibility guidance
+before execution and observed root-session fallback events on stderr. See the
 [provider contract](./spec/03-provider-contracts.md) for the existing compatibility options.
 
 The default configuration keeps provider-side storage disabled where supported
