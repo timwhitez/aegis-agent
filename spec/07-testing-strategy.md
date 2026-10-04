@@ -412,3 +412,5 @@ fixture 内容：
 - 真正失去 ownership 后，queue resume 的执行 settlement 与准备失败 rollback 都不得覆盖新 owner；保存原始红例、基线/候选 source 与 stage/time 证据。existing budget/cap/cross-parent、reaper、cancel、CLI/SDK/Web 回归与 race gate 保持原预算和断言；单个 focused pass 不替代完整 gate。
 
 - queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。
+
+- 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。

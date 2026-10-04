@@ -1056,7 +1056,7 @@ func (r *Runner) rollbackPromptedChildRunSlot(cause error, stopHeartbeat func() 
 
 func (r *Runner) releasePromptedChildRunSlot(childSessionID string, previousJob session.QueueJob, directSlotReserved bool) error {
 	if previousJob.ID != "" {
-		_, err := r.store.UpdateQueueJobAfterExecution(previousJob.ID, true, func(job *session.QueueJob) {
+		_, err := r.store.UpdateQueueJobAfterExecution(previousJob.ID, session.QueueExecutionRollback, func(job *session.QueueJob) {
 			*job = previousJob
 		})
 		if errors.Is(err, session.ErrQueueJobLeaseLost) {
@@ -1072,7 +1072,7 @@ func (r *Runner) releasePromptedChildRunSlot(childSessionID string, previousJob 
 
 func (r *Runner) reconcilePromptedChildJob(parentSessionID string, previous session.QueueJob, result RunResult) error {
 	meta, metaErr := r.store.LoadMetadata(result.SessionID)
-	job, err := r.store.UpdateQueueJobAfterExecution(previous.ID, false, func(current *session.QueueJob) {
+	job, err := r.store.UpdateQueueJobAfterExecution(previous.ID, session.QueueExecutionSettlement, func(current *session.QueueJob) {
 		job := current
 		job.SessionID = result.SessionID
 		job.SessionStatus = result.Status
@@ -1487,8 +1487,12 @@ func (r *Runner) ProcessNextJob(ctx context.Context) (session.QueueJob, bool, er
 		}
 	}
 	clearQueueLeaseFields(&job)
+	writeMode := session.QueueExecutionSettlement
+	if handoffErr != nil {
+		writeMode = session.QueueExecutionFailedHandoff
+	}
 	if err := retryQueuePersistence("persist queue job "+job.ID, func() error {
-		committed, err := r.store.UpdateQueueJobAfterExecution(job.ID, false, func(current *session.QueueJob) { *current = job })
+		committed, err := r.store.UpdateQueueJobAfterExecution(job.ID, writeMode, func(current *session.QueueJob) { *current = job })
 		if err == nil {
 			job = committed
 		}

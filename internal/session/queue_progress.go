@@ -71,10 +71,18 @@ func (s *Store) RefreshQueueJobLease(jobID string) (job QueueJob, active bool, e
 	return job, active, err
 }
 
+type QueueExecutionWriteMode int
+
+const (
+	QueueExecutionSettlement QueueExecutionWriteMode = iota
+	QueueExecutionRollback
+	QueueExecutionFailedHandoff
+)
+
 // UpdateQueueJobAfterExecution validates the latest durable lease outcome and
 // publishes the caller's settlement/rollback in the same claim-lock critical
 // section. The mutation callback must not call Store methods.
-func (s *Store) UpdateQueueJobAfterExecution(jobID string, requireRunning bool, update func(*QueueJob)) (job QueueJob, err error) {
+func (s *Store) UpdateQueueJobAfterExecution(jobID string, mode QueueExecutionWriteMode, update func(*QueueJob)) (job QueueJob, err error) {
 	if err := validateStoreID("queue job", jobID); err != nil {
 		return QueueJob{}, err
 	}
@@ -91,12 +99,16 @@ func (s *Store) UpdateQueueJobAfterExecution(jobID string, requireRunning bool, 
 		if err := validateQueueExecutionOwnership(job); err != nil {
 			return err
 		}
-		if requireRunning && job.Status != QueueStatusRunning {
+		if mode == QueueExecutionRollback && job.Status != QueueStatusRunning {
 			return fmt.Errorf("queue job %s is no longer an active rollback claim: %w", jobID, ErrQueueJobLeaseLost)
+		}
+		if mode != QueueExecutionSettlement && mode != QueueExecutionRollback && mode != QueueExecutionFailedHandoff {
+			return errors.New("invalid queue execution write mode")
 		}
 		previous := job
 		update(&job)
-		if previous.Status == QueueStatusCompleted || previous.Status == QueueStatusCancelled || previous.Status == QueueStatusFailed {
+		failedHandoff := mode == QueueExecutionFailedHandoff && previous.Status == QueueStatusCompleted && job.Status == QueueStatusFailed && previous.SessionID != "" && previous.SessionID == job.SessionID && strings.TrimSpace(job.LastError) != ""
+		if !failedHandoff && (previous.Status == QueueStatusCompleted || previous.Status == QueueStatusCancelled || previous.Status == QueueStatusFailed) {
 			// The child may have settled before handoff. Enrich output metadata,
 			// but never reverse an authoritative terminal outcome/result.
 			job.Status, job.SessionID, job.SessionStatus = previous.Status, previous.SessionID, previous.SessionStatus

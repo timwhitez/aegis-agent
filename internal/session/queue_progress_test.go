@@ -117,7 +117,7 @@ func TestQueueExecutionWriteRejectsUnobservedOwnershipLoss(t *testing.T) {
 			t.Fatal(err)
 		}
 		called := false
-		_, err := store.UpdateQueueJobAfterExecution(job.ID, false, func(current *QueueJob) { called = true; current.Status = QueueStatusFailed })
+		_, err := store.UpdateQueueJobAfterExecution(job.ID, QueueExecutionSettlement, func(current *QueueJob) { called = true; current.Status = QueueStatusFailed })
 		if called || !errors.Is(err, ErrQueueJobLeaseLost) {
 			t.Fatalf("foreign callback executed: status=%s called=%t err=%v", status, called, err)
 		}
@@ -130,7 +130,7 @@ func TestQueueExecutionWriteRejectsUnobservedOwnershipLoss(t *testing.T) {
 	if err := store.UpdateQueueJobEffectiveBudget("job_missing", nil); !errors.Is(err, ErrQueueJobLeaseLost) {
 		t.Fatalf("missing budget fact permits resurrection: %v", err)
 	}
-	if _, err := store.UpdateQueueJobAfterExecution("job_missing", true, func(*QueueJob) { t.Fatal("missing fact callback executed") }); !errors.Is(err, ErrQueueJobLeaseLost) {
+	if _, err := store.UpdateQueueJobAfterExecution("job_missing", QueueExecutionRollback, func(*QueueJob) { t.Fatal("missing fact callback executed") }); !errors.Is(err, ErrQueueJobLeaseLost) {
 		t.Fatalf("missing settlement not rejected: %v", err)
 	}
 }
@@ -150,19 +150,59 @@ func TestQueueExecutionRollbackCannotReverseSettledResult(t *testing.T) {
 		if err := store.SaveJob(job); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.UpdateQueueJobAfterExecution(job.ID, true, func(*QueueJob) { t.Fatal("settled rollback callback ran") }); !errors.Is(err, ErrQueueJobLeaseLost) {
+		if _, err := store.UpdateQueueJobAfterExecution(job.ID, QueueExecutionRollback, func(*QueueJob) { t.Fatal("settled rollback callback ran") }); !errors.Is(err, ErrQueueJobLeaseLost) {
 			t.Fatalf("settled rollback not rejected: %v", err)
 		}
 		if status == QueueStatusBlocked {
 			continue
 		}
-		got, err := store.UpdateQueueJobAfterExecution(job.ID, false, func(current *QueueJob) {
+		got, err := store.UpdateQueueJobAfterExecution(job.ID, QueueExecutionSettlement, func(current *QueueJob) {
 			current.Status, current.SessionStatus, current.FinalText = QueueStatusBlocked, StatusPaused, "stale result"
 			current.EffectiveWorkdir = "/output"
 		})
 		if err != nil || got.Status != status || got.SessionStatus != job.SessionStatus || got.FinalText != "durable result" || got.EffectiveWorkdir != "/output" {
 			t.Fatalf("settled outcome reversed or enrichment lost: %#v err=%v", got, err)
 		}
+	}
+}
+
+func TestQueueExecutionFailedHandoffPreservesOwnershipAndChildIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, owner, child, failure string
+		allowed, lost                       bool
+	}{
+		{"same-child-output-failure", QueueStatusCompleted, "", "child", "sync outputs failed", true, false},
+		{"different-child", QueueStatusCompleted, "", "other-child", "sync outputs failed", false, false},
+		{"no-handoff-error", QueueStatusCompleted, "", "child", "", false, false},
+		{"cancelled", QueueStatusCancelled, "", "child", "sync outputs failed", false, false},
+		{"foreign-owner", QueueStatusCompleted, "foreign-process", "child", "sync outputs failed", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewStore(t.TempDir())
+			job := QueueJob{SchemaVersion: 1, ID: "job_handoff", Status: tc.status, Prompt: "offline", Mode: ModeExec, SessionID: "child", SessionStatus: StatusCompleted, ProcessStartID: tc.owner, FinalText: "child result"}
+			if tc.status == QueueStatusCancelled {
+				job.SessionStatus = StatusCancelled
+			}
+			if err := store.SaveJob(job); err != nil {
+				t.Fatal(err)
+			}
+			got, err := store.UpdateQueueJobAfterExecution(job.ID, QueueExecutionFailedHandoff, func(current *QueueJob) {
+				current.Status, current.SessionID, current.LastError = QueueStatusFailed, tc.child, tc.failure
+			})
+			if errors.Is(err, ErrQueueJobLeaseLost) != tc.lost || (!tc.lost && err != nil) {
+				t.Fatalf("handoff guard: %v", err)
+			}
+			if tc.lost {
+				return
+			}
+			if tc.allowed {
+				if got.Status != QueueStatusFailed || got.LastError != tc.failure || got.SessionID != "child" {
+					t.Fatalf("real handoff failure suppressed: %#v", got)
+				}
+			} else if got.Status != job.Status || got.SessionID != "child" || got.LastError != "" {
+				t.Fatalf("terminal facts reversed: %#v", got)
+			}
+		})
 	}
 }
 
