@@ -1032,7 +1032,7 @@ func defReadFile() Definition {
 				return errorResult("read_file", errors.New("path is an internal generated artifact; use source files, copied validation evidence, or rerun the command and redirect output to a normal workspace file (for example under reports/)")), nil
 			}
 			if normalized.Mode == readFileModeByte {
-				return executeReadFileByteMode(execCtx, path, displayBase, source, skillName, normalized.RequestedByteOffset, normalized.RequestedByteLimit), nil
+				return executeReadFileByteMode(execCtx, path, normalized.Path, displayBase, source, skillName, normalized.RequestedByteOffset, normalized.RequestedByteLimit), nil
 			}
 			data, _, err := fileutil.ReadRegularFileNoSymlink(path)
 			if err != nil {

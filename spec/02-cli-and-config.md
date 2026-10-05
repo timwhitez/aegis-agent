@@ -590,6 +590,8 @@ providers:
 - effective timeout/retry policy 也必须写入 session metadata，便于从 durable session 事实中追溯本次运行采用的请求超时、stream idle 超时、retry 预算与开关
 - `continue` 不能因为配置漂移而丢失已选择的 generation 语义
 - `run` / `exec` 和 `continue` 支持显式 `--send-metadata=true|false`，通过既有 ProviderOptions override 路径设置该单项。省略时继续保存 true/nil/default 快照语义；显式 resume override 更新当前 session metadata，并在 provider 调用前追加 `session.provider_options.overridden` 的原值/有效值/source 事实。原 `session.started` 事件与历史不重写，其他已保存选项不因当前配置漂移而变化。
+- 普通 resume 的 override event append 返回错误时，恢复 override 前 metadata 并报告恢复失败，且不调用 provider；receipt-backed approval 仍通过既有 durable recovery payload 补齐原事实，不回滚其已捕获的 snapshot。此为可观测同步失败的恢复，不承诺多个文件的 crash atomicity。
+- interspersed CLI flags 的 normalization 必须保留显式 `--` 分隔符；分隔符后的字面 prompt/session 参数不能被最终 flag parser 当成 metadata 或其他选项。
 - `init --reasoning-effort <value>` 仅在选定 OpenAI API-family profile 保存 operator 的显式原生值；省略保留 provider default，不按 model 猜测 effort。真实上游是否接受该值仍需 operator probe。
 - OpenAI / `openai-compatible` 默认 `store: false`，保持本地 session 是唯一事实源
 - `wire_api` 只作为 OpenAI-compatible Responses 的 legacy / advanced compatibility 字段保留；默认交互和 Settings 以 `api_provider` 命名解释 adapter family

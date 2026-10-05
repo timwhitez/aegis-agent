@@ -14,7 +14,7 @@ const (
 	readFileMaxByteLimit int64 = 24 * 1024
 )
 
-func executeReadFileByteMode(execCtx ExecContext, path, displayBase, source, skillName string, requestedOffset, requestedLimit int64) session.ToolResult {
+func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, source, skillName string, requestedOffset, requestedLimit int64) session.ToolResult {
 	windowLimit := normalizeReadFileByteLimit(execCtx.Config, requestedLimit)
 	llmLimit := toolOutputLLMMaxBytes(execCtx.Config)
 	if windowLimit <= 0 {
@@ -31,7 +31,7 @@ func executeReadFileByteMode(execCtx ExecContext, path, displayBase, source, ski
 	readLimit := windowLimit + lookbehind + utf8.UTFMax
 	data, info, err := fileutil.ReadRegularFileRangeNoSymlink(path, readStart, readLimit)
 	if err != nil {
-		return readFileErrorResult(path, err)
+		return readFileErrorResult(inputPath, err)
 	}
 	if source != "session_ephemeral_artifact" && info.Size() > fileutil.MaxRegularFileReadBytes {
 		return readFileErrorResult(path, fmt.Errorf("file exceeds maximum readable size: %s (%d > %d bytes)", path, info.Size(), fileutil.MaxRegularFileReadBytes))

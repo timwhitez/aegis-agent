@@ -145,6 +145,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - workspace 内 `.artifacts` 这类内部生成物仍默认拒绝读取；`glob` / `grep` / `grep_files` discovery 也必须跳过 session ephemeral artifacts，避免把临时大输出重新作为候选噪音回灌
 - 当 `glob` / `grep` / `grep_files` 显式收到 `artifacts/tool-outputs` 或其子路径时，必须在普通 workspace/skill path resolver 之前返回稳定的 `unsupported_path_source` 错误：提示该 session artifact 不可 discovery，保留原始 path，并要求用 `read_file` 精确读取；不得把它归类为 workspace `not_found`，也不得建议猜路径或重跑生成命令
 - 有两种互斥模式：line mode 使用 1-based `offset` / `limit`；byte mode 使用 0-based `byte_offset` / `byte_limit`。调用中出现任一 byte 字段时不得再出现 line 字段；byte mode 必须给出正数 `byte_limit`，`byte_offset` 省略时为 0
+- line/byte mode 的普通缺文件错误都保留调用方提供的 normalized path 与 `not_found`/discovery hint；不得把相对缺失路径扩展成 host workspace 绝对路径。调用方明确提供的绝对路径仍保留；成功读取和其他错误不因此成为通用脱敏路径。
 - line mode 保持默认与最大 120 行，仍通过 `ReadRegularFileNoSymlink` 执行 16 MiB source guard；旧调用不写 byte 字段时输出与语义兼容
 - byte mode 只通过 `fileutil.ReadRegularFileRangeNoSymlink` 读取有界 range，调用方必须显式给出 `byte_limit`（建议常规页使用 16 KiB），最高 24 KiB，并进一步受当前 `runtime.tool_output.llm_output_max_bytes` 约束；不得先全量读取再切片。workspace / skill source 的总文件大小仍受 16 MiB guard，session tool-output artifact 可在 no-symlink exact-path gate 后读取更大的有界 range
 - byte mode 只返回完整 UTF-8 rune：requested offset 落在 rune 中间时向前调整到下一个边界，requested end 落在 rune 中间时向后调整；返回 `requested_byte_offset`、`requested_byte_limit`、`effective_byte_start`、`effective_byte_end`、`start_adjusted`、`end_adjusted`、`returned_bytes`、`total_bytes`、`has_more`、`next_byte_offset` 与 `encoding=utf-8`

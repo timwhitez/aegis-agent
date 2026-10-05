@@ -2722,6 +2722,7 @@ func normalizeInterspersedFlags(args []string, valueFlags, boolFlags []string) [
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
+			flags = append(flags, arg)
 			positionals = append(positionals, args[i+1:]...)
 			break
 		}
