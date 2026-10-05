@@ -4576,6 +4576,12 @@ func TestReadFileNotFoundSuggestsDiscoveryFirst(t *testing.T) {
 	if got := result.Metadata["path"]; got != "vllm/vllm/lora/models.py" {
 		t.Fatalf("expected missing path metadata, got %#v", result.Metadata)
 	}
+	if strings.Contains(result.LLMOutput, workdir) || strings.Contains(result.DisplayOutput, workdir) {
+		t.Fatalf("relative missing path expanded into host workspace: %#v", result)
+	}
+	if !strings.Contains(result.LLMOutput, "vllm/vllm/lora/models.py") {
+		t.Fatalf("lost missing path: %#v", result)
+	}
 }
 
 func TestGrepToolsRejectEmptyPattern(t *testing.T) {

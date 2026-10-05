@@ -83,12 +83,15 @@ func (d *runDiagnostics) sessionActive(meta session.SessionMetadata) {
 	// child session is still primary because it supplies the first callback.
 	primary := meta.ID == d.primaryID
 	if primary && d.selection.resume {
-		_, _ = fmt.Fprintln(d.out, "resume target uses the session's effective provider snapshot; editing a profile does not replace already recorded options.")
+		_, _ = fmt.Fprintln(d.out, "resume target uses the session's effective provider snapshot plus explicit CLI overrides; editing a profile does not replace already recorded options.")
 	}
 	if meta.ProviderOptions.APIProvider != "openai-compatible" || (meta.ProviderOptions.SendMetadata != nil && !*meta.ProviderOptions.SendMetadata) {
 		return
 	}
 	_, _ = fmt.Fprintln(d.out, "metadata compatibility: enabled; automatic unsupported-metadata fallback is scoped to this adapter instance. A new Start/Continue can discover it again within the same process.")
+	if primary && d.selection.resume {
+		_, _ = fmt.Fprintln(d.out, "For this rejecting gateway, resume with --send-metadata=false to explicitly change only the recorded metadata option; the override is recorded in session events.")
+	}
 	_, _ = fmt.Fprintf(d.out, "For a known rejecting gateway, add send_metadata: false inside the existing complete providers[%q] block; preserve its other fields. Later layers can replace the entire profile.\n", meta.Provider)
 	if !primary {
 		_, _ = fmt.Fprintln(d.out, "Delegated session: the parent CLI selection does not provide a standalone fresh-session recipe for this child role. Verify its actual target after editing the profile.")

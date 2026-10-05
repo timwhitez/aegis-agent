@@ -958,6 +958,7 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	if err != nil {
 		return RunResult{}, err
 	}
+	previousSendMetadata := meta.ProviderOptions.SendMetadata
 	state, err := r.store.LoadState(req.SessionID)
 	if err != nil {
 		return RunResult{}, err
@@ -1066,6 +1067,14 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	}
 	if err := r.store.SaveMetadata(meta.ID, meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
+	}
+	if req.ProviderOptions.SendMetadata != nil {
+		if err := r.appendEvent(meta.ID, "session.provider_options.overridden", "prepare", map[string]any{
+			"option": "send_metadata", "previous": previousSendMetadata,
+			"effective": meta.ProviderOptions.SendMetadata, "source": source,
+		}); err != nil {
+			return r.failBeforeRun(meta.ID, state, "prepare", err)
+		}
 	}
 	if len(req.PlanInputAnswers) > 0 {
 		if err := r.appendPlanInputToolResult(meta.ID, req.PlanInputRequestID, source, req.PlanInputAnswers); err != nil {

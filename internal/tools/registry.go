@@ -4920,6 +4920,11 @@ func errorResult(tool string, err error) session.ToolResult {
 }
 
 func readFileErrorResult(inputPath string, err error) session.ToolResult {
+	if classifyToolError(err) == FailureClassNotFound && strings.TrimSpace(inputPath) != "" {
+		// The operator/model supplied path identifies the missing resource. Do
+		// not expand a relative path into a host workspace path in the result.
+		err = fmt.Errorf("file %q: %w", inputPath, fs.ErrNotExist)
+	}
 	result := errorResult("read_file", withReadFileDiscoveryHint(err))
 	if strings.TrimSpace(inputPath) != "" {
 		if result.Metadata == nil {
