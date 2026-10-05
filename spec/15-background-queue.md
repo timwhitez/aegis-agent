@@ -231,6 +231,8 @@ parent-linked queue job 只能由 root master session 创建。`depth > 0` 或�
 
 - 单个 job 失败时，worker 必须先把 job 状态持久化为 `failed`
 - worker 一旦离开某个 job 的执行边界，在保存 `blocked`、`completed`、`cancelled` 或 `failed` 前必须清空 `claimed_by`、`claimed_at`、`heartbeat_at`、`worker_pid`、`process_start_id`；历史 owner 只保留在事件/诊断记录中，不能继续占用 active lease
+- heartbeat 续租和观察 normal settled / ownership-lost outcome 必须在同一 durable `claim.lock` 内完成，不能以一次 missing-running 错误和后来另一版本的 job 组合判断。当前 owned running lease 持续刷新；普通 blocked/terminal 停止刷新；queued、reaper-reclaimed、foreign owner 或 missing/unreadable facts fail closed。原有 transient heartbeat I/O 的连续失败阈值保留。
+- `agent_prompt` queue resume 在 heartbeat 报告 lease loss 后不得 reconcile/save 或回滚 previous job，包括 budget extension/preparation 失败路径；新的 owner/reaper 负责 durable queue outcome。
 - 普通任务失败不应直接结束长跑 worker，worker 应继续轮询后续 job
 - 只有 claim / 落盘等 queue 基础设施错误才让 worker 返回错误
 
@@ -269,6 +271,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 - job 创建时快照 `effective_budget`，worker 创建 child 时原样传入 `session.json`。Settings 热更新只影响新 job；running/paused job 继续使用自己的 snapshot。
 - 全局 `max_turns_hard` 是独立的 per-run hard limit，显式启用后也适用于 child；child effective budget 与全局/operation timeout 同时存在时，以最先到达的边界为准并记录准确 reason。
 - active-runtime 与 absolute deadline 通过 `context.WithDeadlineCause` 或 `context.WithTimeoutCause` 进入 provider/tool/hook/shell cancellation chain。超限时 child 以 `paused` 收敛，reason 为 `child_budget_turns_exceeded`、`child_budget_active_runtime_exceeded` 或 `child_budget_absolute_deadline_exceeded`，并记录 limit/used/remaining/overrun/attempt/source。
+- session budget 同步到 linked job 时，在 claim lock 内读取最新 canonical job，仅更新 effective budget 与更新时间，不根据尚未恢复的 child state reconcile，也不在锁外用旧整份 job rollback。claim 后、child continue 前的预算镜像必须保留 running claim/lease；publication 失败的 job-budget rollback 仍在同一锁内完成，session snapshot rollback 的失败必须向调用者报告。
 - parent 通过 `agent_prompt.budget_extension` 才能开始下一 attempt；extension 可追加 turns/active runtime、延长 deadline 或清除维度，并写 durable extension/resume events。没有解除 exhausted dimension 的 resume 直接拒绝。
 - parent 对 budget-paused linked blocked job 调用 `agent_stop` 时，job 转为 `cancelled` terminal、从 unresolved jobs 移除并更新 notification；child 保留原始 paused/budget reason。
 
@@ -294,3 +297,11 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
 - queue job 与 child session 能正确关联
 - child 完成/失败后 parent session 能在下一安全边界接纳 background notification；child 若停在 `paused` / `awaiting_input`，queue job 默认保持 `blocked` / resumable，不能释放 parent completion gate；唯一显式例外是 parent 用 `agent_stop` 结算 budget-paused blocked job
 - 多 worker 同时启动时不会重复消费同一 queued 文件
+
+- queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。
+
+- 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。
+
+- 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。
+
+- 被动 reader 的 repair publication 还需在 claim lock 内对完整 canonical snapshot 做版本比较；reader 在新 resume claim 之前读到旧 blocked，或在计算 repair 时遇到 heartbeat/settlement 推进，不得 Save 旧整份事实。冲突时跳过旧 attempt 的后续 coordination/notification，full `LoadJob` / `ListJobs` 从最新 canonical facts 重新协调；成功返回 terminal job 前必须完成其幂等 parent coordination/notification/event 修复，不能依赖稍后 worker 偶然补写。重试有界，持续冲突返回显式可重试 read error，其他落盘错误原样报告；跨重试保留 snapshot 已更新的 changed 语义。status/snapshot 入口保持原有只读/轻量观测合同。

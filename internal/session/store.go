@@ -49,6 +49,9 @@ type Store struct {
 	beforeQueueClaimLeaseWrite func(from, to string, job QueueJob) error
 	// Set only by package tests to advance a job immediately before reaper CAS.
 	beforeQueueReapCommit func(candidate, updated QueueJob)
+	// Set once by package tests to advance canonical facts before a reader CAS.
+	// Invoked without Store or claim locks; use a separate Store for writes.
+	beforeQueueJobRepairCheck func(expected QueueJob, repaired *QueueJob)
 }
 
 type harnessReminderIndex struct {
@@ -3735,29 +3738,15 @@ func (s *Store) RefreshQueueJobHeartbeat(jobID string) (QueueJob, error) {
 	if err := s.ensureQueueDirs(); err != nil {
 		return QueueJob{}, err
 	}
-	path := s.queueJobPath(QueueStatusRunning, jobID)
 	lockPath := filepath.Join(s.queueRoot(), "claim.lock")
 	var job QueueJob
 	// The read-modify-write runs under the durable queue lock so a concurrent
 	// process cannot settle (and delete) running/<job>.json between the read and
 	// the write; otherwise the write would recreate a ghost running copy.
 	err := s.withFileLock(lockPath, func() error {
-		if err := readJSONFile(path, &job); err != nil {
-			return err
-		}
-		if err := validateQueueJob(job); err != nil {
-			return fmt.Errorf("queue job %s: %w", jobID, err)
-		}
-		if err := validateQueueJobStatusDirectory(job, QueueStatusRunning); err != nil {
-			return fmt.Errorf("queue job %s: %w", jobID, err)
-		}
-		if owner := strings.TrimSpace(job.ProcessStartID); owner != "" && owner != queueProcessStartID {
-			return fmt.Errorf("queue job %s is claimed by process %s: %w", jobID, owner, ErrQueueJobLeaseLost)
-		}
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		job.UpdatedAt = now
-		applyQueueLease(&job, now)
-		return s.writeJSONFile(path, job)
+		var err error
+		job, err = s.refreshQueueJobHeartbeatLocked(jobID)
+		return err
 	})
 	if err != nil {
 		return QueueJob{}, err
@@ -4449,7 +4438,34 @@ func unlockFileBestEffort(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
 
+const queueJobReconcileAttempts = 8
+
+var errQueueJobRepairConflict = errors.New("queue job changed during reconciliation")
+
 func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
+	changed := false
+	for attempt := 0; attempt < queueJobReconcileAttempts; attempt++ {
+		current, attemptChanged, err := s.reconcileQueueJobSessionOnce(job)
+		changed = changed || attemptChanged
+		job = current
+		if !errors.Is(err, errQueueJobRepairConflict) {
+			return job, changed, err
+		}
+		// The old attempt has performed no conflict followups. Reconcile the
+		// new canonical fact before exposing a successful full-reader result.
+	}
+	return job, changed, fmt.Errorf("queue job %s reconciliation conflicted after %d attempts; retry the read: %w", job.ID, queueJobReconcileAttempts, errQueueJobRepairConflict)
+}
+
+func (s *Store) reconcileQueueJobSessionOnce(job QueueJob) (QueueJob, bool, error) {
+	current, matches, err := s.updateQueueJobRepairIfCurrent(job, nil)
+	if err != nil {
+		return job, false, err
+	}
+	if !matches {
+		return current, true, errQueueJobRepairConflict
+	}
+	expected := job
 	originalStatus := job.Status
 	now := time.Now().UTC()
 	meta, state, ok, err := s.findSessionForQueueJob(job)
@@ -4471,9 +4487,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		job.Status = QueueStatusFailed
 		job.SessionStatus = StatusFailed
 		job.LastError = "queue job stale: running job has no linked session and heartbeat is stale"
-		if err := s.SaveJob(job); err != nil {
+		committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+		if err != nil {
 			return job, false, fmt.Errorf("persist stale queue job repair %s: %w", job.ID, err)
 		}
+		if !matches {
+			return committed, true, errQueueJobRepairConflict
+		}
+		job = committed
 		if isTerminalQueueStatus(job.Status) {
 			if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 				return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
@@ -4485,6 +4506,9 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, true, nil
 	}
+	if queueResumeClaimIsPendingChildStart(job, state, now) {
+		return job, false, nil
+	}
 	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {
 		marker := job.LastError
 		stateForSync := state
@@ -4493,9 +4517,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		job.Status = QueueStatusBlocked
 		job.LastError = marker
 		if changed {
-			if err := s.SaveJob(job); err != nil {
+			committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+			if err != nil {
 				return job, false, fmt.Errorf("persist reaped queue job snapshot %s: %w", job.ID, err)
 			}
+			if !matches {
+				return committed, true, errQueueJobRepairConflict
+			}
+			job = committed
 		}
 		if err := s.ensureBlockedQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for reaped queue job %s: %w", job.ID, err)
@@ -4543,9 +4572,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 			job.LastError = queueError
 			changed = true
 		}
-		if err := s.SaveJob(job); err != nil {
+		committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+		if err != nil {
 			return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 		}
+		if !matches {
+			return committed, true, errQueueJobRepairConflict
+		}
+		job = committed
 		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
 		}
@@ -4622,9 +4656,14 @@ func (s *Store) reconcileQueueJobSession(job QueueJob) (QueueJob, bool, error) {
 		}
 		return job, false, nil
 	}
-	if err := s.SaveJob(job); err != nil {
+	committed, matches, err := s.updateQueueJobRepairIfCurrent(expected, &job)
+	if err != nil {
 		return job, false, fmt.Errorf("persist queue job repair %s: %w", job.ID, err)
 	}
+	if !matches {
+		return committed, true, errQueueJobRepairConflict
+	}
+	job = committed
 	if isTerminalQueueStatus(job.Status) {
 		if err := s.ensureTerminalQueueJobParentState(job); err != nil {
 			return job, false, fmt.Errorf("persist parent coordination for queue job %s: %w", job.ID, err)
@@ -5011,6 +5050,9 @@ func (s *Store) reconcileQueueJobSessionStatusSnapshot(job QueueJob, metaIndex *
 	}
 	state, err := s.LoadState(meta.ID)
 	if err != nil {
+		return job, nil
+	}
+	if queueResumeClaimIsPendingChildStart(job, state, now) {
 		return job, nil
 	}
 	if QueueJobLeaseWasReclaimed(job) && state.Status == StatusRunning {

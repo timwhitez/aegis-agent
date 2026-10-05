@@ -368,3 +368,16 @@
 - provider contract 与已验证协议事实一致
 - README / AGENTS / scripts 与 spec 一致
 - generation 选项的全链路传递已明确写清
+
+### Queue budget resume lease consistency
+
+- 实现：`internal/session/queue_progress.go` 在 claim lock 内做 budget-only canonical 更新、原子 heartbeat/outcome 观察；`internal/runtime/budget.go` 同步 budget 并报告 session rollback error；`internal/runtime/delegation.go` 持续刷新 owned lease，lease loss 后禁止 queue resume settlement/rollback 回写。
+- 回归：`internal/session/queue_progress_test.go` 覆盖 running/normal settled/requeued/reclaimed/missing/corrupt/foreign owner、旧 heartbeat API 与跨 Store claim overlap；`internal/runtime/queue_budget_lease_test.go` 覆盖 paused child 的 resume claim、heartbeat 持续、新 owner preservation 与失败准备 rollback；已有 `budget_lifecycle_test.go` / `queue_lease_test.go` 保持预算恢复与 reaper 约束。
+
+- queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。
+
+- 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。
+
+- 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。
+
+- 被动 reader 的 repair publication 还需在 claim lock 内对完整 canonical snapshot 做版本比较；reader 在新 resume claim 之前读到旧 blocked，或在计算 repair 时遇到 heartbeat/settlement 推进，不得 Save 旧整份事实。冲突时跳过旧 attempt 的后续 coordination/notification，full `LoadJob` / `ListJobs` 从最新 canonical facts 重新协调；成功返回 terminal job 前必须完成其幂等 parent coordination/notification/event 修复，不能依赖稍后 worker 偶然补写。重试有界，持续冲突返回显式可重试 read error，其他落盘错误原样报告；跨重试保留 snapshot 已更新的 changed 语义。status/snapshot 入口保持原有只读/轻量观测合同。
