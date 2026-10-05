@@ -72,7 +72,7 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 				source.Outcome = "missing"
 			}
 			report.Sources = append(report.Sources, source)
-			if source.Outcome == "missing" {
+			if source.Outcome == "missing" && c.kind != "cli" && c.kind != "env" {
 				continue
 			}
 			return nil, report, err

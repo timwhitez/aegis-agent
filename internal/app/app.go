@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -2348,20 +2350,27 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		configPath  = fs.String("config", "", "")
-		force       = fs.Bool("force", false, "")
-		provider    = fs.String("provider", "", "")
-		model       = fs.String("model", "", "")
-		baseURL     = fs.String("base-url", "", "")
-		apiKeyEnv   = fs.String("api-key-env", "", "")
-		wireAPI     = fs.String("wire-api", "", "")
-		skillDir    = fs.String("skill-dir", "", "")
-		sessionDir  = fs.String("session-dir", "", "")
-		exampleHook = fs.Bool("example-hook", true, "")
+		configPath   = fs.String("config", "", "")
+		force        = fs.Bool("force", false, "")
+		provider     = fs.String("provider", "", "")
+		model        = fs.String("model", "", "")
+		baseURL      = fs.String("base-url", "", "")
+		apiKeyEnv    = fs.String("api-key-env", "", "")
+		wireAPI      = fs.String("wire-api", "", "")
+		sendMetadata = fs.Bool("send-metadata", true, "")
+		skillDir     = fs.String("skill-dir", "", "")
+		sessionDir   = fs.String("session-dir", "", "")
+		exampleHook  = fs.Bool("example-hook", true, "")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	metadataSelected := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "send-metadata" {
+			metadataSelected = true
+		}
+	})
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -2390,21 +2399,33 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		*skillDir = prompt(stdout, reader, "Skills dir", defaultString(*skillDir, "./skills"))
 	}
 	cfg.DefaultProvider = defaultString(*provider, cfg.DefaultProvider)
-	if providerCfg, ok := cfg.Providers[cfg.DefaultProvider]; ok {
-		if *model != "" {
-			providerCfg.Model = *model
-		}
-		if *baseURL != "" {
-			providerCfg.BaseURL = *baseURL
-		}
-		if *apiKeyEnv != "" {
-			providerCfg.APIKeyEnv = *apiKeyEnv
-		}
-		if *wireAPI != "" {
-			providerCfg.WireAPI = *wireAPI
-		}
-		cfg.Providers[cfg.DefaultProvider] = providerCfg
+	providerCfg, ok := cfg.Providers[cfg.DefaultProvider]
+	if !ok {
+		return fmt.Errorf("unsupported init provider %q: select an existing built-in profile", cfg.DefaultProvider)
 	}
+	if metadataSelected {
+		family, err := config.EffectiveAPIProvider(cfg.DefaultProvider, providerCfg)
+		if err != nil {
+			return err
+		}
+		if family != "openai-compatible" {
+			return fmt.Errorf("--send-metadata requires an OpenAI API-family profile; %q uses %q", cfg.DefaultProvider, family)
+		}
+		providerCfg.SendMetadata = sendMetadata
+	}
+	if *model != "" {
+		providerCfg.Model = *model
+	}
+	if *baseURL != "" {
+		providerCfg.BaseURL = *baseURL
+	}
+	if *apiKeyEnv != "" {
+		providerCfg.APIKeyEnv = *apiKeyEnv
+	}
+	if *wireAPI != "" {
+		providerCfg.WireAPI = *wireAPI
+	}
+	cfg.Providers[cfg.DefaultProvider] = providerCfg
 	effectiveSessionDir := strings.TrimSpace(*sessionDir)
 	if effectiveSessionDir == "" {
 		effectiveSessionDir = defaultInitSessionDir(cwd, cfg.Session.Dir)
@@ -2425,6 +2446,14 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	target := *configPath
 	if target == "" {
 		target = filepath.Join(cwd, ".aegis-agent", "config.yaml")
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("config path is required")
+	}
+	target, err = filepath.Abs(filepath.Clean(target))
+	if err != nil {
+		return err
 	}
 	if !*force {
 		if _, err := os.Lstat(target); err == nil {
@@ -2469,11 +2498,17 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	_, _ = fmt.Fprintf(stdout, "wrote config to %s\n", target)
+	_, _ = fmt.Fprintf(stdout, "wrote config to %q\n", target)
+	executable, executableErr := os.Executable()
+	if executableErr != nil || executable == "" || !utf8.ValidString(executable) || !utf8.ValidString(target) || strings.IndexFunc(executable+target, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		_, _ = fmt.Fprintf(stdout, "followup commands unavailable: use your installed executable and explicitly select the generated file with --config %q after reviewing it.\n", target)
+		return nil
+	}
+	quotedExecutable := quoteShellArgument(executable)
 	quotedTarget := quoteShellArgument(target)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent doctor --config %s --skip-probe\n", quotedTarget)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent probe-provider --config %s\n", quotedTarget)
-	_, _ = fmt.Fprintf(stdout, "next: ./bin/aegis-agent run --config %s \"Describe the current repository.\"\n", quotedTarget)
+	_, _ = fmt.Fprintf(stdout, "next: %s doctor --config %s --skip-probe\n", quotedExecutable, quotedTarget)
+	_, _ = fmt.Fprintf(stdout, "next: %s probe-provider --config %s\n", quotedExecutable, quotedTarget)
+	_, _ = fmt.Fprintf(stdout, "next: %s run --config %s \"Describe the current repository.\"\n", quotedExecutable, quotedTarget)
 	return nil
 }
 
