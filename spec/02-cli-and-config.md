@@ -139,6 +139,14 @@ Web-first v1 仍保留以下稳定 CLI 命令：
 - 若该 `workspace/` 目录不存在，runtime 在 session 启动前自动创建
 - `--plan` 只通过显式 flag 启用 Plan Mode；普通 prompt 中写“先计划”不自动切换 runtime mode
 
+CLI 配置与 provider 观测规则（`run` / `exec`，含 `exec --resume`）：
+
+- 在 provider 执行前，同步向 stderr 输出同次 loader 的来源/结果及 runtime 已解析的 session profile、model、endpoint origin；使用既有 session-active 生命周期，不能重新加载或猜测选择。
+- skipped workspace 只是未经检查的候选路径，不能断言文件存在或读取其内容；显式 `--config` 模板须先提示用户审阅完整文件。JSON / stream-json stdout 协议不增加文本提示。
+- endpoint 只显示 HTTP(S) scheme + host/port，隐藏 userinfo/path/query/fragment；其他动态字段转义终端控制字符，包含不可打印字符的可执行命令模板省略。stderr 写入失败不改变 session 执行或结果。
+- metadata enabled 的 OpenAI-compatible session 在执行前说明既有 adapter-instance 降级范围，以及在现有完整 profile 内添加 `send_metadata: false` 的办法。主 CLI session 的新 session 模板保持原配置选择/环境和适用的 CLI 参数，不把某个已加载层冒充等价 `--config`，不声称新 session 复制旧 endpoint/options。继承 observer 的 delegated session 显示实际目标与 profile 指引，明确主调用无法提供其 child role 的独立模板；直接选择 child session 时它仍是主 CLI session。CLI normalization 无法准确表示的 resume profile/model（包括 `default` sentinel）省略可执行模板并提示人工选择。
+- resume 显示实际 durable provider 选项；配置编辑不会覆盖已记录的选项（包括 default nil），旧的缺失 options snapshot 仍按既有兼容规则补全。仅观察根 CLI bus 上既有 metadata fallback 事件，通知继续遵循原有 best-effort 交付；不改变 retry、默认策略、workspace 信任或能力缓存。
+
 ### 5.3 `exec`
 
 作用：

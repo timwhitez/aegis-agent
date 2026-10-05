@@ -17,6 +17,12 @@ func NewCoreRunner(cfg *config.Config) *CoreRunner {
 	return &CoreRunner{runner: NewRunner(cfg)}
 }
 
+// SetRunLifecycleHooks forwards synchronous observations of resolved session
+// metadata before provider execution, using the existing runner lifecycle.
+func (r *CoreRunner) SetRunLifecycleHooks(hooks RunLifecycleHooks) {
+	r.runner.SetRunLifecycleHooks(hooks)
+}
+
 func (r *CoreRunner) Start(ctx context.Context, req StartRequest) (RunResult, error) {
 	return r.runner.Start(ctx, req)
 }
