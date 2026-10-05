@@ -19,13 +19,14 @@ import (
 const maxWebWorkerCount = 8
 
 func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config", "listen", "workers"}, nil)
+	args = normalizeInterspersedFlags(args, []string{"config", "listen", "workers"}, []string{"allow-builtin-config"})
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		configPath = fs.String("config", "", "")
-		listenAddr = fs.String("listen", "127.0.0.1:3940", "")
-		workers    = fs.Int("workers", 2, "")
+		configPath   = fs.String("config", "", "")
+		listenAddr   = fs.String("listen", "127.0.0.1:3940", "")
+		workers      = fs.Int("workers", 2, "")
+		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -45,6 +46,9 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return err
 	}
 	persistedConfigPath := config.PersistPath(*configPath, cwd)
+	if err := admitProviderConfig(cfg, *allowBuiltin); err != nil {
+		return err
+	}
 	// Bind the listener before anything with durable side effects starts. A
 	// failed bind must exit without running audit preparation, queue workers
 	// or the stale-session reaper, and without ever printing the readiness

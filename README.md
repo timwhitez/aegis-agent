@@ -83,6 +83,10 @@ Before provider execution, `run` / `exec` report configuration layer outcomes
 and the resolved session profile, model and endpoint origin on stderr. A skipped
 workspace candidate has not been inspected; review the complete file before
 choosing it with `--config`. JSON and stream-json records remain on stdout.
+If no configuration file loaded, new execution, provider probes and Web startup
+require explicit `--allow-builtin-config` to use builtin provider defaults.
+Review and select your configuration first; `doctor --skip-probe` remains usable
+for diagnosis. This flag does not authorize workspace config loading.
 
 ## Provider configuration
 
@@ -138,6 +142,16 @@ selection is not a fresh-session recipe for a child role. Resume templates are
 omitted when CLI normalization cannot reproduce stored profile/model selectors.
 See the
 [provider contract](./spec/03-provider-contracts.md) for the existing compatibility options.
+
+To continue an existing session against a known metadata-rejecting gateway,
+explicitly override that option with `exec --resume <id> --send-metadata=false`
+or `continue <id> --send-metadata=false`, using the same config selection.
+The choice persists in current session metadata and appends a before/effective
+event; the original start event and unrelated recorded options remain intact.
+Omitting the flag preserves the snapshot. `run` / `exec` also accept the flag
+for a fresh session. `init --reasoning-effort <value>` can persist an explicit
+OpenAI API-family effort; omission uses the provider default without guessing a
+model's supported levels.
 
 The default configuration keeps provider-side storage disabled where supported
 so that local session files remain the source of truth.

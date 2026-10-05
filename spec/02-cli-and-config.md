@@ -349,7 +349,7 @@ next: aegis-agent continue 20260319-101530-ab12cd --message "..."
 
 显式 `--config` / 非空 `AEGIS_AGENT_CONFIG` 选择的文件缺失时加载失败：返回 nil config、同次不完整的 source report 和原 safe-reader 缺文件错误链，不执行替代配置。环境选择层缺失即使此前 home/workspace 层已成功加载也失败；有效 CLI 选择仍只加载所选文件并忽略环境选择。Doctor 返回既有 config exit2 而不 probe，Web 在创建 service/listener 前失败，Store/receipt 命令也不能猜测默认 session root；有效 base config 下的 receipt-first replay 保持原协议。
 
-隐式 home / 受信 workspace 文件缺失仍是普通缺层，可使用合法的内置默认值；未受信 workspace 仍在读取前跳过，不探测存在性，不创建信任 marker。此为对以前显式缺文件可回落行为的有意收紧，不改变 dotenv 缺文件、相对路径、空白、symlink/nonregular 或解析错误的现有读取合同。
+隐式 home / 受信 workspace 文件缺失仍是普通缺层；未受信 workspace 仍在读取前跳过，不探测存在性，不创建信任 marker。加载器仍可返回内置默认值，但 CLI 的新 `run` / `exec`、`probe-provider`、自动 probe 的 `doctor` 和 `web` 在同次完整加载记录没有任何 loaded 层时，必须要求显式 `--allow-builtin-config` 才可执行。错误提供 `init`、审阅后 `--config` 与父进程 trust 环境变量的选择，不声称跳过的文件存在。`doctor --skip-probe`、store 命令与已有 session 的普通 continue/resume 保持可用；内置模式 opt-in 不授权 workspace 配置。此为 provider 执行准入的有意收紧，不改变 dotenv、相对路径、空白、symlink/nonregular 或解析错误的读取合同。
 
 默认位置：
 
@@ -589,6 +589,8 @@ providers:
 - `timeout_sec` 是旧配置兼容字段；新实现优先使用 `request_timeout_sec` 与 `stream_idle_timeout_ms`
 - effective timeout/retry policy 也必须写入 session metadata，便于从 durable session 事实中追溯本次运行采用的请求超时、stream idle 超时、retry 预算与开关
 - `continue` 不能因为配置漂移而丢失已选择的 generation 语义
+- `run` / `exec` 和 `continue` 支持显式 `--send-metadata=true|false`，通过既有 ProviderOptions override 路径设置该单项。省略时继续保存 true/nil/default 快照语义；显式 resume override 更新当前 session metadata，并在 provider 调用前追加 `session.provider_options.overridden` 的原值/有效值/source 事实。原 `session.started` 事件与历史不重写，其他已保存选项不因当前配置漂移而变化。
+- `init --reasoning-effort <value>` 仅在选定 OpenAI API-family profile 保存 operator 的显式原生值；省略保留 provider default，不按 model 猜测 effort。真实上游是否接受该值仍需 operator probe。
 - OpenAI / `openai-compatible` 默认 `store: false`，保持本地 session 是唯一事实源
 - `wire_api` 只作为 OpenAI-compatible Responses 的 legacy / advanced compatibility 字段保留；默认交互和 Settings 以 `api_provider` 命名解释 adapter family
 - `send_metadata` 默认为主契约路径；只有某个非官方 `openai-compatible` 部署明确不兼容 `metadata` 字段时，才应显式设置 `send_metadata: false`

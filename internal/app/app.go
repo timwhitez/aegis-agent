@@ -105,6 +105,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 func usage(w io.Writer) error {
 	_, _ = fmt.Fprintln(w, "usage: aegis-agent <web|init|run|exec|continue|steer|sessions|goal|tasks|models|probe-provider|doctor> [...]")
+	_, _ = fmt.Fprintln(w, "provider execution: --config <reviewed-file> or --allow-builtin-config; run/exec/continue: --send-metadata=true|false; init: --reasoning-effort <provider-value>")
 	return flag.ErrHelp
 }
 
@@ -213,7 +214,7 @@ const maxPromptStdinBytes int64 = 4 << 20
 const streamJSONDrainBarrierEvent = "cli.stream_json.drain_barrier"
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only", "allow-builtin-config", "send-metadata"})
 	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -239,6 +240,8 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		inputFormat      = fs.String("input-format", "text", "")
 		resumeSession    = fs.String("resume", "", "")
 		thinkingLevel    = fs.String("thinking-level", "", "")
+		allowBuiltin     = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
+		sendMetadata     = fs.Bool("send-metadata", true, "Explicit metadata option; also overrides this option on resume")
 		goalCriteria     stringSliceFlag
 		goalValidation   stringSliceFlag
 	)
@@ -270,6 +273,11 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
+	if *resumeSession == "" {
+		if err := admitProviderConfig(cfg, *allowBuiltin); err != nil {
+			return err
+		}
+	}
 	stderr = &runStderrWriter{out: stderr}
 	if mode == "run" && !term.IsTerminal(int(os.Stdin.Fd())) && !*jsonMode {
 		_, _ = fmt.Fprintln(stderr, "warning: stdin is not a TTY; Esc interrupt is disabled in run mode. Prefer exec for zero-interaction runs.")
@@ -286,6 +294,9 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	providerOptions, err := providerOptionsForThinkingLevel(*thinkingLevel, cfg, *providerName)
 	if err != nil {
 		return err
+	}
+	if explicitlySet(fs, "send-metadata") {
+		providerOptions.SendMetadata = sendMetadata
 	}
 	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, *goalStopOnBudget, goalCriteria, goalValidation)
 	if err != nil {
@@ -564,7 +575,7 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage", "approval-receipt"})
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage", "approval-receipt", "send-metadata"})
 	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
@@ -578,6 +589,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		approvePlan          = fs.Bool("approve-plan", false, "")
 		overrideGoalCoverage = fs.Bool("override-goal-coverage", false, "")
 		cancelPlan           = fs.Bool("cancel-plan", false, "")
+		sendMetadata         = fs.Bool("send-metadata", true, "Explicit metadata option for the resumed session")
 	)
 	approvalFlags := registerCLIApprovalFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -607,7 +619,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		approvalStore = storeView.Store()
 		if approvalFlags.receipt {
-			if *planMode || *cancelPlan || *overrideGoalCoverage || *message != "" || *provider != "" || *model != "" || *system != "" {
+			if *planMode || *cancelPlan || *overrideGoalCoverage || *message != "" || *provider != "" || *model != "" || *system != "" || explicitlySet(fs, "send-metadata") {
 				return errors.New("--approval-receipt accepts only session, request ID, config and output flags")
 			}
 			return queryCLIApprovalReceipt(runner, approvalStore, fs.Arg(0), approvalFlags.requestID, *jsonMode, stdout)
@@ -641,6 +653,10 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		*message = data
 	}
+	var providerOptions session.ProviderOptions
+	if explicitlySet(fs, "send-metadata") {
+		providerOptions.SendMetadata = sendMetadata
+	}
 	result, err := runner.Continue(ctx, runtime.ContinueRequest{
 		SessionID:            fs.Arg(0),
 		Message:              strings.TrimSpace(*message),
@@ -655,6 +671,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		OverrideGoalCoverage: *overrideGoalCoverage,
 		CancelPlan:           *cancelPlan,
 		Source:               session.PlanModeSourceCLI,
+		ProviderOptions:      providerOptions,
 	})
 	cancelRender()
 	<-done
@@ -1586,6 +1603,7 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		wireAPI      = fs.String("wire-api", "", "")
 		prompt       = fs.String("prompt", "", "")
 		jsonMode     = fs.Bool("json", false, "")
+		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1596,6 +1614,9 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 	}
 	runner, cfg, err := runnerLoader(*configPath, cwd)
 	if err != nil {
+		return err
+	}
+	if err := admitProviderConfig(cfg, *allowBuiltin); err != nil {
 		return err
 	}
 	req := runtime.ProbeRequest{
@@ -1832,6 +1853,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		prompt       = fs.String("prompt", "", "")
 		skipProbe    = fs.Bool("skip-probe", false, "")
 		jsonMode     = fs.Bool("json", false, "")
+		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1854,6 +1876,15 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	report.Checks = append(report.Checks, configCheck)
+	if !*skipProbe {
+		if err := admitProviderConfig(cfg, *allowBuiltin); err != nil {
+			report.Checks = append(report.Checks, doctorCheck{Name: "provider.admission", Status: "fail", Details: map[string]any{"error": err.Error()}})
+			if renderErr := renderDoctorReport(stdout, report, *jsonMode, false); renderErr != nil {
+				return renderErr
+			}
+			return err
+		}
+	}
 
 	selectedProvider := defaultString(*providerName, cfg.DefaultProvider)
 	providerCfg, providerErr := cfg.ProviderConfig(selectedProvider)
@@ -2350,17 +2381,18 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		configPath   = fs.String("config", "", "")
-		force        = fs.Bool("force", false, "")
-		provider     = fs.String("provider", "", "")
-		model        = fs.String("model", "", "")
-		baseURL      = fs.String("base-url", "", "")
-		apiKeyEnv    = fs.String("api-key-env", "", "")
-		wireAPI      = fs.String("wire-api", "", "")
-		sendMetadata = fs.Bool("send-metadata", true, "")
-		skillDir     = fs.String("skill-dir", "", "")
-		sessionDir   = fs.String("session-dir", "", "")
-		exampleHook  = fs.Bool("example-hook", true, "")
+		configPath      = fs.String("config", "", "")
+		force           = fs.Bool("force", false, "")
+		provider        = fs.String("provider", "", "")
+		model           = fs.String("model", "", "")
+		baseURL         = fs.String("base-url", "", "")
+		apiKeyEnv       = fs.String("api-key-env", "", "")
+		wireAPI         = fs.String("wire-api", "", "")
+		sendMetadata    = fs.Bool("send-metadata", true, "")
+		reasoningEffort = fs.String("reasoning-effort", "", "Explicit native Responses effort; omission uses provider default")
+		skillDir        = fs.String("skill-dir", "", "")
+		sessionDir      = fs.String("session-dir", "", "")
+		exampleHook     = fs.Bool("example-hook", true, "")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -2403,15 +2435,23 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if !ok {
 		return fmt.Errorf("unsupported init provider %q: select an existing built-in profile", cfg.DefaultProvider)
 	}
-	if metadataSelected {
+	if metadataSelected || explicitlySet(fs, "reasoning-effort") {
 		family, err := config.EffectiveAPIProvider(cfg.DefaultProvider, providerCfg)
 		if err != nil {
 			return err
 		}
 		if family != "openai-compatible" {
-			return fmt.Errorf("--send-metadata requires an OpenAI API-family profile; %q uses %q", cfg.DefaultProvider, family)
+			return fmt.Errorf("--send-metadata and --reasoning-effort require an OpenAI API-family profile; %q uses %q", cfg.DefaultProvider, family)
 		}
-		providerCfg.SendMetadata = sendMetadata
+		if metadataSelected {
+			providerCfg.SendMetadata = sendMetadata
+		}
+		if explicitlySet(fs, "reasoning-effort") {
+			if strings.TrimSpace(*reasoningEffort) == "" {
+				return fmt.Errorf("--reasoning-effort requires a non-empty provider value")
+			}
+			providerCfg.ReasoningEffort = *reasoningEffort
+		}
 	}
 	if *model != "" {
 		providerCfg.Model = *model
