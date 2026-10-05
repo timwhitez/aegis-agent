@@ -442,7 +442,14 @@ func TestRunDiagnosticsResolvedRoleTargetThroughCoreFacade(t *testing.T) {
 
 func TestRunDiagnosticsMissingConfigReportWithoutReinspection(t *testing.T) {
 	f := newRunDiagnosticFixture(t)
-	cfg, _, err := config.LoadWithReport(f.path, ".")
+	// Missing explicit selections now fail before diagnostics (#138). An
+	// absent implicit home layer remains valid and retains this test's
+	// authoritative missing-source/no-reinspection contract.
+	f.path = filepath.Join(f.home, ".aegis-agent", "config.yaml")
+	if err := os.Mkdir(filepath.Dir(f.path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.LoadWithReport("", ".")
 	if err != nil {
 		t.Fatal(err)
 	}
