@@ -96,6 +96,7 @@ func TestLoadReportSelectionAndObservedSources(t *testing.T) {
 					wantSources = append(wantSources, LoadSource{Kind: "env", Path: envPath, Outcome: "loaded", Mode: "-rw-------"})
 				} else {
 					wantSources = append(wantSources, LoadSource{Kind: "env", Path: envPath, Outcome: "missing"})
+					wantError = true // #138: an explicit selected missing layer fails loading.
 				}
 			}
 			if scenario == "cli_over_env" || scenario == "missing_cli" {
@@ -105,6 +106,8 @@ func TestLoadReportSelectionAndObservedSources(t *testing.T) {
 					write(cliPath, modelConfig("cli-model"))
 					wantModel = "cli-model"
 					wantSources[0].Outcome, wantSources[0].Mode = "loaded", "-rw-------"
+				} else {
+					wantError = true
 				}
 			}
 			legacy, legacyErr := Load(explicit, cwd)

@@ -3638,7 +3638,11 @@ func TestInitGeneratesConfigSkillAndHookAssets(t *testing.T) {
 	if err := Run(context.Background(), []string{"init", "--force", "--provider", "openai-compatible"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run init: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "next: ./bin/aegis-agent doctor") {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "next: "+quoteShellArgument(executable)+" doctor") {
 		t.Fatalf("expected init guidance in stdout, got %s", stdout.String())
 	}
 	for _, relative := range []string{

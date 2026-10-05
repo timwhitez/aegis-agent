@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,6 +105,15 @@ func TestE2EConfigDoctorReportsActualSelection(t *testing.T) {
 			defer cancel()
 			var stdout, stderr bytes.Buffer
 			err := Run(ctx, args, &stdout, &stderr)
+			if scenario == "missing_cli" {
+				// #138 deliberately rejects an explicitly selected missing file,
+				// matching existing read/parse load-error handling before doctor.
+				var classified ClassifiedError
+				if !errors.Is(err, os.ErrNotExist) || !errors.As(err, &classified) || classified.Code != 2 || stdout.Len() != 0 {
+					t.Fatalf("missing selected config did not fail loading: err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+				}
+				return
+			}
 			var report doctorReport
 			if decodeErr := json.Unmarshal(stdout.Bytes(), &report); decodeErr != nil {
 				t.Fatalf("doctor JSON: %v run=%v stderr=%s stdout=%s", decodeErr, err, stderr.String(), stdout.String())
@@ -150,11 +160,15 @@ func TestE2EConfigInitGuidanceSelectsConfigWithShellSafePath(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(root, ".aegis-agent", "trusted")); !os.IsNotExist(err) {
 		t.Fatalf("init must not write a trust marker: %v", err)
 	}
-	// Capture the shell's argument parsing of each printed next command. The
-	// executable does no provider or runtime work and only writes fixture argv.
-	argvPath := filepath.Join(root, "argv.txt")
-	t.Setenv("AEGIS_GUIDANCE_ARGV_FIXTURE", argvPath)
-	guidanceWrite(t, filepath.Join(root, "bin", "aegis-agent"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AEGIS_GUIDANCE_ARGV_FIXTURE\"\n", 0o700)
+	// Parse the emitted argv without invoking app.test recursively. Actual
+	// executable followups are separately exercised by the installed CLI fixture.
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "bin", "aegis-agent")); !os.IsNotExist(err) {
+		t.Fatalf("unexpected project executable: %v", err)
+	}
 	count := 0
 	for _, line := range strings.Split(stdout.String(), "\n") {
 		if !strings.HasPrefix(line, "next: ") {
@@ -162,16 +176,15 @@ func TestE2EConfigInitGuidanceSelectsConfigWithShellSafePath(t *testing.T) {
 		}
 		count++
 		command := strings.TrimPrefix(line, "next: ")
-		output, err := exec.Command("/bin/sh", "-c", command).CombinedOutput()
+		output, err := exec.Command("/bin/sh", "-c", "set -- "+command+"; printf '%s\\n' \"$@\"").CombinedOutput()
 		if err != nil {
 			t.Errorf("printed command cannot execute: %q error=%v output=%s", command, err, output)
 			continue
 		}
-		data, err := os.ReadFile(argvPath)
-		if err != nil {
-			t.Fatal(err)
+		argv := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+		if argv[0] != executable {
+			t.Errorf("followup executable=%q want actual %q", argv[0], executable)
 		}
-		argv := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 		found := false
 		for i := 0; i+1 < len(argv); i++ {
 			if argv[i] == "--config" && argv[i+1] == filepath.Join(root, ".aegis-agent", "config.yaml") {

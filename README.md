@@ -45,7 +45,9 @@ Requirements: Go 1.26.7+ on Linux, macOS, or WSL.
 ```
 
 `init` writes a configuration file. Select it explicitly with `--config`, as
-above; generating it does not authorize implicit workspace loading. See
+above; its followups use the invoked executable and the generated file's absolute
+path. A missing explicitly selected CLI/env config is an error, never replacement
+defaults. Generating it does not authorize implicit workspace loading. See
 [configuration loading](./spec/02-cli-and-config.md#7-配置文件) for the trust boundary.
 
 Open `http://127.0.0.1:3940` in a browser. By default, sessions use the local
@@ -101,6 +103,14 @@ options:
 
 ```yaml
 send_metadata: false
+```
+
+For new gateway setup, persist that choice during generation instead:
+
+```sh
+./bin/aegis-agent init --provider openai-compatible --config gateway.yaml \
+  --base-url https://gateway.example/v1 --model gateway-model \
+  --api-key-env GATEWAY_API_KEY --send-metadata=false
 ```
 
 Start a **new session** with the same config selection and environment. For
