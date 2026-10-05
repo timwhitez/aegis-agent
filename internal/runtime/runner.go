@@ -983,6 +983,7 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 			return RunResult{}, err
 		}
 	}
+	metadataBeforeOverride := meta
 	if prepared == nil {
 		releaseRunSlot, err := r.acquireRunSlot(meta.ID)
 		if err != nil {
@@ -1073,6 +1074,14 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 			"option": "send_metadata", "previous": previousSendMetadata,
 			"effective": meta.ProviderOptions.SendMetadata, "source": source,
 		}); err != nil {
+			// Ordinary resumes have no receipt to recover this option fact. Do
+			// not retain an unrecorded override after an observed append failure.
+			// Approval resumes retain their captured metadata and event payload.
+			if r.approvalOperation == nil {
+				if restoreErr := r.store.SaveMetadata(meta.ID, metadataBeforeOverride); restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("restore metadata after override event failure: %w", restoreErr))
+				}
+			}
 			return r.failBeforeRun(meta.ID, state, "prepare", err)
 		}
 	}
