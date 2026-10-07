@@ -65,7 +65,7 @@ func BrowserDoctor(ctx context.Context, cfg *config.Config, store *session.Store
 		collector := newCommandOutputCollector(ec, "browser_doctor")
 		cmd.Stdout = collector
 		cmd.Stderr = collector
-		runErr := cmd.Run()
+		runErr := runOwnedBrowserProcess(cmd, collector)
 		result := collector.finalize(commandOutputResultOptions{Summary: "[Browser doctor]", IsError: runErr != nil})
 		var data map[string]any
 		if err := json.Unmarshal([]byte(result.DisplayOutput), &data); err != nil {
@@ -109,7 +109,7 @@ func BrowserDoctor(ctx context.Context, cfg *config.Config, store *session.Store
 	collector := newCommandOutputCollector(ec, "browser_version")
 	versionCmd.Stdout = collector
 	versionCmd.Stderr = collector
-	err = versionCmd.Run()
+	err = runOwnedBrowserProcess(versionCmd, collector)
 	version := collector.finalize(commandOutputResultOptions{IsError: err != nil})
 	report["browser_build"] = version.DisplayOutput
 	if err != nil {

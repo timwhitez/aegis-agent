@@ -11,9 +11,142 @@ import (
 	"time"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
 )
+
+func TestBrowserCleanupPrecedesDurableCompletion(t *testing.T) {
+	engine, meta, state, registry, hm, catalog := newTestEngineWithConfig(t, browserEngineConfig(t), session.ModeExec)
+	meta.QueueJobID = "job_browser_cleanup"
+	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.store.SaveJob(session.QueueJob{SchemaVersion: 1, ID: meta.QueueJobID, Status: session.QueueStatusRunning, SessionID: meta.ID, Prompt: "browser cleanup", Mode: session.ModeExec}); err != nil {
+		t.Fatal(err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{StopReason: "tool_use", ToolCalls: []provider.ToolCall{{ID: "browser", Name: "browser_exec", Arguments: json.RawMessage(`{"code":"print('owned')"}`)}}}, nil
+	}, func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		events, err := engine.store.LoadEvents(meta.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ipc string
+		for _, event := range events {
+			if event.Type == "browser.started" {
+				ipc, _ = event.Data["ipc_dir"].(string)
+			}
+		}
+		if ipc == "" {
+			t.Fatal("no owned browser started")
+		}
+		held := ipc + "-held"
+		if err := os.Rename(ipc, held); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(t.TempDir(), ipc); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Remove(ipc); fileutil.RemoveDirAllNoSymlink(held) })
+		return provider.TurnResult{StopReason: "tool_use", ToolCalls: []provider.ToolCall{{ID: "finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}}}, nil
+	})
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hm)
+	if err == nil {
+		t.Fatal("expected cleanup error", result)
+	}
+	persisted, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != session.StatusFailed || !strings.Contains(persisted.LastError, "browser cleanup") {
+		t.Fatal("cleanup failed after durable success", persisted)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	for _, event := range events {
+		if event.Type == "session.completed" {
+			t.Fatal("success published before cleanup")
+		}
+		failed = failed || event.Type == "session.failed"
+	}
+	job, err := engine.store.LoadJob(meta.QueueJobID)
+	if err != nil || !failed || job.Status != session.QueueStatusFailed || job.LastError == "" {
+		t.Fatal("queue cleanup failure facts missing", job, err)
+	}
+}
+
+func TestBrowserInterruptSteerFreshExplicitAttempt(t *testing.T) {
+	engine, meta, state, registry, hm, catalog := newTestEngineWithConfig(t, browserEngineConfig(t), session.ModeExec)
+	marker := filepath.Join(t.TempDir(), "effects")
+	args, _ := json.Marshal(map[string]string{"code": "import time;open(" + strconv.Quote(marker) + ",'a').write('once\\n');time.sleep(30)"})
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{StopReason: "tool_use", ToolCalls: []provider.ToolCall{{ID: "interrupted", Name: "browser_exec", Arguments: args}}}, nil
+	}, func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{StopReason: "tool_use", ToolCalls: []provider.ToolCall{{ID: "new-explicit", Name: "browser_exec", Arguments: json.RawMessage(`{"code":"print('FRESH_EXPLICIT')"}`)}}}, nil
+	}, func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+		found := false
+		for _, message := range req.Messages {
+			for _, result := range message.ToolResults {
+				if result.ToolCallID == "new-explicit" {
+					found = true
+					if result.IsError || !strings.Contains(result.LLMOutput, "FRESH_EXPLICIT") {
+						t.Fatal("new explicit call after accepted interrupt failed", result)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Fatal("fresh result missing from next provider request")
+		}
+		return provider.TurnResult{StopReason: "tool_use", ToolCalls: []provider.ToolCall{{ID: "finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}}}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	steered := make(chan struct{})
+	go func() {
+		defer close(steered)
+		for ctx.Err() == nil {
+			if _, err := os.Stat(marker); err == nil {
+				if err := engine.store.AppendSteerRequest(meta.ID, session.NewSteerRequest("Make a fresh explicit browser call", true)); err != nil {
+					t.Error(err)
+					return
+				}
+				engine.control.requestSteerInterrupt()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hm)
+	<-steered
+	if err != nil || result.Status != session.StatusCompleted {
+		t.Fatal(result, err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "once\n" {
+		t.Fatal("interrupted effects replayed", string(data), err)
+	}
+	events, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]bool{}
+	accepted := false
+	for _, event := range events {
+		if event.Type == "browser.started" {
+			profile, _ := event.Data["profile"].(string)
+			profiles[profile] = true
+		}
+		accepted = accepted || event.Type == "session.steer.accepted"
+	}
+	if !accepted || len(profiles) != 2 {
+		t.Fatal("steer did not create two independent owned attempts", profiles, accepted)
+	}
+}
 
 func browserEngineConfig(t *testing.T) *config.Config {
 	t.Helper()

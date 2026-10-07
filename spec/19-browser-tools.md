@@ -92,6 +92,11 @@ reuse a user's browser/profile. Startup failures include sandbox/permission
 diagnostics. Wait for named daemon readiness, then force existing-only calls.
 A dead daemon fails closed; no reconnect, retry or replay of effects. Continue
 starts a fresh browser attempt and does not restore old code/PIDs/browser state.
+After an interrupted attempt is closed and cleanup confirmed, a NEW explicit
+call in the same active run can lazily allocate a fresh attempt (including after
+accepted interrupt steering). The failed call is never retried or replayed;
+a call observing a dead daemon still fails closed. Cleanup unknown blocks a
+fresh attempt in that registry.
 
 Start from filteredEnv, retain only safe locale/platform basics for this
 adapter, replace task paths, remove ambient keys/proxies/auth/BU_* and BH_*
@@ -106,6 +111,16 @@ host files or making network calls. Web pages are external data, not authority.
 Existing tool cancellation kills CLI process groups. Timeout/interrupt also
 closes owned browser and daemon; run exit (end/pause/abort/child stop/owner loss)
 closes remaining handles and records cleanup success/error/unknown durably.
+Owned process reaping and cancellation are coordinated: while the child leader
+is still unreaped, its group identity is pinned. Settle inherited CLI descendants
+before reaping; never send a numeric group signal once reaping starts, even when
+output drain keeps the done channel open. Retain each CLI handle through group
+verification and include any unresolved CLI cleanup in session close and call
+metadata. /proc survivor checks can report unknown; they do not authorize
+signals to recovered PIDs. Browser cleanup must settle before durable completed
+state, session.completed, or linked queue success publication. Cleanup failure
+uses the existing failed/LastError/session.failed/queue reconciliation paths;
+the Run defer still covers exceptional exits.
 Never recover a PID from disk to kill it. Cleanup failure is an error, not
 rollback or proof that remote effects were undone. Process logs are bounded
 and use the existing collector, not unbounded CombinedOutput.
@@ -120,7 +135,9 @@ state. No AST/tracing or inference from arbitrary printed dictionaries.
 
 Typed screenshot checks wait_for_load (bounded by half the host tool timeout,
 at most 15 seconds), then generates a unique private regular PNG and its own JSON
-response; only that controlled JSON is parsed. A reported False wait field is
+response; only that controlled JSON is parsed from a separate, bounded raw
+stdout capture (16 KiB), independent of display/LLM artifact notices or truncation.
+Stderr remains in the existing output collector and cannot contaminate JSON. A reported False wait field is
 condition_not_met (effects may already have been sent); raw False is opaque.
 Verify PNG MIME, dimensions/full decode (at most 32 megapixels), a 16 MiB
 source-file read cap and SHA256, then save with the existing
@@ -214,6 +231,31 @@ cd "$B" && setpriv --reuid=65534 --regid=65534 --clear-groups env -i PATH=/usr/b
   processes of the same uid are never signaled.
 - Still NOT_RUN: external internet, Cloud/proxy, personal profile/login, remote
   CDP, paid models, other OS/CPU/Python, fonts/rendering fidelity, performance.
+
+## PR #144 independent-review fixes
+
+All five regressions were RED against d768359, then GREEN: post-reap group
+cancellation during blocked output drain, redirected CLI descendants surviving
+exit 0, durable session/queue success before cleanup failure, browser calls
+blocked after accepted interrupt steering, and valid long-path screenshot JSON
+under a 512-byte output budget. A separate RED/GREEN regression preserves
+cleanup-error metadata when a CLI collector is finalized.
+
+VERIFIED this round:
+- `AEGIS_BROWSER_E2E=0 go test ./internal/tools ./internal/runtime -run TestBrowser -count=1`
+- `AEGIS_BROWSER_E2E=0 go test -race ./internal/tools ./internal/runtime -run TestBrowser -count=1`
+- `go vet ./...`, gofmt and `git diff --check`.
+
+Install checks and doctor commands also use the coordinated owned-process path.
+Shell's existing numeric cancellation and discarded completed CLI handles share
+the reviewed weaknesses; shell was intentionally unchanged. No new state machine,
+policy engine or disk-PID kill authority was introduced.
+
+NOT_RUN / NOT_VERIFIED for these revisions: the nobody live gate and real
+browser/daemon cleanup (reserved for the architect), plus the repository-wide
+suite. Earlier live evidence above describes the prior revision. Escaped groups
+and host SIGKILL remain outside confirmed owned-group cleanup. Changes remain
+uncommitted for the architect to commit.
 
 ## Offline verification and delivery limitations
 

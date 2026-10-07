@@ -43,13 +43,18 @@ type browserSession struct {
 	execCtx             ExecContext
 	root, ipc, endpoint string
 	browser, daemon     *ownedBrowserProcess
+	cli                 *ownedBrowserProcess
 	closed              bool
 	cleanupErr          error
 }
 type ownedBrowserProcess struct {
-	cmd       *exec.Cmd
-	done      chan struct{}
-	collector *commandOutputCollector
+	mu         sync.Mutex
+	reaping    bool
+	cmd        *exec.Cmd
+	done       chan struct{}
+	collector  *commandOutputCollector
+	waitErr    error
+	cleanupErr error
 }
 
 func (r *Registry) registerBrowser() {
@@ -176,14 +181,25 @@ func findBrowser(configured string) (string, error) {
 	return "", errors.New("browser_missing: install a supported Chrome-family browser explicitly; no browser is downloaded")
 }
 
-func startOwnedBrowserProcess(cmd *exec.Cmd, ec ExecContext, name string) (*ownedBrowserProcess, error) {
-	p := &ownedBrowserProcess{cmd: cmd, done: make(chan struct{}), collector: newCommandOutputCollector(ec, name)}
-	cmd.Stdout = p.collector
-	cmd.Stderr = p.collector
+func startOwnedBrowserProcess(cmd *exec.Cmd, collector *commandOutputCollector) (*ownedBrowserProcess, error) {
+	p := &ownedBrowserProcess{cmd: cmd, done: make(chan struct{}), collector: collector}
+	if cmd.Stdout == nil {
+		cmd.Stdout = collector
+	}
+	cmd.Stderr = collector
+	cancel := cmd.Cancel
+	cmd.Cancel = func() error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if p.reaping {
+			return os.ErrProcessDone
+		}
+		return cancel()
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	go func() { _ = cmd.Wait(); close(p.done) }()
+	go p.wait(cancel)
 	return p, nil
 }
 func (p *ownedBrowserProcess) stop() error {
@@ -204,8 +220,16 @@ func (p *ownedBrowserProcess) stop() error {
 			return errors.New("owned process cleanup unknown: wait did not settle")
 		}
 	}
-	p.collector.finalize(commandOutputResultOptions{Summary: "[Owned browser process stopped]"})
-	return browserProcessGroupCleanup(p.cmd.Process.Pid)
+	return p.cleanupErr
+}
+
+func runOwnedBrowserProcess(cmd *exec.Cmd, collector *commandOutputCollector) error {
+	p, err := startOwnedBrowserProcess(cmd, collector)
+	if err != nil {
+		return err
+	}
+	<-p.done
+	return errors.Join(p.waitErr, p.cleanupErr)
 }
 
 func (s *browserSession) initialize(ctx context.Context) error {
@@ -251,7 +275,7 @@ func (s *browserSession) initialize(ctx context.Context) error {
 	c := newCommandOutputCollector(ec, "browser_install_check")
 	check.Stdout = c
 	check.Stderr = c
-	err = check.Run()
+	err = runOwnedBrowserProcess(check, c)
 	checked := c.finalize(commandOutputResultOptions{Summary: "[Browser install check]", IsError: err != nil})
 	if err != nil {
 		return fmt.Errorf("browser install check: %s", checked.LLMOutput)
@@ -271,7 +295,7 @@ func (s *browserSession) initialize(ctx context.Context) error {
 	if err := fileutil.AtomicWriteFileNoSymlink(filepath.Join(s.root, "profile", "Default", "Preferences"), prefs, 0o600); err != nil {
 		return err
 	}
-	s.browser, err = startOwnedBrowserProcess(cmd, ec, "browser_startup")
+	s.browser, err = startOwnedBrowserProcess(cmd, newCommandOutputCollector(ec, "browser_startup"))
 	if err != nil {
 		return err
 	}
@@ -311,7 +335,7 @@ func (s *browserSession) initialize(ctx context.Context) error {
 		}
 	}
 	daemonCmd := browserCommand(context.Background(), ec, s.root, s.ipc, s.endpoint, "daemon")
-	s.daemon, err = startOwnedBrowserProcess(daemonCmd, ec, "browser_daemon")
+	s.daemon, err = startOwnedBrowserProcess(daemonCmd, newCommandOutputCollector(ec, "browser_daemon"))
 	if err != nil {
 		return err
 	}
@@ -366,7 +390,14 @@ func (s *browserSession) close() error {
 		return s.cleanupErr
 	}
 	s.closed = true
-	err := errors.Join(s.daemon.stop(), s.browser.stop())
+	err := errors.Join(s.cli.stop(), s.daemon.stop(), s.browser.stop())
+	// CLI output is finalized by execute with its cleanup facts. Process stop
+	// must not cache a success result before that call can report cleanup unknown.
+	for _, process := range []*ownedBrowserProcess{s.daemon, s.browser} {
+		if process != nil {
+			process.collector.finalize(commandOutputResultOptions{Summary: "[Owned browser process stopped]"})
+		}
+	}
 	status := "confirmed"
 	if err != nil {
 		status = "unknown"
@@ -435,7 +466,14 @@ func (m *browserManager) execute(ctx context.Context, ec ExecContext, name strin
 		return fail(err)
 	}
 	if s.closed {
-		return fail(errors.New("owned browser attempt closed; no retry/replay; continue starts a fresh attempt"))
+		if s.cleanupErr != nil {
+			return fail(fmt.Errorf("owned browser cleanup unknown; cannot start a fresh attempt: %w", s.cleanupErr))
+		}
+		// Only this new explicit call initializes a new attempt. Never replay the
+		// interrupted/dead-daemon call or adopt any previous handles or profile.
+		s.closed = false
+		s.root, s.ipc, s.endpoint = "", "", ""
+		s.cli, s.browser, s.daemon = nil, nil, nil
 	}
 	if s.root == "" {
 		if err = s.initialize(callCtx); err != nil {
@@ -462,9 +500,16 @@ func (m *browserManager) execute(ctx context.Context, ec ExecContext, name strin
 	}
 	cmd := browserCommand(callCtx, ec, s.root, s.ipc, s.endpoint, "exec")
 	cmd.Stdin = strings.NewReader(code)
-	cmd.Stdout = collector
-	cmd.Stderr = collector
-	err = cmd.Run()
+	var machine browserMachineResponse
+	if name == "browser_screenshot" {
+		cmd.Stdout = io.MultiWriter(collector, &machine)
+	}
+	s.cli, err = startOwnedBrowserProcess(cmd, collector)
+	if err != nil {
+		return fail(err)
+	}
+	<-s.cli.done
+	err = s.cli.waitErr
 	exitCode := -1
 	if cmd.ProcessState != nil {
 		exitCode = cmd.ProcessState.ExitCode()
@@ -472,6 +517,11 @@ func (m *browserManager) execute(ctx context.Context, ec ExecContext, name strin
 	}
 	md["exit_code"] = exitCode
 	md["output_collection_complete"] = err == nil || (cmd.ProcessState != nil && exitCode != 0 && callCtx.Err() == nil)
+	if s.cli.cleanupErr != nil {
+		return fail(fmt.Errorf("CLI cleanup unknown: %w", s.cli.cleanupErr))
+	}
+	md["cleanup"] = "confirmed"
+	s.cli = nil
 	if err != nil {
 		if ctx.Err() != nil || callCtx.Err() != nil {
 			return fail(err)
@@ -484,24 +534,41 @@ func (m *browserManager) execute(ctx context.Context, ec ExecContext, name strin
 	summary := fmt.Sprintf("[Browser process completed exit_code=%d signal=%v; business_success=not_evaluated]", exitCode, md["signal"])
 	result := collector.finalize(commandOutputResultOptions{Summary: summary, IsError: err != nil, Metadata: md})
 	if name == "browser_screenshot" && !result.IsError {
-		return s.screenshot(ec, result, shot), nil
+		if machine.overflow {
+			return errorResult(name, errors.New("invalid screenshot JSON: raw response exceeds 16 KiB")), nil
+		}
+		return s.screenshot(ec, result, shot, machine.data), nil
 	}
 	return result, nil
 }
 
-func (s *browserSession) screenshot(ec ExecContext, result session.ToolResult, path string) session.ToolResult {
+type browserMachineResponse struct {
+	data     []byte
+	overflow bool
+}
+
+func (b *browserMachineResponse) Write(data []byte) (int, error) {
+	const limit = 16 * 1024
+	remaining := limit - len(b.data)
+	if len(data) > remaining {
+		b.overflow = true
+	}
+	b.data = append(b.data, data[:min(len(data), remaining)]...)
+	return len(data), nil
+}
+
+func (s *browserSession) screenshot(ec ExecContext, result session.ToolResult, path string, raw []byte) session.ToolResult {
 	fail := func(err error) session.ToolResult {
 		r := errorResult("browser_screenshot", err)
-		r.Metadata = map[string]any{MetadataFailureClass: FailureClassHarnessError, "model_image_visible": false}
+		r.Metadata = map[string]any{MetadataFailureClass: FailureClassHarnessError, "model_image_visible": false, "cleanup": result.Metadata["cleanup"]}
 		return r
 	}
 	// Parse only the fixed wrapper response. Oversized/truncated JSON fails closed.
-	raw := strings.TrimSpace(result.DisplayOutput)
 	var response struct {
 		Path         string `json:"path"`
 		ConditionMet *bool  `json:"condition_met"`
 	}
-	dec := json.NewDecoder(strings.NewReader(raw))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&response); err != nil {
 		return fail(fmt.Errorf("invalid screenshot JSON: %w", err))
@@ -556,6 +623,7 @@ func (s *browserSession) screenshot(ec ExecContext, result session.ToolResult, p
 		return fail(fmt.Errorf("screenshot artifact persist failed: %w", err))
 	}
 	md := map[string]any{"mime": "image/png", "width": dims.Width, "height": dims.Height, "sha256": hex.EncodeToString(hash[:]), "image_delivery": "ref-only", "model_image_visible": false,
+		"cleanup":              result.Metadata["cleanup"],
 		"screenshot_raw_bytes": len(data), "screenshot_persisted_bytes": artifact.PersistedBytes, "screenshot_omitted_bytes": artifact.OmittedBytes,
 		"screenshot_complete": artifact.Complete, "screenshot_truncated": artifact.Truncated, "screenshot_recoverable": artifact.Recoverable, "screenshot_budget_reason": artifact.Reason,
 		"screenshot_artifact_path": commandArtifactDisplayPath(ec, artifact.AbsolutePath), "exit_code": 0, "business_success": "not_evaluated"}

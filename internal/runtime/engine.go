@@ -1271,6 +1271,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if err := e.appendFinalizedToolResults(meta.ID, toolResults); err != nil {
 						return RunResult{}, err
 					}
+					if err := registry.CloseBrowser(); err != nil {
+						return e.fail(ctx, meta, state, fmt.Errorf("browser cleanup unknown: %w", err), hookManager)
+					}
 					return e.complete(ctx, meta, state, toolResult.DisplayOutput, hookManager)
 				}
 			}

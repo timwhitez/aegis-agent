@@ -3,13 +3,53 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+func (p *ownedBrowserProcess) wait(cancel func() error) {
+	// WNOWAIT observes exit without reaping. The unreaped leader pins the group
+	// identity while we cancel inherited descendants, including redirected ones.
+	var info unix.Siginfo
+	var observed error
+	for {
+		observed = unix.Waitid(unix.P_PID, p.cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if !errors.Is(observed, unix.EINTR) {
+			break
+		}
+	}
+	p.mu.Lock()
+	if observed == nil {
+		if err := cancel(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			p.cleanupErr = fmt.Errorf("owned group cancellation: %w", err)
+		}
+	} else {
+		p.cleanupErr = fmt.Errorf("owned exit observation unknown: %w", observed)
+	}
+	// All Cancel callers use this mutex. From here on, even while Cmd.Wait
+	// drains output, no caller can signal a possibly reused numeric PGID.
+	p.reaping = true
+	p.mu.Unlock()
+	p.waitErr = p.cmd.Wait()
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := browserProcessGroupCleanup(p.cmd.Process.Pid)
+		if err == nil || time.Now().After(deadline) {
+			p.cleanupErr = errors.Join(p.cleanupErr, err)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(p.done)
+}
 
 func browserExitSignal(state *os.ProcessState) string {
 	if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {

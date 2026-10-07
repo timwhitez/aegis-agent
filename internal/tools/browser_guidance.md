@@ -10,7 +10,9 @@ capture_screenshot(path) are low-level helpers. Python locals reset each call;
 owned browser state persists within this active run. Print observations,
 assert/check helper returns and inspect business state. Unchecked False can
 exit 0; process completion never proves business success. No automatic retry.
-After pause/timeout/abort, continue uses a fresh owned browser attempt.
+After confirmed interrupt/timeout cleanup, a new explicit call starts a fresh
+owned attempt; interrupted code is never replayed. Continue after pause/abort
+also starts fresh. Cleanup unknown blocks reuse.
 
 browser_screenshot({}) returns private PNG artifact metadata and an exact
 current-session ref. Delivery is ref-only; the model does not see image bytes.

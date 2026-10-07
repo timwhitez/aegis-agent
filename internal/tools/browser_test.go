@@ -306,7 +306,7 @@ func TestBrowserTypedResponseOnly(t *testing.T) {
 		{`{"path":"x","condition_met":true}`, FailureClassHarnessError},
 		{`{"path":"x","condition_met":true} {}`, FailureClassHarnessError},
 	} {
-		got := s.screenshot(ec, session.ToolResult{DisplayOutput: tc.raw}, "/owned/expected.png")
+		got := s.screenshot(ec, session.ToolResult{DisplayOutput: "formatted presentation"}, "/owned/expected.png", []byte(tc.raw))
 		if !got.IsError || got.Metadata[MetadataFailureClass] != tc.class {
 			t.Fatal(got)
 		}
@@ -390,8 +390,10 @@ func TestBrowserCancellationAndDeadDaemonNoReplay(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(s.root, "workspace", "REPLAY")); !os.IsNotExist(err) {
 				t.Fatal("replayed")
 			}
-			again := browserRun(t, r, ec, "print('should not retry')")
-			if !again.IsError {
+			previousRoot := s.root
+			ec.Config.Tools.Browser.TimeoutSec = 5
+			again := browserRun(t, r, ec, "print('new explicit call')")
+			if again.IsError || s.root == previousRoot {
 				t.Fatal(again)
 			}
 		})

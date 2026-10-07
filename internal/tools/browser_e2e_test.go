@@ -73,7 +73,7 @@ func TestBrowserRealRuntime(t *testing.T) {
 		collector := newCommandOutputCollector(ec, "browser_e2e_check")
 		cmd.Stdout = collector
 		cmd.Stderr = collector
-		err := cmd.Run()
+		err := runOwnedBrowserProcess(cmd, collector)
 		r := collector.finalize(commandOutputResultOptions{IsError: err != nil})
 		return r.DisplayOutput, err
 	}
@@ -194,15 +194,14 @@ print('OFFICIAL_IMPORT_CLEAN_NO_OUTBOUND')
 	}
 	s := registry.browser.sessions[store.SessionDir(id)]
 	live := browserCommand(context.Background(), ec, s.root, s.ipc, s.endpoint, "doctor")
-	var buf strings.Builder
-	live.Stdout = &buf
-	live.Stderr = &buf
-	if err := live.Run(); err != nil {
-		t.Fatal(buf.String(), err)
+	liveCollector := newCommandOutputCollector(ec, "browser_e2e_doctor")
+	if err := runOwnedBrowserProcess(live, liveCollector); err != nil {
+		t.Fatal(liveCollector.finalize(commandOutputResultOptions{IsError: true}), err)
 	}
+	liveOutput := liveCollector.finalize(commandOutputResultOptions{})
 	var liveReport map[string]any
-	if json.Unmarshal([]byte(buf.String()), &liveReport) != nil || liveReport["healthy"] != true || liveReport["chrome_running"] != nil {
-		t.Fatal(buf.String())
+	if json.Unmarshal([]byte(liveOutput.DisplayOutput), &liveReport) != nil || liveReport["healthy"] != true || liveReport["chrome_running"] != nil {
+		t.Fatal(liveOutput)
 	}
 	t.Log("VERIFIED real private PNG screenshot and pinned strict live named daemon doctor")
 }
