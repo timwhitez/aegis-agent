@@ -29,6 +29,7 @@ import (
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/skills"
 	"aegis-agent/internal/streamjson"
+	"aegis-agent/internal/tools"
 )
 
 type coreRunner interface {
@@ -1844,16 +1845,17 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var (
-		providerName = fs.String("provider", "", "")
-		model        = fs.String("model", "", "")
-		configPath   = fs.String("config", "", "")
-		baseURL      = fs.String("base-url", "", "")
-		apiKeyEnv    = fs.String("api-key-env", "", "")
-		wireAPI      = fs.String("wire-api", "", "")
-		prompt       = fs.String("prompt", "", "")
-		skipProbe    = fs.Bool("skip-probe", false, "")
-		jsonMode     = fs.Bool("json", false, "")
-		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
+		providerName   = fs.String("provider", "", "")
+		model          = fs.String("model", "", "")
+		configPath     = fs.String("config", "", "")
+		baseURL        = fs.String("base-url", "", "")
+		apiKeyEnv      = fs.String("api-key-env", "", "")
+		wireAPI        = fs.String("wire-api", "", "")
+		prompt         = fs.String("prompt", "", "")
+		skipProbe      = fs.Bool("skip-probe", false, "")
+		jsonMode       = fs.Bool("json", false, "")
+		browserSession = fs.String("browser-session", "", "Check only this session owned named browser daemon")
+		allowBuiltin   = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1963,6 +1965,15 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 	report.Checks = append(report.Checks, checkWorkspaceWrite(cwd))
 	report.Checks = append(report.Checks, checkWorkspaceExtensionTrust(cwd))
 	report.Checks = append(report.Checks, checkRuntimeEnvironment(ctx, cwd))
+	if cfg.Tools.Browser.Enabled {
+		details, browserErr := tools.BrowserDoctor(ctx, cfg, session.NewStore(cfg.Session.Dir), *browserSession)
+		status := "ok"
+		if browserErr != nil {
+			status = "fail"
+			details["error"] = browserErr.Error()
+		}
+		report.Checks = append(report.Checks, doctorCheck{Name: "browser", Status: status, Details: details})
+	}
 
 	skillCatalog, skillErr := skills.Scan(cfg.Skills.Dirs)
 	skillStatus := "ok"

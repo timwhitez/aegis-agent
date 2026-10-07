@@ -256,6 +256,11 @@ func (e *Engine) triggerActiveHook(ctx context.Context, hookManager *hooks.Manag
 }
 
 func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state session.State, systemOverride string, adapter provider.Adapter, catalog *skills.Catalog, registry *tools.Registry, hookManager *hooks.Manager) (runResult RunResult, runErr error) {
+	defer func() {
+		if err := registry.CloseBrowser(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("browser cleanup unknown: %w", err))
+		}
+	}()
 	if ensureChildEffectiveBudget(e.cfg, &meta, state, session.BudgetSourceLegacyResume) {
 		if err := e.store.SaveMetadata(meta.ID, meta); err != nil {
 			return RunResult{}, err

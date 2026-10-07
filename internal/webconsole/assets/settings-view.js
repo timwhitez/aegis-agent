@@ -44,6 +44,7 @@ async function renderSettings() {
       return;
     }
     const providers = configData.providers || {};
+    const browser = configData.browser || {};
     const defaultProvider = configData.default_provider || '';
     const guardrailsMode = configData.guardrails_mode || 'yolo';
     const maxTurnsSoft = Number(configData.max_turns_soft || 24);
@@ -158,6 +159,13 @@ async function renderSettings() {
       </div>
       <div class="skill-card settings-card">
         <form class="settings-form">
+          <details class="role-provider-panel" id="settings-browser-runtime">
+            <summary class="role-provider-summary" style="min-height:44px">Optional browser runtime</summary>
+            <p><strong>${browser.enabled ? 'Enabled' : 'Disabled'}</strong> · <span>Local mode</span></p>
+            <p>Install target: <code translate="no" data-i18n-skip>${escapeHTML(browser.install_root || '')}</code></p>
+            <p>Host sandbox off: Python has host file, process, and network permissions. Chromium sandbox stays enabled.</p>
+            <p>Read-only settings. Enable and install explicitly using the local config file. Screenshots are artifact references only.</p>
+          </details>
           <div class="field">
             <label class="field-label">Guardrails Mode</label>
             <select id="settings-guardrails" class="settings-input">
