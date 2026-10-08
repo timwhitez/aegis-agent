@@ -50,6 +50,7 @@ type Config struct {
 	Web             WebConfig           `yaml:"web,omitempty"`
 	Session         SessionConfig       `yaml:"session"`
 	Skills          SkillsConfig        `yaml:"skills"`
+	Tools           ToolsConfig         `yaml:"tools,omitempty"`
 	Runtime         RuntimeConfig       `yaml:"runtime"`
 	Output          OutputConfig        `yaml:"output"`
 	Hooks           HooksConfig         `yaml:"hooks"`
@@ -391,6 +392,7 @@ func Default() *Config {
 				Store:   boolPtr(false),
 			},
 		},
+		Tools: ToolsConfig{Browser: BrowserConfig{InstallRoot: DefaultBrowserInstallRoot()}},
 		Session: SessionConfig{
 			Dir:     ".aegis-agent/sessions",
 			DirMode: "0700",

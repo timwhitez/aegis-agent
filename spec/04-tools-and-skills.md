@@ -571,3 +571,7 @@ hook 可修改最终进入模型的内容，但必须留下 trace。
 - `task_create` / `task_update` / `task_list` / `task_get` 可维护完整 task graph
 - `feature_list_create` / `feature_list_update` / `feature_list_read` 可维护 durable feature 状态
 - `finish` 能驱动 session 完成
+
+## Optional browser tools (#136)
+
+See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.

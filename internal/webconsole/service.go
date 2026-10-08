@@ -4592,6 +4592,7 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
 		"legacy_ui_enabled":       cfg.Web.LegacyUIEnabled,
+		"browser":                 tools.BrowserSettings(cfg),
 		"child_budget": map[string]any{
 			"disabled":                     cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
 			"max_active_runtime_sec":       cfg.Runtime.ChildBudget.MaxActiveRuntimeSec,

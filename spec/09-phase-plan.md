@@ -292,3 +292,7 @@ Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须�
 - 即使仓库里已有对应实现，也只能作为高级或实验扩展
 - 不得反过来要求默认 Web 页面、帮助文本、smoke 脚本都围绕内部高级能力设计
 - 若用户明确要求推进扩展 phase，必须先确认 core 主路径未被破坏
+
+## Phase 16+ optional browser profile (#136)
+
+See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.

@@ -29,6 +29,7 @@ imposing a fixed workflow engine.
   `generateContent`, and OpenAI-compatible Responses endpoints.
 - File-backed session facts: messages, events, state, goals, tasks, queue
   jobs, and compaction artifacts remain local and recoverable.
+- Optional, default-off local [browser-use tools](./spec/19-browser-tools.md).
 
 The project deliberately does not provide hosted multi-user service, browser
 IDE features, remote terminals, or a fixed workflow engine.
