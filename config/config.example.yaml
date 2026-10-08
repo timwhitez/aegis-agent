@@ -231,3 +231,10 @@ output:
 
 hooks:
   default_timeout_sec: 300
+
+# Optional experimental local browser tools; explicit private install required.
+# See spec/19-browser-tools.md.
+tools:
+  browser:
+    enabled: false
+    timeout_sec: 0

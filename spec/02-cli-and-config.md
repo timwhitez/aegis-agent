@@ -607,3 +607,7 @@ providers:
 - `run` / `exec` / `steer` / `continue` 语义无冲突
 - 配置文件默认简洁，可选 generation 字段不污染最小配置
 - 扩展命令仍可用，但不主导默认 Web 页面或主验收口径
+
+## Optional browser configuration (#136)
+
+See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.

@@ -418,3 +418,7 @@ fixture 内容：
 - 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。
 
 - 被动 reader 的 repair publication 还需在 claim lock 内对完整 canonical snapshot 做版本比较；reader 在新 resume claim 之前读到旧 blocked，或在计算 repair 时遇到 heartbeat/settlement 推进，不得 Save 旧整份事实。冲突时跳过旧 attempt 的后续 coordination/notification，full `LoadJob` / `ListJobs` 从最新 canonical facts 重新协调；成功返回 terminal job 前必须完成其幂等 parent coordination/notification/event 修复，不能依赖稍后 worker 偶然补写。重试有界，持续冲突返回显式可重试 read error，其他落盘错误原样报告；跨重试保留 snapshot 已更新的 changed 语义。status/snapshot 入口保持原有只读/轻量观测合同。
+
+## Browser adapter verification (#136)
+
+See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.

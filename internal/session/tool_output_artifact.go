@@ -48,6 +48,15 @@ type ToolOutputArtifactResult struct {
 var beforeToolOutputArtifactWrite func(path string, payload []byte) error
 
 func (s *Store) WriteToolOutputArtifact(sessionID, artifactRoot, artifactKey string, payload []byte, quota ToolOutputArtifactQuota) (ToolOutputArtifactResult, error) {
+	return s.writeToolOutputArtifact(sessionID, artifactRoot, artifactKey, payload, quota, ".txt")
+}
+
+// WriteToolOutputPNGArtifact shares the exact text-artifact quota and persistence contract.
+func (s *Store) WriteToolOutputPNGArtifact(sessionID, artifactRoot, artifactKey string, payload []byte, quota ToolOutputArtifactQuota) (ToolOutputArtifactResult, error) {
+	return s.writeToolOutputArtifact(sessionID, artifactRoot, artifactKey, payload, quota, ".png")
+}
+
+func (s *Store) writeToolOutputArtifact(sessionID, artifactRoot, artifactKey string, payload []byte, quota ToolOutputArtifactQuota, extension string) (ToolOutputArtifactResult, error) {
 	result := ToolOutputArtifactResult{RawBytes: len(payload), OmittedBytes: len(payload)}
 	if err := validateStoreID("session", sessionID); err != nil {
 		return result, err
@@ -60,7 +69,7 @@ func (s *Store) WriteToolOutputArtifact(sessionID, artifactRoot, artifactKey str
 		return result, err
 	}
 	artifactRoot = resolvedRoot
-	filename := toolOutputArtifactFilename(artifactKey, payload)
+	filename := strings.TrimSuffix(toolOutputArtifactFilename(artifactKey, payload), ".txt") + extension
 	targetPath := filepath.Join(artifactRoot, filename)
 	lockPath := filepath.Join(artifactRoot, toolOutputArtifactLockName)
 

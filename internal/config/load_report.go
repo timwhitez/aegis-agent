@@ -87,6 +87,9 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 		report.Sources = append(report.Sources, source)
 	}
 	normalizeConfig(cfg, cwd)
+	if err := ValidateBrowserConfig(cfg.Tools.Browser); err != nil {
+		return nil, report, err
+	}
 	report.Complete = true
 	cfg.loadReport = cloneLoadReport(report)
 	return cfg, report, nil
