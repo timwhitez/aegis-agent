@@ -883,8 +883,7 @@ func defShell() Definition {
 					Metadata:      metadata(0, 0, false),
 				}, nil
 			}
-			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
-			procutil.PrepareCommandCancellation(cmd)
+			cmd := procutil.PrepareCommandCancellation(exec.CommandContext(callCtx, commandPath, commandArgs...))
 			cmd.Dir = commandDir
 			if sandboxStatus == "bwrap" {
 				cmd.ExtraFiles = append(cmd.ExtraFiles, sandboxExtraFiles...)
@@ -4322,8 +4321,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 					Metadata:      attachExecPolicyMetadata(metadata, policyMetadata),
 				}, nil
 			}
-			cmd := exec.CommandContext(callCtx, commandPath, commandArgs...)
-			procutil.PrepareCommandCancellation(cmd)
+			cmd := procutil.PrepareCommandCancellation(exec.CommandContext(callCtx, commandPath, commandArgs...))
 			cmd.Dir = commandDir
 			if sandboxStatus == "bwrap" {
 				cmd.ExtraFiles = append(cmd.ExtraFiles, sandboxExtraFiles...)

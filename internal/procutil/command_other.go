@@ -13,9 +13,10 @@ import (
 // only kills the direct child. WaitDelay is still set so a surviving
 // grandchild holding the stdout/stderr pipe cannot block cmd.Wait forever and
 // defeat the shell tool timeout.
-func PrepareCommandCancellation(cmd *exec.Cmd) {
+func PrepareCommandCancellation(cmd *exec.Cmd) *Command {
 	if cmd == nil {
-		return
+		return nil
 	}
 	cmd.WaitDelay = 2 * time.Second
+	return &Command{Cmd: cmd}
 }

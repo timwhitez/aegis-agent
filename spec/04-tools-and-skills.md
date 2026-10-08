@@ -112,6 +112,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 可选接受 `workdir` 覆盖；相对路径按当前 workspace 解析，解析后仍必须位于 workspace 内且是目录
 - 对已注册 skill，`workdir` 也可使用 `load_skill` 返回的 skill 根目录提示；这只表示 skill bundle 的受控执行目录，不改变 workspace 写入边界
 - 必须接受 timeout
+- Unix shell 使用独立进程组；取消或 timeout 向整组发送 SIGKILL。Linux/Darwin/FreeBSD/NetBSD/DragonFly 的退出观察不回收 leader，取消与开始回收共用锁；开始回收后不得再按数字 PGID 发信号。正常退出不强制清理用户显式启动的后台进程，继承 pipe 的后代仍受 `WaitDelay` 限制；这些平台的退出观察失败时关闭整组信号入口并报告错误。缺少非回收退出观察器的其他 Unix 平台不属于 Linux/macOS/WSL 支持集，保留普通 `cmd.Wait` 与原有未保护的整组取消行为。非 Unix 保留 direct-child cancellation 与 `WaitDelay` fallback
 - 禁止使用 `CombinedOutput()` 或等价的执行后全量内存缓冲；stdout/stderr 必须接入同一个 streaming collector，合并后只保留有界 UTF-8-safe head/tail preview，并把可保存的原始合并字节流写入当前 session artifact
 - 返回码、timeout、workdir、sandbox、原始输出长度和截断状态必须写入 metadata，并以简短执行摘要进入 `llm_output`，避免模型只能在 UI/event metadata 中看到关键执行事实
 - 默认只继承 allowlist 环境变量，避免把整个父进程环境泄露给子进程

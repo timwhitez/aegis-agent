@@ -210,8 +210,7 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			}
 			goto afterCommand
 		}
-		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
-		procutil.PrepareCommandCancellation(cmd)
+		cmd := procutil.PrepareCommandCancellation(exec.CommandContext(callCtx, argv[0], argv[1:]...))
 		cmd.Dir = m.workdir
 		cmd.Env = minimalEnv(next)
 		cmd.Stdin = bytes.NewReader(stdin)
