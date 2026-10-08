@@ -4,33 +4,16 @@ package procutil
 
 import (
 	"errors"
-	"os"
-	"os/exec"
-	"syscall"
-	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-func PrepareCommandCancellation(cmd *exec.Cmd) {
-	if cmd == nil {
-		return
-	}
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return os.ErrProcessDone
+func waitCommandExit(pid int) error {
+	var info unix.Siginfo
+	for {
+		err := unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil)
+		if !errors.Is(err, unix.EINTR) {
+			return err
 		}
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				return os.ErrProcessDone
-			}
-			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-				return err
-			}
-		}
-		return nil
 	}
-	cmd.WaitDelay = 2 * time.Second
 }

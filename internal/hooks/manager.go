@@ -67,6 +67,8 @@ type hookExecution struct {
 
 const hookCommandOutputLimit = 12000
 
+var runHookCommand = (*procutil.Command).Run
+
 func New(cfg config.HooksConfig, workdir string) *Manager {
 	return &Manager{
 		workdir:        workdir,
@@ -210,8 +212,7 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			}
 			goto afterCommand
 		}
-		cmd := exec.CommandContext(callCtx, argv[0], argv[1:]...)
-		procutil.PrepareCommandCancellation(cmd)
+		cmd := procutil.PrepareCommandCancellation(exec.CommandContext(callCtx, argv[0], argv[1:]...))
 		cmd.Dir = m.workdir
 		cmd.Env = minimalEnv(next)
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -221,7 +222,7 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 		collector := newBoundedHookOutput(hookCommandOutputLimit)
 		cmd.Stdout = collector
 		cmd.Stderr = collector
-		err = cmd.Run()
+		err = runHookCommand(cmd)
 		exitCode := 0
 		if cmd.ProcessState != nil {
 			exitCode = cmd.ProcessState.ExitCode()
@@ -239,8 +240,11 @@ func (m *Manager) runHook(ctx context.Context, hook config.HookDefinition, paylo
 			return execution, &emitError{Event: "hook.command", Context: hook.Name, Err: emitErr}
 		}
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
 				exitCode = exitErr.ExitCode()
+			}
+			if exitErr != nil || cmd.ProcessState != nil {
 				execution.commandExitCode = &exitCode
 			}
 			return execution, err
