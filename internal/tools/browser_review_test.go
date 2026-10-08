@@ -18,7 +18,99 @@ import (
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/session"
+	"golang.org/x/sys/unix"
 )
+
+func TestBrowserCleanupTimeoutSkipsBlockedCollector(t *testing.T) {
+	for _, kind := range []string{"daemon", "browser"} {
+		t.Run(kind, func(t *testing.T) {
+			_, ec := browserFixture(t)
+			r, err := NewRegistry(ec.Config, nil, ec.Store, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ec.Config.Runtime.ToolOutput.LLMOutputMaxBytes = 512
+			if err := os.MkdirAll(ec.EphemeralArtifactRoot, 0700); err != nil {
+				t.Fatal(err)
+			}
+			lock, err := os.OpenFile(filepath.Join(ec.EphemeralArtifactRoot, ".quota.lock"), os.O_CREATE|os.O_RDWR, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer lock.Close()
+			if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+				t.Fatal(err)
+			}
+			defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+			cleanup := make(chan map[string]any, 1)
+			ec.EmitRequired = func(event string, data map[string]any) error {
+				if event == "browser.cleanup" {
+					cleanup <- data
+				}
+				return nil
+			}
+			s, err := r.browser.session(ec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.root = t.TempDir()
+			cmd := exec.CommandContext(context.Background(), "/usr/bin/python3", "-c", "print('x'*2048)")
+			procutil.PrepareCommandCancellation(cmd)
+			blocked := newCommandOutputCollector(ec, "browser_"+kind)
+			process, err := startOwnedBrowserProcess(cmd, blocked)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settled := &ownedBrowserProcess{done: make(chan struct{}), collector: newCommandOutputCollector(ec, "browser_settled")}
+			close(settled.done)
+			if kind == "daemon" {
+				s.daemon, s.browser = process, settled
+			} else {
+				s.browser, s.daemon = process, settled
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			for blocked.mu.TryLock() {
+				blocked.mu.Unlock()
+				if time.Now().After(deadline) {
+					t.Fatal("output writer did not block on the held artifact quota lock")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- r.CloseBrowser() }()
+			var closeErr error
+			timedOut := false
+			select {
+			case closeErr = <-closed:
+			case <-time.After(4 * time.Second):
+				timedOut = true
+			}
+			// Release only after checking the close bound, so a broken finalize
+			// cannot be rescued by unlocking early. Always settle test resources.
+			if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
+				t.Fatal(err)
+			}
+			if timedOut {
+				closeErr = <-closed
+			}
+			<-process.done
+			data := <-cleanup
+			if timedOut {
+				t.Fatal("cleanup exceeded its stop timeout while finalizing a quota-blocked collector")
+			}
+			if closeErr == nil || !strings.Contains(closeErr.Error(), "wait did not settle") || data["status"] != "unknown" {
+				t.Fatal("unsettled cleanup must report unknown", closeErr, data)
+			}
+			if !settled.collector.closed {
+				t.Fatal("settled sibling collector was not finalized")
+			}
+			if blocked.closed {
+				t.Fatal("unsettled collector was finalized")
+			}
+			blocked.finalize(commandOutputResultOptions{})
+		})
+	}
+}
 
 func TestBrowserCLIUnknownCleanupPreservesErrorResult(t *testing.T) {
 	collector := newCommandOutputCollector(ExecContext{Config: config.Default()}, "browser_exec")

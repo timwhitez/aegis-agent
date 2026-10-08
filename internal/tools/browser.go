@@ -395,7 +395,13 @@ func (s *browserSession) close() error {
 	// must not cache a success result before that call can report cleanup unknown.
 	for _, process := range []*ownedBrowserProcess{s.daemon, s.browser} {
 		if process != nil {
-			process.collector.finalize(commandOutputResultOptions{Summary: "[Owned browser process stopped]"})
+			select {
+			case <-process.done:
+				process.collector.finalize(commandOutputResultOptions{Summary: "[Owned browser process stopped]"})
+			default:
+				// A timed-out output writer can still hold collector.mu while
+				// waiting on the artifact quota lock. Preserve the stop bound.
+			}
 		}
 	}
 	status := "confirmed"

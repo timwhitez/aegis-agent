@@ -121,6 +121,16 @@ signals to recovered PIDs. Browser cleanup must settle before durable completed
 state, session.completed, or linked queue success publication. Cleanup failure
 uses the existing failed/LastError/session.failed/queue reconciliation paths;
 the Run defer still covers exceptional exits.
+If process stop times out before its done channel closes, skip that process's
+collector finalization and return cleanup unknown. An output writer blocked on
+the artifact quota lock must not turn the bounded stop into an unbounded wait.
+Settled daemon/browser collectors retain their ordinary finalization path.
+The follow-up regression holds the real .quota.lock with an owned output child,
+checks both daemon/browser close bounds, unknown cleanup and settled-sibling
+finalization: RED before the guard, GREEN normally and under -race. The full
+requested browser suites were run normally and under -race but failed because
+this sandbox rejects AF_UNIX bind with EPERM; those suites remain NOT_VERIFIED
+for this revision until rerun outside the sandbox. Vet/gofmt/diff checks passed.
 Never recover a PID from disk to kill it. Cleanup failure is an error, not
 rollback or proof that remote effects were undone. Process logs are bounded
 and use the existing collector, not unbounded CombinedOutput.
