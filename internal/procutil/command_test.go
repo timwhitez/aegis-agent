@@ -41,6 +41,9 @@ func TestWaitAfterExitObservation(t *testing.T) {
 				t.Fatalf("error = %v, want wait error %v", err, tc.waitErr)
 			}
 			if tc.guard && tc.observeErr != nil {
+				if !errors.Is(err, ErrCommandExitObservation) {
+					t.Fatalf("observation failure missing classification: %v", err)
+				}
 				if !errors.Is(err, tc.observeErr) {
 					t.Fatalf("error = %v, want observation error %v", err, tc.observeErr)
 				}

@@ -242,6 +242,8 @@ func (p toolCapabilityProfile) allows(name string) bool {
 
 var beforeShellCommandStart func(workdir string) error
 
+var runToolCommand = (*procutil.Command).Run
+
 var reservedNames = map[string]struct{}{
 	"browser_exec": {}, "browser_screenshot": {}, "shell": {}, "read_file": {}, "read_session_history": {}, "write_file": {}, "edit_file": {}, "glob": {}, "grep": {}, "grep_files": {},
 	"finish": {}, "await_input": {}, "load_skill": {}, "get_goal": {}, "create_goal": {}, "record_goal_progress": {}, "update_goal": {}, "todo_write": {}, "todo_read": {}, "task_create": {},
@@ -899,7 +901,7 @@ func defShell() Definition {
 			collector := newCommandOutputCollector(execCtx, "shell")
 			cmd.Stdout = collector
 			cmd.Stderr = collector
-			err = cmd.Run()
+			err = runToolCommand(cmd)
 			exitCode := 0
 			if cmd.ProcessState != nil {
 				exitCode = cmd.ProcessState.ExitCode()
@@ -908,36 +910,23 @@ func defShell() Definition {
 			truncated := rawLength > effectiveCommandToolOutputPolicy(execCtx.Config).LLMOutputMaxBytes
 			summary := commandResultSummary("shell", exitCode, timeout, workdirSource, workdir, sandboxStatus, rawLength, truncated)
 			if err != nil {
+				options := commandFailureResultOptions(err, summary, metadata(exitCode, rawLength, truncated))
 				// A real interrupt cancels the parent ctx (user steer, pause,
 				// session shutdown) and must propagate. A per-command timeout
 				// only expires callCtx: it is a recoverable tool error the model
 				// can react to, so surface a timeout-specific message + class and
 				// return nil error instead of a bare "interrupted".
 				if ctx.Err() != nil {
-					md := metadata(exitCode, rawLength, truncated)
-					md[MetadataFailureClass] = FailureClassInterrupted
-					return collector.finalize(commandOutputResultOptions{
-						Summary:       summary,
-						StatusMessage: InterruptedToolExecutionMessage,
-						IsError:       true,
-						Metadata:      md,
-					}), ctx.Err()
+					options.Metadata[MetadataFailureClass] = FailureClassInterrupted
+					options.StatusMessage = strings.TrimSpace(InterruptedToolExecutionMessage + "\n" + options.StatusMessage)
+					return collector.finalize(options), ctx.Err()
 				}
 				if callCtx.Err() != nil {
-					md := metadata(exitCode, rawLength, truncated)
-					md[MetadataFailureClass] = FailureClassTimeout
-					return collector.finalize(commandOutputResultOptions{
-						Summary:       summary,
-						StatusMessage: TimedOutToolExecutionMessage,
-						IsError:       true,
-						Metadata:      md,
-					}), nil
+					options.Metadata[MetadataFailureClass] = FailureClassTimeout
+					options.StatusMessage = strings.TrimSpace(TimedOutToolExecutionMessage + "\n" + options.StatusMessage)
+					return collector.finalize(options), nil
 				}
-				return collector.finalize(commandOutputResultOptions{
-					Summary:  summary,
-					IsError:  true,
-					Metadata: metadata(exitCode, rawLength, truncated),
-				}), nil
+				return collector.finalize(options), nil
 			}
 			return collector.finalize(commandOutputResultOptions{
 				Summary:  summary,
@@ -4343,7 +4332,7 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			collector := newCommandOutputCollector(execCtx, tool.Name)
 			cmd.Stdout = collector
 			cmd.Stderr = collector
-			err = cmd.Run()
+			err = runToolCommand(cmd)
 			exitCode := 0
 			if cmd.ProcessState != nil {
 				exitCode = cmd.ProcessState.ExitCode()
@@ -4352,31 +4341,18 @@ func commandToolDefinition(cfg *config.Config, tool skills.CommandTool) Definiti
 			truncated := rawLength > effectiveCommandToolOutputPolicy(effectiveConfig).LLMOutputMaxBytes
 			summary := commandResultSummary(tool.Name, exitCode, timeout, "skill", skillDir, sandboxStatus, rawLength, truncated)
 			if err != nil {
+				options := commandFailureResultOptions(err, summary, attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata))
 				if ctx.Err() != nil {
-					md := attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata)
-					md[MetadataFailureClass] = FailureClassInterrupted
-					return collector.finalize(commandOutputResultOptions{
-						Summary:       summary,
-						StatusMessage: InterruptedToolExecutionMessage,
-						IsError:       true,
-						Metadata:      md,
-					}), ctx.Err()
+					options.Metadata[MetadataFailureClass] = FailureClassInterrupted
+					options.StatusMessage = strings.TrimSpace(InterruptedToolExecutionMessage + "\n" + options.StatusMessage)
+					return collector.finalize(options), ctx.Err()
 				}
 				if callCtx.Err() != nil {
-					md := attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata)
-					md[MetadataFailureClass] = FailureClassTimeout
-					return collector.finalize(commandOutputResultOptions{
-						Summary:       summary,
-						StatusMessage: TimedOutToolExecutionMessage,
-						IsError:       true,
-						Metadata:      md,
-					}), nil
+					options.Metadata[MetadataFailureClass] = FailureClassTimeout
+					options.StatusMessage = strings.TrimSpace(TimedOutToolExecutionMessage + "\n" + options.StatusMessage)
+					return collector.finalize(options), nil
 				}
-				return collector.finalize(commandOutputResultOptions{
-					Summary:  summary,
-					IsError:  true,
-					Metadata: attachExecPolicyMetadata(commandMetadata(timeout, sandboxStatus, exitCode, rawLength, truncated), policyMetadata),
-				}), nil
+				return collector.finalize(options), nil
 			}
 			return collector.finalize(commandOutputResultOptions{
 				Summary:  summary,
@@ -4917,6 +4893,16 @@ func errorResult(tool string, err error) session.ToolResult {
 		setToolResultFailureClass(&result, class)
 	}
 	return result
+}
+
+func commandFailureResultOptions(err error, summary string, metadata map[string]any) commandOutputResultOptions {
+	options := commandOutputResultOptions{Summary: summary, IsError: true, Metadata: metadata}
+	if errors.Is(err, procutil.ErrCommandExitObservation) {
+		metadata[MetadataFailureClass] = FailureClassHarnessError
+		metadata["exit_observation_error"] = err.Error()
+		options.StatusMessage = "Error: " + err.Error()
+	}
+	return options
 }
 
 func readFileErrorResult(inputPath string, err error) session.ToolResult {

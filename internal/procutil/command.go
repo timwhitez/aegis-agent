@@ -2,11 +2,14 @@ package procutil
 
 import (
 	"errors"
-	"os"
+	"fmt"
 	"os/exec"
 )
 
 var errExitObservationNotImplemented = errors.New("non-reaping exit observation not implemented")
+
+// ErrCommandExitObservation identifies failures to observe exit before reaping.
+var ErrCommandExitObservation = errors.New("observe command exit")
 
 // Command keeps group cancellation synchronized with reaping where a non-reaping
 // exit observer is available. Use its Run or Wait methods, rather than the
@@ -38,7 +41,7 @@ func waitAfterExitObservation(observeErr error, startReaping func(), wait func()
 	startReaping()
 	waitErr := wait()
 	if observeErr != nil {
-		return errors.Join(os.NewSyscallError("observe command exit", observeErr), waitErr)
+		return errors.Join(fmt.Errorf("%w: %w", ErrCommandExitObservation, observeErr), waitErr)
 	}
 	return waitErr
 }
