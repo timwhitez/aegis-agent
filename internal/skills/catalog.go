@@ -38,9 +38,10 @@ type Skill struct {
 }
 
 type Catalog struct {
-	skills map[string]Skill
-	order  []string
-	mu     sync.Mutex
+	skills     map[string]Skill
+	order      []string
+	bodyLoaded map[string]bool
+	mu         sync.RWMutex
 }
 
 func Scan(dirs []string) (*Catalog, error) {
@@ -87,6 +88,8 @@ func Scan(dirs []string) (*Catalog, error) {
 }
 
 func (c *Catalog) Summaries() []Summary {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	var out []Summary
 	for _, name := range c.order {
 		skill := c.skills[name]
@@ -109,6 +112,8 @@ func (c *Catalog) Names() []string {
 }
 
 func (c *Catalog) Load(name string) (Skill, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	skill, ok := c.skills[name]
 	if !ok {
 		return Skill{}, fmt.Errorf("unknown skill %q", name)
@@ -116,36 +121,62 @@ func (c *Catalog) Load(name string) (Skill, error) {
 	return skill, nil
 }
 
+// LoadBody keeps the registered body's cached version, including a valid empty body.
 func (c *Catalog) LoadBody(name string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.loadBodyLocked(name, false)
+}
 
+// ReloadBody refreshes only instructions from the registered safe path. It
+// never rescans tools or changes metadata already used by the registry.
+func (c *Catalog) ReloadBody(name string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	body, err := c.loadBodyLocked(name, true)
+	if err != nil {
+		skill, ok := c.skills[name]
+		retained := ok && (skill.Body != "" || c.bodyLoaded[name])
+		return "", fmt.Errorf("reload skill body failed (cached_body_retained=%t): %w", retained, err)
+	}
+	return body, nil
+}
+
+// Caller holds mu; no public locking accessor is called under this boundary.
+func (c *Catalog) loadBodyLocked(name string, force bool) (string, error) {
 	skill, ok := c.skills[name]
 	if !ok {
 		return "", fmt.Errorf("unknown skill %q", name)
 	}
-
-	if skill.Body != "" {
+	if !force && (skill.Body != "" || c.bodyLoaded[name]) {
 		return skill.Body, nil
 	}
-
 	data, _, err := fileutil.ReadRegularFileNoSymlink(skill.Path)
 	if err != nil {
 		return "", err
 	}
-
-	_, body, err := parseFrontmatter(string(data))
+	meta, body, err := parseFrontmatter(string(data))
 	if err != nil {
 		return "", fmt.Errorf("parse skill frontmatter %s: %w", skill.Path, err)
 	}
-
+	nameNow, descriptionNow := catalogIdentity(meta, skill.Path)
+	if nameNow != skill.Name || descriptionNow != skill.Description {
+		return "", fmt.Errorf("skill registration metadata changed; rescan catalog before loading %q", name)
+	}
+	// Publish a complete private candidate only after safe read, parse and identity
+	// validation. Failed reloads leave both the body and loaded-version bit intact.
 	skill.Body = body
 	c.skills[name] = skill
-
+	if c.bodyLoaded == nil {
+		c.bodyLoaded = map[string]bool{}
+	}
+	c.bodyLoaded[name] = true
 	return body, nil
 }
 
 func (c *Catalog) CommandTools() []CommandTool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	var out []CommandTool
 	for _, name := range c.order {
 		out = append(out, c.skills[name].Tools...)
@@ -213,6 +244,19 @@ func realOrAbs(path string) (string, error) {
 	return "", err
 }
 
+// Match the existing scan defaults; body reload is not metadata hot-update.
+func catalogIdentity(meta map[string]string, path string) (string, string) {
+	name := strings.TrimSpace(meta["name"])
+	if name == "" {
+		name = filepath.Base(filepath.Dir(path))
+	}
+	description := strings.TrimSpace(meta["description"])
+	if description == "" {
+		description = "No description"
+	}
+	return name, description
+}
+
 func loadSkill(rootReal, path string) (Skill, error) {
 	skillDir := filepath.Dir(path)
 	skillDirReal, err := filepath.EvalSymlinks(skillDir)
@@ -228,14 +272,7 @@ func loadSkill(rootReal, path string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	name := strings.TrimSpace(meta["name"])
-	if name == "" {
-		name = filepath.Base(filepath.Dir(path))
-	}
-	description := strings.TrimSpace(meta["description"])
-	if description == "" {
-		description = "No description"
-	}
+	name, description := catalogIdentity(meta, path)
 	tools, err := loadTools(rootReal, skillDirReal, filepath.Join(skillDir, "tools"), name, realPath)
 	if err != nil {
 		return Skill{}, err

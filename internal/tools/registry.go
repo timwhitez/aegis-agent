@@ -2497,7 +2497,13 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 					Metadata:      metadata,
 				}, nil
 			}
-			body, err := execCtx.Catalog.LoadBody(input.Name)
+			var body string
+			var err error
+			if input.ForceReload {
+				body, err = execCtx.Catalog.ReloadBody(input.Name)
+			} else {
+				body, err = execCtx.Catalog.LoadBody(input.Name)
+			}
 			if err != nil {
 				if available := execCtx.Catalog.Names(); len(available) > 0 {
 					err = fmt.Errorf("%w; available skills: %s", err, strings.Join(available, ", "))
@@ -2505,7 +2511,14 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				return errorResult("load_skill", err), nil
 			}
 			if err := markSkillLoaded(execCtx, input.Name); err != nil {
-				return errorResult("load_skill", err), nil
+				result := errorResult("load_skill", fmt.Errorf("skill body loaded in catalog, but session loaded state save failed: %w", err))
+				if result.Metadata == nil {
+					result.Metadata = map[string]any{}
+				}
+				result.Metadata["body_loaded"] = true
+				result.Metadata["body_reloaded"] = input.ForceReload
+				result.Metadata["session_state_saved"] = false
+				return result, nil
 			}
 			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect or search referenced skill files, call read_file, grep, or grep_files with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
 			metadata := map[string]any{

@@ -258,6 +258,25 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
 - 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` / `grep` / `grep_files` 的 `skills/<skill-name>/references/...`、`load_skill` 返回的绝对路径，或唯一匹配的 `references/...` 访问，不属于 workspace 文件
 
+`load_skill` 在同一 session 普通重复调用仍返回 compact `already_loaded`。
+显式 `force_reload=true` 必须从已注册路径通过既有 no-symlink regular-file
+reader 和同一 frontmatter parser 重读正文，不能只绕过 session 去重后返回旧
+Catalog body。候选安全读取、解析与注册 name/description 一致性验证全部
+成功后，才在 Catalog 同步边界发布完整正文；有效空正文也是已加载版本。
+普通 LoadBody 保留该缓存版本，失败刷新保留旧版本并明确
+`cached_body_retained=true/false`，不能返回旧正文冒充刷新成功。
+
+正文刷新不重扫或改变已注册名称、description、Tools 或权限；注册身份/描述
+变化时明确要求重新扫描 Catalog。共享 skills map 的普通首载、缓存读取、
+强制刷新、Summaries、Load 和 CommandTools 使用一致锁边界；公开入口各取
+一次锁，不持锁重入公开 accessor。TrustedCommandTools 复用工具快照后做
+路径过滤，不因 reload 死锁或扩大 explorer-readonly-v1 能力。
+
+会话 LoadedSkills 不因刷新失败清空或重复追加。Catalog 正文已发布但会话
+loaded state 保存失败时，handler 返回真实失败及 body_reloaded /
+session_state_saved 诊断，不声称整个 handler 成功，不把状态写失败当成文件
+重读失败，也不在该失败响应中注入正文。
+
 ### 4.9.1 Goal Tools
 
 `get_goal`
