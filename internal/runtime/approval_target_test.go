@@ -602,6 +602,10 @@ type preparedCASComparison struct {
 }
 
 func newPreparedCASWindow(t *testing.T, r *Runner) *preparedCASWindow {
+	return newPreparedCASWindowWithLimit(t, r, 3*time.Second)
+}
+
+func newPreparedCASWindowWithLimit(t *testing.T, r *Runner, limit time.Duration) *preparedCASWindow {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	w := &preparedCASWindow{read: make(chan session.State, 1), release: make(chan struct{}), compared: make(chan preparedCASComparison, 1), done: make(chan struct{}), cancel: cancel}
@@ -611,7 +615,7 @@ func newPreparedCASWindow(t *testing.T, r *Runner) *preparedCASWindow {
 				return errors.New("first-CAS barrier repeated")
 			}
 			w.read <- current
-			timer := time.NewTimer(3 * time.Second)
+			timer := time.NewTimer(limit)
 			defer timer.Stop()
 			select {
 			case <-w.release:
@@ -1253,6 +1257,29 @@ func TestApprovalClaimPublicationErrorRecoversOnlyItsGeneration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPreparedApprovalCASBarrierTimeoutKeepsState(t *testing.T) {
+	r, p, _ := newPreparedApprovalWindowFixture(t)
+	w := newPreparedCASWindowWithLimit(t, r, 20*time.Millisecond)
+	w.start(t, func() error { return r.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	if err := w.awaitResult(t); err == nil || !strings.Contains(err.Error(), "peer barrier timed out") {
+		t.Fatalf("barrier timeout lost: %v", err)
+	}
+	select {
+	case <-w.compared:
+		t.Fatal("timed-out barrier reached CAS")
+	default:
+	}
+	state, err := r.store.LoadState(p.meta.ID)
+	if err != nil || !reflect.DeepEqual(state, p.state) {
+		t.Fatalf("timed-out barrier changed durable state: %+v %v", state, err)
+	}
+	var record approvalPreparationRecord
+	if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+		t.Fatalf("timed-out barrier changed phase: %+v %v", record, err)
 	}
 }
 
