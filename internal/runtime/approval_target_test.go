@@ -1309,10 +1309,12 @@ func TestPreparedApprovalCASBarrierErrorKeepsState(t *testing.T) {
 
 func TestPreparedApprovalCASBarrierIsPerRunner(t *testing.T) {
 	first, p, _ := newPreparedApprovalWindowFixture(t)
+	other, q, _ := newPreparedApprovalWindowFixture(t)
+	// Complete unrelated durable setup before starting the bounded window.
+	// The other Runner's actual abort must still run while the first is paused.
 	w := newPreparedCASWindow(t, first)
 	w.start(t, func() error { return first.AbortPreparedApproval(p, nil) })
 	w.awaitRead(t)
-	other, q, _ := newPreparedApprovalWindowFixture(t)
 	if err := other.AbortPreparedApproval(q, nil); err != nil {
 		t.Fatalf("another Runner inherited paused fixture observer: %v", err)
 	}
@@ -1322,5 +1324,44 @@ func TestPreparedApprovalCASBarrierIsPerRunner(t *testing.T) {
 	}
 	if w.beforeCalls.Load() != 1 {
 		t.Fatalf("first fixture observer called by another Runner: %d", w.beforeCalls.Load())
+	}
+}
+
+func TestPreparedApprovalCASBarrierSharedObserverControl(t *testing.T) {
+	first, p, _ := newPreparedApprovalWindowFixture(t)
+	other, q, _ := newPreparedApprovalWindowFixture(t)
+	w := newPreparedCASWindow(t, first)
+	// Deliberately inject the defect that the isolation witness must detect.
+	// Configure both hooks before either operation starts; they remain immutable.
+	other.preparedApprovalCAS = first.preparedApprovalCAS
+	w.start(t, func() error { return first.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	if err := other.AbortPreparedApproval(q, nil); err == nil || !strings.Contains(err.Error(), "first-CAS barrier repeated") {
+		t.Fatalf("shared observer was not detected by the actual other abort: %v", err)
+	}
+	w.cancel()
+	if err := w.awaitResult(t); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shared-observer control lost first fixture cancellation: %v", err)
+	}
+	if w.beforeCalls.Load() != 2 {
+		t.Fatalf("shared-observer control did not observe both Runners: %d", w.beforeCalls.Load())
+	}
+	select {
+	case compared := <-w.compared:
+		t.Fatalf("shared observer failure reached a real CAS: %+v", compared)
+	default:
+	}
+	for _, fixture := range []struct {
+		r *Runner
+		p *PreparedApproval
+	}{{first, p}, {other, q}} {
+		state, err := fixture.r.store.LoadState(fixture.p.meta.ID)
+		if err != nil || !reflect.DeepEqual(state, fixture.p.state) {
+			t.Fatalf("shared observer failure changed durable state: %+v %v", state, err)
+		}
+		var record approvalPreparationRecord
+		if err := readApprovalPreparationForTest(fixture.r, fixture.p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+			t.Fatalf("shared observer failure changed preparation facts: %+v %v", record, err)
+		}
 	}
 }
