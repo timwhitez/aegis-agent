@@ -6435,13 +6435,25 @@ func TestLoadSkillReturnsAlreadyLoadedOnRepeatAndForceReload(t *testing.T) {
 		t.Fatalf("expected compact already_loaded result, got %#v output=%q", second.Metadata, second.LLMOutput)
 	}
 
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: helpers\ndescription: helper skill\n---\nFRESH SKILL BODY V2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	reloaded, err := registry.Execute(context.Background(), "load_skill", execCtx, json.RawMessage(`{"name":"helpers","force_reload":true}`))
 	if err != nil || reloaded.IsError {
 		t.Fatalf("force reload err=%v result=%#v", err, reloaded)
 	}
-	if reloaded.Metadata["force_reload"] != true || !strings.Contains(reloaded.LLMOutput, "FULL SKILL BODY") {
+	if reloaded.Metadata["force_reload"] != true || !strings.Contains(reloaded.LLMOutput, "FRESH SKILL BODY V2") {
 		t.Fatalf("expected force reload to return full body, got %#v output=%q", reloaded.Metadata, reloaded.LLMOutput)
 	}
+	if body, err := catalog.LoadBody("helpers"); err != nil || body != "FRESH SKILL BODY V2" {
+		t.Fatalf("refreshed body not cached: %q %v", body, err)
+	}
+	loaded, err = store.LoadState(meta.ID)
+	if err != nil || fmt.Sprint(loaded.LoadedSkills) != "[helpers]" {
+		t.Fatalf("reload changed loaded identity set: %+v %v", loaded.LoadedSkills, err)
+	}
+
 }
 
 func TestLoadSkillReportsLoadedSkillStateSaveError(t *testing.T) {
