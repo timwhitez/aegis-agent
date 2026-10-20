@@ -1186,13 +1186,15 @@ func TestToolGuardBlocksInvalidReviewArtifactWrite(t *testing.T) {
 }
 
 func TestToolGuardBlocksFinishUntilReviewArtifactIsWritten(t *testing.T) {
-	kind, text := toolGuard("/tmp/work", []session.Message{
+	kind, text := toolGuard(t.TempDir(), []session.Message{
 		session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
 	}, "finish", json.RawMessage(`{"message":"done"}`))
-	if kind != "review_artifact" {
-		t.Fatalf("expected review_artifact finish guard, got %q", kind)
+	// The exact-path requirement is checked before review validation. A missing
+	// write must keep that first guard's diagnosis in the complete chain.
+	if kind != "artifact_path" {
+		t.Fatalf("expected artifact_path finish guard before review validation, got %q", kind)
 	}
-	if !strings.Contains(text, "before finishing this audit/review task") {
+	if !strings.Contains(text, "before finishing, write the requested deliverable") || !strings.Contains(text, "reports/final-audit.md") {
 		t.Fatalf("expected finish guard text, got %q", text)
 	}
 }
