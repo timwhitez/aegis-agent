@@ -36,7 +36,7 @@ IDE features, remote terminals, or a fixed workflow engine.
 
 ## Quick start
 
-Requirements: Go 1.26.7+ on Linux, macOS, or WSL.
+Requirements: Go 1.26.10+ on Linux, macOS, or WSL.
 
 ```sh
 ./build.sh
@@ -159,7 +159,7 @@ so that local session files remain the source of truth.
 
 ## Development
 
-Repository validation requires Go 1.26.7+ and Node.js 22+.
+Repository validation requires Go 1.26.10+ and Node.js 22+.
 
 ```sh
 ./test.sh

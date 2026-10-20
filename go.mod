@@ -1,6 +1,6 @@
 module aegis-agent
 
-go 1.26.7
+go 1.26.10
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.8.1

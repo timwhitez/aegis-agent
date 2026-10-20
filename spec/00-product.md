@@ -253,7 +253,7 @@ Web 可以成为默认操作体验，但不能反向污染 runtime 边界。queu
 
 ## 8. 非功能要求
 
-- Go 1.26.7+ 兼容；声明的最低版本必须位于 Go 官方仍受支持且已包含已知标准库安全修复的 release line
+- Go 1.26.10+ 兼容；声明的最低版本必须位于 Go 官方仍受支持且已包含已知标准库安全修复的 release line
 - Linux / macOS / WSL 优先
 - 配置文件默认 YAML
 - 会话数据采用 JSON / JSONL

@@ -12,8 +12,8 @@ fi
 GO_MAJOR="${BASH_REMATCH[1]}"
 GO_MINOR="${BASH_REMATCH[2]}"
 GO_PATCH="${BASH_REMATCH[4]:-0}"
-if (( GO_MAJOR < 1 || (GO_MAJOR == 1 && GO_MINOR < 26) || (GO_MAJOR == 1 && GO_MINOR == 26 && GO_PATCH < 7) )); then
-	printf 'Go 1.26.7 or newer is required; found %s\n' "$GO_VERSION" >&2
+if (( GO_MAJOR < 1 || (GO_MAJOR == 1 && GO_MINOR < 26) || (GO_MAJOR == 1 && GO_MINOR == 26 && GO_PATCH < 10) )); then
+	printf 'Go 1.26.10 or newer is required; found %s\n' "$GO_VERSION" >&2
 	exit 1
 fi
 
