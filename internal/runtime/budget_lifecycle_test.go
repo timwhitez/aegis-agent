@@ -1463,6 +1463,7 @@ func TestAbsoluteDeadlineBudgetPersistsAcrossRunnerRestartAndCanBeExtended(t *te
 	}
 	mode.Store(1)
 	restarted := NewRunner(cfg)
+	extensionRequestedAt := time.Now().UTC()
 	resumed, err := restarted.PromptAgent(context.Background(), tools.AgentPromptRequest{
 		ParentSessionID: parentID,
 		SessionID:       spawned.SessionID,
@@ -1477,8 +1478,9 @@ func TestAbsoluteDeadlineBudgetPersistsAcrossRunnerRestartAndCanBeExtended(t *te
 		t.Fatalf("missing restarted deadline attempt: %#v err=%v", after.EffectiveBudget, err)
 	}
 	deadline, ok := session.EffectiveBudgetDeadline(after.EffectiveBudget)
-	if !ok || !deadline.After(time.Now().UTC()) {
-		t.Fatalf("deadline extension was not persisted into the future: %#v", after.EffectiveBudget)
+	// The completed run may be observed after its deadline under filesystem load.
+	if !ok || deadline.Before(extensionRequestedAt.Add(2*time.Second)) {
+		t.Fatalf("persisted deadline did not include the requested extension: %#v", after.EffectiveBudget)
 	}
 	state, err = restarted.store.LoadState(spawned.SessionID)
 	if err != nil || state.Status != session.StatusCompleted {

@@ -46,7 +46,7 @@ body:
     attributes:
       label: Environment
       description: Operating system, architecture, Go or browser version, and relevant launch mode.
-      placeholder: Ubuntu 24.04, amd64, Go 1.26.7, Web console
+      placeholder: Ubuntu 24.04, amd64, Go 1.26.10, Web console
     validations:
       required: true
   - type: textarea

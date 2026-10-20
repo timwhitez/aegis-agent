@@ -684,8 +684,8 @@ async function legacyRecovery(env) {
   const { a, b, context, baseURL, sessionRoot, providerLogPath } = env;
   const id = await create(env, 'legacy-direct');
   const old = await fixture.coherentSnapshot(context, baseURL, id);
-  const thaw = await holdDetailPolling(a, baseURL, id, true);
   await openSessionUI(a, id, 'plan');
+  const thaw = await holdDetailPolling(a, baseURL, id);
   const beforeCalls = await providerCalls(providerLogPath, id);
   try {
     await seedLegacyExecuting(sessionRoot, id);
@@ -717,8 +717,8 @@ async function legacyRecovery(env) {
   const linked = await create(env, 'legacy-linked-facts', true);
   await fixture.patchMission(b, baseURL, linked, fixture.missionPlan(true));
   const linkedReview = await fixture.coherentSnapshot(context, baseURL, linked);
-  const releaseLinked = await holdDetailPolling(a, baseURL, linked, true);
   await openSessionUI(a, linked, 'goal');
+  const releaseLinked = await holdDetailPolling(a, baseURL, linked);
   const linkedBefore = await providerCalls(providerLogPath, linked);
   const linkedTraffic = observe(a, baseURL, linked);
   let repairRequest;
@@ -789,7 +789,8 @@ async function legacyRecovery(env) {
     fixture_setup: 'stopped local fixture enters legacy executing without receipt or assigned historical revision' };
 }
 
-async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
+// Freeze only after the UI consumed its initial detail; a queued refresh may discard the first GET.
+async function holdDetailPolling(page, baseURL, id) {
   const pathname = new URL(`${baseURL}/api/sessions/${id}`).pathname;
   const matches = (url) => url.pathname === pathname;
   const released = deferred();
@@ -797,8 +798,7 @@ async function holdDetailPolling(page, baseURL, id, allowInitialRead = false) {
   let holding = true;
   const handler = (route) => {
     assert.equal(route.request().method(), 'GET', 'only real detail polling is delayed');
-    const shouldHold = holding && !allowInitialRead;
-    allowInitialRead = false;
+    const shouldHold = holding;
     const task = (async () => {
       if (shouldHold) await released.promise;
       await route.continue();

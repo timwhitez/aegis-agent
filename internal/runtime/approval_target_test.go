@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	goruntime "runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +18,6 @@ import (
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/session"
-	"golang.org/x/sys/unix"
 )
 
 func newApprovalTargetFixture(t *testing.T) (*Runner, string, *atomic.Int32) {
@@ -582,54 +581,113 @@ func newPreparedApprovalWindowFixture(t *testing.T) (*Runner, *PreparedApproval,
 	return r, p, stopBeforeProvider
 }
 
-// Hold the actual state.lock to order a writer before the prepared CAS, after
-// the prepared operation has already read state.json. No runtime hook replaces
-// either Store operation: the failed compare comes from the durable writer.
-func holdApprovalStateWindow(t *testing.T, r *Runner, id string) func() {
-	t.Helper()
-	lock, err := os.OpenFile(filepath.Join(r.store.SessionDir(id), "state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
-		_ = lock.Close()
-		t.Fatal(err)
-	}
-	released := false
-	release := func() {
-		if !released {
-			released = true
-			if err := unix.Flock(int(lock.Fd()), unix.LOCK_UN); err != nil {
-				t.Error(err)
-			}
-			if err := lock.Close(); err != nil {
-				t.Error(err)
-			}
-		}
-	}
-	t.Cleanup(release)
-	return release
+// Pause only after the real LoadState/samePreparedRun checks and before the
+// first real CAS. No file lock, Store mutex or scheduler-order assumption is used.
+type preparedCASWindow struct {
+	read        chan session.State
+	release     chan struct{}
+	compared    chan preparedCASComparison
+	done        chan struct{}
+	cancel      context.CancelFunc
+	once        sync.Once
+	beforeCalls atomic.Int32
+	stage       atomic.Int32
+	result      error
 }
 
-func waitForApprovalStateWindow(t *testing.T, function string) {
+type preparedCASComparison struct {
+	saved bool
+	err   error
+	stage int32
+}
+
+func newPreparedCASWindow(t *testing.T, r *Runner) *preparedCASWindow {
+	return newPreparedCASWindowWithLimit(t, r, 3*time.Second)
+}
+
+func newPreparedCASWindowWithLimit(t *testing.T, r *Runner, limit time.Duration) *preparedCASWindow {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		buffer := make([]byte, 1<<20)
-		size := goruntime.Stack(buffer, true)
-		for _, stack := range strings.Split(string(buffer[:size]), "\n\n") {
-			// Require the writer's actual state.lock syscall, not an earlier
-			// pending-count read that happens to have the same caller frame.
-			// This proves both operations are blocked, not FIFO flock order.
-			stateLock := strings.Contains(stack, "(*Store).withFileLock") || strings.Contains(stack, "(*Store).withExistingFileLock")
-			if strings.Contains(stack, "aegis-agent/internal/session.(*Store)."+function) && strings.Contains(stack, "[syscall]") && stateLock && !strings.Contains(stack, "(*Store).pendingSteerCountLocked") {
-				return
+	ctx, cancel := context.WithCancel(t.Context())
+	w := &preparedCASWindow{read: make(chan session.State, 1), release: make(chan struct{}), compared: make(chan preparedCASComparison, 1), done: make(chan struct{}), cancel: cancel}
+	r.preparedApprovalCAS = &preparedApprovalCASObserver{
+		beforeFirst: func(current session.State) error {
+			if w.beforeCalls.Add(1) != 1 || !w.stage.CompareAndSwap(0, 1) {
+				return errors.New("first-CAS barrier repeated")
 			}
+			w.read <- current
+			timer := time.NewTimer(limit)
+			defer timer.Stop()
+			select {
+			case <-w.release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return errors.New("first-CAS peer barrier timed out")
+			}
+		},
+		afterFirst: func(saved bool, err error) {
+			w.compared <- preparedCASComparison{saved: saved, err: err, stage: w.stage.Add(1)}
+		},
+	}
+	return w
+}
+
+func (w *preparedCASWindow) unblock() { w.once.Do(func() { close(w.release) }) }
+func (w *preparedCASWindow) start(t *testing.T, operation func() error) {
+	t.Helper()
+	t.Cleanup(func() {
+		w.unblock()
+		w.cancel()
+		select {
+		case <-w.done:
+		case <-time.After(3 * time.Second):
+			t.Error("owned prepared operation did not join")
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("did not reach real blocked state operation %s", function)
+	})
+	go func() { w.result = operation(); close(w.done) }()
+}
+func (w *preparedCASWindow) awaitRead(t *testing.T) session.State {
+	t.Helper()
+	select {
+	case current := <-w.read:
+		return current
+	case <-w.done:
+		t.Fatalf("prepared operation ended before its first CAS: %v", w.result)
+	case <-time.After(3 * time.Second):
+		t.Fatal("prepared read did not reach first-CAS barrier")
+	}
+	return session.State{}
+}
+func (w *preparedCASWindow) peerCommitted(t *testing.T) {
+	t.Helper()
+	if !w.stage.CompareAndSwap(1, 2) {
+		t.Fatal("peer commit was not between prepared read and CAS")
+	}
+	w.unblock()
+}
+func (w *preparedCASWindow) awaitResult(t *testing.T) error {
+	t.Helper()
+	select {
+	case <-w.done:
+		return w.result
+	case <-time.After(3 * time.Second):
+		t.Fatal("prepared operation did not finish after release")
+	}
+	return nil
+}
+func (w *preparedCASWindow) requireFirstCASLoss(t *testing.T) {
+	t.Helper()
+	select {
+	case observed := <-w.compared:
+		if observed.saved || observed.err != nil || observed.stage != 3 {
+			t.Fatalf("first real CAS did not lose after durable peer commit: %+v", observed)
 		}
-		time.Sleep(time.Millisecond)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first real CAS result not observed")
+	}
+	if w.beforeCalls.Load() != 1 {
+		t.Fatalf("retry reentered barrier: %d", w.beforeCalls.Load())
 	}
 }
 
@@ -638,39 +696,36 @@ func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
 		t.Run(operation, func(t *testing.T) {
 			r, p, stopBeforeProvider := newPreparedApprovalWindowFixture(t)
 			if operation == "review_required" {
-				if _, _, err := r.store.MutatePlanMode(p.meta.ID, func(plan *session.PlanModeState) error {
-					plan.Objective = "Changed after admission"
-					return nil
-				}); err != nil {
+				if _, _, err := r.store.MutatePlanMode(p.meta.ID, func(plan *session.PlanModeState) error { plan.Objective = "Changed after admission"; return nil }); err != nil {
 					t.Fatal(err)
 				}
 				snapshot, err := r.store.LoadApprovalSnapshot(p.meta.ID)
 				if err != nil || !errors.Is(session.ValidateApprovalTarget(snapshot, *p.req.ApprovalTarget), session.ErrApprovalConflict) {
-					t.Fatalf("fixture must change the reviewed approval scope: %#v %v", snapshot, err)
+					t.Fatalf("fixture must change reviewed scope: %#v %v", snapshot, err)
 				}
 			}
-			unlock := holdApprovalStateWindow(t, r, p.meta.ID)
-			steerDone := make(chan error, 1)
-			go func() {
-				_, err := r.Steer(context.Background(), SteerRequest{SessionID: p.meta.ID, Message: "Keep the approved scope"})
-				steerDone <- err
-			}()
-			waitForApprovalStateWindow(t, "RefreshPendingSteerCount")
-			preparedDone := make(chan error, 1)
-			go func() {
+			w := newPreparedCASWindow(t, r)
+			w.start(t, func() error {
 				if operation == "abort" {
-					preparedDone <- r.AbortPreparedApproval(p, nil)
-					return
+					return r.AbortPreparedApproval(p, nil)
 				}
 				_, err := r.RunPreparedApproval(context.Background(), p)
-				preparedDone <- err
-			}()
-			waitForApprovalStateWindow(t, "SwapStateIfCurrent")
-			unlock()
-			if err := <-steerDone; err != nil {
+				return err
+			})
+			if current := w.awaitRead(t); !reflect.DeepEqual(current, p.state) {
+				t.Fatalf("prepared did not read the old complete state: %+v", current)
+			}
+			// Steer commits synchronously through the actual Store observation API.
+			if _, err := r.Steer(context.Background(), SteerRequest{SessionID: p.meta.ID, Message: "Keep the approved scope"}); err != nil {
 				t.Fatal(err)
 			}
-			err := <-preparedDone
+			peerState, err := r.store.LoadState(p.meta.ID)
+			if err != nil || peerState.PendingSteerCount != 1 || peerState.RunGeneration != p.state.RunGeneration || reflect.DeepEqual(peerState, p.state) {
+				t.Fatalf("peer steer not durably committed: %+v %v", peerState, err)
+			}
+			w.peerCommitted(t)
+			err = w.awaitResult(t)
+			w.requireFirstCASLoss(t)
 			if operation == "run" && !errors.Is(err, stopBeforeProvider) || operation == "abort" && err != nil || operation == "review_required" && !errors.Is(err, session.ErrApprovalConflict) {
 				t.Fatalf("accepted same-run steer stranded prepared %s: %v", operation, err)
 			}
@@ -685,7 +740,7 @@ func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
 				wantStatus = session.StatusAwaitingInput
 			}
 			if state.Status != wantStatus || state.PendingSteerCount != 1 {
-				t.Fatalf("prepared %s lost recovery or queued steer: %#v", operation, state)
+				t.Fatalf("prepared %s lost recovery or steer: %#v", operation, state)
 			}
 			var record approvalPreparationRecord
 			if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil {
@@ -698,7 +753,7 @@ func TestPreparedApprovalQueuedSteerBetweenReadAndCAS(t *testing.T) {
 				wantPhase = "review_required"
 			}
 			if record.Phase != wantPhase || record.PreparedState.PendingSteerCount != 1 {
-				t.Fatalf("prepared %s lost its updated claim facts: %#v", operation, record)
+				t.Fatalf("prepared %s lost updated claim facts: %#v", operation, record)
 			}
 		})
 	}
@@ -709,17 +764,36 @@ func TestPreparedApprovalCASWindowRejectsReplacementOrAdvancedState(t *testing.T
 		for _, operation := range []string{"run", "abort"} {
 			t.Run(change+"/"+operation, func(t *testing.T) {
 				r, p, _ := newPreparedApprovalWindowFixture(t)
-				unlock := holdApprovalStateWindow(t, r, p.meta.ID)
-				peer := session.NewStore(r.store.Root())
-				writerDone := make(chan error, 1)
-				go func() {
-					if change == "generation" {
-						// The Store API explicitly permits a replacement claim from
-						// this status. Its fresh identity must reject the older CAS.
-						_, err := peer.ClaimSessionRun(p.meta.ID, session.StatusRunning)
-						writerDone <- err
-						return
+				var active atomic.Int32
+				r.SetRunLifecycleHooks(RunLifecycleHooks{OnSessionActive: func(session.SessionMetadata, *Runner) error {
+					active.Add(1)
+					return errors.New("unexpected active run")
+				}})
+				var beforeRecord approvalPreparationRecord
+				if err := readApprovalPreparationForTest(r, p.meta.ID, &beforeRecord); err != nil {
+					t.Fatal(err)
+				}
+				beforeReceipt, err := r.store.GetApprovalReceipt(p.meta.ID, p.req.ApprovalRequestID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				w := newPreparedCASWindow(t, r)
+				w.start(t, func() error {
+					if operation == "abort" {
+						return r.AbortPreparedApproval(p, nil)
 					}
+					_, err := r.RunPreparedApproval(context.Background(), p)
+					return err
+				})
+				if current := w.awaitRead(t); !reflect.DeepEqual(current, p.state) {
+					t.Fatalf("prepared did not read old state: %+v", current)
+				}
+				peer := session.NewStore(r.store.Root())
+				if change == "generation" {
+					if _, err := peer.ClaimSessionRun(p.meta.ID, session.StatusRunning); err != nil {
+						t.Fatal(err)
+					}
+				} else {
 					state := p.state
 					switch change {
 					case "phase":
@@ -729,43 +803,57 @@ func TestPreparedApprovalCASWindowRejectsReplacementOrAdvancedState(t *testing.T
 					case "semantic":
 						state.LastError = "another semantic state update"
 					}
-					writerDone <- peer.SaveState(p.meta.ID, state)
-				}()
-				if change == "generation" {
-					waitForApprovalStateWindow(t, "ClaimSessionRun")
-				} else {
-					waitForApprovalStateWindow(t, "saveStateLocked")
-				}
-				preparedDone := make(chan error, 1)
-				go func() {
-					if operation == "abort" {
-						preparedDone <- r.AbortPreparedApproval(p, nil)
-						return
+					if err := peer.SaveState(p.meta.ID, state); err != nil {
+						t.Fatal(err)
 					}
-					_, err := r.RunPreparedApproval(context.Background(), p)
-					preparedDone <- err
-				}()
-				waitForApprovalStateWindow(t, "SwapStateIfCurrent")
-				unlock()
-				if err := <-writerDone; err != nil {
-					t.Fatal(err)
 				}
-				if err := <-preparedDone; !errors.Is(err, session.ErrApprovalConflict) {
+				committed, err := peer.LoadState(p.meta.ID)
+				if err != nil || reflect.DeepEqual(committed, p.state) {
+					t.Fatalf("peer mutation did not commit: %+v %v", committed, err)
+				}
+				w.peerCommitted(t)
+				if err := w.awaitResult(t); !errors.Is(err, session.ErrApprovalConflict) {
 					t.Fatalf("prepared %s adopted %s update: %v", operation, change, err)
 				}
+				w.requireFirstCASLoss(t)
 				state, err := peer.LoadState(p.meta.ID)
-				if err != nil {
-					t.Fatal(err)
+				if err != nil || !reflect.DeepEqual(committed, state) {
+					t.Fatalf("prepared overwrote full peer state: %#v %v", state, err)
 				}
 				var record approvalPreparationRecord
-				if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil {
-					t.Fatal(err)
+				if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil || !reflect.DeepEqual(beforeRecord, record) {
+					t.Fatalf("rejection changed preparation facts: %#v %v", record, err)
 				}
-				if state.Status != session.StatusRunning || record.Phase != "prepared" || change == "generation" && state.RunGeneration == p.state.RunGeneration || change == "phase" && state.Phase != "provider" || change == "turn" && state.Turn != p.state.Turn+1 || change == "semantic" && state.LastError == "" {
-					t.Fatalf("prepared %s changed peer %s state or facts: %#v %#v", operation, change, state, record)
+				receipt, err := r.store.GetApprovalReceipt(p.meta.ID, p.req.ApprovalRequestID)
+				if err != nil || !reflect.DeepEqual(beforeReceipt, receipt) || active.Load() != 0 {
+					t.Fatalf("rejection admitted execution/abort or changed receipt: %#v %v active=%d", receipt, err, active.Load())
 				}
 			})
 		}
+	}
+}
+
+func TestPreparedApprovalCASBarrierCancellationKeepsState(t *testing.T) {
+	r, p, _ := newPreparedApprovalWindowFixture(t)
+	w := newPreparedCASWindow(t, r)
+	w.start(t, func() error { return r.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	w.cancel()
+	if err := w.awaitResult(t); !errors.Is(err, context.Canceled) {
+		t.Fatalf("barrier cancellation lost: %v", err)
+	}
+	select {
+	case <-w.compared:
+		t.Fatal("cancelled barrier reached CAS")
+	default:
+	}
+	state, err := r.store.LoadState(p.meta.ID)
+	if err != nil || !reflect.DeepEqual(state, p.state) {
+		t.Fatalf("cancelled barrier changed durable state: %+v %v", state, err)
+	}
+	var record approvalPreparationRecord
+	if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+		t.Fatalf("cancelled barrier changed phase: %+v %v", record, err)
 	}
 }
 
@@ -1169,5 +1257,111 @@ func TestApprovalClaimPublicationErrorRecoversOnlyItsGeneration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPreparedApprovalCASBarrierTimeoutKeepsState(t *testing.T) {
+	r, p, _ := newPreparedApprovalWindowFixture(t)
+	w := newPreparedCASWindowWithLimit(t, r, 20*time.Millisecond)
+	w.start(t, func() error { return r.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	if err := w.awaitResult(t); err == nil || !strings.Contains(err.Error(), "peer barrier timed out") {
+		t.Fatalf("barrier timeout lost: %v", err)
+	}
+	select {
+	case <-w.compared:
+		t.Fatal("timed-out barrier reached CAS")
+	default:
+	}
+	state, err := r.store.LoadState(p.meta.ID)
+	if err != nil || !reflect.DeepEqual(state, p.state) {
+		t.Fatalf("timed-out barrier changed durable state: %+v %v", state, err)
+	}
+	var record approvalPreparationRecord
+	if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+		t.Fatalf("timed-out barrier changed phase: %+v %v", record, err)
+	}
+}
+
+func TestPreparedApprovalCASBarrierErrorKeepsState(t *testing.T) {
+	r, p, _ := newPreparedApprovalWindowFixture(t)
+	injected := errors.New("controlled first-CAS observer failure")
+	var reads, compares atomic.Int32
+	r.preparedApprovalCAS = &preparedApprovalCASObserver{beforeFirst: func(current session.State) error {
+		reads.Add(1)
+		if !reflect.DeepEqual(current, p.state) {
+			t.Error("wrong prepared snapshot")
+		}
+		return injected
+	}, afterFirst: func(bool, error) { compares.Add(1) }}
+	if err := r.AbortPreparedApproval(p, nil); !errors.Is(err, injected) {
+		t.Fatalf("observer error lost: %v", err)
+	}
+	state, err := r.store.LoadState(p.meta.ID)
+	if err != nil || !reflect.DeepEqual(state, p.state) || reads.Load() != 1 || compares.Load() != 0 {
+		t.Fatalf("observer failure changed state or compared: %+v %v reads=%d compares=%d", state, err, reads.Load(), compares.Load())
+	}
+	var record approvalPreparationRecord
+	if err := readApprovalPreparationForTest(r, p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+		t.Fatalf("observer error changed preparation facts: %+v %v", record, err)
+	}
+}
+
+func TestPreparedApprovalCASBarrierIsPerRunner(t *testing.T) {
+	first, p, _ := newPreparedApprovalWindowFixture(t)
+	other, q, _ := newPreparedApprovalWindowFixture(t)
+	// Complete unrelated durable setup before starting the bounded window.
+	// The other Runner's actual abort must still run while the first is paused.
+	w := newPreparedCASWindow(t, first)
+	w.start(t, func() error { return first.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	if err := other.AbortPreparedApproval(q, nil); err != nil {
+		t.Fatalf("another Runner inherited paused fixture observer: %v", err)
+	}
+	w.cancel()
+	if err := w.awaitResult(t); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first fixture cancellation lost: %v", err)
+	}
+	if w.beforeCalls.Load() != 1 {
+		t.Fatalf("first fixture observer called by another Runner: %d", w.beforeCalls.Load())
+	}
+}
+
+func TestPreparedApprovalCASBarrierSharedObserverControl(t *testing.T) {
+	first, p, _ := newPreparedApprovalWindowFixture(t)
+	other, q, _ := newPreparedApprovalWindowFixture(t)
+	w := newPreparedCASWindow(t, first)
+	// Deliberately inject the defect that the isolation witness must detect.
+	// Configure both hooks before either operation starts; they remain immutable.
+	other.preparedApprovalCAS = first.preparedApprovalCAS
+	w.start(t, func() error { return first.AbortPreparedApproval(p, nil) })
+	w.awaitRead(t)
+	if err := other.AbortPreparedApproval(q, nil); err == nil || !strings.Contains(err.Error(), "first-CAS barrier repeated") {
+		t.Fatalf("shared observer was not detected by the actual other abort: %v", err)
+	}
+	w.cancel()
+	if err := w.awaitResult(t); !errors.Is(err, context.Canceled) {
+		t.Fatalf("shared-observer control lost first fixture cancellation: %v", err)
+	}
+	if w.beforeCalls.Load() != 2 {
+		t.Fatalf("shared-observer control did not observe both Runners: %d", w.beforeCalls.Load())
+	}
+	select {
+	case compared := <-w.compared:
+		t.Fatalf("shared observer failure reached a real CAS: %+v", compared)
+	default:
+	}
+	for _, fixture := range []struct {
+		r *Runner
+		p *PreparedApproval
+	}{{first, p}, {other, q}} {
+		state, err := fixture.r.store.LoadState(fixture.p.meta.ID)
+		if err != nil || !reflect.DeepEqual(state, fixture.p.state) {
+			t.Fatalf("shared observer failure changed durable state: %+v %v", state, err)
+		}
+		var record approvalPreparationRecord
+		if err := readApprovalPreparationForTest(fixture.r, fixture.p.meta.ID, &record); err != nil || record.Phase != "prepared" {
+			t.Fatalf("shared observer failure changed preparation facts: %+v %v", record, err)
+		}
 	}
 }

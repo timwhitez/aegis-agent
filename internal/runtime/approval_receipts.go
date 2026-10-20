@@ -661,7 +661,7 @@ func (r *Runner) PrepareApprovalOperation(ctx context.Context, req ContinueReque
 				current.Phase = "prepare"
 				current.LastError = admitErr.Error()
 				return current
-			})
+			}, r.preparedApprovalCAS)
 			if releaseErr == nil {
 				phase := "prepare_failed"
 				if uncertain {
