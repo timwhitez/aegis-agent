@@ -83,6 +83,7 @@ func (r *Runner) newApprovalPreparationRunner(scoped *session.Store) *Runner {
 	prep.approvalAdmit = r.approvalAdmit
 	prep.approvalOperation = r.approvalOperation
 	prep.approvalPreparation = r.approvalPreparation
+	prep.preparedApprovalCAS = r.preparedApprovalCAS
 	return prep
 }
 
@@ -100,7 +101,7 @@ func (r *Runner) AbortPreparedApproval(p *PreparedApproval, cause error) error {
 		}
 		committed, err := swapPreparedApprovalState(scoped, p.meta.ID, p.state, func(session.State) session.State {
 			return p.originalState
-		})
+		}, r.preparedApprovalCAS)
 		if err != nil {
 			return fmt.Errorf("restore run claim after approval prepare abort: %w", err)
 		}
@@ -158,7 +159,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 				current.IdleReason = "approval_content_changed"
 				current.LastError = targetErr.Error()
 				return current
-			})
+			}, r.preparedApprovalCAS)
 			if err != nil {
 				return err
 			}
@@ -181,7 +182,7 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 		// An unrelated state writer cannot replace a newer run generation.
 		committed, err := swapPreparedApprovalState(scoped, p.meta.ID, p.state, func(current session.State) session.State {
 			return current
-		})
+		}, r.preparedApprovalCAS)
 		if err != nil {
 			return err
 		}
@@ -392,11 +393,20 @@ func samePreparedRun(expected, current session.State) bool {
 	return reflect.DeepEqual(expected, current)
 }
 
+// preparedApprovalCASObserver is configured before a fixture starts and is
+// immutable during execution. Both callbacks observe only the first real CAS;
+// neither replaces the Store compare nor runs under Store.mu/state.lock.
+type preparedApprovalCASObserver struct {
+	beforeFirst func(session.State) error
+	afterFirst  func(bool, error)
+}
+
 // The approval lock keeps the reviewed scope stable while state observations
 // can still change independently. Retry a lost full-state CAS only after proving
 // the same run is still in its unadvanced preparation state. Build each write
 // from that fresh observation; never ignore fields in the Store's generic CAS.
-func swapPreparedApprovalState(store *session.Store, sessionID string, expected session.State, next func(session.State) session.State) (session.State, error) {
+func swapPreparedApprovalState(store *session.Store, sessionID string, expected session.State, next func(session.State) session.State, observer *preparedApprovalCASObserver) (session.State, error) {
+	first := true
 	for {
 		current, err := store.LoadState(sessionID)
 		if err != nil {
@@ -405,7 +415,16 @@ func swapPreparedApprovalState(store *session.Store, sessionID string, expected 
 		if !samePreparedRun(expected, current) {
 			return session.State{}, fmt.Errorf("%w: prepared run generation or state changed", session.ErrApprovalConflict)
 		}
+		if first && observer != nil && observer.beforeFirst != nil {
+			if err := observer.beforeFirst(current); err != nil {
+				return session.State{}, err
+			}
+		}
 		committed, saved, err := store.SwapStateIfCurrent(sessionID, current, next(current))
+		if first && observer != nil && observer.afterFirst != nil {
+			observer.afterFirst(saved, err)
+		}
+		first = false
 		if err != nil {
 			return session.State{}, err
 		}

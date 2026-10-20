@@ -269,23 +269,9 @@ func TestWebApprovalReceiptHandleFailureCannotReadmit(t *testing.T) {
 	svc, id, calls := webReceiptFixture(t)
 	target := reviewedApprovalPayload(t, svc.store, id, false).ApprovalTarget
 	before, _ := svc.store.LoadState(id)
-	preparing, resume := make(chan struct{}), make(chan struct{})
-	svc.beforeApprovalPrepare = func(string) { close(preparing); <-resume }
-	done := make(chan *httptest.ResponseRecorder, 1)
-	go func() { done <- approvalTargetPost(svc, id, receiptBody(t, target, "handle-failed", false)) }()
-	select {
-	case <-preparing:
-	case <-time.After(2 * time.Second):
-		t.Fatal("request did not reach actual prepare boundary")
-	}
-	svc.Close()
-	close(resume)
-	var w *httptest.ResponseRecorder
-	select {
-	case w = <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handle failure did not return")
-	}
+	// Close at the real prepare boundary so addHandle fails after durable admission.
+	svc.beforeApprovalPrepare = func(string) { svc.Close() }
+	w := approvalTargetPost(svc, id, receiptBody(t, target, "handle-failed", false))
 	var response ApprovalResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)

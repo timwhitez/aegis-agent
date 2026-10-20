@@ -55,8 +55,7 @@ func TestApprovalRecoveryFreshTargetAcrossExecutionEntrypoints(t *testing.T) {
 		for _, damage := range []string{"control", "provider_resume_count", "pause_reason", "prepared_generation"} {
 			t.Run(entry+"/"+damage, func(t *testing.T) {
 				store, id, cfg, calls := cliReceiptFixture(t)
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
+				ctx := t.Context()
 				runner := sdk.New(cfg)
 				first, err := store.LoadApprovalSnapshot(id)
 				if err != nil {
@@ -144,6 +143,9 @@ func TestApprovalRecoveryFreshTargetAcrossExecutionEntrypoints(t *testing.T) {
 					defer svc.Close()
 				}
 				before := approvalEntrypointFacts(t, filepath.Join(store.Root(), id))
+				// Time the execution entrypoint, after durable fixture preparation.
+				ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
 				switch entry {
 				case "core_continue":
 					_, err = runtime.NewCoreRunner(cfg).Continue(ctx, request)

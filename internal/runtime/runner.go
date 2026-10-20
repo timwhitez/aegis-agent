@@ -34,6 +34,8 @@ type Runner struct {
 	engine              *Engine
 	approvalOperation   *approvalOperationContext
 	approvalPreparation *approvalPreparationRecord
+	// Immutable per-fixture hooks; nil outside package tests.
+	preparedApprovalCAS *preparedApprovalCASObserver
 	// Set only by package tests to force run-claim publication failures.
 	approvalRunClaim func(*session.Store, string, string, ...string) (session.State, error)
 	// Set only by package tests to exercise reported admission commit outcomes.

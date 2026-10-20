@@ -7,10 +7,70 @@ import (
 	"strings"
 	"testing"
 
+	"aegis-agent/internal/config"
 	"aegis-agent/internal/review"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/tools"
 )
+
+func TestReviewArtifactGuardFinishRequiresValidatedArtifact(t *testing.T) {
+	for _, state := range []string{"missing", "written_without_validation", "validated"} {
+		t.Run(state, func(t *testing.T) {
+			workdir := t.TempDir()
+			messages := []session.Message{
+				session.NewMessage("user", "Audit the repo and write reports/final-audit.md."),
+			}
+			if state != "missing" {
+				content := "# Audit\n\n## Findings\nNo validated findings.\n\n## Remaining Risks\n- Broader integration checks were not run.\n"
+				raw, err := json.Marshal(map[string]string{"path": "reports/final-audit.md", "content": content})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind, text := toolGuard(workdir, messages, "write_file", raw); kind != "" || text != "" {
+					t.Fatalf("valid review write was rejected: kind=%q text=%q", kind, text)
+				}
+				cfg := config.Default()
+				registry, err := tools.NewRegistry(cfg, nil, nil, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := registry.Execute(t.Context(), "write_file", tools.ExecContext{Workdir: workdir, Config: cfg}, raw)
+				if err != nil || result.IsError {
+					t.Fatalf("actual artifact write failed: result=%#v error=%v", result, err)
+				}
+				written, err := os.ReadFile(filepath.Join(workdir, "reports", "final-audit.md"))
+				if err != nil || string(written) != content {
+					t.Fatalf("actual artifact was not persisted: body=%q error=%v", written, err)
+				}
+				if state == "validated" {
+					// Use the same production post-tool validator as Engine; do not
+					// fabricate the review_artifact_valid result metadata.
+					annotateReviewArtifactResult(workdir, messages, "write_file", raw, &result)
+					if result.Metadata["review_artifact_valid"] != true {
+						t.Fatalf("valid artifact was not annotated: %#v", result)
+					}
+				}
+				messages = append(messages, session.NewToolMessage([]session.ToolResult{result}))
+			}
+			kind, text := reviewArtifactGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`))
+			if state == "validated" {
+				if kind != "" || text != "" {
+					t.Fatalf("validated review artifact did not permit finish: kind=%q text=%q", kind, text)
+				}
+			} else if kind != "review_artifact" || !strings.Contains(text, "before finishing this audit/review task") || !strings.Contains(text, "reports/final-audit.md") {
+				t.Fatalf("missing validation did not reject finish: kind=%q text=%q", kind, text)
+			}
+			chainKind, chainText := toolGuard(workdir, messages, "finish", json.RawMessage(`{"message":"done"}`))
+			if state == "missing" {
+				if chainKind != "artifact_path" {
+					t.Fatalf("complete chain lost exact-path precedence: kind=%q text=%q", chainKind, chainText)
+				}
+			} else if chainKind != kind || chainText != text {
+				t.Fatalf("complete chain did not reach review validation: kind=%q text=%q direct_kind=%q direct_text=%q", chainKind, chainText, kind, text)
+			}
+		})
+	}
+}
 
 func TestReviewIssueDetailAddsSnippetMismatchCorrectionHint(t *testing.T) {
 	detail := reviewIssueDetail(review.ValidationResult{
