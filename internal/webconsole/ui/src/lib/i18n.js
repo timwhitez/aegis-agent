@@ -103,6 +103,36 @@ export function t(key, params) {
   return interpolate(template, params);
 }
 
+// Key aliases for families emitted by lib/ modules that live under another area.
+const KEY_ALIASES = [['status.', 'common.status.']];
+
+function resolveKey(key) {
+  if (hasKey(key) || hasKey(key, DEFAULT_LOCALE)) return key;
+  for (const [from, to] of KEY_ALIASES) {
+    if (key.startsWith(from)) {
+      const aliased = to + key.slice(from.length);
+      if (hasKey(aliased) || hasKey(aliased, DEFAULT_LOCALE)) return aliased;
+    }
+  }
+  return '';
+}
+
+/**
+ * Translates a descriptor returned by lib/ modules: a key string or
+ * { key, params }. Missing keys fall back to params.fallback (a humanized
+ * server token) and finally to the key itself. Raw durable values are never
+ * passed through here; render descriptor.raw separately in translate="no".
+ */
+export function tx(descriptor, extraParams) {
+  if (!descriptor) return '';
+  const key = typeof descriptor === 'string' ? descriptor : String(descriptor.key || '');
+  const params = { ...(typeof descriptor === 'object' ? descriptor.params || {} : {}), ...(extraParams || {}) };
+  if (!key) return params.fallback != null ? String(params.fallback) : '';
+  const resolved = resolveKey(key);
+  if (resolved) return t(resolved, params);
+  return params.fallback != null ? String(params.fallback) : key;
+}
+
 // ---- Intl helpers --------------------------------------------------------------
 
 function toDate(value) {

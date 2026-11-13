@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AREAS, dictionaries, mergeAreas } from '../../internal/webconsole/ui/src/i18n/index.js';
+import { AREAS, areaPrefixes, dictionaries, mergeAreas } from '../../internal/webconsole/ui/src/i18n/index.js';
 import { LOCALES, LOCALE_STORAGE_KEY, formatRelativeTime, getLocale, initLocale, interpolate, setLocale, subscribeLocale, t } from '../../internal/webconsole/ui/src/lib/i18n.js';
 import { KNOWN_STATUSES } from '../../internal/webconsole/ui/src/lib/status.js';
 import { SESSION_GROUPS } from '../../internal/webconsole/ui/src/lib/session-list.js';
@@ -8,13 +8,21 @@ import { INSPECTOR_TABS } from '../../internal/webconsole/ui/src/state/prefs.js'
 import { collectSourceKeys, missingSourceKeys, placeholders } from './ui_i18n_keys.mjs';
 
 test('every area file has identical zh-CN / en key sets, prefixed by its area', () => {
+  const claimed = new Map();
   for (const [area, dict] of Object.entries(AREAS)) {
-    assert.deepEqual(Object.keys(dict).sort(), [...LOCALES].sort(), `${area} exports both locales`);
+    assert.deepEqual(Object.keys(dict).filter((key) => key !== 'prefixes').sort(), [...LOCALES].sort(), `${area} exports both locales`);
+    const prefixes = areaPrefixes(area, dict);
+    for (const prefix of prefixes) {
+      for (const [other, otherPrefix] of claimed) {
+        assert.ok(!(prefix.startsWith(otherPrefix) || otherPrefix.startsWith(prefix)), `${area} prefix ${prefix} overlaps ${other} prefix ${otherPrefix}`);
+      }
+    }
+    prefixes.forEach((prefix) => claimed.set(area + ':' + prefix, prefix));
     const zh = Object.keys(dict['zh-CN']).sort();
     const en = Object.keys(dict.en).sort();
     assert.deepEqual(en, zh, `${area}: en and zh-CN keys differ`);
     for (const key of zh) {
-      assert.ok(key.startsWith(`${area}.`), `${area}: key ${key} must start with "${area}."`);
+      assert.ok(prefixes.some((prefix) => key.startsWith(prefix)), `${area}: key ${key} must start with one of ${prefixes.join(', ')}`);
       assert.equal(typeof dict['zh-CN'][key], 'string');
       assert.ok(dict['zh-CN'][key].trim() && dict.en[key].trim(), `${key} is empty`);
       assert.deepEqual(placeholders(dict.en[key]), placeholders(dict['zh-CN'][key]), `${key}: {placeholders} differ`);
@@ -88,6 +96,21 @@ test('relative time helper', () => {
     assert.equal(formatRelativeTime(new Date(now - 10_000).toISOString(), now), 'just now');
     assert.match(formatRelativeTime(new Date(now - 5 * 60_000).toISOString(), now), /5 min/);
     assert.equal(formatRelativeTime('not a date', now), '');
+  } finally {
+    setLocale('zh-CN', { persist: false });
+  }
+});
+
+test('tx() renders lib descriptors with alias and fallback', async () => {
+  const { tx } = await import('../../internal/webconsole/ui/src/lib/i18n.js');
+  setLocale('en', { persist: false });
+  try {
+    assert.equal(tx('shell.newSession'), 'New session');
+    assert.equal(tx({ key: 'no.such.key', params: { fallback: 'Fallback text' } }), 'Fallback text');
+    assert.equal(tx({ key: 'no.such.key' }), 'no.such.key');
+    assert.equal(tx(null), '');
+    const status = KNOWN_STATUSES[0];
+    assert.equal(tx({ key: 'status.' + status, params: { fallback: 'x' } }), t('common.status.' + status));
   } finally {
     setLocale('zh-CN', { persist: false });
   }
