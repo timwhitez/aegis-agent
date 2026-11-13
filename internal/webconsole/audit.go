@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/runtime"
 )
 
@@ -241,7 +241,7 @@ func (s *Service) ensureAuditLogWritable() error {
 }
 
 func (s *Service) ensureWebAuditManagedPathsDistinct(logPath string) error {
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}

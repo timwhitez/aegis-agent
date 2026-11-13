@@ -169,8 +169,13 @@ func TestStoreEnsureRootChmodDoesNotFollowReplacedSymlink(t *testing.T) {
 	temp := t.TempDir()
 	root := filepath.Join(temp, "sessions")
 	outside := filepath.Join(temp, "outside")
-	if err := os.Mkdir(root, 0o700); err != nil {
+	// A root that already has the store mode is left untouched by ensureDir;
+	// start from a drifted mode so the chmod (and the swap hook) runs.
+	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatalf("mkdir root: %v", err)
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("chmod root: %v", err)
 	}
 	if err := os.Mkdir(outside, 0o777); err != nil {
 		t.Fatalf("mkdir outside: %v", err)
@@ -7367,13 +7372,8 @@ func TestDeleteSessionTreeDoesNotDeadlockWithReconcilableJob(t *testing.T) {
 	go func() {
 		done <- store.DeleteSessionTree(parentMeta.ID)
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("delete session tree: %v", err)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("DeleteSessionTree appears deadlocked")
+	if err := waitUnlessLockDeadlocked(t, done, "session.(*Store).DeleteSessionTree"); err != nil {
+		t.Fatalf("delete session tree: %v", err)
 	}
 	if _, err := os.Stat(store.SessionDir(parentMeta.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected parent session removed, got %v", err)

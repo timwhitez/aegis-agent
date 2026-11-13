@@ -817,9 +817,13 @@ const (
 	sessionTitleCacheMaxEntries = 4096
 )
 
-// sessionTitleCache remembers non-empty derived titles by session id. A
-// session's first user message is append-only history, so a found title never
-// changes; misses are not cached because the message may not be published yet.
+// sessionTitleCache remembers non-empty derived titles by session id. Only
+// settled titles are cached (see scanSessionTitle): the runtime may still roll
+// back the operator message while it is the transcript's last record
+// (Store.RemoveLastMessageIfID after a failed user.message event), but a
+// message followed by another record can no longer be removed, so a settled
+// title never changes. Misses are not cached because the message may not be
+// published yet.
 type sessionTitleCache struct {
 	mu      sync.Mutex
 	max     int
@@ -892,8 +896,10 @@ func (s *Service) sessionTitle(sessionID string) string {
 	if title, ok := s.titles.get(sessionID); ok {
 		return title
 	}
-	title := readSessionTitle(filepath.Join(s.store.SessionDir(sessionID), "messages.jsonl"), sessionTitleScanMaxBytes)
-	s.titles.put(sessionID, title)
+	title, settled := scanSessionTitle(filepath.Join(s.store.SessionDir(sessionID), "messages.jsonl"), sessionTitleScanMaxBytes)
+	if settled {
+		s.titles.put(sessionID, title)
+	}
 	return title
 }
 
@@ -910,14 +916,24 @@ type sessionTitleProbe struct {
 // results, compaction summaries, plan approvals) carry meta.source or
 // meta.kind and are skipped. A record cut by the scan window is ignored.
 func readSessionTitle(path string, maxBytes int64) string {
+	title, _ := scanSessionTitle(path, maxBytes)
+	return title
+}
+
+// scanSessionTitle is readSessionTitle that also reports whether the title is
+// settled: a complete (newline-terminated, decodable) record follows the
+// title's message inside the scan window. Message rollback only removes the
+// last record, so only a settled title is safe to cache.
+func scanSessionTitle(path string, maxBytes int64) (string, bool) {
 	if maxBytes <= 0 {
-		return ""
+		return "", false
 	}
 	data, info, err := fileutil.ReadRegularFileRangeNoSymlink(path, 0, maxBytes)
 	if err != nil || info == nil {
-		return ""
+		return "", false
 	}
 	windowCut := info.Size() > int64(len(data))
+	title := ""
 	for len(data) > 0 {
 		line, rest, found := bytes.Cut(data, []byte{'\n'})
 		data = rest
@@ -932,14 +948,17 @@ func readSessionTitle(path string, maxBytes int64) string {
 		if err := json.Unmarshal(line, &probe); err != nil {
 			continue
 		}
+		if title != "" {
+			return title, found
+		}
 		if probe.Role != "user" || sessionTitleMetaString(probe.Meta, "source") != "" || sessionTitleMetaString(probe.Meta, "kind") != "" {
 			continue
 		}
-		if title := normalizeSessionTitle(probe.Text); title != "" {
-			return title
+		if normalized := normalizeSessionTitle(probe.Text); normalized != "" {
+			title = normalized
 		}
 	}
-	return ""
+	return title, false
 }
 
 func sessionTitleMetaString(meta map[string]any, key string) string {
@@ -4571,7 +4590,7 @@ func workspaceMutationStatus(err error) int {
 }
 
 func currentServerWorkspaceRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -4594,7 +4613,7 @@ func currentServerWorkspaceRoot() (string, error) {
 }
 
 func currentServerBrowseRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -5775,7 +5794,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("discover workspace extensions: %w", err))
 		return
@@ -8404,7 +8423,7 @@ func resolveSkillDir(rawDir string) (string, error) {
 	if filepath.IsAbs(rawDir) {
 		return filepath.Clean(rawDir), nil
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}

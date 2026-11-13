@@ -412,30 +412,51 @@ func TestOpenDirNoSymlinkSingleOpenMatchesWalkAndRejectsEverySymlinkComponent(t 
 	if err := os.Symlink(real, filepath.Join(root, "final-link")); err != nil {
 		t.Fatalf("symlink final: %v", err)
 	}
+	outsideFile := filepath.Join(outside, "b", "state.json")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	viaLink := filepath.Join(root, "ancestor-link", "b", "state.json")
+	symlinkPaths := []string{filepath.Join(root, "ancestor-link", "b"), filepath.Join(root, "final-link")}
 
+	// Single-open fast path: darwin only. Elsewhere it must decline so the
+	// callers below always take the walk.
 	fd, ok := openDirNoSymlinkSingleOpen(real)
-	if !ok {
-		if runtime.GOOS == "darwin" {
+	if runtime.GOOS != "darwin" {
+		if ok {
+			_ = unix.Close(fd)
+			t.Fatal("single-open fast path must decline on platforms without O_NOFOLLOW_ANY")
+		}
+	} else {
+		if !ok {
 			t.Fatal("single-open fast path must open a symlink-free directory on darwin")
 		}
-		t.Skip("platform has no single-open no-symlink directory resolution")
-	}
-	var fast, walked unix.Stat_t
-	if err := unix.Fstat(fd, &fast); err != nil {
-		t.Fatalf("fstat fast: %v", err)
-	}
-	_ = unix.Close(fd)
-	if err := unix.Lstat(real, &walked); err != nil {
-		t.Fatalf("lstat: %v", err)
-	}
-	if fast.Dev != walked.Dev || fast.Ino != walked.Ino {
-		t.Fatalf("single open resolved a different directory: %+v vs %+v", fast, walked)
-	}
-	for _, path := range []string{filepath.Join(root, "ancestor-link", "b"), filepath.Join(root, "final-link")} {
-		if fd, ok := openDirNoSymlinkSingleOpen(path); ok {
-			_ = unix.Close(fd)
-			t.Fatalf("single open followed a symlink component: %s", path)
+		var fast, walked unix.Stat_t
+		if err := unix.Fstat(fd, &fast); err != nil {
+			t.Fatalf("fstat fast: %v", err)
 		}
+		_ = unix.Close(fd)
+		if err := unix.Lstat(real, &walked); err != nil {
+			t.Fatalf("lstat: %v", err)
+		}
+		if fast.Dev != walked.Dev || fast.Ino != walked.Ino {
+			t.Fatalf("single open resolved a different directory: %+v vs %+v", fast, walked)
+		}
+		for _, path := range symlinkPaths {
+			if fd, ok := openDirNoSymlinkSingleOpen(path); ok {
+				_ = unix.Close(fd)
+				t.Fatalf("single open followed a symlink component: %s", path)
+			}
+		}
+		if fd, ok := openNoSymlinkSingleOpen(viaLink, unix.O_RDONLY); ok {
+			_ = unix.Close(fd)
+			t.Fatal("single open followed a symlinked ancestor of a regular file")
+		}
+	}
+
+	// Public helpers (walk on every unix, fast path plus walk fallback on
+	// darwin) keep the walk's symlink errors and side-effect freedom.
+	for _, path := range symlinkPaths {
 		if _, err := OpenDirNoSymlink(path); err == nil || !strings.Contains(err.Error(), "symlinked") {
 			t.Fatalf("OpenDirNoSymlink(%s) must keep the walk's symlink error, got %v", path, err)
 		}
@@ -446,15 +467,6 @@ func TestOpenDirNoSymlinkSingleOpenMatchesWalkAndRejectsEverySymlinkComponent(t 
 	if _, err := os.Stat(filepath.Join(outside, "b", "c")); !os.IsNotExist(err) {
 		t.Fatalf("outside target should not be created, stat err=%v", err)
 	}
-	outsideFile := filepath.Join(outside, "b", "state.json")
-	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
-		t.Fatalf("write outside file: %v", err)
-	}
-	viaLink := filepath.Join(root, "ancestor-link", "b", "state.json")
-	if fd, ok := openNoSymlinkSingleOpen(viaLink, unix.O_RDONLY); ok {
-		_ = unix.Close(fd)
-		t.Fatal("single open followed a symlinked ancestor of a regular file")
-	}
 	if data, _, err := ReadRegularFileNoSymlink(viaLink); err == nil {
 		t.Fatalf("read through symlinked ancestor must fail, got %q", data)
 	}
@@ -463,6 +475,11 @@ func TestOpenDirNoSymlinkSingleOpenMatchesWalkAndRejectsEverySymlinkComponent(t 
 	}
 	if info, err := os.Stat(outsideFile); err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("outside file mode changed: info=%v err=%v", info, err)
+	}
+	if dir, err := OpenDirNoSymlink(real); err != nil {
+		t.Fatalf("OpenDirNoSymlink(real): %v", err)
+	} else {
+		_ = dir.Close()
 	}
 	localFile := filepath.Join(real, "state.json")
 	if err := os.WriteFile(localFile, []byte("local"), 0o644); err != nil {
@@ -476,6 +493,65 @@ func TestOpenDirNoSymlinkSingleOpenMatchesWalkAndRejectsEverySymlinkComponent(t 
 	}
 	if info, err := os.Stat(localFile); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("local file mode not applied: info=%v err=%v", info, err)
+	}
+}
+
+// TestNoSymlinkHelpersBelowSearchOnlyAncestor pins the documented platform
+// difference for an ancestor with search (x) but no read permission: the
+// per-component walk opens every ancestor O_RDONLY and fails with EACCES (all
+// platforms without the fast path, and darwin whenever it falls back), while
+// darwin's single O_NOFOLLOW_ANY open needs only search permission on
+// ancestors, like any path-based open(2). Symlink rejection is identical.
+func TestNoSymlinkHelpersBelowSearchOnlyAncestor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory read permission")
+	}
+	searchOnly := filepath.Join(t.TempDir(), "search-only")
+	inner := filepath.Join(searchOnly, "inner")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	file := filepath.Join(inner, "f.txt")
+	if err := os.WriteFile(file, []byte("data"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(inner, "link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := os.Chmod(searchOnly, 0o311); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(searchOnly, 0o700) })
+
+	fastPath := runtime.GOOS == "darwin"
+	check := func(name string, err error, allowedByFastPath bool) {
+		t.Helper()
+		if fastPath && allowedByFastPath {
+			if err != nil {
+				t.Fatalf("%s below a search-only ancestor on darwin: %v", name, err)
+			}
+			return
+		}
+		if !errors.Is(err, unix.EACCES) {
+			t.Fatalf("%s below a search-only ancestor: got %v, want EACCES from the walk", name, err)
+		}
+	}
+	_, _, err := ReadRegularFileNoSymlink(file)
+	check("ReadRegularFileNoSymlink", err, true)
+	dir, err := OpenDirNoSymlink(inner)
+	if dir != nil {
+		_ = dir.Close()
+	}
+	check("OpenDirNoSymlink", err, true)
+	check("ChmodPathNoSymlink", ChmodPathNoSymlink(file, 0o640), true)
+	check("MkdirAllNoSymlink(existing)", MkdirAllNoSymlink(inner, 0o700), true)
+	// A missing component makes the fast path decline; the walk then fails.
+	check("MkdirAllNoSymlink(new)", MkdirAllNoSymlink(filepath.Join(inner, "new"), 0o700), false)
+	// A symlinked final component is still refused (darwin: the fast path
+	// rejects it and the walk fallback then stops at the ancestor).
+	if dir, err := OpenDirNoSymlink(filepath.Join(inner, "link")); err == nil {
+		_ = dir.Close()
+		t.Fatal("OpenDirNoSymlink followed a symlink below a search-only ancestor")
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/hooks"
 	"aegis-agent/internal/isolation"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/skills"
@@ -703,7 +704,7 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 			workdir = firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir)
 		}
 		if workdir == "" {
-			current, err := os.Getwd()
+			current, err := procutil.Getwd()
 			if err != nil {
 				return "", err
 			}
@@ -729,7 +730,7 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 		return "", err
 	}
 	if usedDefaultWorkspace {
-		current, err := os.Getwd()
+		current, err := procutil.Getwd()
 		if err != nil {
 			return "", err
 		}

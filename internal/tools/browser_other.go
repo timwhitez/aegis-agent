@@ -25,6 +25,3 @@ func (p *ownedBrowserProcess) wait(func() error) {
 }
 
 func browserExitSignal(*os.ProcessState) string { return "unknown" }
-func browserProcessGroupCleanup(int) error {
-	return errors.New("browser cleanup unsupported on this platform")
-}

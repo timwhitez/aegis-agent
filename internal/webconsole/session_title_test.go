@@ -189,6 +189,18 @@ func TestSessionTitleCachesOnlyFoundTitles(t *testing.T) {
 	if got := svc.sessionTitle("title_cached"); got != "First prompt" {
 		t.Fatalf("expected the title once the message is published, got %q", got)
 	}
+	if _, ok := svc.titles.get("title_cached"); ok {
+		t.Fatal("a title whose message is still the last record must not be cached")
+	}
+	if err := svc.store.AppendMessage("title_cached", session.NewAssistantMessage("On it.", "", nil)); err != nil {
+		t.Fatalf("append reply: %v", err)
+	}
+	if got := svc.sessionTitle("title_cached"); got != "First prompt" {
+		t.Fatalf("expected the settled title, got %q", got)
+	}
+	if got, ok := svc.titles.get("title_cached"); !ok || got != "First prompt" {
+		t.Fatalf("expected the settled title to be cached, got %q (cached=%v)", got, ok)
+	}
 	// Replace the transcript on disk: the cached title must be served without re-reading.
 	replacement, err := json.Marshal(session.NewMessage("user", "Rewritten prompt"))
 	if err != nil {
@@ -224,6 +236,83 @@ func TestSessionTitleCachesOnlyFoundTitles(t *testing.T) {
 	nilCache.put("x", "X")
 	if _, ok := nilCache.get("x"); ok || nilCache.size() != 0 {
 		t.Fatal("a nil cache must be a no-op")
+	}
+}
+
+// The runtime rolls an operator message back (Store.RemoveLastMessageIfID)
+// when recording its user.message event fails; a title read while that
+// message was the last record must not outlive the rollback.
+func TestSessionTitleIsNotCachedAcrossFirstPromptRollback(t *testing.T) {
+	svc := newTitleTestService(t)
+	const id = "title_rollback"
+	createTitleTestSession(t, svc, id)
+	rolledBack := session.NewMessage("user", "Rolled back prompt")
+	if err := svc.store.AppendMessage(id, rolledBack); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if got := svc.sessionTitle(id); got != "Rolled back prompt" {
+		t.Fatalf("expected the published prompt as title, got %q", got)
+	}
+	if err := svc.store.RemoveLastMessageIfID(id, rolledBack.ID); err != nil {
+		t.Fatalf("roll back: %v", err)
+	}
+	if got := svc.sessionTitle(id); got != "" {
+		t.Fatalf("expected no title after the rollback, got %q", got)
+	}
+	if err := svc.store.AppendMessage(id, session.NewMessage("user", "Retried prompt")); err != nil {
+		t.Fatalf("append retry: %v", err)
+	}
+	if err := svc.store.AppendMessage(id, session.NewAssistantMessage("Done.", "", nil)); err != nil {
+		t.Fatalf("append reply: %v", err)
+	}
+	for _, path := range titleEndpoints {
+		if got := titlesFromEndpoint(t, svc, path)[id]; got == nil || *got != "Retried prompt" {
+			t.Fatalf("GET %s: expected the retried prompt as title, got %v", path, got)
+		}
+	}
+	if got, ok := svc.titles.get(id); !ok || got != "Retried prompt" {
+		t.Fatalf("expected the settled retried prompt to be cached, got %q (cached=%v)", got, ok)
+	}
+}
+
+func TestSessionTitleSettledRequiresCompleteFollowingRecord(t *testing.T) {
+	dir := t.TempDir()
+	prompt, err := json.Marshal(session.NewMessage("user", "Prompt"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	reply, err := json.Marshal(session.NewAssistantMessage("Reply", "", nil))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, tc := range []struct {
+		name    string
+		body    string
+		window  int64
+		settled bool
+	}{
+		{name: "last record", body: string(prompt) + "\n"},
+		{name: "unterminated prompt", body: string(prompt)},
+		{name: "blank and garbage follower", body: string(prompt) + "\n\n{not json}\n"},
+		{name: "unterminated follower", body: string(prompt) + "\n" + string(reply)},
+		{name: "follower cut by window", body: string(prompt) + "\n" + string(reply) + "\n", window: int64(len(prompt) + 1 + len(reply)/2)},
+		{name: "complete follower", body: string(prompt) + "\n" + string(reply) + "\n", settled: true},
+		{name: "complete harness follower", body: string(prompt) + "\n" + "{\"role\":\"user\",\"text\":\"r\",\"meta\":{\"source\":\"harness_reminder\"}}\n", settled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "_")+".jsonl")
+			if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			window := tc.window
+			if window == 0 {
+				window = sessionTitleScanMaxBytes
+			}
+			title, settled := scanSessionTitle(path, window)
+			if title != "Prompt" || settled != tc.settled {
+				t.Fatalf("scanSessionTitle = %q, settled=%v; want \"Prompt\", settled=%v", title, settled, tc.settled)
+			}
+		})
 	}
 }
 

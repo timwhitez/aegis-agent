@@ -119,7 +119,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `read_file` 正常读取
 - 越界路径被拒绝
 - symlink 越界被拒绝
-- `internal/fileutil` 在 darwin 用单次 `O_NOFOLLOW_ANY` open 解析 no-symlink 路径（每次 open 在装有 Endpoint Security 客户端的主机上都有毫秒级成本），失败一律回退逐级 `O_NOFOLLOW` walk 以保持错误分类与测试钩子；永久测试覆盖祖先/末级 symlink 拒绝与 walk 同一身份。非独占 `O_CREAT` 因并发创建同名文件得到的 ENOENT 有界重试，`O_EXCL` 与父目录真实删除仍 fail closed
+- `internal/fileutil` 在 darwin 用单次 `O_NOFOLLOW_ANY` open 解析 no-symlink 路径（每次 open 在装有 Endpoint Security 客户端的主机上都有毫秒级成本），失败一律回退逐级 `O_NOFOLLOW` walk 以保持错误分类与测试钩子；永久测试覆盖祖先/末级 symlink 拒绝与 walk 同一身份（walk 部分在所有 unix 上运行，快速路径部分仅 darwin）。已知且保留的权限差异：walk 以 `O_RDONLY` 打开每级祖先，所以祖先只有 search（x）而无 read（r）权限（如 `0311`）时 walk 返回 EACCES；darwin 快速路径与普通路径 open(2) 一样只要求祖先 search 权限，因此在该祖先下读取已有文件、打开已有目录、chmod、对已存在目录 `MkdirAll` 会成功，需要新建路径分量或回退 walk 的操作仍返回 EACCES。symlink 拒绝不受影响；不补齐该差异，因为等价检查需要逐级 open（正是快速路径要省掉的成本）或 `access(2)`（与 open 的 ACL/沙箱/特权判定不可证明等价）。`TestNoSymlinkHelpersBelowSearchOnlyAncestor` 固定了两种平台行为。非独占 `O_CREAT` 因并发创建同名文件得到的 ENOENT 有界重试，`O_EXCL` 与父目录真实删除仍 fail closed
 - `write_file` 创建父目录
 - `edit_file` 替换失败时报错
 - `finish` 设置 `final`

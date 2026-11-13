@@ -6846,6 +6846,15 @@ func TestServiceUIMissingAssetsAndRetiredRoutesReturnNotFound(t *testing.T) {
 			t.Fatalf("%s served the application shell", path)
 		}
 	}
+	// Retired routes match whole path segments; other paths that merely share
+	// the prefix are ordinary SPA routes and get the shell.
+	for _, path := range []string{"/legacyx", "/legacy-notes", "/v2-assetsx", "/shared-assets-old"} {
+		rec := httptest.NewRecorder()
+		svc.ServeHTTP(rec, newLocalWebRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `id="app"`) {
+			t.Fatalf("%s status = %d, want the application shell", path, rec.Code)
+		}
+	}
 }
 
 // externalUIReference matches references that would make the browser load a
@@ -14549,6 +14558,12 @@ func testConfig(t *testing.T, baseURL string) *config.Config {
 	cfg.Skills.Dirs = nil
 	cfg.Runtime.Queue.PollIntervalMS = 20
 	cfg.Runtime.Queue.AutoWorker = false
+	// The background queue reaper's first pass runs queueReaperStartupJitter
+	// (2s) after New and pauses every running session whose recorded owner is
+	// dead. Under -race or a loaded host a test can outlive that delay and race
+	// it (e.g. a stop test then sees the session already paused by the reaper).
+	// Reaper behaviour is tested by driving runReaperPass directly.
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
 	return cfg
 }
 

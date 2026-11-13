@@ -4130,7 +4130,7 @@ func (s *Store) appendJSONL(path string, payload any) error {
 		return err
 	}
 	defer file.Close()
-	chmodBestEffort(path, s.fileMode)
+	chmodOpenFileBestEffort(file, path, s.fileMode)
 	enc := json.NewEncoder(file)
 	return enc.Encode(payload)
 }
@@ -4240,7 +4240,7 @@ func appendJSONLRecordsChecked[T any](s *Store, path string, payload []T, valida
 		return nil, err
 	}
 	defer file.Close()
-	chmodBestEffort(path, s.fileMode)
+	chmodOpenFileBestEffort(file, path, s.fileMode)
 	if err := lockFileExclusive(file); err != nil {
 		return nil, err
 	}
@@ -7515,10 +7515,26 @@ func deriveFileMode(dirMode fs.FileMode) fs.FileMode {
 	return mode
 }
 
+// ensureDir creates path and every store level above it with the store's
+// directory mode, refusing symlinked components. Every component of path is
+// lstat-checked first; each target prefix of path is therefore covered. A
+// level that lstat already shows as a real directory whose mode bits equal
+// s.dirMode is left alone: MkdirAllNoSymlink would be a no-op and chmod would
+// rewrite identical bits, while on hosts with an Endpoint Security client each
+// skipped no-symlink open and fchmod is a millisecond-scale authorization
+// round trip on every store operation. Nothing is created or re-moded through
+// a skipped level, and the file operation that follows ensureDir opens its
+// target no-symlink itself. Missing or drifted levels (wrong mode, setuid,
+// setgid or sticky bits) get the full create, re-check and chmod as before.
 func (s *Store) ensureDir(path string) error {
 	path = filepath.Clean(path)
-	targets := modeTargets(s.root, path)
-	for _, target := range targets {
+	if err := rejectSymlinkPathAncestors(path); err != nil {
+		return err
+	}
+	for _, target := range modeTargets(s.root, path) {
+		if s.dirPrepared(target) {
+			continue
+		}
 		if err := rejectSymlinkPathAncestors(target); err != nil {
 			return err
 		}
@@ -7531,6 +7547,28 @@ func (s *Store) ensureDir(path string) error {
 		chmodBestEffort(target, s.dirMode)
 	}
 	return nil
+}
+
+// dirPrepared reports whether path is already a real directory (not a
+// symlink) whose permission and special mode bits are exactly s.dirMode.
+func (s *Store) dirPrepared(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.Mode().Type() == fs.ModeDir && modeBitsEqual(info.Mode(), s.dirMode)
+}
+
+func modeBitsEqual(mode, want fs.FileMode) bool {
+	const bits = fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
+	return mode&bits == want&bits
+}
+
+// chmodOpenFileBestEffort is chmodBestEffort for a file this store just
+// opened no-symlink: when the open descriptor already carries exactly mode,
+// the path-based chmod (another no-symlink open plus fchmod) is skipped.
+func chmodOpenFileBestEffort(file *os.File, path string, mode fs.FileMode) {
+	if info, err := file.Stat(); err == nil && modeBitsEqual(info.Mode(), mode) {
+		return
+	}
+	chmodBestEffort(path, mode)
 }
 
 func rejectSymlinkPathAncestors(path string) error {
