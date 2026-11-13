@@ -1,15 +1,21 @@
-// Inspector shell (shell-owned, final): side panel at ≥1280px, modal overlay
-// below. Header, tablist and the active tab panel; tab content components are
-// owned by the inspector feature worker.
-import { html } from '../../lib/html.js';
+// Session inspector shell: side panel at ≥1280px (mode="panel"), modal sheet
+// below (mode="overlay": focus trap, Esc, inert background and a fresh scroll
+// position on every reopen come from ui/Dialog.js, which is mounted only
+// while open). Shows only the tabs relevant for the open session
+// (visibleInspectorTabs); a persisted tab that is hidden falls back to
+// Overview without overwriting the preference. Tab ids come from
+// state/prefs.js INSPECTOR_TABS; each tab receives { sessionId, mode }.
+import { html, useLayoutEffect, useMemo, useRef, useState } from '../../lib/html.js';
 import { t } from '../../lib/i18n.js';
 import { useStore } from '../../state/hooks.js';
 import { setInspectorTab, toggleInspector } from '../../state/actions.js';
-import { INSPECTOR_TABS } from '../../state/prefs.js';
+import { currentDisplayStatus } from '../../state/selectors.js';
 import { Dialog } from '../../ui/Dialog.js';
 import { IconButton } from '../../ui/IconButton.js';
-import { Tabs, TabPanel } from '../../ui/Tabs.js';
+import { Tabs, panelId, tabId } from '../../ui/Tabs.js';
 import { EmptyState } from '../../ui/EmptyState.js';
+import { TAB_LABEL_KEYS, fileChangeCount, resolveInspectorTab, visibleInspectorTabs, withMessages } from './inspector-model.js';
+import { StatusPill } from './parts.js';
 import { OverviewTab } from './OverviewTab.js';
 import { PlanTab } from './PlanTab.js';
 import { GoalTab } from './GoalTab.js';
@@ -24,27 +30,112 @@ const TAB_COMPONENTS = {
   agents: AgentsTab, context: ContextTab, timeline: TimelineTab, files: FilesTab,
 };
 
+const TAB_LABELS = {
+  overview: () => t('inspector.tab.overview'),
+  plan: () => t('inspector.tab.plan'),
+  goal: () => t('inspector.tab.goal'),
+  tasks: () => t('inspector.tab.tasks'),
+  agents: () => t('inspector.tab.agents'),
+  context: () => t('inspector.tab.context'),
+  timeline: () => t('inspector.tab.timeline'),
+  files: () => t('inspector.tab.files'),
+};
+
+/** Tablist wrapper: single scrollable row with edge fades; keeps the active tab in view. */
+function TabBar({ tabs, value }) {
+  const wrapRef = useRef(null);
+  const [fade, setFade] = useState({ start: false, end: false });
+  const list = () => wrapRef.current?.querySelector('[role="tablist"]') || null;
+  const measure = () => {
+    const element = list();
+    if (!element) return;
+    const start = element.scrollLeft > 1;
+    const end = element.scrollLeft + element.clientWidth < element.scrollWidth - 1;
+    setFade((previous) => (previous.start === start && previous.end === end ? previous : { start, end }));
+  };
+  useLayoutEffect(() => {
+    const element = list();
+    if (!element) return undefined;
+    element.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null;
+    observer?.observe(element);
+    measure();
+    return () => {
+      element.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, []);
+  useLayoutEffect(() => {
+    const element = list();
+    const selected = element?.querySelector('[aria-selected="true"]');
+    if (element && selected) {
+      const left = selected.offsetLeft - element.offsetLeft;
+      const right = left + selected.offsetWidth;
+      if (left < element.scrollLeft) element.scrollLeft = Math.max(0, left - 24);
+      else if (right > element.scrollLeft + element.clientWidth) element.scrollLeft = right - element.clientWidth + 24;
+    }
+    measure();
+  }, [value, tabs.map((tab) => tab.id).join(',')]);
+  const classes = ['insp-tabbar', fade.start ? 'fade-start' : '', fade.end ? 'fade-end' : ''].filter(Boolean).join(' ');
+  return html`<div class=${classes} ref=${wrapRef} data-testid="inspector-tabbar">
+    <${Tabs} idPrefix="inspector" label=${t('inspector.tabsLabel')} tabs=${tabs} value=${value} onChange=${setInspectorTab} class="inspector-tabs" />
+  </div>`;
+}
+
 /** mode: 'panel' (side-by-side, ≥1280px) | 'overlay' (modal sheet) */
 export function Inspector({ mode = 'panel' }) {
-  const view = useStore((state) => ({ locale: state.ui.locale, tab: state.ui.inspectorTab, sessionId: state.session.id }));
+  const view = useStore((state) => ({
+    locale: state.ui.locale,
+    tab: state.ui.inspectorTab,
+    sessionId: state.session.id,
+    detail: state.session.detail,
+    messages: state.session.messages,
+    status: currentDisplayStatus(state),
+  }));
+  const bodyRef = useRef(null);
+  const detail = useMemo(() => withMessages(view.detail, view.messages), [view.detail, view.messages]);
+  const fileCount = useMemo(() => fileChangeCount(detail), [detail]);
+  const visible = visibleInspectorTabs(detail, { fileCount });
+  const active = resolveInspectorTab(view.tab, visible);
+  const tabs = visible.map((id) => ({ id, label: TAB_LABELS[id]() }));
+  const Active = TAB_COMPONENTS[active] || OverviewTab;
   const close = () => toggleInspector(false);
-  const tabs = INSPECTOR_TABS.map((id) => ({ id, label: t(`shell.inspector.tab.${id}`) }));
-  const Active = TAB_COMPONENTS[view.tab] || OverviewTab;
+
+  // Switching tab or session starts the panel at the top; ordinary polling
+  // re-renders keep the reader's position.
+  useLayoutEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
+  }, [active, view.sessionId]);
+
   const body = html`
-    <div class="inspector-head">
-      <h2 class="inspector-title">${t('shell.inspector.title')}</h2>
-      <${IconButton} icon="x" size="sm" label=${t('shell.inspector.close')} onClick=${close} data-testid="inspector-close" />
+    <div class="inspector-head insp-head">
+      <div class="insp-head-title">
+        <h2 class="inspector-title">${t('inspector.title')}</h2>
+        ${view.sessionId && view.status ? html`<${StatusPill} status=${view.status} testId="inspector-status" />` : null}
+      </div>
+      <${IconButton} icon="x" size="sm" label=${t('inspector.close')} onClick=${close} data-testid="inspector-close" />
     </div>
-    <${Tabs} idPrefix="inspector" label=${t('shell.inspector.tabs')} tabs=${tabs} value=${view.tab} onChange=${setInspectorTab} class="inspector-tabs" />
-    <${TabPanel} idPrefix="inspector" id=${view.tab} class="inspector-panel-body">
+    ${view.sessionId ? html`<${TabBar} tabs=${tabs} value=${active} />` : null}
+    <div
+      ref=${bodyRef}
+      role=${view.sessionId ? 'tabpanel' : undefined}
+      id=${view.sessionId ? panelId('inspector', active) : undefined}
+      aria-labelledby=${view.sessionId ? tabId('inspector', active) : undefined}
+      tabindex="0"
+      class="tab-panel inspector-panel-body insp-body"
+      data-testid="inspector-panel"
+      data-tab=${active}
+    >
       ${view.sessionId
-        ? html`<${Active} sessionId=${view.sessionId} />`
-        : html`<${EmptyState} icon="info" body=${t('shell.inspector.noSession')} />`}
-    <//>`;
+        ? html`<${Active} key=${view.sessionId + ':' + active} sessionId=${view.sessionId} mode=${mode} />`
+        : html`<${EmptyState} icon="info" body=${t('inspector.noSession')} />`}
+    </div>`;
   if (mode === 'overlay') {
-    return html`<${Dialog} title=${t('shell.inspector.title')} hideTitle showClose=${false} placement="right" class="inspector inspector-overlay" testId="inspector" onClose=${close}>
+    return html`<${Dialog} title=${t('inspector.title')} hideTitle showClose=${false} placement="right" class="inspector inspector-overlay" testId="inspector" onClose=${close}>
       ${body}
     <//>`;
   }
-  return html`<aside class="inspector inspector-panel" data-testid="inspector" aria-label=${t('shell.inspector.title')}>${body}</aside>`;
+  return html`<aside class="inspector inspector-panel" data-testid="inspector" aria-label=${t('inspector.title')}>${body}</aside>`;
 }
+
+export { TAB_LABEL_KEYS };
