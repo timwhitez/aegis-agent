@@ -562,3 +562,19 @@ export function contextReportView(report) {
     truncation,
   };
 }
+
+/**
+ * Context tab load decision (spec 17 §7.4.1: /context is requested only when
+ * the tab is opened or Refresh is clicked). cached = { report, visit } kept by
+ * the tab for a session; visit identifies the current visit of that session
+ * and changes on every session switch. Re-opening the tab during the same
+ * visit (Tasks → Context) reuses the report without a request; a new visit
+ * shows the previous report while it loads again; Refresh always loads.
+ * @param {{report: object, visit: number}|null|undefined} cached
+ * @param {{visit?: number, refresh?: boolean}} input
+ * @returns {{report: object|null, load: boolean}}
+ */
+export function contextLoadPlan(cached, { visit = 0, refresh = false } = {}) {
+  const report = isObject(cached?.report) ? cached.report : null;
+  return { report, load: Boolean(refresh) || !report || cached.visit !== visit };
+}

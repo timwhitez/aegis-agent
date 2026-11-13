@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  activeHandleView, badgeTone, budgetInspector, checkpointView, contextReportView, goalActions, goalCoverage, goalHistory,
+  activeHandleView, badgeTone, budgetInspector, checkpointView, contextLoadPlan, contextReportView, goalActions, goalCoverage, goalHistory,
   goalItemTitle, goalLinkedFacts, hasAgents, hasPlanMode, hasTasks, parentCoordinationView, pendingSteers, planHistory,
   providerAttemptStats, providerFailureClass, providerOptionRows, recentProviderAttempts, relatedSessions, requiredArtifactRows,
   resolveInspectorTab, visibleInspectorTabs, withMessages,
@@ -35,6 +35,15 @@ test('files tab follows inferred changes from the merged message window', () => 
   ];
   assert.equal(visibleInspectorTabs(withMessages(base, messages)).includes('files'), true);
   assert.equal(withMessages(base, []), base);
+});
+
+test('Context loads once per session visit; Refresh and a session switch load again (spec 17 §7.4.1)', () => {
+  const report = { schema_version: 1, root_session_id: 'session_a' };
+  assert.deepEqual(contextLoadPlan(undefined, { visit: 3 }), { report: null, load: true }, 'first open loads');
+  assert.deepEqual(contextLoadPlan({ report, visit: 3 }, { visit: 3 }), { report, load: false }, 'Tasks → Context reuses the loaded report');
+  assert.deepEqual(contextLoadPlan({ report, visit: 3 }, { visit: 3, refresh: true }), { report, load: true }, 'Refresh always requests');
+  assert.deepEqual(contextLoadPlan({ report, visit: 3 }, { visit: 4 }), { report, load: true }, 'a new visit shows the old report while loading');
+  assert.deepEqual(contextLoadPlan({ report: null, visit: 3 }, { visit: 3 }), { report: null, load: true }, 'no report yet: load');
 });
 
 test('a hidden persisted tab falls back to overview', () => {

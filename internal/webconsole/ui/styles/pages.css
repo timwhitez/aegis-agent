@@ -107,12 +107,23 @@
   gap: 4px;
 }
 
+/* The title link itself is a full hit target (var(--hit) tall); negative
+   margins keep the row layout at one title line. */
 .history-row-link {
-  display: block;
+  display: flex;
+  align-items: center;
   min-width: 0;
+  min-height: var(--hit);
+  margin-block: calc((var(--text-md) * var(--leading-tight) - var(--hit)) / 2);
   color: var(--text);
+  font-size: var(--text-md);
+  line-height: var(--leading-tight);
   text-decoration: none;
   border-radius: var(--radius-1);
+}
+
+.history-row-link > .history-row-title {
+  min-width: 0;
 }
 
 /* Stretched link: the whole row opens the session; side controls sit above. */

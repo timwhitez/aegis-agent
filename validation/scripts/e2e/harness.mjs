@@ -169,32 +169,69 @@ export async function createHarness({ repoRoot, outputDir, only = [], keepRuntim
   };
 
   // ---- REST helpers ------------------------------------------------------------------
-  h.api = async (method, url, body) => {
-    const response = await fetch(h.baseURL + url, {
-      method,
-      headers: method === 'GET' ? {} : { 'Content-Type': 'application/json', 'X-Aegis-Agent-Web': '1' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    let json = null;
-    try { json = text ? JSON.parse(text) : null; } catch { json = null; }
-    return { status: response.status, json, text, headers: response.headers };
-  };
-  h.detail = async (id) => {
-    const result = await h.api('GET', '/api/sessions/' + encodeURIComponent(id) + '?limit=40');
-    if (result.status !== 200) throw new Error('GET session ' + id + ': ' + result.status + ' ' + result.text.slice(0, 300));
-    return result.json;
-  };
-  h.waitDetail = (id, predicate, label = 'state', timeout = 120000) => until(async () => {
-    const detail = await h.detail(id);
-    return predicate(detail) ? detail : null;
-  }, 'session ' + id + ' ' + label, timeout, 120);
+  /** api / detail / waitDetail / startSession against the web service at baseOf(). */
+  function restHelpers(baseOf) {
+    const rest = {};
+    rest.api = async (method, url, body) => {
+      const response = await fetch(baseOf() + url, {
+        method,
+        headers: method === 'GET' ? {} : { 'Content-Type': 'application/json', 'X-Aegis-Agent-Web': '1' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const text = await response.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+      return { status: response.status, json, text, headers: response.headers };
+    };
+    rest.detail = async (id) => {
+      const result = await rest.api('GET', '/api/sessions/' + encodeURIComponent(id) + '?limit=40');
+      if (result.status !== 200) throw new Error('GET session ' + id + ': ' + result.status + ' ' + result.text.slice(0, 300));
+      return result.json;
+    };
+    rest.waitDetail = (id, predicate, label = 'state', timeout = 120000) => until(async () => {
+      const detail = await rest.detail(id);
+      return predicate(detail) ? detail : null;
+    }, 'session ' + id + ' ' + label, timeout, 120);
+    rest.startSession = async (payload) => {
+      const result = await rest.api('POST', '/api/sessions/start', typeof payload === 'string' ? { prompt: payload } : payload);
+      assert.equal(result.status, 202, result.text);
+      assert.ok(result.json?.session_id, 'start returned a session id');
+      return result.json.session_id;
+    };
+    return rest;
+  }
+  Object.assign(h, restHelpers(() => h.baseURL));
   h.settled = (detail) => detail && !['running', 'queued', 'pending'].includes(detail.state?.status) && !detail.active_handle;
-  h.startSession = async (payload) => {
-    const result = await h.api('POST', '/api/sessions/start', typeof payload === 'string' ? { prompt: payload } : payload);
-    assert.equal(result.status, 202, result.text);
-    assert.ok(result.json?.session_id, 'start returned a session id');
-    return result.json.session_id;
+
+  /**
+   * Starts an extra web service with its own config, session/skills
+   * directories and workspace (same binaries and scripted provider), e.g. for
+   * README screenshots that must not list the suite's other sessions.
+   * Returns { label, baseURL, paths, api, detail, waitDetail, startSession, stop }.
+   */
+  h.startRuntime = async (label) => {
+    const dir = path.join(runtimeRoot, 'runtime-' + slug(label));
+    const rt = { label, baseURL: '', paths: { root: dir, cwd: path.join(dir, 'workspace'), sessions: path.join(dir, 'sessions'), skills: path.join(dir, 'skills'), config: path.join(dir, 'config.yaml') } };
+    await mkdir(rt.paths.cwd, { recursive: true });
+    await mkdir(rt.paths.skills, { recursive: true });
+    await mkdir(rt.paths.sessions, { recursive: true, mode: 0o700 });
+    await writeFile(rt.paths.config, renderConfig({ providerURL: h.providerURL, sessionRoot: rt.paths.sessions, skillsRoot: rt.paths.skills }), { mode: 0o600 });
+    const port = await reservePort();
+    rt.baseURL = 'http://127.0.0.1:' + port;
+    const record = startProcess(paths.binary, ['web', '--config', rt.paths.config, '--listen', '127.0.0.1:' + port, '--workers', process.env.E2E_WEB_WORKERS || '2'], {
+      label: 'web-' + slug(label), env: { E2E_API_KEY: 'local-fixture-key' }, cwd: rt.paths.cwd,
+    });
+    await waitHTTP(rt.baseURL + '/api/meta', 20000);
+    Object.assign(rt, restHelpers(() => rt.baseURL));
+    rt.stop = async () => {
+      const index = children.indexOf(record);
+      if (index >= 0) children.splice(index, 1);
+      if (record.child.exitCode !== null || record.child.signalCode) return;
+      record.child.kill('SIGTERM');
+      await Promise.race([new Promise((resolve) => record.child.once('exit', resolve)), delay(5000)]);
+      if (record.child.exitCode === null && !record.child.signalCode) record.child.kill('SIGKILL');
+    };
+    return rt;
   };
 
   // Shared fixtures, created once on demand (areas may also register their own).

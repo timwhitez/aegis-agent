@@ -1,18 +1,51 @@
 // Context tab: GET /api/sessions/{id}/context, requested only when this tab
-// is opened or Refresh is clicked (spec 17 §7.4.1). The last report per
-// session is kept in memory so reopening shows it while a fresh one loads.
+// is opened or Refresh is clicked (spec 17 §7.4.1). The report is loaded once
+// per visit of a session: switching to another tab and back reuses it
+// (contextLoadPlan), Refresh loads again, and after a session switch the last
+// report is shown while a fresh one loads. Memory only.
 // Operator labels are translated; ids and agent roles stay raw.
 import { html, useEffect, useRef, useState } from '../../lib/html.js';
 import { t } from '../../lib/i18n.js';
 import { getSessionContext } from '../../lib/api.js';
 import { useLocale } from '../../state/hooks.js';
+import { store } from '../../state/store.js';
 import { Button } from '../../ui/Button.js';
 import { EmptyState } from '../../ui/EmptyState.js';
 import { Skeleton } from '../../ui/Skeleton.js';
-import { contextReportView } from './inspector-model.js';
+import { contextLoadPlan, contextReportView } from './inspector-model.js';
 import { Metrics, Notice, Raw, Section, duration, num } from './parts.js';
 
-const reports = new Map(); // sessionId -> last ContextReport (memory only)
+// A visit lasts while one session stays open; any session switch starts a new
+// one. Read-only store subscription (never writes the store).
+let visit = 0;
+let visitSession = store.getState().session.id;
+store.subscribe((state) => {
+  if (state.session.id === visitSession) return;
+  visitSession = state.session.id;
+  visit += 1;
+});
+
+const reports = new Map(); // sessionId -> { report, visit } of the last loaded report
+const inflight = new Map(); // sessionId -> { visit, promise } of the latest request
+
+/** Latest /context request for a session; re-opening the tab joins one already running. */
+function loadReport(id, { refresh = false } = {}) {
+  const running = inflight.get(id);
+  if (!refresh && running && running.visit === visit) return running.promise;
+  const entry = { visit, promise: null };
+  entry.promise = getSessionContext(id).then((report) => {
+    if (inflight.get(id) === entry) {
+      inflight.delete(id);
+      reports.set(id, { report, visit: entry.visit });
+    }
+    return report;
+  }, (error) => {
+    if (inflight.get(id) === entry) inflight.delete(id);
+    throw error;
+  });
+  inflight.set(id, entry);
+  return entry.promise;
+}
 
 function errorInfo(error) {
   return { message: String(error?.message || ''), detail: String(error?.detail || ''), action: String(error?.action || '') };
@@ -20,40 +53,43 @@ function errorInfo(error) {
 
 export function ContextTab({ sessionId }) {
   useLocale();
-  const [state, setState] = useState(() => ({ report: reports.get(sessionId) || null, loading: true, error: null }));
+  const [state, setState] = useState(() => {
+    const plan = contextLoadPlan(reports.get(sessionId), { visit });
+    return { report: plan.report, loading: plan.load, error: null };
+  });
   const seq = useRef(0);
   const mounted = useRef(true);
 
-  const load = async () => {
+  const load = async ({ refresh = false } = {}) => {
     const id = sessionId;
     const current = ++seq.current;
     setState((previous) => ({ ...previous, loading: true, error: null }));
     try {
-      const report = await getSessionContext(id);
+      const report = await loadReport(id, { refresh });
       if (!mounted.current || current !== seq.current) return;
-      reports.set(id, report);
       setState({ report, loading: false, error: null });
     } catch (error) {
       if (!mounted.current || current !== seq.current) return;
       setState((previous) => ({ ...previous, loading: false, error: errorInfo(error) }));
     }
   };
+  const reload = () => load({ refresh: true });
 
   useEffect(() => {
     mounted.current = true;
-    load();
+    if (contextLoadPlan(reports.get(sessionId), { visit }).load) load();
     return () => { mounted.current = false; };
   }, [sessionId]);
 
   const view = contextReportView(state.report);
-  const refresh = html`<${Button} size="sm" variant="ghost" icon="refresh" pending=${state.loading} onClick=${load} data-testid="inspector-context-refresh">
+  const refresh = html`<${Button} size="sm" variant="ghost" icon="refresh" pending=${state.loading} onClick=${reload} data-testid="inspector-context-refresh">
     ${state.loading ? t('inspector.context.refreshing') : t('inspector.context.refresh')}
   <//>`;
 
   if (!view) {
     if (state.error) {
       return html`<${EmptyState} icon="alert-circle" title=${t('inspector.context.errorTitle')} body=${state.error.message} role="alert" data-testid="inspector-context-error">
-        <${Button} size="sm" icon="refresh" onClick=${load}>${t('common.retry')}<//>
+        <${Button} size="sm" icon="refresh" onClick=${reload}>${t('common.retry')}<//>
       <//>`;
     }
     return html`<div class="insp-loading" aria-live="polite" data-testid="inspector-context-loading">

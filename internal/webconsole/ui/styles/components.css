@@ -282,7 +282,9 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  min-width: var(--hit); /* short (two-character zh-CN) labels keep a square hit target */
   min-height: var(--hit);
   padding: 0 10px;
   border: 0;
@@ -523,10 +525,11 @@
 
 /* Page views: older toasts collapse behind the newest so the stack stays in
    the top-bar band; hovering or focusing the rack expands it. */
+/* Offset only (no scale): a scaled toast would shrink its close button below var(--hit-sm). */
 .toast-rack[data-placement="page"] > .toast {
   grid-area: stack;
   transform-origin: top center;
-  transform: translateY(calc(var(--toast-depth, 0) * 6px)) scale(calc(1 - var(--toast-depth, 0) * 0.04));
+  transform: translateY(calc(var(--toast-depth, 0) * 6px));
   transition: transform var(--motion-base) var(--ease);
 }
 

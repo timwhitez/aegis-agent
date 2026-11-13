@@ -6,12 +6,12 @@ import {
   canSubmit, composerMode, effectiveToggles, placeholderKey, primaryAction, primaryLabelKey,
 } from '../../internal/webconsole/ui/src/features/session/controls/composer-model.js';
 
-function state({ route = 'session', status = '', planStatus = '', generating = false, detail = true, composer = {} } = {}) {
+function state({ route = 'session', status = '', planStatus = '', generating = false, detail = true, handle = false, activity = null, composer = {} } = {}) {
   const base = initialState();
   return {
     ...base,
     route: route === 'new' ? { name: 'new', path: '/', params: {} } : { name: 'session', path: '/s/a', params: { id: 'a' } },
-    session: { ...base.session, id: route === 'new' ? '' : 'a', generating, detail: detail ? { state: { status }, plan_mode: planStatus ? { status: planStatus, plan_version: 3 } : null } : null },
+    session: { ...base.session, id: route === 'new' ? '' : 'a', generating, activity, detail: detail ? { state: { status }, active_handle: handle, plan_mode: planStatus ? { status: planStatus, plan_version: 3 } : null } : null },
     composer: { ...base.composer, ...composer },
   };
 }
@@ -26,6 +26,20 @@ test('composer mode follows the send route', () => {
   assert.equal(revise.kind, 'revise');
   assert.equal(revise.planVersion, 3);
   assert.equal(revise.planAwaitingApproval, true);
+});
+
+test('launch window: the composer shows "starting" (disabled) until the run is running', () => {
+  const launching = composerMode(state({ detail: false, activity: { kind: 'start', at: 1 } }));
+  assert.equal(launching.kind, 'starting', 'accepted start, detail not loaded yet');
+  assert.equal(composerMode(state({ detail: false, activity: { kind: 'steer', at: 1 } })).kind, 'loading');
+  assert.equal(composerMode(state({ status: 'queued', handle: true })).kind, 'starting');
+  assert.equal(composerMode(state({ status: '', generating: true })).kind, 'starting');
+  assert.equal(composerMode(state({ status: 'cancelled', generating: true })).kind, 'blocked', 'a local flag alone never offers steer');
+  assert.equal(composerMode(state({ status: 'running', handle: true })).kind, 'steer');
+  assert.equal(placeholderKey(launching, {}), 'composer.placeholder.starting');
+  assert.equal(primaryAction(launching, 'x'), 'send');
+  assert.equal(canSubmit(launching, { text: 'x', submitting: false }), false);
+  assert.equal(launching.canInterrupt, false);
 });
 
 test('toolbar controls only where they apply', () => {
@@ -67,7 +81,7 @@ test('every key the composer model can return exists in both locales', () => {
       for (const planStatus of ['', 'awaiting_approval', 'awaiting_user_input']) {
         for (const generating of [false, true]) {
           for (const detail of [true, false]) {
-            const mode = composerMode(state({ route, status, planStatus, generating, detail }));
+            const mode = composerMode(state({ route, status, planStatus, generating, detail, activity: detail ? null : { kind: 'start', at: 1 } }));
             for (const composer of [{}, { goalEnabled: true }, { planEnabled: true }, { interrupt: true }]) keys.add(placeholderKey(mode, composer));
             for (const text of ['', 'x']) keys.add(primaryLabelKey(primaryAction(mode, text), mode));
           }

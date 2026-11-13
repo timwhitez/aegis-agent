@@ -182,6 +182,8 @@ internal/webconsole/ui/
 - 工具行：Goal 与 Plan 切换（仅在可 start/continue 时出现）、运行中的"打断当前步骤"开关、
   provider/model 选择（仅新会话与 continue 时可改，默认继承）。
 - 主按钮：空闲时为发送；运行中输入为空时变为停止，有内容时为追加指令（steer）。
+  只有已加载 detail 的 `state.status` 为 `running` 且有活动运行事实（本地 generating 或活动句柄）时才路由为追加指令；
+  启动窗口（已接受的 start 尚未加载 detail，或已有活动标记/句柄而状态尚未进入 running）显示禁用的“启动中…”，不发送注定被拒绝的请求。
 - Enter 发送，Shift+Enter 换行，输入法组合输入期间不发送。
 - 失败草稿以卡片显示在 Composer 上方，标注原 session，并区分"被拒绝"和"未确认是否送达"；
   只有在当前输入为空时才能恢复草稿，不自动重发。

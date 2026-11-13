@@ -2,15 +2,19 @@
 // state, which toolbar controls apply, and the placeholder / primary action.
 // Mirrors send-recovery.js resolveSendRoute() so the UI never offers a mode
 // the send pipeline would reject. Tested by validation/scripts/ui_composer_model_test.mjs.
-import { CONTINUABLE_STATUSES } from '../../../lib/send-recovery.js';
+import { CONTINUABLE_STATUSES, detailHasLiveRunHandle, steerReadiness } from '../../../lib/send-recovery.js';
 
 export const PENDING_PLAN_STATUSES = Object.freeze(['planning', 'awaiting_user_input', 'awaiting_approval']);
 
 const lower = (value) => String(value || '').trim().toLowerCase();
 
 /**
- * composerMode(state) -> { kind: 'start'|'continue'|'steer'|'revise'|'loading'|'blocked', … }
- * kind follows resolveSendRoute: continuable status first, then a live run (steer).
+ * composerMode(state) -> { kind: 'start'|'continue'|'steer'|'revise'|'starting'|'loading'|'blocked', … }
+ * kind follows resolveSendRoute: continuable status first, then a live run
+ * (steer only while the loaded state is 'running', send-recovery.js
+ * steerReadiness). 'starting' is the launch window: an accepted start whose
+ * detail has not loaded yet, or a live run that has not reached the running
+ * state; the composer is disabled instead of offering a send the server refuses.
  */
 export function composerMode(state) {
   const isNew = state.route.name !== 'session';
@@ -18,12 +22,15 @@ export function composerMode(state) {
   const status = lower(detail?.state?.status);
   const planStatus = lower(detail?.plan_mode?.status);
   const generating = !isNew && Boolean(state.session.generating);
+  const launching = !isNew && !detail && state.session.activity?.kind === 'start';
   let kind;
   if (isNew) kind = 'start';
-  else if (!detail) kind = 'loading';
+  else if (!detail) kind = launching ? 'starting' : 'loading';
   else if (CONTINUABLE_STATUSES.includes(status)) kind = planStatus === 'awaiting_approval' ? 'revise' : 'continue';
-  else if (generating) kind = 'steer';
-  else kind = 'blocked';
+  else {
+    const readiness = steerReadiness({ status, generating, liveHandle: detailHasLiveRunHandle(detail) });
+    kind = readiness === 'steer' ? 'steer' : readiness === 'starting' ? 'starting' : 'blocked';
+  }
   const planPending = PENDING_PLAN_STATUSES.includes(planStatus);
   return {
     kind,
@@ -66,6 +73,8 @@ export function placeholderKey(mode, composer) {
       return 'composer.placeholder.revise';
     case 'loading':
       return 'composer.placeholder.loading';
+    case 'starting':
+      return 'composer.placeholder.starting';
     default:
       // A run that is settling (handle release, plan submission) accepts input again shortly.
       return ['running', 'queued', 'pending'].includes(mode.status) || mode.planAwaitingApproval ? 'composer.placeholder.settling' : 'composer.placeholder.blocked';
@@ -96,5 +105,5 @@ export function primaryLabelKey(action, mode) {
 
 /** True when the send button may submit now. */
 export function canSubmit(mode, composer) {
-  return String(composer.text || '').trim() !== '' && !composer.submitting && mode.kind !== 'loading' && mode.kind !== 'blocked';
+  return String(composer.text || '').trim() !== '' && !composer.submitting && !['loading', 'starting', 'blocked'].includes(mode.kind);
 }

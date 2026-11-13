@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { t, tx } from '../../internal/webconsole/ui/src/lib/i18n.js';
-import { APPROVAL_STORAGE_KEY, coverageOverrideConfirmation } from '../../internal/webconsole/ui/src/lib/approval-operations.js';
+import { APPROVAL_STORAGE_KEY, coverageOverrideConfirmation, startsNewApprovalOperation } from '../../internal/webconsole/ui/src/lib/approval-operations.js';
 import { apiError, createHarness, memoryStorage } from './ui_session_actions_harness.mjs';
 
 const target = { plan_mode_id: 'pm_1', plan_version: 2, expected_revision: 'rev_2' };
@@ -138,6 +138,53 @@ test('saved unresolved approvals are re-checked once when the session loads', as
   h.store.update('session', (session) => ({ ...session, detail: { ...session.detail } }));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(h.calls.length, 1, 'restore runs once per session');
+});
+
+test('refused recovery: the same target only re-checks; a newly reviewed target posts with a NEW id (spec 17 §7.13)', async () => {
+  const recovery = () => apiError('legacy executing plan needs explicit recovery', { status: 409, code: 'APPROVAL_RECOVERY_REQUIRED', action: 'use ordinary continue' });
+  const h = createHarness({ api: { approvePlanMode: (_id, payload) => { if (payload.plan_version === 2) throw recovery(); return admitted(payload); } } });
+  h.openSession('sess_a', detail());
+  await h.actions.approvePlan('sess_a');
+  assert.equal(saved(h).phase, 'recovery_required');
+  assert.equal(saved(h).approval_request_id, 'req_1');
+
+  // Same target again: query the saved id, never resend it, never mint a new one.
+  await h.actions.approvePlan('sess_a');
+  assert.deepEqual(h.calls.map((call) => [call.name, call.args[1]?.approval_request_id || call.args[1]]),
+    [['approvePlanMode', 'req_1'], ['getApprovalReceipt', 'req_1']]);
+  assert.equal(saved(h).phase, 'recovery_required', 'a receipt miss keeps the explicit refusal');
+
+  // A newly reviewed target: the old receipt stays visible until Approve is clicked.
+  h.store.update('session', (session) => ({ ...session, detail: { ...session.detail, plan_mode: planMode({ plan_version: 3, approval_revision: 'rev_3' }) } }));
+  assert.equal(h.state().session.approval.record.approval_request_id, 'req_1');
+  assert.equal(h.state().session.approval.record.phase, 'recovery_required');
+  const result = await h.actions.approvePlan('sess_a');
+  assert.equal(result.outcome, 'done');
+  const posts = h.calls.filter((call) => call.name === 'approvePlanMode').map((call) => call.args[1]);
+  assert.deepEqual(posts.map((payload) => payload.approval_request_id), ['req_1', 'req_2'], 'the refused id is never resent');
+  assert.deepEqual(posts[1], { plan_mode_id: 'pm_1', plan_version: 3, expected_revision: 'rev_3', override_coverage: false, approval_request_id: 'req_2' });
+  assert.equal(saved(h).approval_request_id, 'req_2');
+  assert.equal(saved(h).phase, 'admitted');
+  assert.equal(h.state().session.generating, true);
+});
+
+test('startsNewApprovalOperation: which saved phases a reviewed target may replace', () => {
+  const same = { ...target, override_coverage: false };
+  const other = { ...target, plan_version: 3, expected_revision: 'rev_3', override_coverage: false };
+  const record = (phase) => ({ phase, parameters: same });
+  assert.equal(startsNewApprovalOperation(null, same), true);
+  for (const phase of ['admitted', 'failed']) {
+    assert.equal(startsNewApprovalOperation(record(phase), same), true, phase + ' same target');
+    assert.equal(startsNewApprovalOperation(record(phase), other), true, phase + ' new target');
+  }
+  for (const phase of ['rejected', 'recovery_required']) {
+    assert.equal(startsNewApprovalOperation(record(phase), same), false, phase + ' same target re-checks the saved id');
+    assert.equal(startsNewApprovalOperation(record(phase), other), true, phase + ' new target gets a new id');
+  }
+  for (const phase of ['pending', 'unknown', 'not_found', 'prepared']) {
+    assert.equal(startsNewApprovalOperation(record(phase), same), false, phase + ' same target');
+    assert.equal(startsNewApprovalOperation(record(phase), other), false, phase + ' keeps its id while delivery is unproven');
+  }
 });
 
 test('linked mission approval uses the mission entrypoint with the displayed target', async () => {

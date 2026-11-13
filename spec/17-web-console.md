@@ -450,7 +450,7 @@ Settings API：
 
 - 只读，不写回 session，不维护第二套 telemetry 状态
 - 保留完整 aggregate，但 session/request detail 共用 64 项预算；发生截断时返回 omitted session/request 计数
-- 只在用户打开 Session inspector 的 Context tab 或点击 Refresh 时请求；普通 session polling 与默认首页不主动加载
+- 只在用户打开 Session inspector 的 Context tab 或点击 Refresh 时请求；普通 session polling 与默认首页不主动加载；同一次会话访问内切换到其他 tab 再回到 Context 复用已加载的报告，切换会话后重新打开才再次请求
 - 只返回尺寸、计数、ID、状态、时间和 provider 已报告的 usage，不复制 prompt/tool schema/metadata value/error/tool output/raw provider payload
 
 ### 7.5 `POST /api/sessions/start`

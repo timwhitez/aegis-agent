@@ -21,6 +21,7 @@
  * i18n keys emitted:
  *   send.launchInFlight            a new-session launch is still pending
  *   send.notReady                  session state does not allow continue/steer
+ *   send.starting                  the run is still starting (steer not accepted yet)
  *   send.draft.title               failed draft card heading
  *   send.draft.rejected            explicit rejection notice
  *   send.draft.unconfirmed         unknown delivery notice
@@ -74,6 +75,36 @@ export function sameSessionRef(a, b) {
   return Boolean(a && b) && sessionRef(a).key === sessionRef(b).key;
 }
 
+/** Non-running statuses of a run that is still being launched. */
+const LAUNCH_STATUSES = Object.freeze(['', 'queued', 'pending']);
+
+/**
+ * Whether a composer send may steer the open session (spec/17-web-console.md
+ * §7.7, §8.2). The server accepts steer only while the durable state.status
+ * is 'running', so the decision uses the loaded detail facts: a running state
+ * plus a known live run (the local generating flag or a live active handle).
+ * A live flag or handle without a running state is the launch window
+ * ('starting': show a disabled "Starting…" composer instead of a send that the
+ * server refuses); anything else is not steerable ('none').
+ * @param {{status?: string, generating?: boolean, liveHandle?: boolean}} facts
+ * @returns {'steer'|'starting'|'none'}
+ */
+export function steerReadiness({ status = '', generating = false, liveHandle = false } = {}) {
+  const live = Boolean(generating) || Boolean(liveHandle);
+  const value = str(status).trim().toLowerCase();
+  if (value === 'running') return live ? 'steer' : 'none';
+  return live && LAUNCH_STATUSES.includes(value) ? 'starting' : 'none';
+}
+
+/**
+ * True when the session detail reports a live run handle: one owned by this
+ * server process, or a running session owned by another live process.
+ */
+export function detailHasLiveRunHandle(detail) {
+  const owner = str(detail?.active_handle_owner?.state);
+  return detail?.active_handle === true || owner === 'current_process' || owner === 'running_not_owned';
+}
+
 /** True for POST /api/sessions/start|continue async 202 responses. */
 export function isAcceptedLaunchResponse(value) {
   return str(value?.status).toLowerCase() === 'accepted' && Boolean(value?.session_id);
@@ -83,10 +114,11 @@ export function isAcceptedLaunchResponse(value) {
  * Decide how a composer submission is routed. Must run (and any Goal/Plan
  * draft validation must pass) before the composer is cleared.
  * @param {{rawText: string, sessionId?: string, backed?: boolean, status?: string,
- *   generating?: boolean, planModeStatus?: string, launchInFlight?: boolean}} ctx
+ *   generating?: boolean, liveHandle?: boolean, planModeStatus?: string, launchInFlight?: boolean}} ctx
+ *   liveHandle: detailHasLiveRunHandle(detail) of the loaded session
  * @returns {{ok: true, kind: string, text: string, rawText: string, session: object,
  *   allowsGoalDraft: boolean, allowsPlanDraft: boolean} |
- *   {ok: false, reason: 'empty'|'launchInFlight'|'notReady', notice: object|null}}
+ *   {ok: false, reason: 'empty'|'launchInFlight'|'starting'|'notReady', notice: object|null}}
  */
 export function resolveSendRoute(ctx = {}) {
   const rawText = str(ctx.rawText);
@@ -99,7 +131,11 @@ export function resolveSendRoute(ctx = {}) {
   }
   const status = str(ctx.status).toLowerCase();
   const routesToContinue = durable && CONTINUABLE_STATUSES.includes(status);
-  const routesToSteer = Boolean(ctx.generating) && durable && !routesToContinue;
+  const readiness = durable && !routesToContinue ? steerReadiness({ status, generating: ctx.generating, liveHandle: ctx.liveHandle }) : 'none';
+  const routesToSteer = readiness === 'steer';
+  if (readiness === 'starting') {
+    return { ok: false, reason: 'starting', notice: { key: 'send.starting', tone: 'info' } };
+  }
   if (durable && !routesToContinue && !routesToSteer) {
     return { ok: false, reason: 'notReady', notice: { key: 'send.notReady', tone: 'error' } };
   }

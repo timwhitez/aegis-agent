@@ -9,6 +9,7 @@ export default {
   'zh-CN': {
     'send.launchInFlight': "新会话正在启动，请稍候。",
     'send.notReady': "会话当前状态不能接收消息，请刷新后再试。",
+    'send.starting': "运行正在启动，启动完成后即可追加指令。",
     'send.draft.title': "未发送的消息",
     'send.draft.rejected': "发送被拒绝，消息未送达",
     'send.draft.unconfirmed': "未确认是否送达，请先核对会话记录",
@@ -70,6 +71,7 @@ export default {
     'composer.placeholder.interrupt': "输入指令，发送后将打断当前步骤…",
     'composer.placeholder.revise': "说明计划需要怎么改…",
     'composer.placeholder.loading': "正在加载会话…",
+    'composer.placeholder.starting': "启动中…",
     'composer.placeholder.blocked': "会话当前不能接收消息",
     'composer.placeholder.settling': "会话状态更新中，稍后即可发送…",
     'composer.action.start': "开始",
@@ -194,6 +196,7 @@ export default {
   en: {
     'send.launchInFlight': "A new session is still starting.",
     'send.notReady': "This session can't take a message right now. Refresh and try again.",
+    'send.starting': "The run is still starting. You can add instructions once it is running.",
     'send.draft.title': "Unsent messages",
     'send.draft.rejected': "Rejected — the message was not delivered",
     'send.draft.unconfirmed': "Delivery unconfirmed — check the session before resending",
@@ -255,6 +258,7 @@ export default {
     'composer.placeholder.interrupt': "Instruction to send after interrupting the current step…",
     'composer.placeholder.revise': "Describe how the plan should change…",
     'composer.placeholder.loading': "Loading session…",
+    'composer.placeholder.starting': "Starting…",
     'composer.placeholder.blocked': "This session can't take messages right now",
     'composer.placeholder.settling': "Session is updating — you can send in a moment…",
     'composer.action.start': "Start",

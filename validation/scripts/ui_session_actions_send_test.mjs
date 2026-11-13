@@ -65,6 +65,25 @@ test('running session steers with interrupt; the interrupt toggle resets after s
   assert.equal(h.state().session.optimistic[0].meta.source, 'steer');
 });
 
+test('launch window: a live flag or handle without a running state never sends a steer', async () => {
+  for (const [detail, generating] of [[{ state: { status: 'queued' }, active_handle: true }, false], [{ state: { status: '' } }, true], [{ state: { status: 'pending' }, active_handle_owner: { state: 'running_not_owned' } }, false]]) {
+    const h = createHarness();
+    h.openSession('sess_a', detail, { generating });
+    h.setComposer({ text: 'too early' });
+    const result = await h.actions.submitComposer();
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'starting');
+    assert.deepEqual(h.calls, [], 'no request is sent before the run is running');
+    assert.equal(h.state().composer.text, 'too early', 'the draft stays in the composer');
+    assert.equal(h.toasts.at(-1).message, t('send.starting'));
+  }
+  // Once the durable state is running with a live handle, the same text steers.
+  const h = createHarness();
+  h.openSession('sess_a', { state: { status: 'running' }, active_handle: true }, { generating: false });
+  h.setComposer({ text: 'now' });
+  assert.equal((await h.actions.submitComposer()).kind, 'steer');
+});
+
 test('awaiting plan approval: composer text is sent as a plan revision', async () => {
   const h = createHarness();
   h.openSession('sess_a', { state: { status: 'awaiting_input' }, plan_mode: { status: 'awaiting_approval', plan_version: 2 } });

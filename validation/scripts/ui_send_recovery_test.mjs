@@ -5,6 +5,7 @@ import {
   CONTINUABLE_STATUSES,
   SendRecoveryStore,
   classifySendFailure,
+  detailHasLiveRunHandle,
   failedDraftView,
   isAcceptedLaunchResponse,
   isEphemeralSessionId,
@@ -13,7 +14,8 @@ import {
   resolveSendRoute,
   sameSessionRef,
   sendSuccessFeedback,
-  sessionRef
+  sessionRef,
+  steerReadiness
 } from '../../internal/webconsole/ui/src/lib/send-recovery.js';
 
 function store() {
@@ -205,6 +207,28 @@ test('route resolution mirrors the composer state machine', () => {
   assert.equal(steer.allowsPlanDraft, false);
   assert.equal(steer.allowsGoalDraft, false);
   assert.equal(resolveSendRoute({ ...routeContexts.start, rawText: 'x' }).allowsGoalDraft, true);
+});
+
+test('steer routes only while the durable state is running (launch window is "starting")', () => {
+  assert.equal(steerReadiness({ status: 'running', generating: true }), 'steer');
+  assert.equal(steerReadiness({ status: 'running', liveHandle: true }), 'steer');
+  assert.equal(steerReadiness({ status: 'running' }), 'none', 'a running state without any live run fact is stale');
+  for (const status of ['', 'queued', 'pending']) {
+    assert.equal(steerReadiness({ status, generating: true }), 'starting', status + ' + generating');
+    assert.equal(steerReadiness({ status, liveHandle: true }), 'starting', status + ' + handle');
+    assert.equal(steerReadiness({ status }), 'none');
+  }
+  for (const status of ['cancelled', 'error', 'unknown']) assert.equal(steerReadiness({ status, generating: true }), 'none', status);
+  assert.equal(detailHasLiveRunHandle({ active_handle: true }), true);
+  assert.equal(detailHasLiveRunHandle({ active_handle: false, active_handle_owner: { state: 'running_not_owned' } }), true);
+  assert.equal(detailHasLiveRunHandle({ active_handle: false, active_handle_owner: { state: 'settled' } }), false);
+  assert.equal(detailHasLiveRunHandle(null), false);
+  const durable = { rawText: 'x', sessionId: 's', backed: true };
+  assert.deepEqual(resolveSendRoute({ ...durable, status: 'queued', generating: true }), { ok: false, reason: 'starting', notice: { key: 'send.starting', tone: 'info' } });
+  assert.equal(resolveSendRoute({ ...durable, status: '', liveHandle: true }).reason, 'starting');
+  assert.equal(resolveSendRoute({ ...durable, status: 'cancelled', generating: true }).reason, 'notReady', 'the local flag alone never steers');
+  assert.equal(resolveSendRoute({ ...durable, status: 'running', liveHandle: true }).kind, 'steer');
+  assert.equal(resolveSendRoute({ ...durable, status: 'completed', generating: true }).kind, 'continue', 'continuable states win over a stale flag');
 });
 
 test('success feedback is expressed as keys', () => {

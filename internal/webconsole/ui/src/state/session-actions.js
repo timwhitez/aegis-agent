@@ -26,7 +26,7 @@
 import * as apiModule from '../lib/api.js';
 import { t, tx } from '../lib/i18n.js';
 import { shallowEqual } from '../lib/store.js';
-import { SendRecoveryStore, isEphemeralSessionId, localSendActivity, prepareSend, sendSuccessFeedback } from '../lib/send-recovery.js';
+import { SendRecoveryStore, detailHasLiveRunHandle, isEphemeralSessionId, localSendActivity, prepareSend, sendSuccessFeedback } from '../lib/send-recovery.js';
 import {
   ApprovalOperationController,
   approvalActionError,
@@ -87,6 +87,7 @@ export function sendContextFromState(state, drafts, launching = new Set()) {
     backed,
     status: backed ? str(state.session.detail?.state?.status) : '',
     generating: backed && Boolean(state.session.generating),
+    liveHandle: backed && detailHasLiveRunHandle(state.session.detail),
     planModeStatus: backed ? str(state.session.detail?.plan_mode?.status) : '',
     launchInFlight: !backed && launching.has(sessionId),
   };

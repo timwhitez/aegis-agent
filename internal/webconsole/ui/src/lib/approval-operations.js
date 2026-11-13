@@ -74,6 +74,24 @@ function sameTarget(a, b) {
     a?.expected_revision === b?.expected_revision;
 }
 
+/**
+ * Whether Approve on `parameters` starts a NEW operation (new request id)
+ * instead of re-checking the saved intent (spec/17-web-console.md §7.13).
+ * Admitted and explicitly failed operations are complete. A rejected or
+ * recovery_required operation proves its target was not admitted: the same
+ * target is only re-checked (never silently resent with the old id), while a
+ * newly reviewed, different target may be approved with a new id; the server
+ * ledger still gates corrupt or prepared receipts for any id. Pending, unknown,
+ * not_found and prepared intents keep their id until a check resolves them,
+ * even when the displayed target changes.
+ */
+export function startsNewApprovalOperation(old, parameters) {
+  if (!old) return true;
+  if (['admitted', 'failed'].includes(old.phase)) return true;
+  if (['rejected', 'recovery_required'].includes(old.phase)) return !sameTarget(old.parameters, parameters);
+  return false;
+}
+
 function missionFactsResponse(record, response) {
   return record.entrypoint === 'mission' && !response?.approval && response?.schema_version === 1 &&
     response.session_id === record.session_id && typeof response.goal_id === 'string' && response.goal_id !== '' &&
@@ -167,10 +185,7 @@ export class ApprovalOperationController {
   start(sessionID, entrypoint, parameters) {
     return this.run(sessionID, async () => {
       const old = this.get(sessionID);
-      if (old && (!['admitted', 'failed', 'rejected'].includes(old.phase) ||
-        (old.phase === 'rejected' && sameTarget(old.parameters, parameters)))) {
-        return this.checkRecord(old);
-      }
+      if (!startsNewApprovalOperation(old, parameters)) return this.checkRecord(old);
       const record = {
         session_id: sessionID,
         approval_request_id: this.requestID(),
