@@ -14,8 +14,21 @@ import {
 } from '../../vendor/hooks.module.js';
 import htm from '../../vendor/htm.module.js';
 
-/** Tagged template bound to Preact's h(): html`<div class=${cls}>${child}</div>`. */
-export const html = htm.bind(h);
+/**
+ * Element factory used by html``. Preact assigns `translate` as the boolean
+ * DOM property, so the string "no" would become translate="yes". Normalize
+ * string values on DOM elements so translate="no" (and translate=${false})
+ * both render translate="no".
+ */
+export function hx(type, props, ...children) {
+  if (props && typeof type === 'string' && typeof props.translate === 'string') {
+    props = { ...props, translate: props.translate.trim().toLowerCase() !== 'no' };
+  }
+  return h(type, props, ...children);
+}
+
+/** Tagged template bound to hx(): html`<div class=${cls}>${child}</div>`. */
+export const html = htm.bind(hx);
 
 export {
   h,

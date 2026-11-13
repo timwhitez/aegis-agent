@@ -1,5 +1,5 @@
 // Renders the top entry of state.dialogs (confirmDialog / promptDialog).
-import { html, useRef, useState } from '../lib/html.js';
+import { html, useId, useRef, useState } from '../lib/html.js';
 import { t } from '../lib/i18n.js';
 import { useStore } from '../state/hooks.js';
 import { resolveDialog } from '../state/dialogs.js';
@@ -40,6 +40,7 @@ function PromptDialogView({ dialog }) {
   const [value, setValue] = useState(dialog.initialValue || '');
   const [error, setError] = useState('');
   const inputRef = useRef(null);
+  const errorId = useId();
   const submit = (event) => {
     event?.preventDefault();
     const message = typeof dialog.validate === 'function' ? dialog.validate(value) : (value.trim() ? '' : t('common.dialog.promptInvalid'));
@@ -60,10 +61,11 @@ function PromptDialogView({ dialog }) {
           class="input"
           value=${value}
           aria-invalid=${error ? 'true' : undefined}
+          aria-describedby=${error ? errorId : undefined}
           onInput=${(event) => { setValue(event.currentTarget.value); setError(''); }}
         />
       </label>
-      ${error ? html`<p class="field-error" role="alert">${error}</p>` : null}
+      ${error ? html`<p id=${errorId} class="field-error" role="alert">${error}</p>` : null}
       <div class="dialog-footer is-inline">
         <${Button} variant="secondary" onClick=${() => resolveDialog(dialog.id, null)}>${t('common.cancel')}<//>
         <${Button} variant="primary" type="submit">${dialog.confirmLabel || t('common.confirm')}<//>

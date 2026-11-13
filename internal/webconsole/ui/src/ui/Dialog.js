@@ -1,4 +1,4 @@
-import { html, useEffect, useId, useLayoutEffect, useRef } from '../lib/html.js';
+import { html, useId, useLayoutEffect, useRef } from '../lib/html.js';
 import { t } from '../lib/i18n.js';
 import { Portal } from './Portal.js';
 import { IconButton } from './IconButton.js';
@@ -51,17 +51,17 @@ function DialogFrame({
     };
   }, []);
 
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key === 'Escape' && !event.isComposing) {
-        event.stopPropagation();
-        onCloseRef.current?.();
-      }
-    };
-    const frame = frameRef.current;
-    frame?.addEventListener('keydown', onKeyDown);
-    return () => frame?.removeEventListener('keydown', onKeyDown);
-  }, []);
+  // Escape is handled synchronously in the frame's onKeyDown (bound at render
+  // time) so a key pressed right after the dialog opens is never lost.
+  const onFrameKeyDown = (event) => {
+    if (event.key === 'Escape' && !event.isComposing) {
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current?.();
+      return;
+    }
+    trapTabKey(event, frameRef.current);
+  };
 
   return html`<div class=${`dialog-layer placement-${placement}`} onMouseDown=${(event) => { if (event.target === event.currentTarget) onCloseRef.current?.(); }}>
     <div
@@ -73,7 +73,7 @@ function DialogFrame({
       aria-describedby=${description ? descriptionId : undefined}
       tabindex="-1"
       data-testid=${testId}
-      onKeyDown=${(event) => trapTabKey(event, frameRef.current)}
+      onKeyDown=${onFrameKeyDown}
     >
       ${title || showClose ? html`<div class=${`dialog-header ${hideTitle ? 'is-title-hidden' : ''}`}>
         ${title ? html`<h2 id=${titleId} class=${hideTitle ? 'sr-only' : 'dialog-title'}>${title}</h2>` : null}
