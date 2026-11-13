@@ -458,24 +458,8 @@ func chmodPathAtNoSymlink(path string, mode os.FileMode, allowRegular, allowDir 
 	if base == "." || base == string(filepath.Separator) {
 		return fmt.Errorf("invalid chmod path: %s", path)
 	}
-	parentFD, err := openDirNoSymlink(parent)
+	fd, err := openChmodTargetNoSymlink(path, parent, base)
 	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = unix.Close(parentFD)
-	}()
-	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
-		return err
-	}
-	fd, err := unix.Openat(parentFD, base, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
-			return fmt.Errorf("refusing to chmod symlinked path: %s", path)
-		}
-		if errors.Is(err, unix.ENOENT) {
-			return os.ErrNotExist
-		}
 		return err
 	}
 	var stat unix.Stat_t
@@ -504,6 +488,35 @@ func chmodPathAtNoSymlink(path string, mode os.FileMode, allowRegular, allowDir 
 		err = closeErr
 	}
 	return err
+}
+
+func openChmodTargetNoSymlink(path, parent, base string) (int, error) {
+	if abs, err := filepath.Abs(path); err == nil {
+		if fd, ok := openNoSymlinkSingleOpen(abs, unix.O_RDONLY); ok {
+			return fd, nil
+		}
+	}
+	parentFD, err := openDirNoSymlink(parent)
+	if err != nil {
+		return -1, err
+	}
+	defer func() {
+		_ = unix.Close(parentFD)
+	}()
+	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
+		return -1, err
+	}
+	fd, err := unix.Openat(parentFD, base, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return -1, fmt.Errorf("refusing to chmod symlinked path: %s", path)
+		}
+		if errors.Is(err, unix.ENOENT) {
+			return -1, os.ErrNotExist
+		}
+		return -1, err
+	}
+	return fd, nil
 }
 
 func ReadRegularFileNoSymlink(path string) ([]byte, os.FileInfo, error) {
@@ -583,6 +596,16 @@ func openRegularFileForReadNoSymlink(path string) (*os.File, error) {
 	if base == "." || base == string(filepath.Separator) {
 		return nil, fmt.Errorf("invalid file path: %s", path)
 	}
+	if beforeReadRegularFileOpen == nil {
+		if abs, err := filepath.Abs(path); err == nil {
+			if fd, ok := openNoSymlinkSingleOpen(abs, unix.O_RDONLY); ok {
+				if file := os.NewFile(uintptr(fd), path); file != nil {
+					return file, nil
+				}
+				_ = unix.Close(fd)
+			}
+		}
+	}
 	parentFD, err := openDirNoSymlink(parent)
 	if err != nil {
 		if errors.Is(err, unix.ENOENT) || errors.Is(err, os.ErrNotExist) {
@@ -650,7 +673,7 @@ func OpenFileNoSymlink(path string, flags int, mode os.FileMode) (*os.File, erro
 	if err := ensureDirFDStillAtPath(parentFD, parent); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(parentFD, base, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
+	fd, err := openatCreateRetryingSpuriousENOENT(parentFD, base, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(mode.Perm()))
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
 			return nil, fmt.Errorf("refusing to open symlinked file: %s", path)
@@ -666,6 +689,26 @@ func OpenFileNoSymlink(path string, flags int, mode os.FileMode) (*os.File, erro
 		return nil, errors.New("failed to open file")
 	}
 	return file, nil
+}
+
+const openCreateENOENTRetries = 8
+
+// openatCreateRetryingSpuriousENOENT retries a non-exclusive O_CREAT open that
+// reports ENOENT. On macOS hosts (observed with an Endpoint Security client),
+// when several threads or processes create the same new name concurrently,
+// every racer except the creator fails with ENOENT although the parent is a
+// live directory; the name exists by the next attempt. O_EXCL opens and opens
+// without O_CREAT are never retried, and a parent that was really removed keeps
+// reporting ENOENT after the bounded retries.
+func openatCreateRetryingSpuriousENOENT(parentFD int, base string, flags int, perm uint32) (int, error) {
+	fd, err := unix.Openat(parentFD, base, flags, perm)
+	if flags&unix.O_CREAT == 0 || flags&unix.O_EXCL != 0 {
+		return fd, err
+	}
+	for attempt := 0; attempt < openCreateENOENTRetries && errors.Is(err, unix.ENOENT); attempt++ {
+		fd, err = unix.Openat(parentFD, base, flags, perm)
+	}
+	return fd, err
 }
 
 // OpenDirNoSymlink opens an existing directory without following symlinks in
@@ -714,6 +757,11 @@ func mkdirAllNoSymlinkAt(path string, mode os.FileMode) error {
 		return err
 	}
 	abs = filepath.Clean(abs)
+	if existingFD, ok := openDirNoSymlinkSingleOpen(abs); ok {
+		// Every component already exists as a real directory; nothing to create.
+		_ = unix.Close(existingFD)
+		return nil
+	}
 	root, parts := splitAbsolutePath(abs)
 	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -913,6 +961,13 @@ func openDirNoSymlink(path string) (int, error) {
 	abs, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		return -1, err
+	}
+	if fd, ok := openDirNoSymlinkSingleOpen(abs); ok {
+		if err := ensureDirFDStillAtPath(fd, path); err != nil {
+			_ = unix.Close(fd)
+			return -1, err
+		}
+		return fd, nil
 	}
 	root, parts := splitAbsolutePath(abs)
 	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)

@@ -14,9 +14,22 @@ import (
 	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 )
 
+// requireOwnedBrowserPlatform skips owned browser process lifecycle tests where
+// spec 19 provides no owned browser (outside Linux x86_64); there every call
+// fails with the explicit unsupported-platform diagnostic, which the app and
+// Web browser tests assert.
+func requireOwnedBrowserPlatform(t *testing.T) {
+	t.Helper()
+	if err := tools.BrowserPlatformError(); err != nil {
+		t.Skip(err)
+	}
+}
+
 func TestBrowserCleanupPrecedesDurableCompletion(t *testing.T) {
+	requireOwnedBrowserPlatform(t)
 	engine, meta, state, registry, hm, catalog := newTestEngineWithConfig(t, browserEngineConfig(t), session.ModeExec)
 	meta.QueueJobID = "job_browser_cleanup"
 	if err := engine.store.SaveMetadata(meta.ID, meta); err != nil {
@@ -80,6 +93,7 @@ func TestBrowserCleanupPrecedesDurableCompletion(t *testing.T) {
 }
 
 func TestBrowserInterruptSteerFreshExplicitAttempt(t *testing.T) {
+	requireOwnedBrowserPlatform(t)
 	engine, meta, state, registry, hm, catalog := newTestEngineWithConfig(t, browserEngineConfig(t), session.ModeExec)
 	marker := filepath.Join(t.TempDir(), "effects")
 	args, _ := json.Marshal(map[string]string{"code": "import time;open(" + strconv.Quote(marker) + ",'a').write('once\\n');time.sleep(30)"})
@@ -219,6 +233,7 @@ func TestBrowserGuidanceDisclosureInProviderRequest(t *testing.T) {
 	}
 }
 func TestBrowserEngineRegistryHooksArtifactNextProvider(t *testing.T) {
+	requireOwnedBrowserPlatform(t)
 	cfg := browserEngineConfig(t)
 	cfg.Runtime.ToolOutput.LLMOutputMaxBytes = 1024
 	cfg.Hooks.ToolBefore = []config.HookDefinition{{Name: "browser-before", Match: config.HookMatch{Tool: "browser_exec"}, Inject: &config.HookInject{Field: "arguments", Set: `{"code":"print('HEAD'+'x'*6000+'MIDDLE'+'y'*6000+'TAIL')"}`}}}
@@ -328,6 +343,7 @@ func TestBrowserPlanModeBlocksForgedDispatch(t *testing.T) {
 }
 
 func TestBrowserPauseAndAbortSettlesOwnedProcesses(t *testing.T) {
+	requireOwnedBrowserPlatform(t)
 	for _, kind := range []string{"pause", "abort", "child_stop"} {
 		t.Run(kind, func(t *testing.T) {
 			cfg := browserEngineConfig(t)

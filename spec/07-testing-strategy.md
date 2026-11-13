@@ -110,6 +110,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - 优先使用标准库和 `httptest`
 - 尽量不使用 mock framework
 - 优先用 fake provider、fake tool、fake session store
+- 测试只写自己的临时目录：使用 queue/delegate/isolation 的测试 config 必须把 `runtime.isolation.root_dir` 指向 `t.TempDir()`，不能落到真实 HOME 的默认 `~/.aegis-agent/_worktrees`；提速不得通过放松 fsync 或路径安全语义实现
 
 ## 4. 关键测试场景
 
@@ -118,6 +119,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `read_file` 正常读取
 - 越界路径被拒绝
 - symlink 越界被拒绝
+- `internal/fileutil` 在 darwin 用单次 `O_NOFOLLOW_ANY` open 解析 no-symlink 路径（每次 open 在装有 Endpoint Security 客户端的主机上都有毫秒级成本），失败一律回退逐级 `O_NOFOLLOW` walk 以保持错误分类与测试钩子；永久测试覆盖祖先/末级 symlink 拒绝与 walk 同一身份。非独占 `O_CREAT` 因并发创建同名文件得到的 ENOENT 有界重试，`O_EXCL` 与父目录真实删除仍 fail closed
 - `write_file` 创建父目录
 - `edit_file` 替换失败时报错
 - `finish` 设置 `final`

@@ -14543,6 +14543,9 @@ func testConfig(t *testing.T, baseURL string) *config.Config {
 	provider.TimeoutSec = 3
 	cfg.Providers["openai"] = provider
 	cfg.Session.Dir = filepath.Join(t.TempDir(), "sessions")
+	// The default isolation root lives under the real HOME; child worktrees
+	// created by queue/delegate tests must stay inside the test's temp tree.
+	cfg.Runtime.Isolation.RootDir = filepath.Join(t.TempDir(), "worktrees")
 	cfg.Skills.Dirs = nil
 	cfg.Runtime.Queue.PollIntervalMS = 20
 	cfg.Runtime.Queue.AutoWorker = false

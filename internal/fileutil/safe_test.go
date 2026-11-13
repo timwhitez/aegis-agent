@@ -1,9 +1,13 @@
 package fileutil
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,6 +393,162 @@ func TestMkdirAllNoSymlinkRejectsSymlinkAncestor(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(outside, "demo", "references")); !os.IsNotExist(statErr) {
 		t.Fatalf("outside target should not be created, stat err=%v", statErr)
+	}
+}
+
+func TestOpenDirNoSymlinkSingleOpenMatchesWalkAndRejectsEverySymlinkComponent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	real := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "b"), 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "ancestor-link")); err != nil {
+		t.Fatalf("symlink ancestor: %v", err)
+	}
+	if err := os.Symlink(real, filepath.Join(root, "final-link")); err != nil {
+		t.Fatalf("symlink final: %v", err)
+	}
+
+	fd, ok := openDirNoSymlinkSingleOpen(real)
+	if !ok {
+		if runtime.GOOS == "darwin" {
+			t.Fatal("single-open fast path must open a symlink-free directory on darwin")
+		}
+		t.Skip("platform has no single-open no-symlink directory resolution")
+	}
+	var fast, walked unix.Stat_t
+	if err := unix.Fstat(fd, &fast); err != nil {
+		t.Fatalf("fstat fast: %v", err)
+	}
+	_ = unix.Close(fd)
+	if err := unix.Lstat(real, &walked); err != nil {
+		t.Fatalf("lstat: %v", err)
+	}
+	if fast.Dev != walked.Dev || fast.Ino != walked.Ino {
+		t.Fatalf("single open resolved a different directory: %+v vs %+v", fast, walked)
+	}
+	for _, path := range []string{filepath.Join(root, "ancestor-link", "b"), filepath.Join(root, "final-link")} {
+		if fd, ok := openDirNoSymlinkSingleOpen(path); ok {
+			_ = unix.Close(fd)
+			t.Fatalf("single open followed a symlink component: %s", path)
+		}
+		if _, err := OpenDirNoSymlink(path); err == nil || !strings.Contains(err.Error(), "symlinked") {
+			t.Fatalf("OpenDirNoSymlink(%s) must keep the walk's symlink error, got %v", path, err)
+		}
+	}
+	if err := MkdirAllNoSymlink(filepath.Join(root, "ancestor-link", "b", "c"), 0o700); err == nil {
+		t.Fatal("MkdirAllNoSymlink must reject a symlinked ancestor")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "b", "c")); !os.IsNotExist(err) {
+		t.Fatalf("outside target should not be created, stat err=%v", err)
+	}
+	outsideFile := filepath.Join(outside, "b", "state.json")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	viaLink := filepath.Join(root, "ancestor-link", "b", "state.json")
+	if fd, ok := openNoSymlinkSingleOpen(viaLink, unix.O_RDONLY); ok {
+		_ = unix.Close(fd)
+		t.Fatal("single open followed a symlinked ancestor of a regular file")
+	}
+	if data, _, err := ReadRegularFileNoSymlink(viaLink); err == nil {
+		t.Fatalf("read through symlinked ancestor must fail, got %q", data)
+	}
+	if err := ChmodPathNoSymlink(viaLink, 0o600); err == nil {
+		t.Fatal("chmod through symlinked ancestor must fail")
+	}
+	if info, err := os.Stat(outsideFile); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("outside file mode changed: info=%v err=%v", info, err)
+	}
+	localFile := filepath.Join(real, "state.json")
+	if err := os.WriteFile(localFile, []byte("local"), 0o644); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+	if data, _, err := ReadRegularFileNoSymlink(localFile); err != nil || string(data) != "local" {
+		t.Fatalf("read local file: %q %v", data, err)
+	}
+	if err := ChmodPathNoSymlink(localFile, 0o600); err != nil {
+		t.Fatalf("chmod local file: %v", err)
+	}
+	if info, err := os.Stat(localFile); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("local file mode not applied: info=%v err=%v", info, err)
+	}
+}
+
+func TestOpenFileNoSymlinkConcurrentCreateOfSameNewNameAlwaysOpens(t *testing.T) {
+	base := t.TempDir()
+	for trial := 0; trial < 40; trial++ {
+		dir := filepath.Join(base, fmt.Sprintf("trial-%d", trial))
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		path := filepath.Join(dir, "claim.lock")
+		start := make(chan struct{})
+		errs := make(chan error, 4)
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				file, err := OpenFileNoSymlink(path, unix.O_CREAT|unix.O_RDWR, 0o600)
+				if err == nil {
+					err = file.Close()
+				}
+				errs <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("trial %d: concurrent create of the same lock file failed: %v", trial, err)
+			}
+		}
+	}
+}
+
+func TestOpenatCreateRetryKeepsENOENTForRemovedParentAndExclusiveSemantics(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "gone")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	fd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open dir: %v", err)
+	}
+	defer unix.Close(fd)
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("remove dir: %v", err)
+	}
+	if child, err := openatCreateRetryingSpuriousENOENT(fd, "claim.lock", unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC, 0o600); err == nil {
+		_ = unix.Close(child)
+		t.Fatal("create inside a removed directory must not succeed")
+	} else if !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("expected ENOENT for removed parent, got %v", err)
+	}
+
+	live := t.TempDir()
+	liveFD, err := unix.Open(live, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open live dir: %v", err)
+	}
+	defer unix.Close(liveFD)
+	first, err := openatCreateRetryingSpuriousENOENT(liveFD, "exclusive", unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		t.Fatalf("exclusive create: %v", err)
+	}
+	_ = unix.Close(first)
+	if second, err := openatCreateRetryingSpuriousENOENT(liveFD, "exclusive", unix.O_CREAT|unix.O_EXCL|unix.O_RDWR|unix.O_CLOEXEC, 0o600); err == nil {
+		_ = unix.Close(second)
+		t.Fatal("O_EXCL must keep failing for an existing name")
+	} else if !errors.Is(err, unix.EEXIST) {
+		t.Fatalf("expected EEXIST, got %v", err)
 	}
 }
 
