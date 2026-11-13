@@ -75,8 +75,12 @@ export function createComposerDrafts({ getState, update, random = Math.random })
 
   /** Called by newSession() before it clears the composer: keeps the old owner's draft, drops the new-session draft. */
   function resetNewSession() {
-    if (!isNewSessionKey(owner)) stashOwner();
-    stash.delete(owner);
+    if (isNewSessionKey(owner)) {
+      stash.delete(owner);
+    } else {
+      stashOwner();
+      stash.delete(newKey());
+    }
     ephemeralId = nextEphemeralSessionId(random);
     owner = newKey();
     return owner;

@@ -35,7 +35,7 @@ internal/webconsole/ui/
   src/
     main.js                  启动：locale、store、路由、实时通道、挂载 <App>
     lib/                     纯逻辑，无 DOM 依赖，可在 node:test 中直接 import
-      html.js                html = htm.bind(h) 与 hooks 再导出
+      html.js                html = htm.bind(hx)（规范化 translate 的元素工厂）与 hooks 再导出
       api.js                 REST 客户端与 APIError（唯一 fetch 入口）
       store.js               最小可订阅 store
       i18n.js                t()、locale、Intl 格式化
@@ -109,7 +109,8 @@ internal/webconsole/ui/
 - Composer 草稿（文本与 Goal/Plan/打断开关）按会话保存在内存中（`state/composer-drafts.js`），切换回会话时恢复；新会话草稿独立。失败草稿只存在于内存。
 - 工作区浏览路径偏好按 `workspace_root + session` 分桶存入 `aegis-agent.workspace-paths.v1`；工作区页通过 `features/workspace/workspace-session.js` 记住最近打开的会话，用于从会话进入时定位其 workdir。
 - 会话摘要（overview、sessions、history）带只读 `title`：Web 适配层从 `messages.jsonl` 头部有界读取首条用户消息并在内存缓存；工作区列表条目带 `size`（普通文件）与 `modified_at`。
-- `overview.titles` 只保存在内存中，来自打开过的会话的首条 prompt；当前摘要 DTO 没有标题字段。
+- 会话标题优先使用摘要 DTO 的 `title`；`overview.titles` 只作内存补充（来自本页打开过的会话的首条 prompt），用于摘要尚未带标题的情况。
+- 轮询取回的消息尾部与已加载窗口没有任何重叠时（两次刷新之间新增超过一页），前端用 `before_id` 向前分页补齐缺口（每页 200 条，最多 10 页）；仍补不齐时只保留最新窗口并允许"加载更早"，不会静默丢失消息。会话切换会递增 epoch，过期的刷新或更早分页结果一律丢弃。
 - 偏好 `sidebarCollapsed`、`inspectorOpen`、`inspectorTab` 持久化到 `aegis-agent.ui-prefs.v1`；语言偏好持久化到 `aegis-agent.locale.v1`。
 
 **订阅与动作**：

@@ -96,6 +96,43 @@ export function firstPromptFromMessages(messages, hasMoreEarlier) {
   return first ? firstLine(first.text, 120) : '';
 }
 
+/** True when both windows hold messages and share no message id (a gap may sit between them). */
+export function windowsDisjoint(current, tail) {
+  const currentIds = new Set((current || []).map((message) => message?.id).filter(Boolean));
+  const tailIds = (tail || []).map((message) => message?.id).filter(Boolean);
+  if (!currentIds.size || !tailIds.length) return false;
+  return !tailIds.some((id) => currentIds.has(id));
+}
+
+/**
+ * Closes a gap between the loaded window (known) and a newer tail that shares
+ * no id with it by paging backwards from the tail: fetchPage(beforeId) must
+ * resolve to { messages, has_more }. Stops as soon as a page overlaps the
+ * known window (bridged: messages = known + everything after it), when the
+ * history start is reached (bridged: messages = the fetched history), or
+ * after maxPages (not bridged: messages = what was fetched, older messages
+ * remain reachable through "load earlier"). Never drops loaded messages
+ * silently.
+ */
+export async function bridgeMessageGap({ known = [], tail = [], fetchPage, maxPages = 10 }) {
+  const knownIds = new Set(known.map((message) => message?.id).filter(Boolean));
+  let collected = tail.slice();
+  for (let page = 0; page < maxPages; page += 1) {
+    const beforeId = collected[0]?.id;
+    if (!beforeId) break;
+    const result = await fetchPage(beforeId);
+    const messages = Array.isArray(result?.messages) ? result.messages : [];
+    collected = mergeMessageWindows(messages, collected);
+    if (messages.some((message) => knownIds.has(message?.id))) {
+      return { bridged: true, reachedStart: false, messages: mergeMessageWindows(known, collected) };
+    }
+    if (!messages.length || !result?.has_more) {
+      return { bridged: true, reachedStart: true, messages: collected };
+    }
+  }
+  return { bridged: false, reachedStart: false, messages: collected };
+}
+
 /**
  * Merges two message windows by id. `later` wins for duplicate ids and its new
  * ids are appended after `earlier`. Used for tail polling (merge(current,

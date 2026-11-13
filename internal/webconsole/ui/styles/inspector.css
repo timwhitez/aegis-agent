@@ -912,7 +912,7 @@ ul.insp-bullets[role="list"] {
 }
 
 .insp-segment {
-  min-height: calc(var(--hit) - 4px);
+  min-height: var(--hit);
   padding: 0 var(--space-3);
   border: 0;
   border-radius: var(--radius-1);

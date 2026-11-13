@@ -2,7 +2,7 @@
 import * as api from '../lib/api.js';
 import { t, toggleLocale as toggleLocaleCore } from '../lib/i18n.js';
 import { sessionDetailDisplayStatus, sessionSummaryDisplayStatus } from '../lib/status.js';
-import { firstPromptFromMessages, mergeMessageWindows, rootSessions } from '../lib/session-list.js';
+import { bridgeMessageGap, firstPromptFromMessages, mergeMessageWindows, rootSessions, windowsDisjoint } from '../lib/session-list.js';
 import { isLocalActivitySettled } from '../lib/send-recovery.js';
 import { relayHints } from './relay.js';
 import { emptyComposerSlice, emptySessionSlice, getState, update } from './store.js';
@@ -16,6 +16,11 @@ export { navigate, sessionPath };
 const notifiedMissing = new Set();
 let sessionRequestSeq = 0;
 let appliedSessionSeq = 0;
+// Bumped whenever the session slice is recreated (route switch) so late
+// responses for an earlier visit of the same session cannot merge into it.
+let sessionEpoch = 0;
+const GAP_PAGE_LIMIT = 200;
+const GAP_MAX_PAGES = 10;
 let overviewRequestSeq = 0;
 let lastMalformedToastAt = 0;
 let lastOverviewReconcile = '';
@@ -53,11 +58,15 @@ export function syncSessionForRoute(route) {
   const { session } = getState();
   if (route.name === 'session') {
     if (session.id === route.params.id) return;
+    sessionEpoch += 1;
     update('session', () => ({ ...emptySessionSlice(route.params.id), loading: true }));
     refreshSession();
     return;
   }
-  if (session.id) update('session', () => emptySessionSlice());
+  if (session.id) {
+    sessionEpoch += 1;
+    update('session', () => emptySessionSlice());
+  }
 }
 
 // ---- data loading ----------------------------------------------------------------
@@ -80,16 +89,43 @@ export async function refreshSession({ silent = false } = {}) {
   const id = session.id;
   if (!id || session.missing) return null;
   const seq = ++sessionRequestSeq;
+  const epoch = sessionEpoch;
+  const isStale = () => getState().session.id !== id || epoch !== sessionEpoch || seq < appliedSessionSeq;
   update('session', { refreshing: true });
   try {
     const detail = await api.getSession(id, { limit: 40 });
-    const current = getState().session;
-    if (current.id !== id || seq < appliedSessionSeq) return null;
+    if (isStale()) return null;
     appliedSessionSeq = seq;
-    const messages = mergeMessageWindows(current.messages, detail?.messages || []);
-    const hasMoreEarlier = current.messages.length === 0 && !current.earlierLoaded
-      ? Boolean(detail?.has_more_messages)
-      : current.hasMoreEarlier;
+    const tail = detail?.messages || [];
+    let current = getState().session;
+    let messages;
+    let hasMoreEarlier;
+    let earlierLoaded = current.earlierLoaded;
+    if (windowsDisjoint(current.messages, tail)) {
+      // More messages arrived than one tail holds (e.g. a hidden tab during a
+      // long run): page backwards to close the gap instead of hiding it.
+      const bridge = await bridgeMessageGap({
+        known: current.messages,
+        tail,
+        fetchPage: (beforeId) => api.getSessionMessages(id, { beforeId, limit: GAP_PAGE_LIMIT }),
+        maxPages: GAP_MAX_PAGES,
+      });
+      if (getState().session.id !== id || epoch !== sessionEpoch || seq < appliedSessionSeq) return null;
+      current = getState().session;
+      if (bridge.bridged && !bridge.reachedStart) {
+        messages = mergeMessageWindows(current.messages, bridge.messages);
+        hasMoreEarlier = current.hasMoreEarlier;
+      } else {
+        messages = bridge.messages;
+        hasMoreEarlier = !bridge.reachedStart;
+        earlierLoaded = false;
+      }
+    } else {
+      messages = mergeMessageWindows(current.messages, tail);
+      hasMoreEarlier = current.messages.length === 0 && !current.earlierLoaded
+        ? Boolean(detail?.has_more_messages)
+        : current.hasMoreEarlier;
+    }
     const displayStatus = sessionDetailDisplayStatus(detail);
     const generating = displayStatus === 'running';
     // Local send feedback ends once the run settled after it (or it aged out).
@@ -98,6 +134,7 @@ export async function refreshSession({ silent = false } = {}) {
       detail,
       messages,
       hasMoreEarlier,
+      earlierLoaded,
       loading: false,
       refreshing: false,
       error: null,
@@ -109,7 +146,8 @@ export async function refreshSession({ silent = false } = {}) {
     reconcileOverviewStatus(id, displayStatus);
     return detail;
   } catch (error) {
-    if (getState().session.id !== id) return null;
+    // An older request that failed after a newer one succeeded must not mark fresh data as failed.
+    if (isStale()) return null;
     if (error?.status === 404) {
       handleMissingSession(id);
       return null;
@@ -146,10 +184,11 @@ export async function loadEarlierMessages() {
   const beforeId = session.messages[0]?.id;
   if (!session.id || session.loadingEarlier || !session.hasMoreEarlier || !beforeId) return;
   const id = session.id;
+  const epoch = sessionEpoch;
   update('session', { loadingEarlier: true });
   try {
     const page = await api.getSessionMessages(id, { beforeId, limit: 40 });
-    if (getState().session.id !== id) return;
+    if (getState().session.id !== id || epoch !== sessionEpoch) return;
     update('session', (current) => {
       const messages = mergeMessageWindows(page?.messages || [], current.messages);
       return { ...current, messages, loadingEarlier: false, earlierLoaded: true, hasMoreEarlier: Boolean(page?.has_more) };
@@ -157,7 +196,7 @@ export async function loadEarlierMessages() {
     const current = getState().session;
     learnSessionTitle(id, current.messages, current.hasMoreEarlier);
   } catch (error) {
-    if (getState().session.id !== id) return;
+    if (getState().session.id !== id || epoch !== sessionEpoch) return;
     update('session', { loadingEarlier: false });
     toastError(error, 'shell.session.earlierFailed');
   }
