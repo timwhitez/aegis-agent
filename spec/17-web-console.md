@@ -422,7 +422,7 @@ Settings API：
 
 - `limit`
 
-返回最近 sessions。
+返回最近 sessions。`/api/overview` 的 `recent_sessions`、`/api/sessions` 与 `/api/history` 的 `items` 中每个 session 摘要额外带可选 `title`：首条操作者 user 消息（跳过带 `meta.source`/`meta.kind` 的 harness/steer/后台消息，空白折叠，最多 120 rune），只从 `messages.jsonl` 开头有界读取（≤256 KiB）并按 session id 在内存中缓存非空结果；读不到时省略该字段，不报错。
 
 ### 7.4 `GET /api/sessions/{id}`
 

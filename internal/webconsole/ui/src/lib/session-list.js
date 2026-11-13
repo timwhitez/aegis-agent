@@ -11,17 +11,18 @@ export function rootSessions(items) {
 
 /**
  * Durable title text for a summary, or '' when only a UI fallback is possible.
- * knownTitles maps session id -> first prompt learned from opened sessions.
+ * Prefers the server-derived summary.title (first operator prompt); knownTitles
+ * maps session id -> first prompt learned from opened sessions.
  */
 export function summaryTitle(item, knownTitles = {}) {
   const learned = item?.id ? knownTitles[item.id] : '';
-  return firstLine(learned || item?.goal_objective || item?.plan_mode_summary || item?.agent_name || '', 120);
+  return firstLine(item?.title || learned || item?.goal_objective || item?.plan_mode_summary || item?.agent_name || '', 120);
 }
 
 export function filterSessions(items, query, knownTitles = {}) {
   const needle = normalizeText(query);
   if (!needle) return items;
-  return items.filter((item) => [summaryTitle(item, knownTitles), item.id, item.workdir, item.agent_name, item.model]
+  return items.filter((item) => [summaryTitle(item, knownTitles), item.title, item.id, item.workdir, item.agent_name, item.model]
     .some((value) => normalizeText(value).includes(needle)));
 }
 

@@ -151,7 +151,7 @@ function SessionRow({ item, active, titles, now, onNav }) {
   >
     <${StatusDot} status=${status} />
     ${title
-      ? html`<span class="session-row-title" translate="no">${title}</span>`
+      ? html`<span class="session-row-title" translate="no" title=${title}>${title}</span>`
       : html`<span class="session-row-title is-fallback">${t('shell.session.untitled', { id: '' })}<span translate="no">${shortId(item.id)}</span></span>`}
     <time class="session-row-time" datetime=${time} title=${formatDateTime(time)}>${formatRelativeTime(time, now)}</time>
   </a>`;

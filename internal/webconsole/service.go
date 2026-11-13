@@ -167,6 +167,9 @@ type Service struct {
 	handles map[string]*launchHandle
 	closed  bool
 
+	// titles caches derived session titles (first user prompt) by session id.
+	titles *sessionTitleCache
+
 	pendingStartSeq int
 	pendingStarts   map[int]context.CancelFunc
 
@@ -382,6 +385,7 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		pendingStarts:   map[int]context.CancelFunc{},
 		setProcessEnv:   os.Setenv,
 		unsetProcessEnv: os.Unsetenv,
+		titles:          newSessionTitleCache(sessionTitleCacheMaxEntries),
 	}
 	svc.wsUpgrader = websocket.Upgrader{CheckOrigin: svc.websocketOriginAllowed}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
@@ -516,7 +520,10 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, overviewResponseView{
+			OverviewResponse: resp,
+			RecentSessions:   s.sessionSummaryViews(resp.RecentSessions),
+		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/history":
 		s.handleHistory(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/sessions":
@@ -755,7 +762,7 @@ func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []session.SessionSummary{}
 	}
-	writeJSON(w, http.StatusOK, webSafeSessionSummaries(items))
+	writeJSON(w, http.StatusOK, s.sessionSummaryViews(webSafeSessionSummaries(items)))
 }
 
 func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -774,13 +781,17 @@ func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		totalPages = (total + pageSize - 1) / pageSize
 	}
-	writeJSON(w, http.StatusOK, webSafeHistoryResponse(HistoryResponse{
+	resp := webSafeHistoryResponse(HistoryResponse{
 		Items:      items,
 		Total:      total,
 		Page:       page,
 		PageSize:   pageSize,
 		TotalPages: totalPages,
-	}))
+	})
+	writeJSON(w, http.StatusOK, historyResponseView{
+		HistoryResponse: resp,
+		Items:           s.sessionSummaryViews(resp.Items),
+	})
 }
 
 func paginationOffset(page, pageSize int) int {
@@ -793,6 +804,161 @@ func paginationOffset(page, pageSize int) int {
 		return maxInt
 	}
 	return (page - 1) * pageSize
+}
+
+const (
+	// sessionTitleMaxRunes caps the derived title; longer prompts end in "…".
+	sessionTitleMaxRunes = 120
+	// sessionTitleScanMaxBytes bounds the messages.jsonl prefix scanned for the
+	// first operator prompt, so list endpoints never read whole transcripts.
+	sessionTitleScanMaxBytes = 256 << 10
+	// sessionTitleCacheMaxEntries bounds the in-memory title cache.
+	sessionTitleCacheMaxEntries = 4096
+)
+
+// sessionTitleCache remembers non-empty derived titles by session id. A
+// session's first user message is append-only history, so a found title never
+// changes; misses are not cached because the message may not be published yet.
+type sessionTitleCache struct {
+	mu      sync.Mutex
+	max     int
+	entries map[string]string
+	order   []string
+}
+
+func newSessionTitleCache(max int) *sessionTitleCache {
+	if max <= 0 {
+		max = sessionTitleCacheMaxEntries
+	}
+	return &sessionTitleCache{max: max, entries: map[string]string{}}
+}
+
+func (c *sessionTitleCache) get(id string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	title, ok := c.entries[id]
+	return title, ok
+}
+
+func (c *sessionTitleCache) put(id, title string) {
+	if c == nil || id == "" || title == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entries[id]; ok {
+		c.entries[id] = title
+		return
+	}
+	for len(c.entries) >= c.max && len(c.order) > 0 {
+		delete(c.entries, c.order[0])
+		c.order = c.order[1:]
+	}
+	c.entries[id] = title
+	c.order = append(c.order, id)
+}
+
+func (c *sessionTitleCache) size() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// sessionSummaryViews decorates summaries with derived titles. It always
+// returns a non-nil slice so empty lists encode as [].
+func (s *Service) sessionSummaryViews(items []session.SessionSummary) []SessionSummaryView {
+	out := make([]SessionSummaryView, 0, len(items))
+	for _, item := range items {
+		out = append(out, SessionSummaryView{SessionSummary: item, Title: s.sessionTitle(item.ID)})
+	}
+	return out
+}
+
+// sessionTitle returns the session's first operator prompt (whitespace
+// collapsed, capped at sessionTitleMaxRunes) or "" when it is not available.
+// It is a best-effort display fact: missing, partial or unreadable message
+// files yield "" instead of failing the list request.
+func (s *Service) sessionTitle(sessionID string) string {
+	if s == nil || s.store == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	if title, ok := s.titles.get(sessionID); ok {
+		return title
+	}
+	title := readSessionTitle(filepath.Join(s.store.SessionDir(sessionID), "messages.jsonl"), sessionTitleScanMaxBytes)
+	s.titles.put(sessionID, title)
+	return title
+}
+
+// sessionTitleProbe decodes only the message fields the title needs.
+type sessionTitleProbe struct {
+	Role string         `json:"role"`
+	Text string         `json:"text"`
+	Meta map[string]any `json:"meta"`
+}
+
+// readSessionTitle scans at most maxBytes from the start of messages.jsonl and
+// returns the normalized text of the first operator-authored user message.
+// Harness-injected user messages (steer, harness reminders, background
+// results, compaction summaries, plan approvals) carry meta.source or
+// meta.kind and are skipped. A record cut by the scan window is ignored.
+func readSessionTitle(path string, maxBytes int64) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	data, info, err := fileutil.ReadRegularFileRangeNoSymlink(path, 0, maxBytes)
+	if err != nil || info == nil {
+		return ""
+	}
+	windowCut := info.Size() > int64(len(data))
+	for len(data) > 0 {
+		line, rest, found := bytes.Cut(data, []byte{'\n'})
+		data = rest
+		if !found && windowCut {
+			break
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var probe sessionTitleProbe
+		if err := json.Unmarshal(line, &probe); err != nil {
+			continue
+		}
+		if probe.Role != "user" || sessionTitleMetaString(probe.Meta, "source") != "" || sessionTitleMetaString(probe.Meta, "kind") != "" {
+			continue
+		}
+		if title := normalizeSessionTitle(probe.Text); title != "" {
+			return title
+		}
+	}
+	return ""
+}
+
+func sessionTitleMetaString(meta map[string]any, key string) string {
+	value, ok := meta[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return fmt.Sprint(value)
+}
+
+func normalizeSessionTitle(text string) string {
+	title := strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(title) <= sessionTitleMaxRunes {
+		return title
+	}
+	runes := []rune(title)
+	return strings.TrimSpace(string(runes[:sessionTitleMaxRunes-1])) + "…"
 }
 
 func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
@@ -6522,6 +6688,14 @@ func (s *Service) listDirectory(root, browseRoot, current string, policy *webFil
 			node["type"] = "directory"
 		} else {
 			node["type"] = "file"
+		}
+		// Display-only metadata from the directory entry itself (no symlink
+		// follow); omitted when the entry vanished between ReadDir and Info.
+		if info, infoErr := entry.Info(); infoErr == nil {
+			if info.Mode().IsRegular() {
+				node["size"] = info.Size()
+			}
+			node["modified_at"] = info.ModTime().UTC().Format(time.RFC3339)
 		}
 		tree = append(tree, node)
 	}

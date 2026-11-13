@@ -11828,6 +11828,17 @@ func TestServiceWorkspaceRoutesListReadAndRejectEscape(t *testing.T) {
 	if len(nested) != 2 || nested[0]["name"] != ".." || nested[0]["navigation"] != "parent" || nested[1]["name"] != "hello.txt" {
 		t.Fatalf("unexpected nested directory listing: %#v", nested)
 	}
+	if size, ok := nested[1]["size"].(float64); !ok || size != float64(len("hello workspace")) {
+		t.Fatalf("expected file size metadata, got %#v", nested[1])
+	}
+	if modified, _ := nested[1]["modified_at"].(string); modified == "" {
+		t.Fatalf("expected file modified_at metadata, got %#v", nested[1])
+	} else if _, err := time.Parse(time.RFC3339, modified); err != nil {
+		t.Fatalf("modified_at is not RFC3339: %q", modified)
+	}
+	if _, ok := nested[0]["size"]; ok {
+		t.Fatalf("parent navigation entry must not carry size: %#v", nested[0])
+	}
 
 	var readResp map[string]string
 	postGetJSON(t, ts.URL+"/api/file/read?path="+url.QueryEscape("nested/hello.txt"), &readResp)
