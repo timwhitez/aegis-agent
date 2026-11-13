@@ -45,20 +45,17 @@ import (
 var (
 	webconsoleProcessOwner = newProcessOwner()
 	webconsoleProcessAlive = hostProcessAlive
-	sharedV2AssetNames     = map[string]struct{}{
-		"api.js":                    {},
-		"app.js":                    {},
-		"approval-operations.mjs":   {},
-		"events.js":                 {},
-		"file-change-disclosure.js": {},
-		"icons.js":                  {},
-		"i18n.js":                   {},
-		"markdown-security.js":      {},
-		"session-view.js":           {},
-		"settings-view.js":          {},
-		"styles.css":                {},
-		"utils.js":                  {},
-		"workspace-view.js":         {},
+	// uiContentTypes pins MIME types for the shipped frontend so module
+	// scripts never depend on host mime.types tables (browsers refuse ES
+	// modules that are not served with a JavaScript MIME type).
+	uiContentTypes = map[string]string{
+		".css":  "text/css; charset=utf-8",
+		".html": "text/html; charset=utf-8",
+		".js":   "text/javascript; charset=utf-8",
+		".json": "application/json",
+		".md":   "text/markdown; charset=utf-8",
+		".mjs":  "text/javascript; charset=utf-8",
+		".svg":  "image/svg+xml",
 	}
 )
 
@@ -135,8 +132,7 @@ type Service struct {
 	cfg           *config.Config
 	configPath    string
 	store         *session.Store
-	staticFS      fs.FS
-	modernFS      fs.FS
+	uiFS          fs.FS
 	workers       *workerPool
 	basicAuth     *basicAuthenticator
 	hostAllowlist webHostAllowlist
@@ -358,11 +354,7 @@ type WorkerStatus struct {
 }
 
 func New(cfg *config.Config, opts Options) (*Service, error) {
-	staticFS, err := assetFS()
-	if err != nil {
-		return nil, err
-	}
-	modernFS, err := assetV2FS()
+	uiFS, err := uiAssetFS()
 	if err != nil {
 		return nil, err
 	}
@@ -383,8 +375,7 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		cfg:             serviceCfg,
 		configPath:      opts.ConfigPath,
 		store:           store,
-		staticFS:        staticFS,
-		modernFS:        modernFS,
+		uiFS:            uiFS,
 		basicAuth:       basicAuth,
 		hostAllowlist:   hostAllowlist,
 		handles:         map[string]*launchHandle{},
@@ -589,75 +580,43 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/legacy" {
-		if !s.legacyUIEnabled() {
-			http.NotFound(w, r)
-			return
-		}
-		http.Redirect(w, r, "/legacy/", http.StatusPermanentRedirect)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/legacy/") {
-		if !s.legacyUIEnabled() {
-			http.NotFound(w, r)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/legacy/")
-		if name == "" {
-			name = "index.html"
-		}
-		if _, err := fs.Stat(s.staticFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.staticFS, name)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/shared-assets/") {
-		name := strings.TrimPrefix(r.URL.Path, "/shared-assets/")
-		if _, ok := sharedV2AssetNames[name]; !ok {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := fs.Stat(s.staticFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.staticFS, name)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/v2-assets/") {
-		name := strings.TrimPrefix(r.URL.Path, "/v2-assets/")
-		if name == "" {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := fs.Stat(s.modernFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.modernFS, name)
-		return
-	}
-	name := strings.TrimPrefix(r.URL.Path, "/")
-	if name != "" && name != "index.html" {
-		if legacyInfo, legacyErr := fs.Stat(s.staticFS, name); legacyErr == nil && !legacyInfo.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
-		if modernInfo, modernErr := fs.Stat(s.modernFS, name); modernErr == nil && !modernInfo.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	serveEmbeddedFileRequest(w, r, s.modernFS, "index.html")
-}
+const uiAssetPrefix = "/ui/"
 
-func (s *Service) legacyUIEnabled() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.cfg.Web.LegacyUIEnabled
+// retiredUIPrefixes are routes of removed frontends. They answer 404 instead
+// of the SPA shell so stale bookmarks and cached pages fail visibly.
+var retiredUIPrefixes = []string{"/legacy", "/v2-assets", "/shared-assets"}
+
+// serveUI serves the embedded frontend: static files only below /ui/ (missing
+// files are 404, never the shell) and ui/index.html for every other GET/HEAD
+// path so History API routes such as /s/{id} can be opened and reloaded.
+func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	for _, prefix := range retiredUIPrefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if path == strings.TrimSuffix(uiAssetPrefix, "/") || strings.HasPrefix(path, uiAssetPrefix) {
+		name := strings.TrimPrefix(path, uiAssetPrefix)
+		if name == "" || !fs.ValidPath(name) {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := fs.Stat(s.uiFS, name)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		serveEmbeddedFileRequest(w, r, s.uiFS, name)
+		return
+	}
+	serveEmbeddedFileRequest(w, r, s.uiFS, "index.html")
 }
 
 func (s *Service) configSnapshot() (*config.Config, error) {
@@ -4591,7 +4550,6 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_soft":          cfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
-		"legacy_ui_enabled":       cfg.Web.LegacyUIEnabled,
 		"browser":                 tools.BrowserSettings(cfg),
 		"child_budget": map[string]any{
 			"disabled":                     cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
@@ -4656,9 +4614,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.GuardrailsMode = guardrailsMode
-	}
-	if req.LegacyUIEnabled != nil {
-		updatedCfg.Web.LegacyUIEnabled = *req.LegacyUIEnabled
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
@@ -4904,7 +4859,6 @@ func configAuditData(updatedCfg *config.Config, configPath string) map[string]an
 		"max_turns_soft":                  updatedCfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":                  updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active":          updatedCfg.Runtime.MaxTurnsHard > 0,
-		"legacy_ui_enabled":               updatedCfg.Web.LegacyUIEnabled,
 		"child_budget_active":             updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec > 0 || updatedCfg.Runtime.ChildBudget.MaxElapsedSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt > 0,
 		"child_budget_active_runtime_sec": updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
 		"child_budget_elapsed_sec":        updatedCfg.Runtime.ChildBudget.MaxElapsedSec,
@@ -4933,7 +4887,6 @@ func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
 		req.MaxTurnsSoft != nil ||
 		req.MaxTurnsHard != nil ||
 		req.DisableHardTurnLimit ||
-		req.LegacyUIEnabled != nil ||
 		req.ChildBudget != nil ||
 		configRequestHasProviderScopedFields(req) ||
 		len(req.RoleProviders) > 0
@@ -8678,7 +8631,10 @@ func loadEmbeddedAsset(files fs.FS, name string) (*assetCacheEntry, error) {
 			return v.(*assetCacheEntry), nil
 		}
 	}
-	contentType := mime.TypeByExtension(filepath.Ext(name))
+	contentType := uiContentTypes[strings.ToLower(filepath.Ext(name))]
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(name))
+	}
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}

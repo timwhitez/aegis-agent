@@ -33,10 +33,17 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-for js_file in internal/webconsole/assets/*.js internal/webconsole/assets/*.mjs internal/webconsole/assets-v2/*.js; do
-  [[ -f "$js_file" ]] || continue
+# The Web console frontend is a no-build ES module tree; the root package.json
+# declares "type": "module", so node --check parses every file as ESM.
+UI_JS_COUNT=0
+while IFS= read -r js_file; do
   node --check "$js_file"
-done
+  UI_JS_COUNT=$((UI_JS_COUNT + 1))
+done < <(find internal/webconsole/ui -type f -name '*.js' | LC_ALL=C sort)
+if (( UI_JS_COUNT == 0 )); then
+  printf 'no WebConsole frontend modules found under internal/webconsole/ui\n' >&2
+  exit 1
+fi
 
 node --test validation/scripts/*_test.mjs
 

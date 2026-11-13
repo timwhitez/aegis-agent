@@ -112,9 +112,6 @@ role_providers:
     model: ""
 
 web:
-  # Web Console v2 is the default. Set true only for a temporary local rollback
-  # to the original page at /legacy/.
-  legacy_ui_enabled: false
   # Optional WebConsole HTTP Basic authentication. Both fields must be set to
   # enable it. Generate a bcrypt hash outside this file; never save a clear-text
   # password here. Basic Auth needs HTTPS when the console is exposed over an

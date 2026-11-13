@@ -105,12 +105,27 @@ type RoleProviderOverride struct {
 // WebConfig controls the local WebConsole adapter. The runtime and session
 // stores do not depend on these operator-surface settings.
 type WebConfig struct {
-	BasicAuth       WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
-	LegacyUIEnabled bool               `yaml:"legacy_ui_enabled,omitempty"`
+	BasicAuth WebBasicAuthConfig `yaml:"basic_auth,omitempty"`
+	// LegacyUIEnabled is deprecated and ignored. The legacy Web console page
+	// and its /legacy/ rollback route were removed; the key stays parseable so
+	// existing configuration files keep loading under strict parsing, but it
+	// is never written back (see DeprecatedBool).
+	LegacyUIEnabled DeprecatedBool `yaml:"legacy_ui_enabled,omitempty"`
 	// AllowedHosts extends the Host-header allowlist (localhost, *.localhost,
 	// and IP literals are always allowed) with explicit proxy or LAN hostnames
 	// for deployments behind a reverse proxy.
 	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
+}
+
+// DeprecatedBool is the type of retired boolean configuration keys. It still
+// decodes (so strict parsing accepts old files) but always reports itself as
+// empty, which makes omitempty drop it whenever a configuration is marshaled
+// by init, Settings saves or Clone.
+type DeprecatedBool bool
+
+// IsZero implements yaml.IsZeroer so retired keys are never emitted.
+func (DeprecatedBool) IsZero() bool {
+	return true
 }
 
 // WebBasicAuthConfig enables HTTP Basic authentication when both fields are

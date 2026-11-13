@@ -5,8 +5,12 @@ import (
 	"io/fs"
 )
 
-//go:embed assets/* assets-v2/*
-var embeddedAssets embed.FS
+// The Web console frontend is a no-build ES module tree. The whole ui/
+// directory is embedded recursively and served from /ui/*; ui/index.html is
+// also the application shell for every SPA route.
+//
+//go:embed ui
+var embeddedUI embed.FS
 
 type namespacedAssetFS struct {
 	fs.FS
@@ -17,18 +21,10 @@ func (n namespacedAssetFS) cacheNamespace() string {
 	return n.namespace
 }
 
-func assetFS() (fs.FS, error) {
-	assets, err := fs.Sub(embeddedAssets, "assets")
+func uiAssetFS() (fs.FS, error) {
+	files, err := fs.Sub(embeddedUI, "ui")
 	if err != nil {
 		return nil, err
 	}
-	return namespacedAssetFS{FS: assets, namespace: "legacy-shared"}, nil
-}
-
-func assetV2FS() (fs.FS, error) {
-	assets, err := fs.Sub(embeddedAssets, "assets-v2")
-	if err != nil {
-		return nil, err
-	}
-	return namespacedAssetFS{FS: assets, namespace: "v2"}, nil
+	return namespacedAssetFS{FS: files, namespace: "ui"}, nil
 }
