@@ -2,6 +2,7 @@ package webconsole
 
 import (
 	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 	"bytes"
 	"context"
 	"fmt"
@@ -10,12 +11,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
 func TestBrowserWebAssemblyAndReadOnlySettings(t *testing.T) {
+	// Outside Linux x86_64 (spec 19) the adapter is still assembled, but every
+	// call must report the unsupported platform explicitly.
+	platformErr := tools.BrowserPlatformError()
 	var calls atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
@@ -27,7 +32,11 @@ func TestBrowserWebAssemblyAndReadOnlySettings(t *testing.T) {
 			io.WriteString(w, `{"id":"one","status":"completed","output":[{"type":"function_call","call_id":"web-browser","name":"browser_exec","arguments":"{\"code\":\"print('WEB-HEAD'+'x'*60000+'WEB-MIDDLE'+'y'*60000+'WEB-TAIL')\"}"}]}`)
 			return
 		}
-		if !bytes.Contains(data, []byte("Complete artifact:")) || !bytes.Contains(data, []byte("process completed")) {
+		if platformErr != nil {
+			if !bytes.Contains(data, []byte("browser platform unsupported")) {
+				t.Errorf("Web provider did not receive unsupported-platform diagnostic on %s", runtime.GOOS)
+			}
+		} else if !bytes.Contains(data, []byte("Complete artifact:")) || !bytes.Contains(data, []byte("process completed")) {
 			t.Error("Web provider did not receive finalized browser artifact")
 		}
 		io.WriteString(w, `{"id":"two","status":"completed","output":[{"type":"function_call","call_id":"finish","name":"finish","arguments":"{\"message\":\"done\"}"}]}`)

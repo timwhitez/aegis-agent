@@ -8,11 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/webconsole"
 )
 
@@ -37,7 +37,7 @@ func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if *workers > maxWebWorkerCount {
 		return fmt.Errorf("workers must be <= %d", maxWebWorkerCount)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/session"
+	"aegis-agent/internal/tools"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -38,6 +40,9 @@ func TestBrowserCLIAssemblyAndDoctor(t *testing.T) {
 		os.WriteFile(p, fixture, 0700)
 	}
 	cfg.Tools.Browser.BrowserExecutable = filepath.Join(cfg.Tools.Browser.InstallRoot, "chrome")
+	// Outside Linux x86_64 (spec 19) the adapter is still assembled, but every
+	// call and the doctor must report the unsupported platform explicitly.
+	platformErr := tools.BrowserPlatformError()
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
@@ -50,7 +55,11 @@ func TestBrowserCLIAssemblyAndDoctor(t *testing.T) {
 			fmt.Fprintf(w, `{"id":"one","status":"completed","output":[{"type":"function_call","call_id":"browser-call","name":"browser_exec","arguments":%q}]}`, args)
 			return
 		}
-		if !bytes.Contains(data, []byte("Complete artifact:")) || !bytes.Contains(data, []byte("process completed")) {
+		if platformErr != nil {
+			if !bytes.Contains(data, []byte("browser platform unsupported")) {
+				t.Errorf("CLI next wire request lacks unsupported-platform diagnostic on %s", runtime.GOOS)
+			}
+		} else if !bytes.Contains(data, []byte("Complete artifact:")) || !bytes.Contains(data, []byte("process completed")) {
 			t.Error("CLI next wire request lacks bounded result/artifact")
 		}
 		io.WriteString(w, `{"id":"two","status":"completed","output":[{"type":"function_call","call_id":"finish","name":"finish","arguments":"{\"message\":\"done\"}"}]}`)
@@ -71,11 +80,19 @@ func TestBrowserCLIAssemblyAndDoctor(t *testing.T) {
 		t.Fatal(calls.Load())
 	}
 	stdout.Reset()
-	if err := Run(context.Background(), []string{"doctor", "--config", path, "--skip-probe", "--json"}, &stdout, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stdout.String(), `"name":"browser"`) || !strings.Contains(stdout.String(), "Fake Chrome 136") {
-		t.Fatal(stdout.String())
+	doctorErr := Run(context.Background(), []string{"doctor", "--config", path, "--skip-probe", "--json"}, &stdout, io.Discard)
+	if platformErr != nil {
+		// The failed browser check fails doctor before any browser process runs.
+		if doctorErr == nil || !strings.Contains(stdout.String(), `"name":"browser"`) || !strings.Contains(stdout.String(), `"status":"unsupported_platform"`) || strings.Contains(stdout.String(), "Fake Chrome 136") {
+			t.Fatalf("doctor on %s: err=%v output=%s", runtime.GOOS, doctorErr, stdout.String())
+		}
+	} else {
+		if doctorErr != nil {
+			t.Fatal(doctorErr)
+		}
+		if !strings.Contains(stdout.String(), `"name":"browser"`) || !strings.Contains(stdout.String(), "Fake Chrome 136") {
+			t.Fatal(stdout.String())
+		}
 	}
 	records, err := session.NewStore(cfg.Session.Dir).List(10)
 	if err != nil || len(records) != 1 {

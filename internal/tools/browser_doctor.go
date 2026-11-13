@@ -33,6 +33,10 @@ func BrowserDoctor(ctx context.Context, cfg *config.Config, store *session.Store
 		return report, nil
 	}
 	fail := func(status string, err error) (map[string]any, error) { report["status"] = status; return report, err }
+	// Report an unsupported host before any install check or process starts.
+	if err := BrowserPlatformError(); err != nil {
+		return fail("unsupported_platform", err)
+	}
 	if err := config.ValidateBrowserConfig(cfg.Tools.Browser); err != nil {
 		return fail("invalid_config", err)
 	}

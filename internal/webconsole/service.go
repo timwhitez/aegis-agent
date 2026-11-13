@@ -32,6 +32,7 @@ import (
 	"aegis-agent/internal/extensions"
 	"aegis-agent/internal/filechanges"
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
@@ -4862,7 +4863,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

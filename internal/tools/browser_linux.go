@@ -15,6 +15,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Linux sockaddr_un.sun_path is 108 bytes including the NUL terminator.
+const (
+	browserSocketPathMax      = 107
+	browserSocketPathPlatform = "Linux"
+)
+
 func (p *ownedBrowserProcess) wait(cancel func() error) {
 	// WNOWAIT observes exit without reaping. The unreaped leader pins the group
 	// identity while we cancel inherited descendants, including redirected ones.

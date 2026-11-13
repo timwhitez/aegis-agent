@@ -5,6 +5,14 @@ package tools
 import (
 	"errors"
 	"os"
+	"runtime"
+)
+
+// darwin and the BSDs size sockaddr_un.sun_path at 104 bytes including the
+// NUL terminator. The browser adapter itself is gated by BrowserPlatformError.
+const (
+	browserSocketPathMax      = 103
+	browserSocketPathPlatform = runtime.GOOS
 )
 
 func (p *ownedBrowserProcess) wait(func() error) {
