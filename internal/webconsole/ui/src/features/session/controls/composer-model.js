@@ -50,6 +50,51 @@ export function composerMode(state) {
   };
 }
 
+/** Session statuses of a planning run that is still finishing (e.g. right after submit_plan). */
+const SETTLING_STATUSES = Object.freeze(['running', 'queued', 'pending']);
+
+/** i18n key of the approval card's wait status per approvalCardState().wait. */
+export const APPROVAL_WAIT_KEYS = Object.freeze({
+  sending: 'composer.approval.sending',
+  settling: 'composer.approval.settling',
+  starting: 'composer.approval.starting',
+});
+
+/**
+ * approvalCardState(state) -> { wait: ''|'sending'|'settling'|'starting', approving,
+ *   approveDisabled, reviseDisabled, cancelDisabled }
+ * Inline approval card actions follow the same launch-window rule as
+ * composerMode(), so the card never offers an approve/cancel the server
+ * refuses (409 while the session is running or launching):
+ *   - 'sending': a plan revision request is in flight (session.pendingAction 'revise');
+ *   - 'settling': the planning run is still running/queued (state.status running|queued|pending);
+ *   - 'starting': the launch window — a live run handle that is not merely
+ *     settling (detailHasLiveRunHandle) or the session.generating marker of an
+ *     accepted revise/continue/approve, before the state reaches 'running'.
+ * A settling handle of a finished run does not block approve (the server waits
+ * for its release). Another in-flight control (cancel, receipt check) also
+ * locks approve and cancel; approve in flight keeps its own pending button.
+ */
+export function approvalCardState(state) {
+  const detail = state.session.detail || null;
+  const status = lower(detail?.state?.status);
+  const pending = String(state.session.pendingAction || '');
+  const approving = pending === 'approve' || Boolean(state.session.approval?.busy);
+  const readiness = steerReadiness({ status, generating: Boolean(state.session.generating), liveHandle: detailHasLiveRunHandle(detail) });
+  let wait = '';
+  if (pending === 'revise') wait = 'sending';
+  else if (SETTLING_STATUSES.includes(status)) wait = 'settling';
+  else if (readiness === 'starting') wait = 'starting';
+  const otherPending = Boolean(pending) && !approving;
+  return {
+    wait,
+    approving,
+    approveDisabled: otherPending || Boolean(wait),
+    reviseDisabled: approving || wait === 'sending' || wait === 'starting',
+    cancelDisabled: approving || otherPending || Boolean(wait),
+  };
+}
+
 /** Effective toggles: a toggle that does not apply to the mode is off. */
 export function effectiveToggles(mode, composer) {
   return {

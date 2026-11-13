@@ -810,6 +810,7 @@
 }
 
 .segmented-btn {
+  min-width: var(--hit);
   min-height: var(--hit);
   padding: 0 var(--space-3);
   border: 0;

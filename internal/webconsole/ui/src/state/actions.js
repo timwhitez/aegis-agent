@@ -313,7 +313,8 @@ export function applyRelayFrame(frame) {
     update('session', (session) => ({ ...session, liveEvents: [...session.liveEvents.slice(-199), liveEvent] }));
   }
   if (hints.generating !== undefined) update('session', { generating: hints.generating });
-  if (hints.error) pushToast({ tone: 'danger', message: t('shell.relay.sessionError', { message: hints.error }) });
+  // The engine's error text is backend output: a raw detail line, not part of the copy.
+  if (hints.error) pushToast({ tone: 'danger', message: t('shell.relay.sessionError'), detail: hints.error, raw: { detail: true } });
   if (hints.refreshSession !== null) queueRefresh('session', hints.refreshSession);
   if (hints.refreshOverview !== null) queueRefresh('overview', hints.refreshOverview);
 }

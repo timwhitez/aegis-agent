@@ -158,7 +158,7 @@ export function SkillsView() {
       pushToast({ tone: 'success', message: t('skills.uninstall.success') });
       await loadRef.current({ silent: true });
     } catch (err) {
-      pushToast({ tone: 'danger', message: t('skills.uninstall.failed'), detail: err?.detail || err?.message || '', action: err?.action || '' });
+      pushToast({ tone: 'danger', message: t('skills.uninstall.failed'), detail: err?.detail || err?.message || '', action: err?.action || '', raw: { detail: true, action: true } });
     } finally {
       setPending((current) => {
         const next = new Set(current);

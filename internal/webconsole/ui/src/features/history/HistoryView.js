@@ -234,6 +234,7 @@ export function HistoryView() {
         message: info.kind === 'conflict' ? t('history.delete.conflict') : t('history.delete.failed'),
         detail: info.detail || info.message,
         action: info.action || (info.kind === 'conflict' ? t('history.delete.conflictAction') : ''),
+        raw: { detail: true, action: Boolean(info.action) },
       });
     } finally {
       setPendingId(item.id, false);
@@ -266,6 +267,7 @@ export function HistoryView() {
         message: info.kind === 'conflict' ? t('history.clear.conflict') : t('history.clear.failed'),
         detail: info.detail || info.message,
         action: info.action || (info.kind === 'conflict' ? t('history.clear.conflictAction') : ''),
+        raw: { detail: true, action: Boolean(info.action) },
       });
     } finally {
       setClearing(false);

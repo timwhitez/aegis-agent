@@ -13,6 +13,49 @@ import {
 export const MAIN_PROMPT = 'E2E_UI_MAIN raw user text: Settings must remain unchanged.';
 const LONG_PROMPT = 'E2E_UI_AWAIT long session for load earlier.';
 
+/**
+ * Opens the model picker and asserts the popover lies fully inside the
+ * viewport and every clipping ancestor (.app-main hides horizontal overflow),
+ * that Done is the element under its own centre with a mobile-size target,
+ * captures the screen (overflow audit included) and closes it with Done.
+ */
+async function assertModelPopoverFits(h, page, shot) {
+  const picker = tid(page, 'model-picker');
+  await picker.waitFor();
+  await picker.click();
+  const popover = tid(page, 'model-popover');
+  await popover.waitFor();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const box = await popover.evaluate((node) => {
+    const round = (value) => Math.round(value * 10) / 10;
+    const rect = node.getBoundingClientRect();
+    const clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+    for (let parent = node.parentElement; parent && parent !== document.documentElement; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      const bounds = parent.getBoundingClientRect();
+      if (style.overflowX !== 'visible') { clip.left = Math.max(clip.left, bounds.left); clip.right = Math.min(clip.right, bounds.right); }
+      if (style.overflowY !== 'visible') { clip.top = Math.max(clip.top, bounds.top); clip.bottom = Math.min(clip.bottom, bounds.bottom); }
+    }
+    const done = node.querySelector('[data-testid="model-done"]').getBoundingClientRect();
+    const hit = document.elementFromPoint(done.left + done.width / 2, done.top + done.height / 2);
+    return {
+      rect: { left: round(rect.left), right: round(rect.right), top: round(rect.top), bottom: round(rect.bottom) },
+      clip: { left: round(clip.left), right: round(clip.right), top: round(clip.top), bottom: round(clip.bottom) },
+      done: { width: round(done.width), height: round(done.height), hit: Boolean(hit?.closest('[data-testid="model-done"]')) },
+    };
+  });
+  const detail = JSON.stringify(box);
+  assert.ok(box.rect.left >= box.clip.left - 0.5 && box.rect.right <= box.clip.right + 0.5, 'popover inside horizontally ' + detail);
+  assert.ok(box.rect.top >= box.clip.top - 0.5 && box.rect.bottom <= box.clip.bottom + 0.5, 'popover inside vertically ' + detail);
+  assert.ok(box.done.hit, 'Done is reachable ' + detail);
+  assert.ok(box.done.width >= 44 && box.done.height >= 44, 'Done is a 44px target ' + detail);
+  await h.capture(page, shot);
+  await tid(page, 'model-done').click();
+  await popover.waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => document.activeElement?.dataset?.testid), 'model-picker', 'Done returns focus to the picker');
+  return box;
+}
+
 export async function runSession(h) {
   // A long MAIN session (for "load earlier") and a background notification
   // fixture are prepared through REST while the browser drives the rest.
@@ -254,6 +297,10 @@ export async function runSession(h) {
     await h.until(async () => (await tid(page, 'composer-input').getAttribute('placeholder')) === '回复以继续这个会话…', 'continue placeholder', 8000);
     await tid(page, 'model-picker').click();
     await tid(page, 'model-popover').waitFor();
+    // Desktop placement: the popover starts under the chip.
+    const chipLeft = await tid(page, 'model-picker').evaluate((node) => node.getBoundingClientRect().left);
+    const popoverLeft = await tid(page, 'model-popover').evaluate((node) => node.getBoundingClientRect().left);
+    assert.ok(Math.abs(popoverLeft - chipLeft) <= 1, 'desktop popover aligned with the chip: ' + popoverLeft + ' vs ' + chipLeft);
     await h.capture(page, 'session-model-picker-zh-desktop');
     await page.locator('[data-testid="model-option"][data-provider="e2e"]').check();
     await tid(page, 'model-input').fill('e2e-model');
@@ -385,6 +432,16 @@ export async function runSession(h) {
       assert.equal(await tid(m, 'inspector-panel').evaluate((node) => node.scrollTop), 0, 'reopened overlay starts at the top');
       await m.keyboard.press('Escape');
       await tid(m, 'inspector').waitFor({ state: 'detached' });
+    }, { page: m });
+    await h.check('mobile ' + tag + ': model picker stays inside 390px in continue mode and on /, Done reachable', async () => {
+      // MAIN is completed: continue mode with the Plan chip before the model chip.
+      assert.equal(await tid(m, 'composer').getAttribute('data-kind'), 'continue');
+      const cont = await assertModelPopoverFits(h, m, 'session-model-picker-continue-' + tag + '-mobile');
+      // New session: Goal and Plan chips push the model chip furthest right.
+      await gotoApp(h, m, '/');
+      await tid(m, 'goal-toggle').waitFor();
+      const fresh = await assertModelPopoverFits(h, m, 'session-model-picker-new-' + tag + '-mobile');
+      h.evidence['model-popover-390-' + tag] = { continue: cont, new: fresh };
     }, { page: m });
     await mobile.close();
   }

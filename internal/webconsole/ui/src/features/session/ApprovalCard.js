@@ -3,7 +3,10 @@
 // plan_mode.status === 'awaiting_approval' (and, as a compact receipt card,
 // while a saved approval is unresolved or belongs to the displayed plan). This is the only place with
 // approval buttons. Approval target, coverage override, stale review and
-// receipts are handled by state/session-actions.js approvePlan().
+// receipts are handled by state/session-actions.js approvePlan(). Actions
+// follow controls/composer-model.js approvalCardState(): while a revision is
+// being sent, the planning run settles or a new run launches, approve and
+// cancel are disabled and approval-settling (data-reason) explains why.
 // Test ids: approval-card, approval-settling, approve-plan, revise-plan, cancel-plan,
 // approval-plan-toggle, approval-receipt, approval-check, approval-retry, approval-continue.
 import { html, useEffect, useId, useState } from '../../lib/html.js';
@@ -15,6 +18,7 @@ import { Button } from '../../ui/Button.js';
 import { Icon } from '../../ui/Icon.js';
 import { Spinner } from '../../ui/Spinner.js';
 import { ApprovalReceipt } from './controls/ApprovalReceipt.js';
+import { APPROVAL_WAIT_KEYS, approvalCardState } from './controls/composer-model.js';
 
 const LONG_PLAN_CHARS = 1400;
 const LONG_PLAN_LINES = 28;
@@ -55,10 +59,13 @@ export function ApprovalCard() {
     approval: state.session.approval,
     pendingAction: state.session.pendingAction,
     revising: state.composer.revising,
+    // Flat primitives so the shallow store equality skips unrelated updates.
+    ...approvalCardState(state),
   }));
   const [expanded, setExpanded] = useState(false);
   const planBodyId = useId();
   const headingId = useId();
+  const waitId = useId();
   const plan = view.plan;
   const awaiting = plan?.status === 'awaiting_approval';
   const markdown = String(plan?.plan_markdown || '');
@@ -79,10 +86,10 @@ export function ApprovalCard() {
     </section>`;
   }
 
-  const busy = view.pendingAction === 'approve' || Boolean(view.approval?.busy);
-  // Right after submit_plan the planning run is still settling (status running,
-  // live handle); approve/cancel would be rejected until it releases.
-  const settling = ['running', 'queued', 'pending'].includes(String(view.status).toLowerCase());
+  // Same launch-window rule as the composer: approve/cancel would be rejected
+  // (409) while a revision is sent, the planning run settles or a run launches.
+  const busy = view.approving;
+  const wait = view.wait;
   const assumptions = list(plan.assumptions);
   const risks = list(plan.risks);
   const verification = list(plan.verification);
@@ -144,13 +151,14 @@ export function ApprovalCard() {
     ${showReceipt ? html`<${ApprovalReceipt} sessionId=${view.sessionId} approval=${view.approval} loadedStatus=${view.status} pending=${view.pendingAction === 'approval-check'} />`
       : html`<div class="approval-receipt-region" role="status" aria-live="polite"></div>`}
 
-    ${settling ? html`<p class="approval-settling" role="status" data-testid="approval-settling"><${Spinner} size=${14} />${t('composer.approval.settling')}</p>` : null}
+    ${wait ? html`<p class="approval-settling" id=${waitId} role="status" data-testid="approval-settling" data-reason=${wait}><${Spinner} size=${14} />${t(APPROVAL_WAIT_KEYS[wait])}</p>` : null}
     <footer class="approval-actions">
       <${Button}
         variant="primary"
         icon="play"
         pending=${busy}
-        disabled=${(Boolean(view.pendingAction) && !busy) || settling}
+        disabled=${view.approveDisabled}
+        aria-describedby=${wait ? waitId : undefined}
         data-testid="approve-plan"
         onClick=${() => approvePlan(view.sessionId)}
       >${busy ? t('composer.approval.approving') : t('composer.approval.approve')}<//>
@@ -158,7 +166,7 @@ export function ApprovalCard() {
         variant="secondary"
         icon="pencil"
         aria-pressed=${String(Boolean(view.revising))}
-        disabled=${busy}
+        disabled=${view.reviseDisabled}
         data-testid="revise-plan"
         onClick=${() => revisePlan(view.sessionId)}
       >${t('composer.approval.revise')}<//>
@@ -168,7 +176,8 @@ export function ApprovalCard() {
         class="is-danger-text"
         icon="x"
         pending=${view.pendingAction === 'cancel-plan'}
-        disabled=${busy || settling}
+        disabled=${view.cancelDisabled}
+        aria-describedby=${wait ? waitId : undefined}
         data-testid="cancel-plan"
         onClick=${() => cancelPlan(view.sessionId)}
       >${t('composer.approval.cancel')}<//>

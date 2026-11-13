@@ -79,10 +79,59 @@ export async function runPlan(h) {
     await tid(page, 'composer-input').fill('请缩小范围');
     assert.equal(await tid(page, 'send-button').getAttribute('aria-label'), '发送修改意见');
     await h.capture(page, 'plan-revising-zh-desktop');
-    const revise = page.waitForRequest((req) => req.url().endsWith('/api/sessions/' + id + '/planmode/revise'));
-    await tid(page, 'composer-input').press('Enter');
-    assert.deepEqual((await revise).postDataJSON(), { message: '请缩小范围' });
+    // Launch window: hold the revise POST ("sending"), then the detail refreshes
+    // after its 202 ("starting": plan_mode is still awaiting_approval while the
+    // revision run launches). The card must stay disabled with a status and
+    // never send an approve (the server answers 409 SESSION_NOT_RESUMABLE).
+    const approveRequests = [];
+    const onApprove = (req) => { if (req.url().includes('/planmode/approve')) approveRequests.push(req.url()); };
+    page.on('request', onApprove);
+    let releaseRevise;
+    const reviseGate = new Promise((resolve) => { releaseRevise = resolve; });
+    let holdDetail = false;
+    let releaseDetail;
+    const detailGate = new Promise((resolve) => { releaseDetail = resolve; });
+    const sessionPath = '/api/sessions/' + encodeURIComponent(id);
+    const isRevise = (url) => url.pathname === sessionPath + '/planmode/revise';
+    const isDetail = (url) => url.pathname === sessionPath;
+    // A held request the page aborts meanwhile (newer refresh) cannot be continued: ignore that.
+    const holdRevise = async (route) => { await reviseGate; await route.continue().catch(() => {}); };
+    const holdDetails = async (route) => { if (holdDetail && route.request().method() === 'GET') await detailGate; await route.continue().catch(() => {}); };
+    await page.route(isRevise, holdRevise);
+    await page.route(isDetail, holdDetails);
+    const card = page.locator('[data-testid="approval-card"][data-plan-version="1"]');
+    const assertLocked = async (reason, shot) => {
+      const status = card.locator('[data-testid="approval-settling"][data-reason="' + reason + '"]');
+      await status.waitFor({ timeout: 15000 });
+      assert.match(await status.innerText(), /不能批准或取消/);
+      assert.equal(await card.locator('[data-testid="approve-plan"]').isDisabled(), true, reason + ': approve disabled');
+      assert.equal(await card.locator('[data-testid="cancel-plan"]').isDisabled(), true, reason + ': cancel disabled');
+      assert.equal(await card.locator('[data-testid="approve-plan"]').getAttribute('aria-describedby'), await status.getAttribute('id'));
+      await h.capture(page, shot);
+      // A disabled button ignores click(): no approve request may leave the page.
+      await card.locator('[data-testid="approve-plan"]').evaluate((node) => node.click());
+    };
+    try {
+      const revise = page.waitForRequest((req) => req.url().endsWith(sessionPath + '/planmode/revise'));
+      await tid(page, 'composer-input').press('Enter');
+      assert.deepEqual((await revise).postDataJSON(), { message: '请缩小范围' });
+      await assertLocked('sending', 'plan-revise-sending-zh-desktop');
+      holdDetail = true;
+      const accepted = page.waitForResponse((res) => res.url().endsWith(sessionPath + '/planmode/revise'));
+      releaseRevise();
+      assert.equal((await accepted).status(), 202);
+      await page.locator('[data-testid="composer"][data-kind="starting"]').waitFor({ timeout: 15000 });
+      await assertLocked('starting', 'plan-revise-starting-zh-desktop');
+    } finally {
+      releaseRevise();
+      holdDetail = false;
+      releaseDetail();
+      await page.unroute(isRevise, holdRevise);
+      await page.unroute(isDetail, holdDetails);
+    }
     await page.locator('[data-testid="approval-card"][data-plan-version="2"]').waitFor({ timeout: 90000 });
+    page.off('request', onApprove);
+    assert.deepEqual(approveRequests, [], 'no approve request during the revise launch window');
     assert.match(await tid(page, 'approval-card').innerText(), /Revised plan/);
     assert.equal(await tid(page, 'composer-revising').count(), 0);
     const detail = await h.waitDetail(id, (d) => d.plan_mode?.plan_version === 2 && !d.active_handle, 'v2');

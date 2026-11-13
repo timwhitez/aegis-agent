@@ -107,7 +107,7 @@ export function createSessionActions(deps) {
   const refreshList = deps.refreshOverview || (async () => null);
   const setInspector = deps.toggleInspector || (() => {});
   const toast = deps.pushToast || (() => 0);
-  const toastErr = deps.toastError || ((error) => toast({ tone: 'danger', message: str(error?.message) }));
+  const toastErr = deps.toastError || ((error) => toast({ tone: 'danger', message: str(error?.message), raw: { message: true } }));
   const confirm = deps.confirmDialog || (async () => false);
   const requestID = deps.requestID || (() => generateApprovalRequestID());
   const now = deps.now || (() => Date.now());
@@ -124,10 +124,12 @@ export function createSessionActions(deps) {
   const currentId = () => getState().session.id;
   const isCurrent = (id) => Boolean(id) && getState().session.id === id;
 
+  /** Toast for a lib descriptor ({ key, params } copy or { raw } backend text); extra detail/action are backend text. */
   function notify(descriptor, extra = {}) {
     if (!descriptor) return 0;
-    const message = descriptor.raw !== undefined && descriptor.raw !== null ? str(descriptor.raw) : tx(descriptor);
-    return toast({ tone: extra.tone || TONES[descriptor.tone] || 'info', message, detail: extra.detail || '', action: extra.action || '' });
+    const isRaw = descriptor.raw !== undefined && descriptor.raw !== null;
+    const message = isRaw ? str(descriptor.raw) : tx(descriptor);
+    return toast({ tone: extra.tone || TONES[descriptor.tone] || 'info', message, detail: extra.detail || '', action: extra.action || '', raw: { message: isRaw, detail: true, action: true } });
   }
 
   function setPending(id, name) {
@@ -177,10 +179,10 @@ export function createSessionActions(deps) {
     const route = getState().route.name;
     if (route === 'new' || route === 'session') return;
     if (draft?.status === 'unconfirmed') {
-      toast({ tone: 'warning', message: t('composer.send.unconfirmed'), detail: str(error?.detail || error?.message), action: str(error?.action) });
+      toast({ tone: 'warning', message: t('composer.send.unconfirmed'), detail: str(error?.detail || error?.message), action: str(error?.action), raw: { detail: true, action: true } });
       return;
     }
-    toast({ tone: 'danger', message: str(error?.message) || t('composer.send.failed'), detail: str(error?.detail), action: str(error?.action) });
+    toast({ tone: 'danger', message: str(error?.message) || t('composer.send.failed'), detail: str(error?.detail), action: str(error?.action), raw: { message: Boolean(str(error?.message)), detail: true, action: true } });
   }
 
   /**
@@ -205,6 +207,8 @@ export function createSessionActions(deps) {
     const key = input.draftKey || '';
     if (key) drafts.setSubmitting(key, true);
     if (kind === 'start') launching.add(sessionId);
+    // A revision in flight locks the approval card (composer-model.js approvalCardState).
+    if (kind === 'revise') setPending(sessionId, 'revise');
     try {
       let response;
       if (kind === 'start') {
@@ -226,8 +230,10 @@ export function createSessionActions(deps) {
       const durableId = kind === 'start' ? str(response?.session_id).trim() : sessionId;
       if (!durableId) throw new apiModule.APIError(t('composer.error.noSessionId'), { status: 0 });
       recovery.succeed(intent.id, { durableSessionId: durableId });
-      // Accepted: the composer is free again even while the follow-up refresh runs.
+      // Accepted: the composer is free again even while the follow-up refresh runs
+      // (the approval card then follows the launch window via session.generating).
       if (key) drafts.setSubmitting(key, false);
+      if (kind === 'revise') clearPending(sessionId, 'revise');
       const feedbackOptions = { interrupt, planDraft: Boolean(input.planDraft) };
       const feedback = sendSuccessFeedback(kind, feedbackOptions);
       if (feedback.toast) notify(feedback.toast);
@@ -262,6 +268,7 @@ export function createSessionActions(deps) {
       return { ok: false, reason: 'failed', kind, draft, error };
     } finally {
       if (key) drafts.setSubmitting(key, false);
+      if (kind === 'revise') clearPending(sessionId, 'revise');
     }
   }
 
@@ -350,7 +357,13 @@ export function createSessionActions(deps) {
       return { ok: true, response };
     } catch (error) {
       if (error?.code === 'ACTIVE_HANDLE_NOT_OWNED') {
-        toast({ tone: 'warning', message: t('composer.stop.notOwned'), detail: str(error.detail || error.message), action: str(error.action) || t('composer.stop.notOwnedAction') });
+        toast({
+          tone: 'warning',
+          message: t('composer.stop.notOwned'),
+          detail: str(error.detail || error.message),
+          action: str(error.action) || t('composer.stop.notOwnedAction'),
+          raw: { detail: true, action: Boolean(str(error.action)) },
+        });
       } else {
         toastErr(error, 'composer.stop.failed');
       }
@@ -430,6 +443,7 @@ export function createSessionActions(deps) {
       message: slot.raw !== undefined ? slot.raw : tx(slot),
       detail: stale || slot.raw === undefined ? '' : str(error?.detail),
       action: stale ? '' : str(error?.action),
+      raw: { message: slot.raw !== undefined, detail: true, action: true },
     });
   }
 

@@ -107,7 +107,7 @@ internal/webconsole/ui/
 
 - `error` 字段统一为 `{ message, detail, action, status }`，保留后端的 detail 和 action。
 - `session.messages` 是"更早分页 + 轮询尾部"按 id 去重合并后的窗口（`lib/session-list.js` 的 `mergeMessageWindows`），轮询不会丢弃已加载的更早消息。
-- `session.optimistic` 保存 `SendRecoveryStore` 产生的乐观用户消息，由消息流追加到末尾；`session.approval` 保存当前会话的审批操作展示状态；`session.pendingAction` 标记进行中的控制动作；`session.activity` 是本地动作（启动、继续、追加指令）的即时活动描述，新的 engine 事件或会话收敛后清除。
+- `session.optimistic` 保存 `SendRecoveryStore` 产生的乐观用户消息，由消息流追加到末尾；`session.approval` 保存当前会话的审批操作展示状态；`session.pendingAction` 标记进行中的控制动作（含发送中的计划修订 `revise`）；`session.activity` 是本地动作（启动、继续、追加指令）的即时活动描述，新的 engine 事件或会话收敛后清除。
 - Composer 草稿（文本与 Goal/Plan/打断开关）按会话保存在内存中（`state/composer-drafts.js`），切换回会话时恢复；新会话草稿独立。失败草稿只存在于内存。
 - 工作区浏览路径偏好按 `workspace_root + session` 分桶存入 `aegis-agent.workspace-paths.v1`；工作区页通过 `features/workspace/workspace-session.js` 记住最近打开的会话，用于从会话进入时定位其 workdir。
 - 会话摘要（overview、sessions、history）带只读 `title`：Web 适配层从 `messages.jsonl` 头部有界读取首条用户消息并在内存缓存；工作区列表条目带 `size`（普通文件）与 `modified_at`。
@@ -123,7 +123,7 @@ internal/webconsole/ui/
   - 导航与数据：`navigate(path, { replace })`、`newSession()`、`openSession(id)`、`refreshSession({ silent })`、`loadEarlierMessages()`、`refreshOverview({ silent })`、`refreshMeta()`、`handleMissingSession(id)`。
   - 界面状态：`toggleSidebar()`、`setSidebarOpen(open)`、`toggleInspector(force?)`、`setInspectorTab(tab)`、`setSidebarQuery(q)`、`openPalette()`、`closePalette()`、`openShortcuts()`、`closeShortcuts()`、`toggleLocale()`、`viewSessionInHistory(id)`。
   - Composer 状态：`focusComposer()`、`setComposerText(text, { focus })`、`toggleGoalMode(force?)`、`togglePlanMode(force?)`。
-- `state/toasts.js`：`pushToast({ tone, message, detail, action, timeout })`、`toastError(error, fallbackKey)`、`dismissToast(id)`。
+- `state/toasts.js`：`pushToast({ tone, message, detail, action, raw, timeout })`、`toastError(error, fallbackKey)`、`dismissToast(id)`。`raw` 为 `true` 或 `{ message, detail, action }`，标记后端原文部分；`ui/Toasts.js` 把原文放进 `translate="no"` 节点，`t()` 文案与“详情/建议”标签保持可翻译。`toastError` 把后端 message/detail/action 记为原文，回退文案（`fallbackKey`、网络错误）不记。
 - `state/dialogs.js`：`confirmDialog({ title, body, confirmLabel, danger })` 返回 `Promise<boolean>`；`promptDialog({ title, label, initialValue, validate })` 返回 `Promise<string|null>`。
 - `state/selectors.js`：`currentDisplayStatus`、`currentSessionTitle`（返回 `{ text, raw }`，`raw` 为 true 时放入 `translate="no"`）、`canStopSession`、`canInterruptSession`。
 - `state/session-actions.js` 由会话、审批、目标的 feature 实现，函数名不可更改：`submitComposer`、`startRun`、`continueRun`、`steerRun`、`stopRun`、`interruptRun`、`approvePlan`、`revisePlan`、`cancelPlan`、`answerPlanInput`、`createGoal`、`updateGoal`、`pauseGoal`、`resumeGoal`、`completeGoal`、`clearGoal`、`restoreFailedDraft`、`discardFailedDraft`。所有请求必须经过 `lib/api.js`；提交期间把 `composer.submitting` 设为 true。
@@ -183,7 +183,7 @@ internal/webconsole/ui/
 
 - 自动增高输入框；占位文案随状态变化（新会话 / 运行中追加指令 / 继续 / 修改计划）。
 - 工具行：Goal 与 Plan 切换（仅在可 start/continue 时出现）、运行中的"打断当前步骤"开关、
-  provider/model 选择（仅新会话与 continue 时可改，默认继承）。
+  provider/model 选择（仅新会话与 continue 时可改，默认继承）。模型弹层以 Composer 工具栏为定位容器：宽屏从模型芯片下方展开并被限制在工具栏宽度内，≤768px 时占满工具栏宽度，任何视口下都不得越出视口或被裁切。
 - 主按钮：空闲时为发送；运行中输入为空时变为停止，有内容时为追加指令（steer）。
   路由与服务端一致：服务端只要 durable `state.status` 为 `running` 就接受 steer（不区分句柄归属），因此已加载 detail 为 `running` 时路由为追加指令（包括无句柄的孤儿 running）。
   启动窗口优先于 continue 判断：已接受的 start 尚未加载 detail，或已有活动句柄（不含 settling 句柄）/活动标记（`session.generating`）而状态尚未进入 `running`
@@ -199,6 +199,7 @@ internal/webconsole/ui/
 - Plan Mode `awaiting_approval` 时，在消息流末尾显示计划审批卡：摘要、版本、Markdown 计划（长内容可折叠）、
   假设/风险/验证，以及"批准并运行""要求修改""取消计划"。审批目标、覆盖率豁免确认、过期重审与回执查询
   沿用 `17-web-console.md` §7.13 的契约，界面同时给出状态说明。
+- 审批卡按钮遵循与 Composer 相同的启动窗口规则（`controls/composer-model.js` 的 `approvalCardState`）：修订请求发送中、规划运行仍为 running/queued/pending、或存在活动句柄（不含 settling 句柄）/`session.generating` 而状态尚未进入 `running` 时，“批准并运行”和“取消计划”禁用，并以 `approval-settling`（`data-reason` 为 sending/settling/starting）说明原因；settling 句柄不阻止批准。
 - `awaiting_user_input` 时显示提问卡：单选/多选选项与自由输入"其他"，提交答案或取消计划。
 - 检查器的"计划"页只展示详情与历史，不再重复主操作按钮。
 - "要求修改"把焦点移到 Composer 并切换为修订模式；若从覆盖面板触发，先关闭面板并解除 `inert`。

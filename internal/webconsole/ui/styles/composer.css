@@ -72,7 +72,9 @@
   line-height: var(--leading-tight);
 }
 
+/* Containing block of the model popover (ModelPicker.js keeps .model-picker static). */
 .composer-toolbar {
+  position: relative;
   flex-wrap: nowrap;
   min-height: var(--hit);
 }
@@ -160,16 +162,19 @@
 .composer-primary[aria-busy="true"] { cursor: progress; }
 
 /* ---- Model picker ---------------------------------------------------------------------- */
-.model-picker { position: relative; min-width: 0; }
+/* Positioned against .composer-toolbar so it never runs past the composer edge:
+   it starts under the chip (--model-popover-left, set by ModelPicker.js) and is
+   clamped to the toolbar width; ≤768px it spans the toolbar (see Responsive). */
+.model-picker { min-width: 0; }
 
 .model-popover {
   position: absolute;
-  left: 0;
+  left: clamp(0px, var(--model-popover-left, 0px), calc(100% - min(320px, 100%)));
   bottom: calc(100% + var(--space-2));
   z-index: 30;
   display: grid;
   gap: var(--space-2);
-  width: min(320px, calc(100vw - 32px));
+  width: min(320px, 100%);
   padding: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-3);
@@ -182,7 +187,7 @@
 .model-options {
   display: grid;
   gap: 2px;
-  max-height: 260px;
+  max-height: min(260px, 36vh);
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -732,6 +737,7 @@
   .todo-strip-toggle-label { display: none; }
   .composer-context { margin: 0 var(--space-3); }
   .model-chip .mode-chip-label { max-width: 120px; }
+  .model-popover { left: 0; right: 0; width: auto; }
   .approval-card,
   .plan-input-card { padding: var(--space-4); }
   .approval-plan-body { padding: var(--space-3) var(--space-4); }

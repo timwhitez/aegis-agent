@@ -94,6 +94,39 @@ test('awaiting plan approval: composer text is sent as a plan revision', async (
   assert.equal(h.state().composer.revising, false);
 });
 
+test('a plan revision in flight locks the approval card (pendingAction revise) until accepted or failed', async () => {
+  const gate = deferred();
+  const h = createHarness({ api: { revisePlanMode: () => gate.promise } });
+  h.openSession('sess_a', { state: { status: 'awaiting_input' }, plan_mode: { status: 'awaiting_approval', plan_version: 1 } });
+  h.setComposer({ text: 'narrow the scope', revising: true });
+  const sending = h.actions.submitComposer();
+  assert.equal(h.state().session.pendingAction, 'revise', 'locked while the request is in flight');
+  gate.resolve({ status: 'accepted' });
+  assert.equal((await sending).kind, 'revise');
+  assert.equal(h.state().session.pendingAction, '', 'released once accepted');
+  assert.equal(h.state().session.generating, true, 'the launch window then follows session.generating');
+
+  const failed = createHarness({ api: { revisePlanMode: () => { throw apiError('session is not resumable', { status: 409, detail: 'already running' }); } } });
+  failed.openSession('sess_b', { state: { status: 'awaiting_input' }, plan_mode: { status: 'awaiting_approval', plan_version: 1 } });
+  failed.setComposer({ text: 'again' });
+  assert.equal((await failed.actions.submitComposer()).ok, false);
+  assert.equal(failed.state().session.pendingAction, '', 'released after a rejected revision');
+});
+
+test('send failure toasts mark backend message/detail/action raw and keep fallback copy translatable', async () => {
+  const h = createHarness({ api: { continueSession: () => { throw apiError('upstream refused', { status: 409, detail: 'busy', action: 'wait' }); } } });
+  h.openSession('sess_a', { state: { status: 'paused' } });
+  h.navigate('/sessions');
+  await h.actions.continueRun('sess_a', { message: 'go' });
+  assert.deepEqual(h.toasts.at(-1).raw, { message: true, detail: true, action: true });
+  const copy = createHarness({ api: { continueSession: () => { throw apiError('', { status: 400 }); } } });
+  copy.openSession('sess_a', { state: { status: 'paused' } });
+  copy.navigate('/sessions');
+  await copy.actions.continueRun('sess_a', { message: 'go' });
+  assert.equal(copy.toasts.at(-1).message, t('composer.send.failed'));
+  assert.equal(copy.toasts.at(-1).raw.message, false, 'fallback copy stays translatable');
+});
+
 test('a stale Plan toggle never starts Plan Mode while one is pending', async () => {
   const h = createHarness();
   h.openSession('sess_a', { state: { status: 'paused' }, plan_mode: { status: 'planning' } });

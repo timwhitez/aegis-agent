@@ -199,7 +199,7 @@ test('stop: not-owned handles explain the backend detail/action; success toasts'
   const h = createHarness({ api: { stopSession: () => { throw apiError('active handle not owned', { status: 409, code: 'ACTIVE_HANDLE_NOT_OWNED', detail: 'owned by another process', action: 'use steer with interrupt' }); } } });
   h.openSession('sess_a', { state: { status: 'running' } }, { generating: true });
   await h.actions.stopRun('sess_a');
-  assert.deepEqual(h.toasts.at(-1), { tone: 'warning', message: t('composer.stop.notOwned'), detail: 'owned by another process', action: 'use steer with interrupt' });
+  assert.deepEqual(h.toasts.at(-1), { tone: 'warning', message: t('composer.stop.notOwned'), detail: 'owned by another process', action: 'use steer with interrupt', raw: { detail: true, action: true } });
   assert.equal(h.state().session.pendingAction, '');
   const ok = createHarness({ api: { stopSession: () => ({ reconciled: true }) } });
   ok.openSession('sess_a', { state: { status: 'running' } }, { generating: true });

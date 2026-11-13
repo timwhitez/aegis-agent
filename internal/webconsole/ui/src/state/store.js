@@ -22,7 +22,7 @@ export function emptySessionSlice(id = '') {
     lastRefreshedAt: 0,
     optimistic: [], // unreconciled optimistic user messages of this session (send-recovery.js, memory only)
     approval: null, // { record, response, busy } | { error } for this session (approval-operations.js)
-    pendingAction: '', // in-flight control on this session: stop|interrupt|approve|approval-check|cancel-plan|answer|goal
+    pendingAction: '', // in-flight control on this session: stop|interrupt|approve|approval-check|cancel-plan|answer|goal|revise
   };
 }
 
