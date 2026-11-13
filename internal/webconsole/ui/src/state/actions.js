@@ -8,6 +8,7 @@ import { emptyComposerSlice, emptySessionSlice, getState, update } from './store
 import { navigate, sessionPath } from './router.js';
 import { pushToast, toastError } from './toasts.js';
 import { saveUIPrefs } from './prefs.js';
+import { composerDrafts } from './composer-drafts.js';
 
 export { navigate, sessionPath };
 
@@ -31,6 +32,8 @@ function persistPrefs() {
 
 /** New session: reset the composer, go to /, close the drawer and focus the composer. */
 export function newSession() {
+  // Keep the open session's unsent draft; the new-session draft starts empty with a new identity.
+  composerDrafts.resetNewSession();
   update('composer', (composer) => ({ ...emptyComposerSlice(), failedDrafts: composer.failedDrafts, focusToken: composer.focusToken + 1 }));
   navigate('/');
   update('ui', { sidebarOpen: false, paletteOpen: false });
@@ -44,6 +47,7 @@ export function openSession(id) {
 
 /** Reacts to route changes: opens/clears the session slice. Called by main.js. */
 export function syncSessionForRoute(route) {
+  composerDrafts.syncRoute(route);
   const { session } = getState();
   if (route.name === 'session') {
     if (session.id === route.params.id) return;
@@ -287,10 +291,27 @@ export function setComposerText(text, { focus = false } = {}) {
   update('composer', (composer) => ({ ...composer, text: String(text ?? ''), focusToken: focus ? composer.focusToken + 1 : composer.focusToken }));
 }
 
+/** Goal and Plan are mutually exclusive start modes: enabling one turns the other off. */
 export function toggleGoalMode(force) {
-  update('composer', (composer) => ({ ...composer, goalEnabled: typeof force === 'boolean' ? force : !composer.goalEnabled }));
+  update('composer', (composer) => {
+    const goalEnabled = typeof force === 'boolean' ? force : !composer.goalEnabled;
+    return { ...composer, goalEnabled, planEnabled: goalEnabled ? false : composer.planEnabled };
+  });
 }
 
 export function togglePlanMode(force) {
-  update('composer', (composer) => ({ ...composer, planEnabled: typeof force === 'boolean' ? force : !composer.planEnabled }));
+  update('composer', (composer) => {
+    const planEnabled = typeof force === 'boolean' ? force : !composer.planEnabled;
+    return { ...composer, planEnabled, goalEnabled: planEnabled ? false : composer.goalEnabled };
+  });
+}
+
+/** "打断当前步骤": the next steer interrupts the current step. */
+export function toggleInterruptMode(force) {
+  update('composer', (composer) => ({ ...composer, interrupt: typeof force === 'boolean' ? force : !composer.interrupt }));
+}
+
+/** Provider/model override for start/continue ('' = inherit the default). */
+export function setComposerModel({ provider = '', model = '' } = {}) {
+  update('composer', { provider: String(provider || ''), model: String(model || '') });
 }

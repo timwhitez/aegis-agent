@@ -19,6 +19,9 @@ export function emptySessionSlice(id = '') {
     generating: false, // a run is known to be active (set by session-actions / relay)
     liveEvents: [], // recent relay engine_event payloads for this session (memory only)
     lastRefreshedAt: 0,
+    optimistic: [], // unreconciled optimistic user messages of this session (send-recovery.js, memory only)
+    approval: null, // { record, response, busy } | { error } for this session (approval-operations.js)
+    pendingAction: '', // in-flight control on this session: stop|interrupt|approve|approval-check|cancel-plan|answer|goal
   };
 }
 
