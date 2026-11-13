@@ -165,6 +165,8 @@ func markArtifactWrite(artifacts []session.RequiredArtifact, path, toolName stri
 	return out, changed
 }
 
+// cleanAbsPath only builds comparison keys for artifact paths; the filesystem is
+// always accessed through the recorded Path, so filepath.Abs suffices here.
 func cleanAbsPath(path string) string {
 	if strings.TrimSpace(path) == "" {
 		return ""

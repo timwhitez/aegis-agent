@@ -11,6 +11,7 @@ import (
 
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/tools"
 )
@@ -1878,7 +1879,7 @@ func resolvedExistingDir(path string) (string, bool) {
 	if cleaned == "" {
 		return "", false
 	}
-	abs, err := filepath.Abs(cleaned)
+	abs, err := procutil.Abs(cleaned)
 	if err != nil {
 		return "", false
 	}
@@ -1898,7 +1899,7 @@ func resolvedExistingPath(path string) (string, bool) {
 	if cleaned == "" {
 		return "", false
 	}
-	abs, err := filepath.Abs(cleaned)
+	abs, err := procutil.Abs(cleaned)
 	if err != nil {
 		return "", false
 	}

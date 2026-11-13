@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"aegis-agent/internal/procutil"
 )
 
 func ResolveWorkspacePath(workdir, input string) (string, error) {
-	base, err := filepath.Abs(workdir)
+	base, err := procutil.Abs(workdir)
 	if err != nil {
 		return "", err
 	}
@@ -111,7 +113,7 @@ var deniedWorkspaceWriteFiles = []string{
 }
 
 func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
-	base, err := filepath.Abs(workdir)
+	base, err := procutil.Abs(workdir)
 	if err != nil {
 		return err
 	}
@@ -136,7 +138,7 @@ func CheckWorkspaceWriteAllowed(workdir, resolvedPath string) error {
 func CheckWorkspaceWriteInputAllowed(workdir, inputPath string) error {
 	displayPath := filepath.Clean(inputPath)
 	if filepath.IsAbs(displayPath) {
-		base, err := filepath.Abs(workdir)
+		base, err := procutil.Abs(workdir)
 		if err != nil {
 			return err
 		}

@@ -22,6 +22,7 @@ import (
 
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -5400,7 +5401,7 @@ func resolveQueueVisibleWritePath(root, rel string) (string, bool) {
 }
 
 func resolveQueueExistingDir(path string) (string, bool) {
-	abs, err := filepath.Abs(filepath.Clean(strings.TrimSpace(path)))
+	abs, err := procutil.Abs(filepath.Clean(strings.TrimSpace(path)))
 	if err != nil {
 		return "", false
 	}
@@ -7572,7 +7573,7 @@ func chmodOpenFileBestEffort(file *os.File, path string, mode fs.FileMode) {
 }
 
 func rejectSymlinkPathAncestors(path string) error {
-	abs, err := filepath.Abs(filepath.Clean(path))
+	abs, err := procutil.Abs(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

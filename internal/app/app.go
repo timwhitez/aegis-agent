@@ -2503,7 +2503,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if target == "" {
 		return fmt.Errorf("config path is required")
 	}
-	target, err = filepath.Abs(filepath.Clean(target))
+	target, err = procutil.Abs(filepath.Clean(target))
 	if err != nil {
 		return err
 	}

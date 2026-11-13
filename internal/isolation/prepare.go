@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 )
 
 type Request struct {
@@ -35,7 +36,7 @@ var (
 )
 
 func Prepare(req Request) (Result, error) {
-	parentWorkdir, err := filepath.Abs(req.ParentWorkdir)
+	parentWorkdir, err := procutil.Abs(req.ParentWorkdir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -59,7 +60,7 @@ func Prepare(req Request) (Result, error) {
 	if strings.TrimSpace(req.SessionID) == "" {
 		return Result{}, fmt.Errorf("session id is required for isolation mode %s", mode)
 	}
-	rootDir, err := filepath.Abs(req.RootDir)
+	rootDir, err := procutil.Abs(req.RootDir)
 	if err != nil {
 		return Result{}, err
 	}

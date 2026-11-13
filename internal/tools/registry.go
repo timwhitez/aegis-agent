@@ -1897,7 +1897,7 @@ func resolveSessionEphemeralArtifactFile(execCtx ExecContext, input string) (str
 		}
 		targetInput = relativeTarget
 	}
-	rootAbs, err := filepath.Abs(root)
+	rootAbs, err := procutil.Abs(root)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -2000,11 +2000,11 @@ func resolveRegisteredSkillPath(catalog *skills.Catalog, input string, requireDi
 }
 
 func pathLexicallyUnderRoot(root, input string) bool {
-	base, err := filepath.Abs(root)
+	base, err := procutil.Abs(root)
 	if err != nil {
 		return false
 	}
-	target, err := filepath.Abs(input)
+	target, err := procutil.Abs(input)
 	if err != nil {
 		return false
 	}
@@ -2067,7 +2067,7 @@ func skillRelativeInput(input, skillName string) (string, bool, bool) {
 }
 
 func resolvePathUnderRoot(root, input string) (string, error) {
-	base, err := filepath.Abs(root)
+	base, err := procutil.Abs(root)
 	if err != nil {
 		return "", err
 	}

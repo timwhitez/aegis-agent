@@ -714,7 +714,7 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 	} else if parentMeta != nil && !filepath.IsAbs(workdir) {
 		if parentBase := firstNonEmpty(parentMeta.RequestedWorkdir, parentMeta.Workdir); parentBase != "" {
 			parentRelative := filepath.Join(parentBase, workdir)
-			cwdRelative, err := filepath.Abs(workdir)
+			cwdRelative, err := procutil.Abs(workdir)
 			if err != nil {
 				return "", err
 			}
@@ -725,7 +725,7 @@ func resolveRequestedWorkdir(input string, parentMeta *session.SessionMetadata) 
 			}
 		}
 	}
-	resolved, err := filepath.Abs(workdir)
+	resolved, err := procutil.Abs(workdir)
 	if err != nil {
 		return "", err
 	}

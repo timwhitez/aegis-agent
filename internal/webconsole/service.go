@@ -5232,11 +5232,11 @@ func sameWebPath(a, b string) (bool, error) {
 	if a == "" || b == "" {
 		return false, nil
 	}
-	absA, err := filepath.Abs(filepath.Clean(a))
+	absA, err := procutil.Abs(filepath.Clean(a))
 	if err != nil {
 		return false, err
 	}
-	absB, err := filepath.Abs(filepath.Clean(b))
+	absB, err := procutil.Abs(filepath.Clean(b))
 	if err != nil {
 		return false, err
 	}

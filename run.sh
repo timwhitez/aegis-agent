@@ -81,7 +81,10 @@ Environment overrides:
   AEGIS_AGENT_WEB_WORKERS  Worker count, default `2`.
   AEGIS_AGENT_BIN          Binary path, default `bin/aegis-agent`.
   AEGIS_AGENT_SIGNAL_HELPER
-                           Trusted Aegis binary used for Linux pidfd signalling.
+                           Trusted Aegis binary, required on Linux and macOS, that
+                           verifies the recorded process identity before signalling
+                           it (Linux: pidfd; macOS: identity check, then kill).
+                           Default: the `AEGIS_AGENT_BIN` binary.
   AEGIS_AGENT_ENV_FILE     Optional credential dotenv file parsed as data by the
                            Go binary; the launcher never sources this file.
   AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.

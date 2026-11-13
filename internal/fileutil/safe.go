@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"aegis-agent/internal/procutil"
 )
 
 const MaxRegularFileReadBytes int64 = 16 << 20
@@ -491,7 +493,7 @@ func chmodPathAtNoSymlink(path string, mode os.FileMode, allowRegular, allowDir 
 }
 
 func openChmodTargetNoSymlink(path, parent, base string) (int, error) {
-	if abs, err := filepath.Abs(path); err == nil {
+	if abs, err := procutil.Abs(path); err == nil {
 		if fd, ok := openNoSymlinkSingleOpen(abs, unix.O_RDONLY); ok {
 			return fd, nil
 		}
@@ -597,7 +599,7 @@ func openRegularFileForReadNoSymlink(path string) (*os.File, error) {
 		return nil, fmt.Errorf("invalid file path: %s", path)
 	}
 	if beforeReadRegularFileOpen == nil {
-		if abs, err := filepath.Abs(path); err == nil {
+		if abs, err := procutil.Abs(path); err == nil {
 			if fd, ok := openNoSymlinkSingleOpen(abs, unix.O_RDONLY); ok {
 				if file := os.NewFile(uintptr(fd), path); file != nil {
 					return file, nil
@@ -752,7 +754,7 @@ func MkdirAllNoSymlink(path string, mode os.FileMode) error {
 }
 
 func mkdirAllNoSymlinkAt(path string, mode os.FileMode) error {
-	abs, err := filepath.Abs(path)
+	abs, err := procutil.Abs(path)
 	if err != nil {
 		return err
 	}
@@ -958,7 +960,7 @@ func CreateTempNoSymlink(parent, pattern string) (*os.File, error) {
 }
 
 func openDirNoSymlink(path string) (int, error) {
-	abs, err := filepath.Abs(filepath.Clean(path))
+	abs, err := procutil.Abs(filepath.Clean(path))
 	if err != nil {
 		return -1, err
 	}
@@ -1486,7 +1488,7 @@ func rejectRegularFileChildAtNoSymlink(parentFD int, name, path string) error {
 }
 
 func rejectExistingSymlinkAncestors(path string) error {
-	abs, err := filepath.Abs(filepath.Clean(path))
+	abs, err := procutil.Abs(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

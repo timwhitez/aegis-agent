@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+
+	"aegis-agent/internal/procutil"
 )
 
 func auditFileIdentity(info os.FileInfo) (string, bool) {
@@ -179,7 +181,7 @@ func auditOptionalMetadataMatches(stored, actual string, actualOK bool) bool {
 }
 
 func rejectAuditSymlinkAncestors(path string) error {
-	abs, err := filepath.Abs(filepath.Clean(path))
+	abs, err := procutil.Abs(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

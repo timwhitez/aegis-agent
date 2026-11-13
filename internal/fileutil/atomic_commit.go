@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"aegis-agent/internal/procutil"
 )
 
 type AtomicCommitOutcome string
@@ -54,7 +56,7 @@ func AtomicCommitFileNoSymlink(path string, data []byte, mode os.FileMode, optio
 	}
 	path = filepath.Clean(path)
 	if options.SyncParentChain {
-		path, err = filepath.Abs(path)
+		path, err = procutil.Abs(path)
 		if err != nil {
 			return outcome, err
 		}
@@ -192,7 +194,7 @@ func openAtomicCommitDirectories(parent string, wholeChain bool) ([]atomicCommit
 		}
 		return []atomicCommitDirectory{{fd: fd, path: parent}}, nil
 	}
-	abs, err := filepath.Abs(parent)
+	abs, err := procutil.Abs(parent)
 	if err != nil {
 		return nil, err
 	}

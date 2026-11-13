@@ -237,7 +237,7 @@ func pathWithinAny(anchors []string, target string) bool {
 }
 
 func realOrAbs(path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	abs, err := procutil.Abs(path)
 	if err != nil {
 		return "", err
 	}
