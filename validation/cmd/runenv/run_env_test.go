@@ -19,6 +19,17 @@ func cleanAgentEnv() []string {
 	return out
 }
 
+// trueBinary resolves true(1) through PATH: Linux has /bin/true, but macOS only
+// ships /usr/bin/true, so a hard-coded /bin/true fails ensure_binary there.
+func trueBinary(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatalf("true(1) not found in PATH: %v", err)
+	}
+	return path
+}
+
 func TestDotEnvIsNeverEvaluatedByLauncher(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", "..", ".."))
 	marker := filepath.Join(t.TempDir(), "executed")
@@ -31,7 +42,7 @@ func TestDotEnvIsNeverEvaluatedByLauncher(t *testing.T) {
 	cmd := exec.Command("bash", filepath.Join(repoRoot, "run.sh"), "foreground")
 	cmd.Env = append(cleanAgentEnv(),
 		"AEGIS_AGENT_SKIP_BUILD=1",
-		"AEGIS_AGENT_BIN=/bin/true",
+		"AEGIS_AGENT_BIN="+trueBinary(t),
 		"AEGIS_AGENT_ENV_FILE="+envFile,
 	)
 	output, err := cmd.CombinedOutput()
