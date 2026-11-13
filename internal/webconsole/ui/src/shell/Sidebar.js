@@ -1,11 +1,15 @@
 // Always-visible sidebar: brand, new session, search, grouped live session
 // list (root sessions from /api/overview), page navigation, connection state.
-import { html, useMemo } from '../lib/html.js';
+// Rows use the plan-mode aware summary status; the open session's row uses
+// the detail-derived status of the top bar (sidebarRowStatus). Each group
+// shows SIDEBAR_GROUP_LIMIT rows plus the open session, with a
+// "Show N more" toggle (data-testid="session-group-toggle").
+import { html, useMemo, useState } from '../lib/html.js';
 import { t, formatRelativeTime, formatDateTime } from '../lib/i18n.js';
 import { shortId } from '../lib/format.js';
-import { sessionSummaryDisplayStatus } from '../lib/status.js';
-import { filterSessions, groupSessions, summaryTitle } from '../lib/session-list.js';
+import { capSessionGroup, filterSessions, groupSessions, sidebarRowStatus, summaryTitle } from '../lib/session-list.js';
 import { useStore } from '../state/hooks.js';
+import { currentDisplayStatus } from '../state/selectors.js';
 import { onLinkClick, sessionPath } from '../state/router.js';
 import { newSession, setSidebarOpen, setSidebarQuery, toggleSidebar, refreshOverview } from '../state/actions.js';
 import { Button } from '../ui/Button.js';
@@ -42,15 +46,24 @@ export function Sidebar({ mode = 'inline' }) {
     overviewError: state.overview.error,
     query: state.ui.sidebarQuery,
     activeId: state.session.id,
+    activeStatus: currentDisplayStatus(state),
     routeName: state.route.name,
     relay: state.connection.relay,
     online: state.connection.online,
   }));
   const now = useNow(30000);
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const current = useMemo(() => ({ id: view.activeId, status: view.activeStatus }), [view.activeId, view.activeStatus]);
   const groups = useMemo(
-    () => groupSessions(filterSessions(view.sessions, view.query, view.titles), now),
-    [view.sessions, view.query, view.titles, now],
+    () => groupSessions(filterSessions(view.sessions, view.query, view.titles), now, { statusOf: (item) => sidebarRowStatus(item, current) }),
+    [view.sessions, view.query, view.titles, now, current],
   );
+  const toggleGroup = (key) => setExpandedGroups((previous) => {
+    const next = new Set(previous);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
   const closeDrawer = () => setSidebarOpen(false);
   const onNav = (event) => {
     onLinkClick(event);
@@ -106,14 +119,32 @@ export function Sidebar({ mode = 'inline' }) {
       </div>` : null}
       ${view.loaded && view.sessions.length === 0 ? html`<p class="session-nav-note">${t('shell.sessions.empty')}</p>` : null}
       ${view.loaded && view.sessions.length > 0 && groups.length === 0 ? html`<p class="session-nav-note">${t('shell.search.noResults')}</p>` : null}
-      ${groups.map((group) => html`<section class="session-group" key=${group.key} data-group=${group.key}>
-        <h2 class="session-group-label">${t(`shell.group.${group.key}`)}</h2>
-        <ul class="session-rows" role="list">
-          ${group.items.map((item) => html`<li key=${item.id}>
-            <${SessionRow} item=${item} active=${item.id === view.activeId} titles=${view.titles} now=${now} onNav=${onNav} />
-          </li>`)}
-        </ul>
-      </section>`)}
+      ${groups.map((group) => {
+        const expanded = expandedGroups.has(group.key);
+        const collapsed = capSessionGroup(group.items, { activeId: view.activeId });
+        // Search results are never capped: every match stays visible.
+        const showToggle = !view.query && collapsed.hiddenCount > 0;
+        const rows = showToggle && !expanded ? collapsed.visible : group.items;
+        return html`<section class="session-group" key=${group.key} data-group=${group.key}>
+          <h2 class="session-group-label">${t(`shell.group.${group.key}`)}</h2>
+          <ul class="session-rows" role="list">
+            ${rows.map((item) => html`<li key=${item.id}>
+              <${SessionRow} item=${item} status=${sidebarRowStatus(item, current)} active=${item.id === view.activeId} titles=${view.titles} now=${now} onNav=${onNav} />
+            </li>`)}
+          </ul>
+          ${showToggle ? html`<button
+            type="button"
+            class="session-group-toggle"
+            aria-expanded=${String(expanded)}
+            data-testid="session-group-toggle"
+            data-group=${group.key}
+            onClick=${() => toggleGroup(group.key)}
+          >
+            <${Icon} name=${expanded ? 'chevron-up' : 'chevron-down'} size=${14} />
+            <span>${expanded ? t('shell.group.showLess') : t('shell.group.showMore', { count: collapsed.hiddenCount })}</span>
+          </button>` : null}
+        </section>`;
+      })}
     </nav>
     ${view.loaded && view.sessions.length > 0 ? html`<a class="view-all-link" href="/sessions" onClick=${onNav}>
       ${t('shell.sessions.viewAll')}<${Icon} name="chevron-right" size=${14} />
@@ -136,8 +167,7 @@ export function Sidebar({ mode = 'inline' }) {
   </aside>`;
 }
 
-function SessionRow({ item, active, titles, now, onNav }) {
-  const status = sessionSummaryDisplayStatus(item);
+function SessionRow({ item, status, active, titles, now, onNav }) {
   const title = summaryTitle(item, titles);
   const time = item.updated_at || item.created_at;
   return html`<a

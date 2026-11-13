@@ -3,8 +3,11 @@
 // position on every reopen come from ui/Dialog.js, which is mounted only
 // while open). Shows only the tabs relevant for the open session
 // (visibleInspectorTabs); a persisted tab that is hidden falls back to
-// Overview without overwriting the preference. Tab ids come from
-// state/prefs.js INSPECTOR_TABS; each tab receives { sessionId, mode }.
+// Overview without overwriting the preference. While a session's detail is
+// loading (session switch) the persisted tab stays selected with a skeleton
+// panel (inspectorTabState), so tabs do not flicker to Overview and back.
+// Tab ids come from state/prefs.js INSPECTOR_TABS; each tab receives
+// { sessionId, mode }.
 import { html, useLayoutEffect, useMemo, useRef, useState } from '../../lib/html.js';
 import { t } from '../../lib/i18n.js';
 import { useStore } from '../../state/hooks.js';
@@ -14,7 +17,8 @@ import { Dialog } from '../../ui/Dialog.js';
 import { IconButton } from '../../ui/IconButton.js';
 import { Tabs, panelId, tabId } from '../../ui/Tabs.js';
 import { EmptyState } from '../../ui/EmptyState.js';
-import { TAB_LABEL_KEYS, fileChangeCount, resolveInspectorTab, visibleInspectorTabs, withMessages } from './inspector-model.js';
+import { Skeleton } from '../../ui/Skeleton.js';
+import { TAB_LABEL_KEYS, fileChangeCount, inspectorTabState, withMessages } from './inspector-model.js';
 import { StatusPill } from './parts.js';
 import { OverviewTab } from './OverviewTab.js';
 import { PlanTab } from './PlanTab.js';
@@ -89,15 +93,16 @@ export function Inspector({ mode = 'panel' }) {
     tab: state.ui.inspectorTab,
     sessionId: state.session.id,
     detail: state.session.detail,
+    loading: state.session.loading,
     messages: state.session.messages,
     status: currentDisplayStatus(state),
   }));
   const bodyRef = useRef(null);
   const detail = useMemo(() => withMessages(view.detail, view.messages), [view.detail, view.messages]);
   const fileCount = useMemo(() => fileChangeCount(detail), [detail]);
-  const visible = visibleInspectorTabs(detail, { fileCount });
-  const active = resolveInspectorTab(view.tab, visible);
-  const tabs = visible.map((id) => ({ id, label: TAB_LABELS[id]() }));
+  const tabState = inspectorTabState({ tab: view.tab, detail, sessionId: view.sessionId, loading: view.loading, fileCount });
+  const active = tabState.active;
+  const tabs = tabState.tabs.map((id) => ({ id, label: TAB_LABELS[id]() }));
   const Active = TAB_COMPONENTS[active] || OverviewTab;
   const close = () => toggleInspector(false);
 
@@ -125,10 +130,11 @@ export function Inspector({ mode = 'panel' }) {
       class="tab-panel inspector-panel-body insp-body"
       data-testid="inspector-panel"
       data-tab=${active}
+      aria-busy=${tabState.pending ? 'true' : undefined}
     >
-      ${view.sessionId
-        ? html`<${Active} key=${view.sessionId + ':' + active} sessionId=${view.sessionId} mode=${mode} />`
-        : html`<${EmptyState} icon="info" body=${t('inspector.noSession')} />`}
+      ${!view.sessionId ? html`<${EmptyState} icon="info" body=${t('inspector.noSession')} />`
+        : tabState.pending ? html`<div class="insp-tab-loading" data-testid="inspector-tab-loading"><span class="sr-only">${t('inspector.loading')}</span><${Skeleton} lines=${6} /></div>`
+          : html`<${Active} key=${view.sessionId + ':' + active} sessionId=${view.sessionId} mode=${mode} />`}
     </div>`;
   if (mode === 'overlay') {
     return html`<${Dialog} title=${t('inspector.title')} hideTitle showClose=${false} placement="right" class="inspector inspector-overlay" testId="inspector" onClose=${close}>

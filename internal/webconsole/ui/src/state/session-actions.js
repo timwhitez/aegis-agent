@@ -18,11 +18,15 @@
 //     composer.failedDrafts (memory only); composer.submitting guards double sends;
 //   - approvals use ApprovalOperationController (localStorage intent, crypto
 //     request IDs, receipts) and the approval-operations.js presentation rules;
-//   - accepted actions refresh the session immediately.
+//   - accepted actions refresh the session immediately;
+//   - accepted start / continue / steer / revise set session.activity
+//     (send-recovery.js localSendActivity) so the stream shows live feedback
+//     at once; actions.js refreshSession clears it once the run settles and
+//     the stream prefers newer engine events (stream/model.js selectLiveActivity).
 import * as apiModule from '../lib/api.js';
 import { t, tx } from '../lib/i18n.js';
 import { shallowEqual } from '../lib/store.js';
-import { SendRecoveryStore, isEphemeralSessionId, prepareSend, sendSuccessFeedback } from '../lib/send-recovery.js';
+import { SendRecoveryStore, isEphemeralSessionId, localSendActivity, prepareSend, sendSuccessFeedback } from '../lib/send-recovery.js';
 import {
   ApprovalOperationController,
   approvalActionError,
@@ -91,7 +95,7 @@ export function sendContextFromState(state, drafts, launching = new Set()) {
 /**
  * createSessionActions(deps) -> { submitComposer, startRun, …, attach(store), recovery, approvals() }
  * deps: { api, getState, update, navigate, sessionPath, refreshSession, refreshOverview,
- *   toggleInspector, pushToast, toastError, confirmDialog, drafts, storage, requestID, createSendId }
+ *   toggleInspector, pushToast, toastError, confirmDialog, drafts, storage, requestID, createSendId, now }
  */
 export function createSessionActions(deps) {
   const api = deps.api || apiModule;
@@ -105,6 +109,7 @@ export function createSessionActions(deps) {
   const toastErr = deps.toastError || ((error) => toast({ tone: 'danger', message: str(error?.message) }));
   const confirm = deps.confirmDialog || (async () => false);
   const requestID = deps.requestID || (() => generateApprovalRequestID());
+  const now = deps.now || (() => Date.now());
   const launching = new Set();
   const stopping = new Set();
   const failureInfo = new Map(); // failed draft id -> { detail, action } kept for the inline card
@@ -130,6 +135,13 @@ export function createSessionActions(deps) {
 
   function clearPending(id, name) {
     update('session', (session) => (session.id === id && session.pendingAction === name ? { ...session, pendingAction: '' } : session));
+  }
+
+  /** Immediate live-activity feedback for an accepted send on the open session id. */
+  function showSendActivity(id, kind, options) {
+    const activity = localSendActivity(kind, options, now());
+    if (!activity) return;
+    update('session', (session) => (session.id === id ? { ...session, activity } : session));
   }
 
   function syncOptimistic() {
@@ -215,7 +227,8 @@ export function createSessionActions(deps) {
       recovery.succeed(intent.id, { durableSessionId: durableId });
       // Accepted: the composer is free again even while the follow-up refresh runs.
       if (key) drafts.setSubmitting(key, false);
-      const feedback = sendSuccessFeedback(kind, { interrupt, planDraft: Boolean(input.planDraft) });
+      const feedbackOptions = { interrupt, planDraft: Boolean(input.planDraft) };
+      const feedback = sendSuccessFeedback(kind, feedbackOptions);
       if (feedback.toast) notify(feedback.toast);
       if (key) {
         const reset = kind === 'start' ? { goalEnabled: false, planEnabled: false, provider: '', model: '' }
@@ -226,11 +239,13 @@ export function createSessionActions(deps) {
       if (kind === 'start') {
         launching.delete(sessionId);
         if (!key || drafts.currentKey() === key) nav(pathFor(durableId));
+        showSendActivity(durableId, kind, feedbackOptions);
         refreshList({ silent: true });
         return { ok: true, kind, sessionId: durableId, response };
       }
       if (isCurrent(sessionId)) {
         if (kind !== 'steer') update('session', (session) => (session.id === sessionId ? { ...session, generating: true } : session));
+        showSendActivity(sessionId, kind, feedbackOptions);
         await refresh({ silent: true });
       }
       refreshList({ silent: true });

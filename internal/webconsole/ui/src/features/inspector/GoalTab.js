@@ -1,5 +1,7 @@
 // Goal tab: objective, status and usage, controls (pause / resume / complete
-// / approve goal plan / clear via state/session-actions.js), runtime facts,
+// / approve goal plan / clear via state/session-actions.js; a linked Plan
+// Mode awaiting approval links to the inline approval card instead, see
+// inspector-model.js goalPlanApprovalEntry), runtime facts,
 // coverage and linked facts, completion audit, success criteria, validation
 // plan, mission plan (features / milestones / roles), recent progress and
 // goal history. A completed goal on a session that keeps running is shown as
@@ -14,8 +16,8 @@ import { approvePlan, clearGoal, completeGoal, pauseGoal, resumeGoal } from '../
 import { Badge } from '../../ui/Badge.js';
 import { Button } from '../../ui/Button.js';
 import { EmptyState } from '../../ui/EmptyState.js';
-import { eventTypeLabelFor, goalActions, goalCoverage, goalHistory, goalItemTitle, goalLinkedFacts, goalProgress } from './inspector-model.js';
-import { Fact, Facts, Metrics, Notice, Raw, RawChips, Section, SessionLink, StatusPill, TimeText, Txt, num, statusText, text } from './parts.js';
+import { eventTypeLabelFor, goalActions, goalCoverage, goalHistory, goalItemTitle, goalLinkedFacts, goalPlanApprovalEntry, goalProgress } from './inspector-model.js';
+import { Fact, Facts, Metrics, Notice, Raw, RawChips, Section, SessionLink, StatusPill, TimeText, Txt, num, revealInlineCard, statusText, text } from './parts.js';
 
 function LinkedFacts({ item, mode }) {
   const facts = goalLinkedFacts(item);
@@ -52,8 +54,10 @@ function GoalItems({ title, items, kind, mode, testId }) {
   <//>`;
 }
 
-function GoalControls({ sessionId, detail }) {
+function GoalControls({ sessionId, detail, mode }) {
   const actions = goalActions(detail);
+  // One approval path: a pending linked Plan Mode is approved on the inline card.
+  const approvalEntry = goalPlanApprovalEntry(detail);
   const [pending, setPending] = useState('');
   // session-actions.js owns confirmation (complete / clear), toasts and the
   // follow-up refresh; the tab only tracks which control is in flight.
@@ -67,12 +71,13 @@ function GoalControls({ sessionId, detail }) {
     }
   };
   const onClear = () => run('clear', () => clearGoal(sessionId));
-  const any = actions.canPause || actions.canResume || actions.canComplete || actions.canApprovePlan || actions.canClear;
+  const any = actions.canPause || actions.canResume || actions.canComplete || actions.canApprovePlan || approvalEntry === 'inline' || actions.canClear;
   if (!any) return null;
   return html`<div class="insp-actions" role="group" aria-label=${t('inspector.goal.controls')} data-testid="inspector-goal-actions">
     ${actions.canPause ? html`<${Button} size="sm" variant="secondary" icon="pause" pending=${pending === 'pause'} disabled=${Boolean(pending)} onClick=${() => run('pause', () => pauseGoal(sessionId))} data-testid="inspector-goal-pause">${t('inspector.goal.pause')}<//>` : null}
     ${actions.canResume ? html`<${Button} size="sm" variant="secondary" icon="play" pending=${pending === 'resume'} disabled=${Boolean(pending)} onClick=${() => run('resume', () => resumeGoal(sessionId))} data-testid="inspector-goal-resume">${t('inspector.goal.resume')}<//>` : null}
     ${actions.canComplete ? html`<${Button} size="sm" variant="secondary" icon="check" pending=${pending === 'complete'} disabled=${Boolean(pending)} onClick=${() => run('complete', () => completeGoal(sessionId))} data-testid="inspector-goal-complete">${t('inspector.goal.complete')}<//>` : null}
+    ${approvalEntry === 'inline' ? html`<${Button} size="sm" variant="secondary" iconRight="arrow-down" onClick=${() => revealInlineCard('approval-card', mode)} data-testid="inspector-goal-goto-approval">${t('inspector.plan.gotoApproval')}<//>` : null}
     ${actions.canApprovePlan ? html`<${Button} size="sm" variant="secondary" icon="list-checks" pending=${pending === 'approve'} disabled=${Boolean(pending)} onClick=${() => run('approve', () => approvePlan(sessionId, { entrypoint: 'mission' }))} data-testid="inspector-goal-approve-plan">${t('inspector.goal.approvePlan')}<//>` : null}
     ${actions.canClear ? html`<${Button} size="sm" variant="ghost" class="insp-danger-text" icon="trash" pending=${pending === 'clear'} disabled=${Boolean(pending)} onClick=${onClear} data-testid="inspector-goal-clear">${t('inspector.goal.clear')}<//>` : null}
   </div>`;
@@ -112,7 +117,7 @@ export function GoalTab({ sessionId, mode = 'panel' }) {
       { label: t('inspector.goal.providerTime'), value: formatSecondsBudget(goal.provider_time_used_seconds ?? goal.time_used_seconds, goal.provider_time_budget_seconds ?? goal.time_budget_seconds) },
       { label: t('inspector.goal.progressCount'), value: num(facts?.progressCount || 0) },
     ]} />
-    <${GoalControls} sessionId=${sessionId} detail=${detail} />
+    <${GoalControls} sessionId=${sessionId} detail=${detail} mode=${mode} />
 
     <${Section} title=${t('inspector.goal.runtime')} testId="inspector-goal-runtime">
       <${Facts}>

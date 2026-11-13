@@ -59,7 +59,7 @@ export function GoalStepCard({ step }) {
 
 function OpenChildButton({ sessionId }) {
   if (!sessionId) return null;
-  return html`<${Button} size="sm" variant="ghost" iconRight="chevron-right" onClick=${() => openSession(sessionId)} data-testid="open-child-session" data-session-id=${sessionId}>${t('session.step.openChild')}<//>`;
+  return html`<${Button} size="sm" variant="ghost" iconRight="arrow-right" onClick=${() => openSession(sessionId)} data-testid="open-child-session" data-session-id=${sessionId}>${t('session.step.openChild')}<//>`;
 }
 
 function AgentRow({ label, status, statusLabel, tone, sessionId, meta, error }) {

@@ -343,6 +343,10 @@ const TERMINAL_EVENTS = new Set(['session.completed', 'session.failed', 'session
  * the running turn (relay live events first, then polled detail.events), then
  * an optional override (e.g. a just-sent steer), then the refresh-derived
  * phase. Returns { title, subject, copy, tone, eventType? }.
+ * An override stamped with `at` (session.activity set by an accepted local
+ * send, epoch ms) wins until newer facts arrive: a promotable engine event at
+ * or after `at` (relay events without a time use their client receivedAt
+ * stamp) or a refreshed running state updated at or after `at`.
  */
 export function selectLiveActivity({ detail = null, liveEvents = [], sinceMs = null, override = null } = {}) {
   let best = null;
@@ -359,7 +363,17 @@ export function selectLiveActivity({ detail = null, liveEvents = [], sinceMs = n
     }
   };
   maybeArray(detail?.events).forEach((event) => consider(event, -Infinity));
-  maybeArray(liveEvents).forEach((event) => consider(event, Number.MAX_SAFE_INTEGER));
+  maybeArray(liveEvents).forEach((event) => consider(event, Number.isFinite(event?.receivedAt) ? event.receivedAt : Number.MAX_SAFE_INTEGER));
+  const overrideAt = Number(override?.at);
+  if (override?.title && overrideAt > 0) {
+    if (best && bestTime >= overrideAt) return best;
+    const stateMs = timeMs(detail?.state?.updated_at);
+    if (detail && stateMs !== null && stateMs >= overrideAt) {
+      const refreshed = liveActivityForRefresh(detail, { hasLiveEvents: false });
+      if (refreshed.generating && refreshed.activity) return { subject: null, ...refreshed.activity };
+    }
+    return { title: override.title, copy: override.copy || null, tone: override.tone || 'live', subject: null };
+  }
   if (best) return best;
   if (override?.title) return { subject: null, tone: 'live', ...override };
   if (detail) {

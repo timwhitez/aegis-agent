@@ -52,6 +52,23 @@ export function missingSourceKeys(dictionaries, dir = UI_SRC_DIR) {
   return missing;
 }
 
+/**
+ * Dictionary keys never referenced by ui/src code (i18n/ excluded): a key
+ * counts as referenced when it appears as a quoted literal ('k', "k", `k`;
+ * covers t('…') calls, descriptor keys and key maps) or when it belongs to an
+ * explicit dynamic family { prefix: [suffix, …] } that source builds with
+ * template keys. -> sorted list of unreferenced keys
+ */
+export function unreferencedKeys(dictionary, families = {}, dir = UI_SRC_DIR) {
+  const text = listSourceFiles(dir)
+    .filter((file) => !relative(dir, file).startsWith('i18n'))
+    .map((file) => readFileSync(file, 'utf8'))
+    .join('\n');
+  const quoted = (key) => ["'", '"', '`'].some((quote) => text.includes(quote + key + quote));
+  const inFamily = (key) => Object.entries(families).some(([prefix, suffixes]) => key.startsWith(prefix) && suffixes.includes(key.slice(prefix.length)));
+  return Object.keys(dictionary || {}).filter((key) => !quoted(key) && !inFamily(key)).sort();
+}
+
 export function placeholders(text) {
   return [...String(text).matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
 }

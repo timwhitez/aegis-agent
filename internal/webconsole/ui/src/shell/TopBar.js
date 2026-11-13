@@ -1,18 +1,24 @@
 // Top bar: sidebar toggle, session title + status + provider/model + workdir,
-// session actions menu, inspector toggle and the language switch.
+// session actions menu, inspector toggle and the language switch. Page views
+// (Sessions / Skills / Workspace / Settings) show the page name next to the
+// sidebar toggle on narrow screens (the drawer hides the nav) and a command
+// palette trigger on desktop, where the large page header already names the page.
 import { html } from '../lib/html.js';
 import { t, getLocale } from '../lib/i18n.js';
 import { compactPath } from '../lib/format.js';
 import { useStore } from '../state/hooks.js';
 import { currentDisplayStatus, currentSessionTitle, canInterruptSession, canStopSession } from '../state/selectors.js';
-import { toggleSidebar, toggleInspector, toggleLocale, viewSessionInHistory } from '../state/actions.js';
+import { openPalette, toggleSidebar, toggleInspector, toggleLocale, viewSessionInHistory } from '../state/actions.js';
 import { pushToast } from '../state/toasts.js';
 import { interruptRun, stopRun } from '../state/session-actions.js';
 import { IconButton } from '../ui/IconButton.js';
 import { StatusBadge } from '../ui/Badge.js';
 import { Menu } from '../ui/Menu.js';
 import { Icon } from '../ui/Icon.js';
+import { Kbd } from '../ui/Kbd.js';
 import { copyText } from '../ui/CopyButton.js';
+
+const PAGE_ICONS = { sessions: 'history', skills: 'box', workspace: 'folder', settings: 'settings' };
 
 export function TopBar() {
   const view = useStore((state) => ({
@@ -31,6 +37,7 @@ export function TopBar() {
     canInterrupt: canInterruptSession(state),
   }), (a, b) => JSON.stringify(a) === JSON.stringify(b));
   const isSessionRoute = view.routeName === 'new' || view.routeName === 'session';
+  const isPageRoute = Boolean(PAGE_ICONS[view.routeName]);
   const showSidebarToggle = view.narrow || view.sidebarCollapsed;
 
   const copyId = async () => {
@@ -58,6 +65,15 @@ export function TopBar() {
           <${Icon} name="folder" size=${13} /><span translate="no">${compactPath(view.workdir, 32)}</span>
         </span>` : null}
       </div>` : null}
+      ${isPageRoute && view.narrow ? html`<span class="topbar-page" data-testid="topbar-page-title">
+        <${Icon} name=${PAGE_ICONS[view.routeName]} size=${16} />
+        <span class="topbar-page-title">${t(`shell.page.${view.routeName}.title`)}</span>
+      </span>` : null}
+      ${isPageRoute && !view.narrow ? html`<button type="button" class="topbar-palette" onClick=${openPalette} data-testid="topbar-palette">
+        <${Icon} name="search" size=${15} />
+        <span class="topbar-palette-label">${t('shell.topbar.palette')}</span>
+        <${Kbd} keys=${['mod', 'K']} />
+      </button>` : null}
     </div>
     <div class="topbar-end">
       ${view.sessionId ? html`<${Menu}

@@ -17,7 +17,8 @@ export function emptySessionSlice(id = '') {
     error: null, // { message, detail, action, status } of the last failed refresh
     missing: false, // server answered 404; polling stops
     generating: false, // a run is known to be active (set by session-actions / relay)
-    liveEvents: [], // recent relay engine_event payloads for this session (memory only)
+    liveEvents: [], // recent relay engine_event payloads for this session (memory only; receivedAt = client ms)
+    activity: null, // local live-activity feedback { title, copy, tone, kind, at } of an accepted send (send-recovery.js localSendActivity)
     lastRefreshedAt: 0,
     optimistic: [], // unreconciled optimistic user messages of this session (send-recovery.js, memory only)
     approval: null, // { record, response, busy } | { error } for this session (approval-operations.js)

@@ -4,12 +4,14 @@ import { t } from '../lib/i18n.js';
 
 let nextToastId = 1;
 const timers = new Map();
+/** At most this many toasts are kept (and shown); older ones drop off. */
+export const MAX_VISIBLE_TOASTS = 3;
 
 /** pushToast({ tone: 'info'|'success'|'warning'|'danger', message, detail?, action?, timeout? }) -> id */
 export function pushToast({ tone = 'info', message, detail = '', action = '', timeout } = {}) {
   const id = nextToastId++;
   const duration = timeout ?? (tone === 'danger' ? 8000 : 4500);
-  update('toasts', (toasts) => [...toasts.slice(-4), { id, tone, message: String(message || ''), detail, action, timeout: duration }]);
+  update('toasts', (toasts) => [...toasts.slice(-(MAX_VISIBLE_TOASTS - 1)), { id, tone, message: String(message || ''), detail, action, timeout: duration }]);
   if (duration > 0 && typeof setTimeout === 'function') {
     timers.set(id, setTimeout(() => dismissToast(id), duration));
   }

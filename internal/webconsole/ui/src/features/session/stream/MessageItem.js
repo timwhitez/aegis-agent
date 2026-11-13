@@ -46,7 +46,7 @@ export function UserMessage({ item }) {
   const interrupt = steer && Boolean(item.meta?.interrupt);
   return html`<article class=${`msg msg-user ${steer ? 'is-steer' : ''} ${item.pending ? 'is-pending' : ''}`} ...${rootAttrs(item)} data-pending=${item.pending ? 'true' : undefined}>
     <span class="sr-only">${tx(item.actor)}</span>
-    ${steer ? html`<div class="msg-user-label"><${Icon} name=${interrupt ? 'hand' : 'message-square'} size=${13} />${t(interrupt ? 'session.message.interruptSteer' : 'session.message.steer')}</div>` : null}
+    ${steer ? html`<div class="msg-user-label"><${Icon} name=${interrupt ? 'hand' : 'corner-down-right'} size=${13} />${t(interrupt ? 'session.message.interruptSteer' : 'session.message.steer')}</div>` : null}
     <div class="msg-bubble" translate="no">${item.text}</div>
     ${item.pending
       ? html`<div class="msg-actions align-end is-visible"><span class="msg-pending" role="status"><${Spinner} size=${12} />${t('session.message.pending')}</span></div>`
@@ -87,7 +87,7 @@ export function NoticeMessage({ item }) {
   const [expanded, setExpanded] = useState(false);
   const harness = item.variant === 'harness_reminder';
   const clip = clipText(item.text, { maxLines: 4, maxChars: 480 });
-  const icon = harness ? 'info' : item.variant === 'tool' ? 'wrench' : 'terminal';
+  const icon = harness ? 'bell' : item.variant === 'tool' ? 'wrench' : 'terminal';
   return html`<article class=${`msg msg-notice ${harness ? 'tone-warning' : 'tone-neutral'}`} ...${rootAttrs(item)}>
     <div class="notice-head">
       <${Icon} name=${icon} size=${14} class="notice-icon" />
@@ -114,7 +114,7 @@ function BackgroundResultRow({ view }) {
       <${Slot} slot=${view.label} class="bg-item-label" />
       <${Badge} tone=${tone}>${tx(view.statusLabel)}<//>
       <span class="bg-item-spacer"></span>
-      ${view.sessionId ? html`<${Button} size="sm" variant="ghost" iconRight="chevron-right" onClick=${() => openSession(view.sessionId)} data-testid="open-child-session" data-session-id=${view.sessionId}>${t('session.step.openChild')}<//>` : null}
+      ${view.sessionId ? html`<${Button} size="sm" variant="ghost" iconRight="arrow-right" onClick=${() => openSession(view.sessionId)} data-testid="open-child-session" data-session-id=${view.sessionId}>${t('session.step.openChild')}<//>` : null}
     </div>
     <div class=${`bg-item-body ${view.isError ? 'is-error' : ''}`}><${Slot} slot=${view.body} /></div>
     <div class="bg-item-meta">

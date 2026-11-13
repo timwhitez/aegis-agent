@@ -15,11 +15,16 @@ export function StatusLabel({ status }) {
   return key ? t(key) : html`<span translate="no">${String(status || '')}</span>`;
 }
 
-/** <StatusBadge status="running" /> — tone from lib/status.js; running pulses. */
+/**
+ * <StatusBadge status="running" /> — tone from lib/status.js; running pulses.
+ * The label sits in .status-badge-label so compact layouts (mobile top bar)
+ * can show the dot only while the label stays available to assistive tech.
+ */
 export function StatusBadge({ status, class: className = '' }) {
   const tone = statusTone(status);
-  return html`<${Badge} tone=${tone} dot class=${`status-badge ${String(status) === 'running' ? 'is-live' : ''} ${className}`} data-status=${status} data-testid="status-badge">
-    <${StatusLabel} status=${status} />
+  const key = statusLabelKey(status);
+  return html`<${Badge} tone=${tone} dot class=${`status-badge ${String(status) === 'running' ? 'is-live' : ''} ${className}`} data-status=${status} data-testid="status-badge" title=${key ? t(key) : String(status || '')}>
+    <span class="status-badge-label"><${StatusLabel} status=${status} /></span>
   <//>`;
 }
 

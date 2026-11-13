@@ -13,7 +13,7 @@
   /* Text */
   --text: #1d1d1b;
   --text-2: #55554e;
-  --text-3: #73736a;
+  --text-3: #6b6b62; /* ≥4.5:1 on --surface, --bg and --surface-2 */
 
   /* Ink (primary actions) */
   --ink: #1d1d1b;

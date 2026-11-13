@@ -160,8 +160,8 @@ test('goal controls follow status and mission plan rules', () => {
   const done = goalActions({ goal: { status: 'complete', mission: { plan_status: 'approved' } } });
   assert.equal(done.canComplete, false);
   assert.equal(done.canApprovePlan, false);
-  const planning = goalActions({ goal: { status: 'active', mission: { plan_status: 'draft' } }, plan_mode: { status: 'planning' } });
-  assert.equal(planning.canApprovePlan, false, 'linked Plan Mode must be awaiting approval');
+  const planning = goalActions({ goal: { goal_id: 'goal_1', status: 'active', mission: { plan_status: 'draft' } }, plan_mode: { status: 'planning', linked_goal_id: 'goal_1' } });
+  assert.equal(planning.canApprovePlan, false, 'a linked Plan Mode is approved on the inline card once it awaits approval');
 });
 
 test('goal item titles, linked facts, coverage and history', () => {

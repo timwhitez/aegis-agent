@@ -91,6 +91,23 @@ export function resolveInspectorTab(tab, visible) {
   return maybeArray(visible).includes(tab) ? tab : 'overview';
 }
 
+/**
+ * Tabs, active tab and loading flag for the inspector. While the open
+ * session's detail is still loading (e.g. right after a session switch) the
+ * persisted tab stays selected and its panel shows a skeleton, instead of
+ * falling back to Overview and jumping back once the detail arrives.
+ * @param {{tab: string, detail: object|null, sessionId?: string, loading?: boolean, fileCount?: number}} input
+ * @returns {{tabs: string[], active: string, pending: boolean}}
+ */
+export function inspectorTabState({ tab, detail = null, sessionId = '', loading = false, fileCount } = {}) {
+  if (sessionId && !detail && loading) {
+    const persisted = INSPECTOR_TABS.includes(tab) ? tab : 'overview';
+    return { tabs: INSPECTOR_TABS.filter((id) => id === 'overview' || id === persisted), active: persisted, pending: true };
+  }
+  const tabs = visibleInspectorTabs(detail, { fileCount });
+  return { tabs, active: resolveInspectorTab(tab, tabs), pending: false };
+}
+
 // ---- tones ----------------------------------------------------------------------
 
 /** Badge tone (ui/Badge.js) for any runtime / queue / task / goal status token. */
@@ -381,18 +398,42 @@ export function planHistory(detail) {
 
 // ---- goal -----------------------------------------------------------------------
 
+/**
+ * How the Goal tab offers mission plan approval (one approval path only):
+ *   'mission' — no pending linked Plan Mode: the tab's button calls
+ *               approvePlan(sessionId, { entrypoint: 'mission' }), which uses
+ *               approval-operations.js approveUnlinkedMission because the
+ *               plan mode is absent or unlinked;
+ *   'inline'  — a linked Plan Mode awaits approval: the tab links to the
+ *               inline approval card (approvePlan with the reviewed target);
+ *   'none'    — nothing to approve (no mission plan, already approved, goal
+ *               complete/cleared) or the linked Plan Mode is not reviewable.
+ * "Linked" mirrors session-actions.js approvePlan: plan_mode.linked_goal_id is set.
+ */
+export function goalPlanApprovalEntry(detail) {
+  const goal = detail?.goal;
+  if (!isObject(goal)) return 'none';
+  const mission = isObject(goal.mission) ? goal.mission : null;
+  if (!mission || lower(mission.plan_status) === 'approved') return 'none';
+  const status = lower(goal.status) || 'active';
+  if (status === 'complete' || status === 'cleared') return 'none';
+  const planMode = isObject(detail?.plan_mode) ? detail.plan_mode : null;
+  if (planMode && str(planMode.linked_goal_id).trim()) {
+    return lower(planMode.status) === 'awaiting_approval' ? 'inline' : 'none';
+  }
+  return 'mission';
+}
+
 /** Goal control availability (port of the v1 goal panel rules). */
 export function goalActions(detail) {
   const goal = detail?.goal;
   if (!isObject(goal)) return { canPause: false, canResume: false, canComplete: false, canApprovePlan: false, canClear: false };
   const status = lower(goal.status) || 'active';
-  const mission = isObject(goal.mission) ? goal.mission : null;
-  const planMode = isObject(detail?.plan_mode) ? detail.plan_mode : null;
   return {
     canPause: status === 'active' || status === 'budget_limited',
     canResume: status === 'paused' || status === 'budget_limited',
     canComplete: status !== 'complete' && status !== 'cleared',
-    canApprovePlan: Boolean(mission) && lower(mission.plan_status) !== 'approved' && (!planMode || lower(planMode.status) === 'awaiting_approval'),
+    canApprovePlan: goalPlanApprovalEntry(detail) === 'mission',
     canClear: status !== 'cleared',
   };
 }

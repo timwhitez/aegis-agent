@@ -527,11 +527,15 @@
   font-variant-numeric: tabular-nums;
 }
 
-.insp-bullets {
+/* Sentence lists (assumptions, risks, verification, evidence, hints) keep
+   their bullets: the role="list" reset in base.css would otherwise win. */
+.insp-bullets,
+ul.insp-bullets[role="list"] {
   display: grid;
   gap: 4px;
   margin: 0;
-  padding-left: 1.15em;
+  padding-left: 1.25em;
+  list-style: disc outside;
   font-size: var(--text-sm);
   color: var(--text-2);
 }

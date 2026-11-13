@@ -34,19 +34,36 @@ function startOfDay(ms) {
 
 export const SESSION_GROUPS = Object.freeze(['attention', 'today', 'yesterday', 'week', 'older']);
 
+/** Rows shown per sidebar group before "Show N more". */
+export const SIDEBAR_GROUP_LIMIT = 6;
+
+/**
+ * Display status of a sidebar row. Summaries use the plan-mode aware
+ * sessionSummaryDisplayStatus; the open session uses current.status (the
+ * detail-derived status the top bar shows) so the two never disagree while
+ * the polled overview lags behind the session detail.
+ * @param {object} item session summary
+ * @param {{id?: string, status?: string}} [current] open session id + display status
+ */
+export function sidebarRowStatus(item, current = {}) {
+  if (current?.id && current.status && item?.id === current.id) return current.status;
+  return sessionSummaryDisplayStatus(item);
+}
+
 /**
  * Groups summaries for the sidebar: attention (running / awaiting_*) first,
  * then today / yesterday / previous 7 days / older by updated_at (newest first).
- * Returns [{ key, items }] without empty groups.
+ * Returns [{ key, items }] without empty groups. options.statusOf(item)
+ * overrides the display status used for the attention group.
  */
-export function groupSessions(items, now = Date.now()) {
+export function groupSessions(items, now = Date.now(), { statusOf = sessionSummaryDisplayStatus } = {}) {
   const groups = Object.fromEntries(SESSION_GROUPS.map((key) => [key, []]));
   const today = startOfDay(now);
   const yesterday = today - 86400000;
   const weekAgo = today - 6 * 86400000;
   const sorted = [...(items || [])].sort((a, b) => (toTimestamp(b.updated_at || b.created_at) || 0) - (toTimestamp(a.updated_at || a.created_at) || 0));
   for (const item of sorted) {
-    if (isAttentionStatus(sessionSummaryDisplayStatus(item))) {
+    if (isAttentionStatus(statusOf(item))) {
       groups.attention.push(item);
       continue;
     }
@@ -57,6 +74,19 @@ export function groupSessions(items, now = Date.now()) {
     else groups.week.push(item);
   }
   return SESSION_GROUPS.map((key) => ({ key, items: groups[key] })).filter((group) => group.items.length > 0);
+}
+
+/**
+ * Caps one sidebar group: the first `limit` rows (in order) plus the active
+ * row wherever it is, so the open session is always visible. Nothing is
+ * hidden when expanded or when at most one row would be hidden.
+ * -> { visible, hiddenCount }
+ */
+export function capSessionGroup(items, { limit = SIDEBAR_GROUP_LIMIT, expanded = false, activeId = '' } = {}) {
+  const list = Array.isArray(items) ? items : [];
+  if (expanded || list.length <= limit + 1) return { visible: list, hiddenCount: 0 };
+  const visible = list.filter((item, index) => index < limit || (activeId && item?.id === activeId));
+  return { visible, hiddenCount: list.length - visible.length };
 }
 
 /** First user prompt of a session when the loaded window starts at the beginning. */

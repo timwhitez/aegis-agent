@@ -5,7 +5,16 @@ import { LOCALES, LOCALE_STORAGE_KEY, formatRelativeTime, getLocale, initLocale,
 import { KNOWN_STATUSES } from '../../internal/webconsole/ui/src/lib/status.js';
 import { SESSION_GROUPS } from '../../internal/webconsole/ui/src/lib/session-list.js';
 import { INSPECTOR_TABS } from '../../internal/webconsole/ui/src/state/prefs.js';
-import { collectSourceKeys, missingSourceKeys, placeholders } from './ui_i18n_keys.mjs';
+import { collectSourceKeys, missingSourceKeys, placeholders, unreferencedKeys } from './ui_i18n_keys.mjs';
+
+/** Key families that source builds with template keys (t(`prefix.${x}`)). */
+const DYNAMIC_FAMILIES = {
+  'shell.group.': SESSION_GROUPS,
+  'inspector.tab.': INSPECTOR_TABS,
+  'shell.palette.group.': ['actions', 'navigation', 'session', 'composer', 'view', 'recent'],
+  'common.status.': KNOWN_STATUSES,
+  'shell.page.': ['sessions', 'skills', 'workspace', 'settings'].map((page) => `${page}.title`),
+};
 
 test('every area file has identical zh-CN / en key sets, prefixed by its area', () => {
   const claimed = new Map();
@@ -42,13 +51,7 @@ test('every literal t() key used under ui/src exists in both locales', () => {
 });
 
 test('dynamic t() keys are covered by explicit key families', () => {
-  const families = {
-    'shell.group.': SESSION_GROUPS,
-    'shell.inspector.tab.': INSPECTOR_TABS,
-    'shell.palette.group.': ['actions', 'navigation', 'session', 'composer', 'view', 'recent'],
-    'common.status.': KNOWN_STATUSES,
-    'shell.page.': ['sessions', 'skills', 'workspace', 'settings'].flatMap((page) => [`${page}.title`, `${page}.description`]),
-  };
+  const families = DYNAMIC_FAMILIES;
   for (const [prefix, suffixes] of Object.entries(families)) {
     for (const suffix of suffixes) {
       for (const locale of LOCALES) {
@@ -58,6 +61,16 @@ test('dynamic t() keys are covered by explicit key families', () => {
   }
   const unknown = collectSourceKeys().dynamic.filter((entry) => !Object.keys(families).some((prefix) => entry.expression.startsWith(prefix)));
   assert.deepEqual(unknown, [], 'dynamic t() keys must belong to a covered family');
+});
+
+test('every shell.* and common.* key is referenced under ui/src (no dead copy)', () => {
+  for (const area of ['shell', 'common']) {
+    const unused = unreferencedKeys(AREAS[area]['zh-CN'], DYNAMIC_FAMILIES);
+    assert.deepEqual(unused, [], `${area}.js keys never used in ui/src (remove them or add a dynamic family): ${unused.join(', ')}`);
+  }
+  // The scan itself must see real references and reject a planted dead key.
+  assert.deepEqual(unreferencedKeys({ 'shell.newSession': 'x', 'shell.zzz.unusedProbe': 'x' }, DYNAMIC_FAMILIES), ['shell.zzz.unusedProbe']);
+  assert.deepEqual(unreferencedKeys({ 'shell.group.today': 'x', 'inspector.tab.files': 'x' }, DYNAMIC_FAMILIES), []);
 });
 
 test('locale persistence, <html lang>, interpolation and fallbacks', () => {

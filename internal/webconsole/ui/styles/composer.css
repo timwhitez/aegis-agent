@@ -172,8 +172,9 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-3);
   background: var(--surface);
-  box-shadow: var(--shadow-2);
-  animation: rise-in var(--motion-fast) var(--ease);
+  box-shadow: var(--shadow-pop);
+  /* Opaque from the first frame (transform-only entrance, ≤120ms). */
+  animation: popover-in var(--motion-fast) var(--ease);
 }
 
 .model-options {
@@ -412,9 +413,6 @@
 }
 
 .approval-actions-spacer { flex: 1; }
-
-.btn.is-danger-text { color: var(--danger); }
-.btn.is-danger-text:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
 
 /* Receipt notice: the aria-live region stays mounted; when empty it takes no space. */
 .approval-receipt-region { display: grid; gap: var(--space-2); }

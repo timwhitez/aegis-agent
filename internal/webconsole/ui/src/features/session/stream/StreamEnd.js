@@ -87,7 +87,7 @@ export function FileChangesCard({ changes }) {
       ${changes.totals.added || changes.totals.removed ? html`<span class="diffstat"><span class="diff-add">+${changes.totals.added}</span> <span class="diff-del">\u2212${changes.totals.removed}</span></span>` : null}
       ${changes.disclosure?.badge ? html`<${Badge} tone="neutral">${slotText(changes.disclosure.badge)}<//>` : null}
       <span class="files-card-spacer"></span>
-      <${Button} size="sm" variant="ghost" iconRight="chevron-right" onClick=${() => setInspectorTab('files')} data-testid="turn-file-changes-open">${t('session.files.viewAll')}<//>
+      <${Button} size="sm" variant="ghost" iconRight="arrow-right" onClick=${() => setInspectorTab('files')} data-testid="turn-file-changes-open">${t('session.files.viewAll')}<//>
     </header>
     <ul class="files-list" role="list">
       ${shown.map((file) => html`<li key=${file.path} class="files-row" data-op=${file.op || 'unknown'}>

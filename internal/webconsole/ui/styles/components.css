@@ -427,6 +427,10 @@
 @keyframes rise-in { from { opacity: 0; transform: translateY(6px) scale(0.99); } }
 @keyframes slide-in-left { from { transform: translateX(-16px); opacity: 0; } }
 @keyframes slide-in-right { from { transform: translateX(16px); opacity: 0; } }
+/* Popovers (menus, model picker) move in without fading so they are always
+   fully opaque, even in a screenshot taken mid-animation. */
+@keyframes popover-in { from { transform: translateY(4px); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-6px); } }
 
 /* ---- Menu --------------------------------------------------------------------- */
 .menu {
@@ -443,7 +447,7 @@
   border-radius: var(--radius-3);
   background: var(--surface);
   box-shadow: var(--shadow-2);
-  animation: rise-in var(--motion-fast) var(--ease);
+  animation: popover-in var(--motion-fast) var(--ease);
 }
 
 .menu-popover.align-end { right: 0; }
@@ -491,15 +495,48 @@
 }
 
 /* ---- Toasts --------------------------------------------------------------------- */
+/* Top-right of the main column, below the top bar (ui/Toasts.js
+   toastPlacement): never at the bottom where the composer, send/stop and
+   failed-draft controls live. Page views use the quiet top-bar band so the
+   page-header actions stay clear; mobile is top-centre. */
 .toast-rack {
+  --toast-app-inset: var(--space-2); /* .app-layout padding */
   position: fixed;
-  right: var(--space-4);
-  bottom: var(--space-4);
+  top: calc(var(--toast-app-inset) + var(--topbar-height) + var(--space-2));
+  right: calc(var(--toast-app-inset) + var(--space-3));
   z-index: 60;
   display: grid;
   gap: var(--space-2);
-  width: min(380px, calc(100vw - 2 * var(--space-4)));
+  width: min(360px, calc(100vw - 2 * var(--space-4)));
   pointer-events: none;
+}
+
+.toast-rack[data-placement="beside-inspector"] {
+  right: calc(var(--toast-app-inset) + var(--inspector-width) + var(--space-2) + var(--space-3));
+}
+
+.toast-rack[data-placement="page"] {
+  top: calc(var(--toast-app-inset) + var(--space-1));
+  right: calc(var(--toast-app-inset) + var(--space-3) + 92px); /* left of the language switch */
+  grid-template-areas: "stack";
+}
+
+/* Page views: older toasts collapse behind the newest so the stack stays in
+   the top-bar band; hovering or focusing the rack expands it. */
+.toast-rack[data-placement="page"] > .toast {
+  grid-area: stack;
+  transform-origin: top center;
+  transform: translateY(calc(var(--toast-depth, 0) * 6px)) scale(calc(1 - var(--toast-depth, 0) * 0.04));
+  transition: transform var(--motion-base) var(--ease);
+}
+
+.toast-rack[data-placement="page"]:is(:hover, :focus-within) {
+  grid-template-areas: none;
+}
+
+.toast-rack[data-placement="page"]:is(:hover, :focus-within) > .toast {
+  grid-area: auto;
+  transform: none;
 }
 
 .toast {
@@ -512,7 +549,7 @@
   background: var(--surface);
   box-shadow: var(--shadow-2);
   pointer-events: auto;
-  animation: rise-in var(--motion-base) var(--ease);
+  animation: toast-in var(--motion-base) var(--ease);
 }
 
 .toast-icon {
@@ -649,8 +686,16 @@
   color: var(--text-2);
 }
 
+.page-header-text {
+  min-width: 0;
+}
+
 .page-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  flex-shrink: 0;
   gap: var(--space-2);
 }
 
@@ -698,4 +743,229 @@
 
 .lang-sep {
   color: var(--border-strong);
+}
+
+/* ---- Shared page pieces (Sessions / Skills / Workspace / Settings) --------------------- */
+.page-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.page-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 280px;
+  min-width: 0;
+  max-width: 420px;
+  min-height: var(--hit);
+  padding: 0 var(--space-1) 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  color: var(--text-3);
+  transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
+}
+
+.page-search:focus-within {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+.page-search-input {
+  flex: 1;
+  min-width: 0;
+  height: var(--hit);
+  margin: -1px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.page-search-input:focus-visible {
+  outline: none;
+}
+
+.page-search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.page-search-clear {
+  margin-right: -2px;
+}
+
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-2);
+  background: var(--surface-2);
+}
+
+.segmented-btn {
+  min-height: calc(var(--hit) - 4px);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--radius-1);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease);
+}
+
+.segmented-btn:hover {
+  color: var(--text);
+}
+
+.segmented-btn.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+
+.page-count {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  min-height: 20px;
+  margin: var(--space-4) 0 var(--space-2);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.page-count-note {
+  color: var(--warning);
+}
+
+.page-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid #f3c7c2;
+  border-radius: var(--radius-3);
+  background: var(--danger-soft);
+}
+
+.page-alert-icon {
+  display: inline-flex;
+  padding-top: 1px;
+  color: var(--danger);
+}
+
+.page-alert-body {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.page-alert-title {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.page-alert-text {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.page-empty {
+  margin-top: var(--space-4);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-3);
+}
+
+/* Inline text button inside running copy (e.g. "or choose a file"). */
+.link-btn {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--brand-strong);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  color: var(--brand);
+}
+
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-4);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pagination-page {
+  min-width: 88px;
+  text-align: center;
+  color: var(--text-2);
+}
+
+.btn.is-danger-text { color: var(--danger); }
+.btn.is-danger-text:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+
+@media (max-width: 768px) {
+  .page-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .segmented {
+    display: flex;
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .segmented::-webkit-scrollbar {
+    display: none;
+  }
+
+  .segmented-btn {
+    flex: 1 0 auto;
+  }
+
+  .pagination {
+    justify-content: center;
+  }
+
+  .pagination-range {
+    flex-basis: 100%;
+    text-align: center;
+  }
+}
+
+@media (pointer: coarse), (max-width: 768px) {
+  .segmented-btn {
+    min-height: var(--hit);
+  }
 }

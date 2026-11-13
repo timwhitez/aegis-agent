@@ -249,6 +249,27 @@
   margin-top: var(--space-2);
 }
 
+.session-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: var(--hit);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-align: left;
+}
+
+.session-group-toggle:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
 .view-all-link {
   display: flex;
   align-items: center;
@@ -357,6 +378,50 @@
   font-weight: 600;
 }
 
+/* Page views: page name on narrow screens, palette trigger on desktop. */
+.topbar-page {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.topbar-page-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.topbar-palette {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--hit);
+  padding: 0 var(--space-2) 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  transition: background-color var(--motion-fast) var(--ease), color var(--motion-fast) var(--ease);
+}
+
+.topbar-palette:hover {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.topbar-palette-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .app-layout[data-route="sessions"] .topbar,
 .app-layout[data-route="skills"] .topbar,
 .app-layout[data-route="workspace"] .topbar,
@@ -392,8 +457,11 @@
   padding-bottom: var(--space-6);
 }
 
+/* Own stacking context above the scrolling stream so composer popovers
+   (model picker, menus) always render on top of stream content. */
 .session-dock {
   position: relative;
+  z-index: 10;
   flex-shrink: 0;
   padding: var(--space-2) 0 var(--space-4);
   background: var(--surface);
@@ -776,6 +844,22 @@
     display: none;
   }
 
+  /* Dot-only status in the cramped mobile top bar: the session title keeps
+     the room; the label stays in the accessibility tree and the tooltip. */
+  .topbar .status-badge {
+    gap: 0;
+    padding: 0 7px;
+  }
+
+  .topbar .status-badge-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
   .session-content {
     padding-top: var(--space-4);
   }
@@ -808,6 +892,22 @@
   .page-header {
     flex-direction: column;
     align-items: stretch;
+    gap: var(--space-3);
+    padding-bottom: var(--space-5);
+  }
+
+  .page-title {
+    font-size: var(--text-xl);
+  }
+
+  /* Actions span the full width under the title; text buttons share the row. */
+  .page-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .page-actions > .btn {
+    flex: 1 1 auto;
   }
 
   .dialog-layer.placement-top {
@@ -818,9 +918,20 @@
     display: none;
   }
 
-  .toast-rack {
-    right: var(--space-2);
-    bottom: var(--space-2);
-    width: calc(100vw - 2 * var(--space-2));
+  .toast-rack,
+  .toast-rack[data-placement] {
+    top: calc(var(--topbar-height) + var(--space-2));
+    right: auto;
+    left: 50%;
+    width: min(420px, calc(100vw - 2 * var(--space-3)));
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-popover,
+  .model-popover,
+  .toast {
+    animation: none;
   }
 }

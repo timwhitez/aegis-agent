@@ -1,8 +1,9 @@
 // Shell / data actions. Components call these; only state/ modules mutate the store.
 import * as api from '../lib/api.js';
 import { t, toggleLocale as toggleLocaleCore } from '../lib/i18n.js';
-import { sessionDetailDisplayStatus } from '../lib/status.js';
+import { sessionDetailDisplayStatus, sessionSummaryDisplayStatus } from '../lib/status.js';
 import { firstPromptFromMessages, mergeMessageWindows, rootSessions } from '../lib/session-list.js';
+import { isLocalActivitySettled } from '../lib/send-recovery.js';
 import { relayHints } from './relay.js';
 import { emptyComposerSlice, emptySessionSlice, getState, update } from './store.js';
 import { navigate, sessionPath } from './router.js';
@@ -17,6 +18,7 @@ let sessionRequestSeq = 0;
 let appliedSessionSeq = 0;
 let overviewRequestSeq = 0;
 let lastMalformedToastAt = 0;
+let lastOverviewReconcile = '';
 const pendingRefresh = { session: null, overview: null };
 
 function errorInfo(error) {
@@ -88,6 +90,10 @@ export async function refreshSession({ silent = false } = {}) {
     const hasMoreEarlier = current.messages.length === 0 && !current.earlierLoaded
       ? Boolean(detail?.has_more_messages)
       : current.hasMoreEarlier;
+    const displayStatus = sessionDetailDisplayStatus(detail);
+    const generating = displayStatus === 'running';
+    // Local send feedback ends once the run settled after it (or it aged out).
+    const activity = current.activity && isLocalActivitySettled(current.activity, { detail, generating }) ? null : current.activity;
     update('session', {
       detail,
       messages,
@@ -95,10 +101,12 @@ export async function refreshSession({ silent = false } = {}) {
       loading: false,
       refreshing: false,
       error: null,
-      generating: sessionDetailDisplayStatus(detail) === 'running',
+      generating,
+      activity,
       lastRefreshedAt: Date.now(),
     });
     learnSessionTitle(id, messages, hasMoreEarlier);
+    reconcileOverviewStatus(id, displayStatus);
     return detail;
   } catch (error) {
     if (getState().session.id !== id) return null;
@@ -110,6 +118,20 @@ export async function refreshSession({ silent = false } = {}) {
     if (!silent) toastError(error, 'shell.session.loadFailed');
     return null;
   }
+}
+
+/**
+ * The sidebar shows the open session with its detail-derived status; when the
+ * polled overview summary disagrees, refresh the overview once per
+ * (session, status) so the other rows and pages catch up too.
+ */
+function reconcileOverviewStatus(id, displayStatus) {
+  const summary = getState().overview.sessions.find((item) => item.id === id);
+  if (!summary || sessionSummaryDisplayStatus(summary) === displayStatus) return;
+  const key = id + '\n' + displayStatus;
+  if (lastOverviewReconcile === key) return;
+  lastOverviewReconcile = key;
+  queueRefresh('overview', 300);
 }
 
 function learnSessionTitle(id, messages, hasMoreEarlier) {
@@ -193,7 +215,9 @@ export function setRelayStatus(status, attempts = 0) {
 export function applyRelayFrame(frame) {
   const hints = relayHints(frame, getState().session.id);
   if (hints.liveEvent) {
-    update('session', (session) => ({ ...session, liveEvents: [...session.liveEvents.slice(-199), hints.liveEvent] }));
+    // receivedAt orders time-less relay events against local send feedback (session.activity.at).
+    const liveEvent = { ...hints.liveEvent, receivedAt: Date.now() };
+    update('session', (session) => ({ ...session, liveEvents: [...session.liveEvents.slice(-199), liveEvent] }));
   }
   if (hints.generating !== undefined) update('session', { generating: hints.generating });
   if (hints.error) pushToast({ tone: 'danger', message: t('shell.relay.sessionError', { message: hints.error }) });

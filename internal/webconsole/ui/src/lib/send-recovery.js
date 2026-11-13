@@ -152,6 +152,41 @@ export function sendSuccessFeedback(kind, { interrupt = false, planDraft = false
   }
 }
 
+/** Run statuses during which local send feedback may still be pending. */
+const LIVE_RUN_STATUSES = Object.freeze(['running', 'queued', 'pending']);
+
+/** Maximum age of local live-activity feedback without any confirmation. */
+export const LOCAL_ACTIVITY_MAX_AGE_MS = 120000;
+
+/**
+ * Local live activity for session.activity right after an accepted send:
+ * sendSuccessFeedback(kind).activity plus the send kind and the time it was
+ * set (epoch ms, `at`). The stream prefers it over engine events older
+ * than `at`, so feedback shows immediately instead of after the next poll.
+ */
+export function localSendActivity(kind, options = {}, now = Date.now()) {
+  const activity = sendSuccessFeedback(kind, options).activity;
+  return activity ? { ...activity, kind: str(kind), at: Number(now) || 0 } : null;
+}
+
+/**
+ * True when session.activity no longer applies: it has no timestamp, is
+ * older than maxAgeMs, or the session settled after it was set (the run is
+ * not live and state.updated_at is at or after `at`).
+ * @param {{title?: object, at?: number}|null} activity
+ * @param {{detail?: object|null, generating?: boolean, now?: number, maxAgeMs?: number}} ctx
+ */
+export function isLocalActivitySettled(activity, { detail = null, generating = false, now = Date.now(), maxAgeMs = LOCAL_ACTIVITY_MAX_AGE_MS } = {}) {
+  if (!activity) return false;
+  const at = Number(activity.at) || 0;
+  if (!at || now - at > maxAgeMs) return true;
+  if (generating || !detail) return false;
+  const status = str(detail.state?.status).toLowerCase();
+  if (LIVE_RUN_STATUSES.includes(status)) return false;
+  const updated = Date.parse(str(detail.state?.updated_at));
+  return Number.isFinite(updated) && updated >= at;
+}
+
 /** Card view for a failed draft (raw text and session id stay raw). */
 export function failedDraftView(draft) {
   return {
