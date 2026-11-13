@@ -9,6 +9,10 @@ Keep changes focused, tested, and consistent with the contracts in `spec/`.
    output, personal prompts, or ad-hoc audit artifacts.
 5. Keep the Web console as a local operator surface and keep provider-specific
    protocol behavior inside provider adapters.
+6. For Web console changes, follow
+   [`spec/17-web-console-frontend.md`](./spec/17-web-console-frontend.md): add
+   copy to both locales, keep durable values untranslated, keep the
+   `data-testid` contract, run `npm run test:e2e`, and attach screenshots.
 
 For substantial changes, update the matching specification in the same commit.
 Report suspected vulnerabilities privately by following [`SECURITY.md`](./SECURITY.md);

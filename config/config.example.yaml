@@ -119,6 +119,10 @@ web:
 #   basic_auth:
 #     username: operator
 #     password_hash: "$2a$..."
+  # Host names other than localhost, *.localhost and IP literals must be listed
+  # explicitly (DNS-rebinding guard). Use "host" for any port or "host:port".
+#   allowed_hosts:
+#     - agent.example.internal
 
 session:
   dir: .aegis-agent/sessions

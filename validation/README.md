@@ -1,27 +1,29 @@
 # Validation
 
-This directory contains deterministic, repository-owned validation helpers.
-They are safe to run without provider credentials and are included in
-`./test.sh`:
+Deterministic, repository-owned validation helpers. Everything here runs
+without provider credentials.
 
-- `cmd/`: small Go fixtures used by runtime and browser-budget regression tests.
-- `scripts/webconsole_utils_test.mjs`: unit tests for embedded Web console
-  utility behavior.
-- `scripts/webconsole_e2e.mjs`: a credential-free Playwright journey through
-  the real local service and deterministic provider fixture.
+- `cmd/`: small Go fixtures for runtime and browser regression tests, including
+  `budgetsmokeprovider`, the scripted provider used by the browser suite.
+- `scripts/*_test.mjs`: `node --test` suites for the embedded Web console
+  (`ui_*`: API client, store, i18n parity and key coverage, markdown sanitizer,
+  session model, send recovery, approval operations, session actions, workspace
+  and settings models, vendored library hashes). Included in `./test.sh`.
+- `scripts/webconsole_e2e.mjs` and the `*_e2e.mjs` suites it orchestrates: the
+  credential-free Playwright acceptance run through the real local service.
 
-Historical live-provider campaigns, generated session data, screenshots, and
-ad-hoc audit output do not belong in source control. Local validation output is
-ignored under `validation/runs/`, `validation/sessions/`, and `validation/tmp/`.
+Historical live-provider campaigns, generated session data, screenshots and
+ad-hoc audit output do not belong in source control. Local output is ignored
+under `validation/runs/`, `validation/sessions/` and `validation/tmp/`.
 
-Use package-level Go tests for focused work, for example:
+Focused runs:
 
 ```sh
 go test ./internal/runtime -count=1
-npm test
+npm test                      # node --test validation/scripts/*_test.mjs
 ```
 
-Run the browser acceptance suite after installing the pinned browser runtime:
+Browser acceptance (install the pinned browser runtime once):
 
 ```sh
 npm ci --ignore-scripts
@@ -36,9 +38,7 @@ sidebar, command palette and shortcuts, session start/continue/steer/interrupt/
 stop, Goal and inline Plan Mode approvals/questions/receipts, send recovery,
 Todo/task grouping, workspace CRUD/download, skill package install/removal,
 provider settings probe, history deletion/clear, desktop/mobile layouts, removed
-legacy routes, and console/request errors. It writes
-populated Context screenshots in both locales and exercises Task, Skill, and
-notification raw-fact collisions so fallbacks translate without rewriting
-durable values. The suite writes
-PNG screenshots plus `manifest.json` with hashes and check results below the
-ignored `validation/runs/` directory.
+legacy routes, and console/request errors. It writes populated Context
+screenshots in both locales and checks that durable raw values are never
+translated. Each run writes PNG screenshots plus `manifest.json` (commit,
+browser, viewport, locale, hashes, check results) below `validation/runs/`.
