@@ -31,6 +31,22 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
+Useful options while iterating:
+
+```sh
+node validation/scripts/webconsole_e2e.mjs --only=shell,session   # areas: server, shell, session, plan,
+                                                                  # approvals, receipts, recovery, showcase, pages
+node validation/scripts/webconsole_e2e.mjs --output=validation/runs/my-run --keep-runtime
+E2E_APPROVAL_PROFILES=all npm run test:e2e   # receipts in all locale × viewport profiles
+E2E_WEB_WORKERS=4 npm run test:e2e          # queue workers for the test server (default 2)
+```
+
+The suite builds the binary from the working tree (the UI is embedded at build
+time) and resolves its temp root with `realpath`, so it also runs on macOS
+without a `TMPDIR` override. Known product bugs, if any, are listed in
+`scripts/e2e/known-bugs.mjs` and reported as known failures; the list should
+be empty on `main`.
+
 The browser gate covers Chinese-by-default and persistent English switching,
 light-theme behavior even when the OS requests dark mode, hit targets (32px for
 fine pointers, 44px on touch/mobile), keyboard/modal semantics, the session
