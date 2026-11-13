@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Portability contract: this launcher runs under macOS /bin/bash 3.2 with BSD
+# userland as well as bash 4/5 with GNU userland on Linux/WSL. Do not use
+# bash >= 4 syntax (${v,,}, ${v^^}, declare -A/-n, mapfile/readarray, |&, &>>,
+# ;&), do not expand a possibly empty array as "${arr[@]}" under set -u, avoid
+# GNU-only tool flags, and keep /proc access behind an explicit Linux branch.
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
@@ -75,7 +81,10 @@ Environment overrides:
   AEGIS_AGENT_WEB_WORKERS  Worker count, default `2`.
   AEGIS_AGENT_BIN          Binary path, default `bin/aegis-agent`.
   AEGIS_AGENT_SIGNAL_HELPER
-                           Trusted Aegis binary used for Linux pidfd signalling.
+                           Trusted Aegis binary, required on Linux and macOS, that
+                           verifies the recorded process identity before signalling
+                           it (Linux: pidfd; macOS: identity check, then kill).
+                           Default: the `AEGIS_AGENT_BIN` binary.
   AEGIS_AGENT_ENV_FILE     Optional credential dotenv file parsed as data by the
                            Go binary; the launcher never sources this file.
   AEGIS_AGENT_WEB_LOG      Log file path, default `.aegis-agent/runtime/webconsole.log`.
@@ -94,8 +103,24 @@ prepare_env_file() {
 }
 
 acquire_runtime_lock() {
-	if ! command -v flock >/dev/null 2>&1; then
-		echo "flock is required for safe background process management" >&2
+	# start/stop/restart/status hold an exclusive kernel flock(2) lock on fd 9
+	# for the rest of the launcher's lifetime. Linux/WSL use flock(1). macOS
+	# ships no flock(1), so the system perl takes the very same flock(2) lock on
+	# the same inherited fd 9. flock(2) locks belong to the open file
+	# description, so the lock outlives the short-lived helper exactly as it does
+	# with `flock -x 9`, and the kernel drops it when the last holder of fd 9
+	# (this launcher; the background child closes fd 9) exits or crashes. A
+	# stale lock is therefore impossible, two launchers can never both hold it,
+	# and no PID-based owner proof (which could misidentify and lead to
+	# signalling an unrelated process) is ever needed. Without either primitive
+	# the launcher fails closed.
+	local lock_tool
+	if command -v flock >/dev/null 2>&1; then
+		lock_tool=flock
+	elif command -v perl >/dev/null 2>&1; then
+		lock_tool=perl
+	else
+		echo "flock(1) or perl is required for safe background process management" >&2
 		return 1
 	fi
 	if [[ -L "$LOCK_FILE" ]]; then
@@ -103,7 +128,21 @@ acquire_runtime_lock() {
 		return 1
 	fi
 	exec 9>"$LOCK_FILE"
-	if ! flock -x 9; then
+	if [[ "$lock_tool" == flock ]]; then
+		if ! flock -x 9; then
+			echo "failed to acquire webconsole runtime lock: $LOCK_FILE" >&2
+			return 1
+		fi
+		return 0
+	fi
+	# Only native flock(2) is acceptable: perl's fcntl(2) emulation would bind
+	# the lock to the perl process and release it when perl exits. Ambient perl
+	# options/library paths are cleared so they cannot replace Fcntl.
+	if ! PERL5OPT= PERL5LIB= PERLLIB= perl -MConfig -MFcntl=:flock -e '
+		$Config{d_flock} or exit 3;
+		open(my $lock, ">&=", 9) or exit 4;
+		flock($lock, LOCK_EX) or exit 5;
+	'; then
 		echo "failed to acquire webconsole runtime lock: $LOCK_FILE" >&2
 		return 1
 	fi
@@ -307,10 +346,12 @@ listen_port() {
 }
 
 is_loopback_host() {
-	local host="${1,,}" first second third fourth
+	local host="$1" first second third fourth
 	local ipv4_re='^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$'
+	# Explicit per-letter classes give an exact ASCII case-insensitive match
+	# without bash 4 ${host,,} or locale-dependent [A-Z] ranges.
 	case "$host" in
-		localhost|::1|\[::1\])
+		[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|::1|\[::1\])
 			return 0
 			;;
 	esac
@@ -331,7 +372,9 @@ print_urls() {
 	if [[ "$host" == "0.0.0.0" || "$host" == "" || "$host" == "*" ]]; then
 		printf 'URL: http://127.0.0.1:%s\n' "$port"
 		local wsl_ip
-		wsl_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+		# `hostname -I` is GNU/Linux-only (BSD hostname rejects -I); under
+		# pipefail its failure must not abort the launcher through set -e.
+		wsl_ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || wsl_ip=""
 		if [[ -n "$wsl_ip" ]]; then
 			printf 'WSL URL: http://%s:%s\n' "$wsl_ip" "$port"
 		fi
@@ -341,16 +384,19 @@ print_urls() {
 }
 
 validate_listen_policy() {
-	local host allow
+	local host
 	host="$(listen_host)"
 	if is_loopback_host "$host"; then
 		return 0
 	fi
-	allow="${ALLOW_NETWORK,,}"
-	if [[ "$allow" != "1" && "$allow" != "true" ]]; then
-		printf 'refusing non-loopback listen address %s without AEGIS_AGENT_ALLOW_NETWORK=1\n' "$LISTEN_ADDR" >&2
-		return 1
-	fi
+	case "$ALLOW_NETWORK" in
+		1|[Tt][Rr][Uu][Ee])
+			;;
+		*)
+			printf 'refusing non-loopback listen address %s without AEGIS_AGENT_ALLOW_NETWORK=1\n' "$LISTEN_ADDR" >&2
+			return 1
+			;;
+	esac
 }
 
 print_lan_warning() {
@@ -382,23 +428,51 @@ ensure_signal_helper() {
 
 launch_background_child() {
 	local child_script
+	# The child records an identity for its own PID that survives exec and that
+	# the trusted signal helper can re-derive; it never execs without one.
+	#   Linux/WSL: linux:<boot_id>:<starttime ticks from /proc/<pid>/stat>
+	#   macOS:     darwin:<kern.bootsessionuuid>:<process start, UTC epoch s>
+	# macOS has no /proc; BSD ps(1) lstart (rendered in C locale and UTC) is
+	# the kernel p_starttime, which exec does not change. Absolute BSD tool
+	# paths keep GNU coreutils earlier in PATH (no `date -j`) from changing it.
+	# Any other platform exits 125 before exec (fail closed).
 	child_script='set -euo pipefail
 pending="$1"
 shift
-if [[ ! -r /proc/sys/kernel/random/boot_id || ! -r "/proc/$$/stat" ]]; then
+case "$(uname -s)" in
+Linux)
+  if [[ ! -r /proc/sys/kernel/random/boot_id || ! -r "/proc/$$/stat" ]]; then
+    exit 125
+  fi
+  boot_id="$(</proc/sys/kernel/random/boot_id)"
+  stat_text="$(<"/proc/$$/stat")"
+  if [[ "$stat_text" != *") "* ]]; then
+    exit 125
+  fi
+  stat_tail="${stat_text##*) }"
+  read -r -a stat_fields <<<"$stat_tail"
+  if [[ -z "$boot_id" || ${#stat_fields[@]} -le 19 || -z "${stat_fields[19]}" ]]; then
+    exit 125
+  fi
+  identity="linux:${boot_id}:${stat_fields[19]}"
+  ;;
+Darwin)
+  boot_id="$(/usr/sbin/sysctl -n kern.bootsessionuuid)" || exit 125
+  started="$(LC_ALL=C TZ=UTC0 /bin/ps -o lstart= -p "$$")" || exit 125
+  read -r wday month mday clock year extra <<<"$started" || exit 125
+  if [[ -z "$year" || -n "$extra" ]]; then
+    exit 125
+  fi
+  start_epoch="$(LC_ALL=C TZ=UTC0 /bin/date -j -f "%a %b %d %T %Y" "$wday $month $mday $clock $year" +%s)" || exit 125
+  if [[ -z "$boot_id" || ! "$start_epoch" =~ ^[0-9]+$ ]]; then
+    exit 125
+  fi
+  identity="darwin:${boot_id}:${start_epoch}"
+  ;;
+*)
   exit 125
-fi
-boot_id="$(</proc/sys/kernel/random/boot_id)"
-stat_text="$(<"/proc/$$/stat")"
-if [[ "$stat_text" != *") "* ]]; then
-  exit 125
-fi
-stat_tail="${stat_text##*) }"
-read -r -a stat_fields <<<"$stat_tail"
-if [[ -z "$boot_id" || ${#stat_fields[@]} -le 19 || -z "${stat_fields[19]}" ]]; then
-  exit 125
-fi
-identity="linux:${boot_id}:${stat_fields[19]}"
+  ;;
+esac
 tmp="${pending}.tmp.$$"
 umask 077
 trap '\''rm -f -- "$tmp"'\'' EXIT

@@ -124,6 +124,39 @@ func TestCatalogAllowsRegularNestedSkillAndTools(t *testing.T) {
 	}
 }
 
+func TestTrustedCommandToolsFailClosedWithoutWorkingDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	toolsDir := filepath.Join(root, "demo", "tools")
+	if err := os.MkdirAll(toolsDir, 0o700); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "demo", "SKILL.md"), []byte("---\nname: demo\ndescription: demo skill\n---\nbody\n"), 0o600); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, "tool.yaml"), []byte("name: demo_tool\ncommand: [\"echo\", \"x\"]\ninput_schema:\n  type: object\n"), 0o600); err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	catalog, err := Scan([]string{root})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	workdir := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "cwd")
+	if err := os.Mkdir(cwd, 0o700); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	t.Chdir(cwd)
+	if got := catalog.TrustedCommandTools(workdir); len(got) != 1 || got[0].Name != "demo_tool" {
+		t.Fatalf("expected the outside tool to be trusted, got %#v", got)
+	}
+	if err := os.Remove(cwd); err != nil {
+		t.Fatalf("remove cwd: %v", err)
+	}
+	if got := catalog.TrustedCommandTools(workdir); len(got) != 0 {
+		t.Fatalf("a removed working directory must not drop the cwd exclusion anchor, got %#v", got)
+	}
+}
+
 func TestCatalogAllowsLooseSkillFrontmatterDescription(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "skills")
 	skillDir := filepath.Join(root, "loose")

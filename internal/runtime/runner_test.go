@@ -2514,6 +2514,25 @@ func TestResolveRequestedWorkdirDefaultsToWorkspaceSubdirAndCreatesIt(t *testing
 	}
 }
 
+func TestResolveRequestedWorkdirRejectsRemovedWorkingDirectory(t *testing.T) {
+	cwd := filepath.Join(t.TempDir(), "cwd")
+	if err := os.Mkdir(cwd, 0o700); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	t.Chdir(cwd)
+	if err := os.Remove(cwd); err != nil {
+		t.Fatalf("remove cwd: %v", err)
+	}
+	// Darwin getcwd(3) can return the stale path; the default workspace must
+	// not be recreated below the removed directory.
+	if got, err := resolveRequestedWorkdir("", nil); err == nil || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("resolveRequestedWorkdir() = %q, %v; want not-exist error", got, err)
+	}
+	if _, err := os.Lstat(cwd); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("default workspace resolution recreated the removed working directory: %v", err)
+	}
+}
+
 func TestRunnerAppendUserMessageAppliesUserHook(t *testing.T) {
 	cfg := config.Default()
 	cfg.Session.Dir = t.TempDir()

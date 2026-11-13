@@ -155,7 +155,6 @@ type UpdateConfigRequest struct {
 	MaxTurnsSoft         *int                                   `json:"max_turns_soft"`
 	MaxTurnsHard         *int                                   `json:"max_turns_hard"`
 	DisableHardTurnLimit bool                                   `json:"disable_hard_turn_limit"`
-	LegacyUIEnabled      *bool                                  `json:"legacy_ui_enabled"`
 	ChildBudget          *ChildBudgetSettingsRequest            `json:"child_budget"`
 	RoleProviders        map[string]RoleProviderOverrideRequest `json:"role_providers"`
 }
@@ -225,6 +224,28 @@ type ErrorResponse struct {
 type MessagesResponse struct {
 	Messages []session.Message `json:"messages"`
 	HasMore  bool              `json:"has_more"`
+}
+
+// SessionSummaryView is the Web API shape of a session summary: the durable
+// store summary plus display facts derived by this adapter. Title is the first
+// operator prompt read from messages.jsonl (see Service.sessionTitle); it is
+// omitted while unknown, e.g. before the first message is published.
+type SessionSummaryView struct {
+	session.SessionSummary
+	Title string `json:"title,omitempty"`
+}
+
+// overviewResponseView and historyResponseView shadow the summary lists of
+// the internal responses (the shallower JSON field wins) so the wire format
+// gains title without changing the internal response types.
+type overviewResponseView struct {
+	OverviewResponse
+	RecentSessions []SessionSummaryView `json:"recent_sessions"`
+}
+
+type historyResponseView struct {
+	HistoryResponse
+	Items []SessionSummaryView `json:"items"`
 }
 
 type webError struct {

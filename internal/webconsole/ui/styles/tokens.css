@@ -1,0 +1,105 @@
+/* Design tokens (spec §8). Light theme only. */
+:root {
+  color-scheme: light;
+
+  /* Surfaces */
+  --bg: #f6f6f3;
+  --surface: #ffffff;
+  --surface-2: #f1f1ed;
+  --surface-3: #e9e9e4;
+  --border: #e4e4de;
+  --border-strong: #d2d2ca;
+
+  /* Text */
+  --text: #1d1d1b;
+  --text-2: #55554e;
+  --text-3: #6b6b62; /* ≥4.5:1 on --surface, --bg and --surface-2 */
+
+  /* Ink (primary actions) */
+  --ink: #1d1d1b;
+  --ink-hover: #33332f;
+  --on-ink: #ffffff;
+
+  /* Brand */
+  --brand: #4f7a12;
+  --brand-strong: #3f6410;
+  --brand-soft: #eef5df;
+  --brand-fill: #b6e858; /* logo mark only */
+
+  /* Semantic */
+  --info: #2457c5;
+  --info-soft: #e8effc;
+  --success: #1f7a37;
+  --success-soft: #e6f3ea;
+  --warning: #9a5b00;
+  --warning-soft: #fdf3e1;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --neutral: #73736a;
+  --neutral-soft: #efefea;
+
+  /* Radius */
+  --radius-1: 6px;
+  --radius-2: 8px;
+  --radius-3: 12px;
+  --radius-4: 16px;
+  --radius-full: 999px;
+
+  /* Shadows */
+  --shadow-1: 0 1px 2px rgba(20, 20, 15, 0.05);
+  --shadow-2: 0 8px 24px rgba(20, 20, 15, 0.08), 0 1px 2px rgba(20, 20, 15, 0.06);
+  --shadow-pop: 0 16px 48px rgba(20, 20, 15, 0.16);
+
+  /* Type */
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --leading: 1.55;
+  --leading-tight: 1.3;
+
+  /* Spacing (4px scale) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Hit targets: ≥32px fine pointer, ≥44px coarse pointer or ≤768px */
+  --hit: 32px;
+  --hit-sm: 32px;
+
+  /* Layout */
+  --sidebar-width: 264px;
+  --inspector-width: 380px;
+  --topbar-height: 52px;
+  --reading-width: 760px;
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand);
+}
+
+@media (pointer: coarse), (max-width: 768px) {
+  :root {
+    --hit: 44px;
+    --hit-sm: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+  }
+}

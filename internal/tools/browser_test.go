@@ -164,10 +164,10 @@ func TestBrowserSocketPathLimitBeforeProcesses(t *testing.T) {
 func TestBrowserSocketPathByteBoundary(t *testing.T) {
 	// The Chromium prefix is the longer of the two supported brand prefixes.
 	suffix := filepath.Join("t", ".org.chromium.Chromium.XXXXXX", "SingletonSocket")
-	base := t.TempDir()
-	ipc := filepath.Join(base, strings.Repeat("x", 107-len(base)-len(suffix)-2))
+	base := browserSocketBoundaryBase(t, browserSocketPathMax-len(suffix)-3)
+	ipc := filepath.Join(base, strings.Repeat("x", browserSocketPathMax-len(base)-len(suffix)-2))
 	if err := prepareBrowserIPC(ipc); err != nil {
-		t.Fatalf("107-byte path rejected: %v", err)
+		t.Fatalf("%d-byte path rejected: %v", browserSocketPathMax, err)
 	}
 	for _, extra := range []string{"x", "é"} {
 		if err := prepareBrowserIPC(ipc + extra); err == nil {
@@ -178,6 +178,74 @@ func TestBrowserSocketPathByteBoundary(t *testing.T) {
 		}
 	}
 }
+
+// browserSocketBoundaryBase returns a private directory of at most maxLen
+// bytes so the boundary path fits the platform sun_path limit. Per-user macOS
+// TMPDIRs under /private/var/folders are too long for that, so it falls back
+// to a private directory below the physical /tmp.
+func browserSocketBoundaryBase(t *testing.T, maxLen int) string {
+	t.Helper()
+	if base := t.TempDir(); len(base) <= maxLen {
+		return base
+	}
+	root, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Fatalf("resolve /tmp: %v", err)
+	}
+	base, err := os.MkdirTemp(root, "ab-t-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	if len(base) > maxLen {
+		t.Fatalf("no private directory short enough for the %d-byte socket boundary: %q", browserSocketPathMax, base)
+	}
+	return base
+}
+
+func TestBrowserUnsupportedPlatformDiagnostic(t *testing.T) {
+	err := BrowserPlatformError()
+	if runtime.GOOS == "linux" && runtime.GOARCH == "amd64" {
+		if err != nil {
+			t.Fatalf("supported platform rejected: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), "Linux x86_64 only") || !strings.Contains(err.Error(), runtime.GOOS) {
+		t.Fatalf("unsupported platform diagnostic = %v", err)
+	}
+	cfg := config.Default()
+	cfg.Tools.Browser.Enabled = true
+	cfg.Tools.Browser.InstallRoot = t.TempDir()
+	store := session.NewStore(t.TempDir())
+	report, doctorErr := BrowserDoctor(context.Background(), cfg, store, "")
+	if doctorErr == nil || report["status"] != "unsupported_platform" {
+		t.Fatalf("doctor report=%v err=%v", report, doctorErr)
+	}
+	id := "browser-unsupported"
+	meta := session.SessionMetadata{SchemaVersion: 1, CompletionPolicy: session.CompletionPolicyAutonomous, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Provider: "openai", Model: "fake", ID: id, Workdir: t.TempDir(), Mode: session.ModeExec}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "prepare", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistry(cfg, nil, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := reg.CloseBrowser(); err != nil {
+			t.Error(err)
+		}
+	})
+	ec := ExecContext{SessionID: id, ToolCallID: "one", Workdir: meta.Workdir, Store: store, Config: cfg, EphemeralArtifactRoot: filepath.Join(store.SessionDir(id), "artifacts", "tool-outputs")}
+	result := browserRun(t, reg, ec, "open('must-not-run','w').close()")
+	if !result.IsError || !strings.Contains(result.LLMOutput, "browser platform unsupported") {
+		t.Fatalf("browser_exec on unsupported platform: %#v", result)
+	}
+	if _, err := os.Lstat(filepath.Join(store.SessionDir(id), "browser")); !os.IsNotExist(err) {
+		t.Fatalf("unsupported platform created browser state: %v", err)
+	}
+}
+
 func TestBrowserStdinResultMatrix(t *testing.T) {
 	r, ec := browserFixture(t)
 	for _, tc := range []struct {

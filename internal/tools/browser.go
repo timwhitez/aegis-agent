@@ -145,15 +145,16 @@ func browserEnv(ec ExecContext, root, ipc, endpoint string) []string {
 }
 
 func prepareBrowserIPC(ipc string) error {
-	// Linux sockaddr_un reserves one of its 108 bytes for the NUL terminator.
-	// Chrome/Chromium create a six-character random directory below TMPDIR.
+	// sockaddr_un reserves one sun_path byte for the NUL terminator; the usable
+	// length is platform specific (browserSocketPathMax). Chrome/Chromium
+	// create a six-character random directory below TMPDIR.
 	for _, path := range []string{
 		filepath.Join(ipc, "bu.sock"),
 		filepath.Join(ipc, "t", "com.google.Chrome.XXXXXX", "SingletonSocket"),
 		filepath.Join(ipc, "t", ".org.chromium.Chromium.XXXXXX", "SingletonSocket"),
 	} {
-		if len(path) > 107 {
-			return fmt.Errorf("browser IPC socket path too long: %d bytes exceeds Linux limit 107; use a shorter TMPDIR parent (%s)", len(path), path)
+		if len(path) > browserSocketPathMax {
+			return fmt.Errorf("browser IPC socket path too long: %d bytes exceeds %s limit %d; use a shorter TMPDIR parent (%s)", len(path), browserSocketPathPlatform, browserSocketPathMax, path)
 		}
 	}
 	return fileutil.MkdirAllNoSymlink(filepath.Join(ipc, "t"), 0o700)
@@ -232,10 +233,21 @@ func runOwnedBrowserProcess(cmd *exec.Cmd, collector *commandOutputCollector) er
 	return errors.Join(p.waitErr, p.cleanupErr)
 }
 
+// BrowserPlatformError reports why this host cannot run the optional browser
+// adapter, or nil on its only supported platform, Linux x86_64 (spec 19).
+// Owned process-group exit observation and cleanup exist only there, so
+// callers must check it before creating browser files or processes.
+func BrowserPlatformError() error {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		return fmt.Errorf("browser platform unsupported: Linux x86_64 only (host %s/%s)", runtime.GOOS, runtime.GOARCH)
+	}
+	return nil
+}
+
 func (s *browserSession) initialize(ctx context.Context) error {
 	ec := s.execCtx
-	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
-		return errors.New("browser platform unsupported: Linux x86_64 only")
+	if err := BrowserPlatformError(); err != nil {
+		return err
 	}
 	if err := config.ValidateBrowserConfig(ec.Config.Tools.Browser); err != nil {
 		return err

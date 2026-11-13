@@ -113,17 +113,12 @@ func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
 		Username:     "operator",
 		PasswordHash: "$2a$10$abcdefghijklmnopqrstuuJ7lHjSuP9gGCP3zZ8KXw2mzg9S0FZ7mP9m",
 	}
-	cfg.Web.LegacyUIEnabled = true
-
 	cloned, err := Clone(cfg)
 	if err != nil {
 		t.Fatalf("clone config: %v", err)
 	}
 	if cloned.Web.BasicAuth != cfg.Web.BasicAuth {
 		t.Fatalf("web basic auth changed after clone: got %#v want %#v", cloned.Web.BasicAuth, cfg.Web.BasicAuth)
-	}
-	if !cloned.Web.LegacyUIEnabled {
-		t.Fatal("web legacy UI setting changed after clone")
 	}
 
 	data, err := MarshalYAML(cfg)
@@ -133,8 +128,41 @@ func TestOptionalWebBasicAuthRoundTripsWithoutClearTextPassword(t *testing.T) {
 	if !strings.Contains(string(data), "password_hash:") || strings.Contains(string(data), "password:") {
 		t.Fatalf("unexpected web basic auth YAML: %s", data)
 	}
-	if !strings.Contains(string(data), "legacy_ui_enabled: true") {
-		t.Fatalf("expected web legacy UI setting in YAML: %s", data)
+}
+
+func TestDeprecatedLegacyUIEnabledStillParsesButIsNeverWritten(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		t.Run(value, func(t *testing.T) {
+			path := writeStrictConfigFixture(t, "web:\n  legacy_ui_enabled: "+value+"\n  allowed_hosts:\n    - console.example.test\n")
+			cfg, err := Load(path, t.TempDir())
+			if err != nil {
+				t.Fatalf("deprecated web.legacy_ui_enabled must still load: %v", err)
+			}
+			if len(cfg.Web.AllowedHosts) != 1 || cfg.Web.AllowedHosts[0] != "console.example.test" {
+				t.Fatalf("sibling web settings were lost: %#v", cfg.Web)
+			}
+			data, err := MarshalYAML(cfg)
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			if strings.Contains(string(data), "legacy_ui_enabled") {
+				t.Fatalf("deprecated key must not be written back: %s", data)
+			}
+			cloned, err := Clone(cfg)
+			if err != nil {
+				t.Fatalf("clone config: %v", err)
+			}
+			if len(cloned.Web.AllowedHosts) != 1 {
+				t.Fatalf("clone lost web settings: %#v", cloned.Web)
+			}
+		})
+	}
+	defaults, err := MarshalYAML(Default())
+	if err != nil {
+		t.Fatalf("marshal defaults: %v", err)
+	}
+	if strings.Contains(string(defaults), "legacy_ui_enabled") {
+		t.Fatalf("init defaults must not emit the deprecated key: %s", defaults)
 	}
 }
 

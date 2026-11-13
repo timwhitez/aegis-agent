@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -65,11 +66,45 @@ func pidFile(root string) string {
 	return filepath.Join(root, ".aegis-agent", "runtime", "webconsole.pid")
 }
 
+// processIdentityShell defines process_identity, which independently
+// re-derives the launcher's platform process identity for a PID so the fake
+// helpers can verify the identity that run.sh recorded. Linux keeps the
+// original boot_id + /proc/<pid>/stat starttime check verbatim; macOS has no
+// /proc, so it uses the boot session UUID plus the kernel process start time
+// reported by BSD ps(1) in C locale and UTC. It sets $actual or exits 3
+// (process gone) / 5 (identity unavailable), like the real helper.
+const processIdentityShell = `process_identity() {
+  local pid="$1" boot stat_text tail started wday month mday clock year extra start_epoch
+  case "$(uname -s)" in
+    Linux)
+      if [[ ! -r "/proc/$pid/stat" ]]; then exit 3; fi
+      if ! boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; then exit 5; fi
+      if ! stat_text="$(cat "/proc/$pid/stat" 2>/dev/null)"; then exit 3; fi
+      tail="${stat_text##*) }"
+      read -r -a fields <<<"$tail"
+      (( ${#fields[@]} > 19 )) || exit 3
+      actual="linux:${boot}:${fields[19]}"
+      ;;
+    Darwin)
+      started="$(LC_ALL=C TZ=UTC0 /bin/ps -o lstart= -p "$pid" 2>/dev/null)" || exit 3
+      read -r wday month mday clock year extra <<<"$started"
+      [[ -n "$year" && -z "$extra" ]] || exit 3
+      boot="$(/usr/sbin/sysctl -n kern.bootsessionuuid 2>/dev/null)" || exit 5
+      start_epoch="$(LC_ALL=C TZ=UTC0 /bin/date -j -f "%a %b %d %T %Y" "$wday $month $mday $clock $year" +%s 2>/dev/null)" || exit 5
+      [[ -n "$boot" && "$start_epoch" =~ ^[0-9]+$ ]] || exit 5
+      actual="darwin:${boot}:${start_epoch}"
+      ;;
+    *) exit 5 ;;
+  esac
+}
+`
+
 func writeSignalHelper(t *testing.T, root string) string {
 	t.Helper()
 	path := filepath.Join(root, "signal-helper")
 	script := `#!/usr/bin/env bash
 set -euo pipefail
+` + processIdentityShell + `
 [[ "${1:-}" == "__signal-process" ]] || exit 2
 shift
 pid=""; identity=""; signal=""
@@ -82,13 +117,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$pid" && -n "$identity" ]] || exit 2
-if [[ ! -r "/proc/$pid/stat" ]]; then exit 3; fi
-if ! boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; then exit 5; fi
-if ! stat_text="$(cat "/proc/$pid/stat" 2>/dev/null)"; then exit 3; fi
-tail="${stat_text##*) }"
-read -r -a fields <<<"$tail"
-(( ${#fields[@]} > 19 )) || exit 3
-actual="linux:${boot}:${fields[19]}"
+process_identity "$pid"
 [[ "$actual" == "$identity" ]] || exit 4
 case "$signal" in
   0) kill -0 "$pid" || exit 3 ;;
@@ -108,6 +137,7 @@ func writeNoopSignalHelper(t *testing.T, root string) string {
 	path := filepath.Join(root, "noop-signal-helper")
 	script := `#!/usr/bin/env bash
 set -euo pipefail
+` + processIdentityShell + `
 [[ "${1:-}" == "__signal-process" ]] || exit 2
 shift
 pid=""; identity=""; signal=""
@@ -120,13 +150,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$pid" && -n "$identity" && -n "$signal" ]] || exit 2
-[[ -r "/proc/$pid/stat" ]] || exit 3
-boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)" || exit 5
-stat_text="$(cat "/proc/$pid/stat" 2>/dev/null)" || exit 3
-tail="${stat_text##*) }"
-read -r -a fields <<<"$tail"
-(( ${#fields[@]} > 19 )) || exit 3
-[[ "linux:${boot}:${fields[19]}" == "$identity" ]] || exit 4
+process_identity "$pid"
+[[ "$actual" == "$identity" ]] || exit 4
 # Deliberately report successful TERM/KILL delivery without changing the
 # process. The launcher must not delete its recovery record until a later
 # identity-bound check proves that the exact process instance is gone.
@@ -138,8 +163,18 @@ exit 0
 	return path
 }
 
-func linuxIdentity(t *testing.T, pid int) string {
+// processIdentity returns the identity the launcher records for pid on this
+// platform: Linux reads /proc directly, other hosts reuse processIdentityShell.
+func processIdentity(t *testing.T, pid int) string {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		script := processIdentityShell + "process_identity \"$1\"\nprintf '%s' \"$actual\"\n"
+		out, err := exec.Command("bash", "-c", script, "bash", strconv.Itoa(pid)).Output()
+		if err != nil || len(out) == 0 {
+			t.Fatalf("no launcher process identity for pid %d on %s: %v", pid, runtime.GOOS, err)
+		}
+		return string(out)
+	}
 	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +259,9 @@ func TestRecordedWebConsoleInstanceCanBeStopped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "pid=") || !strings.Contains(string(data), "identity=linux:") {
+	// The record must be bound to this platform's identity scheme:
+	// identity=linux:... on Linux/WSL, identity=darwin:... on macOS.
+	if !strings.Contains(string(data), "pid=") || !strings.Contains(string(data), "identity="+runtime.GOOS+":") {
 		t.Fatalf("record=%q", data)
 	}
 	output, err = launcher(t, root, "stop", env...)
@@ -446,7 +483,7 @@ func TestStopVerificationFailureRetainsRecordAndProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(pidFile(root)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	identity := linuxIdentity(t, victim.Process.Pid)
+	identity := processIdentity(t, victim.Process.Pid)
 	if err := os.WriteFile(pidFile(root), []byte(fmt.Sprintf("pid=%d\nidentity=%s\n", victim.Process.Pid, identity)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +509,7 @@ func TestSuccessfulSignalsWithoutConfirmedExitRetainDurableRecord(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(pidFile(root)), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	identity := linuxIdentity(t, victim.Process.Pid)
+	identity := processIdentity(t, victim.Process.Pid)
 	if err := os.WriteFile(pidFile(root), []byte(fmt.Sprintf("pid=%d\nidentity=%s\n", victim.Process.Pid, identity)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +535,7 @@ func TestPendingRecoveryRecordBlocksAnotherStart(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	identity := linuxIdentity(t, victim.Process.Pid)
+	identity := processIdentity(t, victim.Process.Pid)
 	if err := os.WriteFile(pending, []byte(fmt.Sprintf("pid=%d\nidentity=%s\n", victim.Process.Pid, identity)), 0o600); err != nil {
 		t.Fatal(err)
 	}

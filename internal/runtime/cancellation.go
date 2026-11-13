@@ -23,6 +23,8 @@ func activeSessionKey(store *session.Store, sessionID string) string {
 	root := ""
 	if store != nil {
 		root = store.Root()
+		// filepath.Abs suffices: the key only names an in-memory runner and
+		// never decides what to create, modify or trust on disk.
 		if absolute, err := filepath.Abs(root); err == nil {
 			root = absolute
 		}

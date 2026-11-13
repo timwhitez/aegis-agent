@@ -6,8 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/streamjson"
 )
 
@@ -24,7 +24,7 @@ func modelsCommand(_ context.Context, args []string, stdout, stderr io.Writer) e
 	if fs.NArg() > 0 {
 		return fmt.Errorf("models does not accept positional arguments")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}

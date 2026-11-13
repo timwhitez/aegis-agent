@@ -1,12 +1,10 @@
 package webconsole
 
-import (
-	"errors"
-	"os"
-	"path/filepath"
-	"strconv"
-)
+import "os"
 
+// hostProcessAlive is conservative: it reports false only when the host proves
+// the PID has no live process (process_liveness_procfs.go on Linux,
+// process_liveness_darwin.go on macOS).
 func hostProcessAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -14,11 +12,5 @@ func hostProcessAlive(pid int) bool {
 	if pid == os.Getpid() {
 		return true
 	}
-	if _, err := os.Stat("/proc"); err != nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid))); err != nil {
-		return !errors.Is(err, os.ErrNotExist)
-	}
-	return true
+	return platformProcessAlive(pid)
 }

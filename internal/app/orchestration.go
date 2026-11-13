@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
 )
@@ -43,7 +44,7 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -106,7 +107,7 @@ func childrenCommand(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("children requires <session-id>")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -185,7 +186,7 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -229,7 +230,7 @@ func queueListCommand(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -264,7 +265,7 @@ func queueShowCommand(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("queue show requires <job-id>")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -299,7 +300,7 @@ func queueWorkerCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	if !*once && *pollMS <= 0 {
 		return fmt.Errorf("queue worker poll-ms must be > 0")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}

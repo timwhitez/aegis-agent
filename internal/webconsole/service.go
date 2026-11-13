@@ -32,6 +32,7 @@ import (
 	"aegis-agent/internal/extensions"
 	"aegis-agent/internal/filechanges"
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
@@ -45,20 +46,17 @@ import (
 var (
 	webconsoleProcessOwner = newProcessOwner()
 	webconsoleProcessAlive = hostProcessAlive
-	sharedV2AssetNames     = map[string]struct{}{
-		"api.js":                    {},
-		"app.js":                    {},
-		"approval-operations.mjs":   {},
-		"events.js":                 {},
-		"file-change-disclosure.js": {},
-		"icons.js":                  {},
-		"i18n.js":                   {},
-		"markdown-security.js":      {},
-		"session-view.js":           {},
-		"settings-view.js":          {},
-		"styles.css":                {},
-		"utils.js":                  {},
-		"workspace-view.js":         {},
+	// uiContentTypes pins MIME types for the shipped frontend so module
+	// scripts never depend on host mime.types tables (browsers refuse ES
+	// modules that are not served with a JavaScript MIME type).
+	uiContentTypes = map[string]string{
+		".css":  "text/css; charset=utf-8",
+		".html": "text/html; charset=utf-8",
+		".js":   "text/javascript; charset=utf-8",
+		".json": "application/json",
+		".md":   "text/markdown; charset=utf-8",
+		".mjs":  "text/javascript; charset=utf-8",
+		".svg":  "image/svg+xml",
 	}
 )
 
@@ -135,8 +133,7 @@ type Service struct {
 	cfg           *config.Config
 	configPath    string
 	store         *session.Store
-	staticFS      fs.FS
-	modernFS      fs.FS
+	uiFS          fs.FS
 	workers       *workerPool
 	basicAuth     *basicAuthenticator
 	hostAllowlist webHostAllowlist
@@ -170,6 +167,9 @@ type Service struct {
 	mu      sync.RWMutex
 	handles map[string]*launchHandle
 	closed  bool
+
+	// titles caches derived session titles (first user prompt) by session id.
+	titles *sessionTitleCache
 
 	pendingStartSeq int
 	pendingStarts   map[int]context.CancelFunc
@@ -358,11 +358,7 @@ type WorkerStatus struct {
 }
 
 func New(cfg *config.Config, opts Options) (*Service, error) {
-	staticFS, err := assetFS()
-	if err != nil {
-		return nil, err
-	}
-	modernFS, err := assetV2FS()
+	uiFS, err := uiAssetFS()
 	if err != nil {
 		return nil, err
 	}
@@ -383,14 +379,14 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		cfg:             serviceCfg,
 		configPath:      opts.ConfigPath,
 		store:           store,
-		staticFS:        staticFS,
-		modernFS:        modernFS,
+		uiFS:            uiFS,
 		basicAuth:       basicAuth,
 		hostAllowlist:   hostAllowlist,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
 		setProcessEnv:   os.Setenv,
 		unsetProcessEnv: os.Unsetenv,
+		titles:          newSessionTitleCache(sessionTitleCacheMaxEntries),
 	}
 	svc.wsUpgrader = websocket.Upgrader{CheckOrigin: svc.websocketOriginAllowed}
 	svc.workers = newWorkerPool(serviceCfg, opts.WorkerCount, svc.runLifecycleHooks())
@@ -525,7 +521,10 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, overviewResponseView{
+			OverviewResponse: resp,
+			RecentSessions:   s.sessionSummaryViews(resp.RecentSessions),
+		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/history":
 		s.handleHistory(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/sessions":
@@ -589,75 +588,43 @@ func (s *Service) serveAPI(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/legacy" {
-		if !s.legacyUIEnabled() {
-			http.NotFound(w, r)
-			return
-		}
-		http.Redirect(w, r, "/legacy/", http.StatusPermanentRedirect)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/legacy/") {
-		if !s.legacyUIEnabled() {
-			http.NotFound(w, r)
-			return
-		}
-		name := strings.TrimPrefix(r.URL.Path, "/legacy/")
-		if name == "" {
-			name = "index.html"
-		}
-		if _, err := fs.Stat(s.staticFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.staticFS, name)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/shared-assets/") {
-		name := strings.TrimPrefix(r.URL.Path, "/shared-assets/")
-		if _, ok := sharedV2AssetNames[name]; !ok {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := fs.Stat(s.staticFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.staticFS, name)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/v2-assets/") {
-		name := strings.TrimPrefix(r.URL.Path, "/v2-assets/")
-		if name == "" {
-			http.NotFound(w, r)
-			return
-		}
-		if _, err := fs.Stat(s.modernFS, name); err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		serveEmbeddedFileRequest(w, r, s.modernFS, name)
-		return
-	}
-	name := strings.TrimPrefix(r.URL.Path, "/")
-	if name != "" && name != "index.html" {
-		if legacyInfo, legacyErr := fs.Stat(s.staticFS, name); legacyErr == nil && !legacyInfo.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
-		if modernInfo, modernErr := fs.Stat(s.modernFS, name); modernErr == nil && !modernInfo.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
-	}
-	serveEmbeddedFileRequest(w, r, s.modernFS, "index.html")
-}
+const uiAssetPrefix = "/ui/"
 
-func (s *Service) legacyUIEnabled() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.cfg.Web.LegacyUIEnabled
+// retiredUIPrefixes are routes of removed frontends. They answer 404 instead
+// of the SPA shell so stale bookmarks and cached pages fail visibly.
+var retiredUIPrefixes = []string{"/legacy", "/v2-assets", "/shared-assets"}
+
+// serveUI serves the embedded frontend: static files only below /ui/ (missing
+// files are 404, never the shell) and ui/index.html for every other GET/HEAD
+// path so History API routes such as /s/{id} can be opened and reloaded.
+func (s *Service) serveUI(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	for _, prefix := range retiredUIPrefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+		return
+	}
+	if path == strings.TrimSuffix(uiAssetPrefix, "/") || strings.HasPrefix(path, uiAssetPrefix) {
+		name := strings.TrimPrefix(path, uiAssetPrefix)
+		if name == "" || !fs.ValidPath(name) {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := fs.Stat(s.uiFS, name)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		serveEmbeddedFileRequest(w, r, s.uiFS, name)
+		return
+	}
+	serveEmbeddedFileRequest(w, r, s.uiFS, "index.html")
 }
 
 func (s *Service) configSnapshot() (*config.Config, error) {
@@ -796,7 +763,7 @@ func (s *Service) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if items == nil {
 		items = []session.SessionSummary{}
 	}
-	writeJSON(w, http.StatusOK, webSafeSessionSummaries(items))
+	writeJSON(w, http.StatusOK, s.sessionSummaryViews(webSafeSessionSummaries(items)))
 }
 
 func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -815,13 +782,17 @@ func (s *Service) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if total > 0 {
 		totalPages = (total + pageSize - 1) / pageSize
 	}
-	writeJSON(w, http.StatusOK, webSafeHistoryResponse(HistoryResponse{
+	resp := webSafeHistoryResponse(HistoryResponse{
 		Items:      items,
 		Total:      total,
 		Page:       page,
 		PageSize:   pageSize,
 		TotalPages: totalPages,
-	}))
+	})
+	writeJSON(w, http.StatusOK, historyResponseView{
+		HistoryResponse: resp,
+		Items:           s.sessionSummaryViews(resp.Items),
+	})
 }
 
 func paginationOffset(page, pageSize int) int {
@@ -834,6 +805,180 @@ func paginationOffset(page, pageSize int) int {
 		return maxInt
 	}
 	return (page - 1) * pageSize
+}
+
+const (
+	// sessionTitleMaxRunes caps the derived title; longer prompts end in "…".
+	sessionTitleMaxRunes = 120
+	// sessionTitleScanMaxBytes bounds the messages.jsonl prefix scanned for the
+	// first operator prompt, so list endpoints never read whole transcripts.
+	sessionTitleScanMaxBytes = 256 << 10
+	// sessionTitleCacheMaxEntries bounds the in-memory title cache.
+	sessionTitleCacheMaxEntries = 4096
+)
+
+// sessionTitleCache remembers non-empty derived titles by session id. Only
+// settled titles are cached (see scanSessionTitle): the runtime may still roll
+// back the operator message while it is the transcript's last record
+// (Store.RemoveLastMessageIfID after a failed user.message event), but a
+// message followed by another record can no longer be removed, so a settled
+// title never changes. Misses are not cached because the message may not be
+// published yet.
+type sessionTitleCache struct {
+	mu      sync.Mutex
+	max     int
+	entries map[string]string
+	order   []string
+}
+
+func newSessionTitleCache(max int) *sessionTitleCache {
+	if max <= 0 {
+		max = sessionTitleCacheMaxEntries
+	}
+	return &sessionTitleCache{max: max, entries: map[string]string{}}
+}
+
+func (c *sessionTitleCache) get(id string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	title, ok := c.entries[id]
+	return title, ok
+}
+
+func (c *sessionTitleCache) put(id, title string) {
+	if c == nil || id == "" || title == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.entries[id]; ok {
+		c.entries[id] = title
+		return
+	}
+	for len(c.entries) >= c.max && len(c.order) > 0 {
+		delete(c.entries, c.order[0])
+		c.order = c.order[1:]
+	}
+	c.entries[id] = title
+	c.order = append(c.order, id)
+}
+
+func (c *sessionTitleCache) size() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entries)
+}
+
+// sessionSummaryViews decorates summaries with derived titles. It always
+// returns a non-nil slice so empty lists encode as [].
+func (s *Service) sessionSummaryViews(items []session.SessionSummary) []SessionSummaryView {
+	out := make([]SessionSummaryView, 0, len(items))
+	for _, item := range items {
+		out = append(out, SessionSummaryView{SessionSummary: item, Title: s.sessionTitle(item.ID)})
+	}
+	return out
+}
+
+// sessionTitle returns the session's first operator prompt (whitespace
+// collapsed, capped at sessionTitleMaxRunes) or "" when it is not available.
+// It is a best-effort display fact: missing, partial or unreadable message
+// files yield "" instead of failing the list request.
+func (s *Service) sessionTitle(sessionID string) string {
+	if s == nil || s.store == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	if title, ok := s.titles.get(sessionID); ok {
+		return title
+	}
+	title, settled := scanSessionTitle(filepath.Join(s.store.SessionDir(sessionID), "messages.jsonl"), sessionTitleScanMaxBytes)
+	if settled {
+		s.titles.put(sessionID, title)
+	}
+	return title
+}
+
+// sessionTitleProbe decodes only the message fields the title needs.
+type sessionTitleProbe struct {
+	Role string         `json:"role"`
+	Text string         `json:"text"`
+	Meta map[string]any `json:"meta"`
+}
+
+// readSessionTitle scans at most maxBytes from the start of messages.jsonl and
+// returns the normalized text of the first operator-authored user message.
+// Harness-injected user messages (steer, harness reminders, background
+// results, compaction summaries, plan approvals) carry meta.source or
+// meta.kind and are skipped. A record cut by the scan window is ignored.
+func readSessionTitle(path string, maxBytes int64) string {
+	title, _ := scanSessionTitle(path, maxBytes)
+	return title
+}
+
+// scanSessionTitle is readSessionTitle that also reports whether the title is
+// settled: a complete (newline-terminated, decodable) record follows the
+// title's message inside the scan window. Message rollback only removes the
+// last record, so only a settled title is safe to cache.
+func scanSessionTitle(path string, maxBytes int64) (string, bool) {
+	if maxBytes <= 0 {
+		return "", false
+	}
+	data, info, err := fileutil.ReadRegularFileRangeNoSymlink(path, 0, maxBytes)
+	if err != nil || info == nil {
+		return "", false
+	}
+	windowCut := info.Size() > int64(len(data))
+	title := ""
+	for len(data) > 0 {
+		line, rest, found := bytes.Cut(data, []byte{'\n'})
+		data = rest
+		if !found && windowCut {
+			break
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var probe sessionTitleProbe
+		if err := json.Unmarshal(line, &probe); err != nil {
+			continue
+		}
+		if title != "" {
+			return title, found
+		}
+		if probe.Role != "user" || sessionTitleMetaString(probe.Meta, "source") != "" || sessionTitleMetaString(probe.Meta, "kind") != "" {
+			continue
+		}
+		if normalized := normalizeSessionTitle(probe.Text); normalized != "" {
+			title = normalized
+		}
+	}
+	return title, false
+}
+
+func sessionTitleMetaString(meta map[string]any, key string) string {
+	value, ok := meta[key]
+	if !ok || value == nil {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return fmt.Sprint(value)
+}
+
+func normalizeSessionTitle(text string) string {
+	title := strings.Join(strings.Fields(text), " ")
+	if utf8.RuneCountInString(title) <= sessionTitleMaxRunes {
+		return title
+	}
+	runes := []rune(title)
+	return strings.TrimSpace(string(runes[:sessionTitleMaxRunes-1])) + "…"
 }
 
 func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
@@ -4445,7 +4590,7 @@ func workspaceMutationStatus(err error) int {
 }
 
 func currentServerWorkspaceRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -4468,7 +4613,7 @@ func currentServerWorkspaceRoot() (string, error) {
 }
 
 func currentServerBrowseRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -4591,7 +4736,6 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"max_turns_soft":          cfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":          cfg.Runtime.MaxTurnsHard,
 		"disable_hard_turn_limit": cfg.Runtime.MaxTurnsHard <= 0,
-		"legacy_ui_enabled":       cfg.Web.LegacyUIEnabled,
 		"browser":                 tools.BrowserSettings(cfg),
 		"child_budget": map[string]any{
 			"disabled":                     cfg.Runtime.ChildBudget.MaxActiveRuntimeSec <= 0 && cfg.Runtime.ChildBudget.MaxElapsedSec <= 0 && cfg.Runtime.ChildBudget.MaxTurnsPerAttempt <= 0,
@@ -4656,9 +4800,6 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.GuardrailsMode = guardrailsMode
-	}
-	if req.LegacyUIEnabled != nil {
-		updatedCfg.Web.LegacyUIEnabled = *req.LegacyUIEnabled
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
@@ -4741,7 +4882,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -4904,7 +5045,6 @@ func configAuditData(updatedCfg *config.Config, configPath string) map[string]an
 		"max_turns_soft":                  updatedCfg.Runtime.MaxTurnsSoft,
 		"max_turns_hard":                  updatedCfg.Runtime.MaxTurnsHard,
 		"hard_turn_limit_active":          updatedCfg.Runtime.MaxTurnsHard > 0,
-		"legacy_ui_enabled":               updatedCfg.Web.LegacyUIEnabled,
 		"child_budget_active":             updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec > 0 || updatedCfg.Runtime.ChildBudget.MaxElapsedSec > 0 || updatedCfg.Runtime.ChildBudget.MaxTurnsPerAttempt > 0,
 		"child_budget_active_runtime_sec": updatedCfg.Runtime.ChildBudget.MaxActiveRuntimeSec,
 		"child_budget_elapsed_sec":        updatedCfg.Runtime.ChildBudget.MaxElapsedSec,
@@ -4933,7 +5073,6 @@ func configRequestHasSettingsMutation(req UpdateConfigRequest) bool {
 		req.MaxTurnsSoft != nil ||
 		req.MaxTurnsHard != nil ||
 		req.DisableHardTurnLimit ||
-		req.LegacyUIEnabled != nil ||
 		req.ChildBudget != nil ||
 		configRequestHasProviderScopedFields(req) ||
 		len(req.RoleProviders) > 0
@@ -5093,11 +5232,11 @@ func sameWebPath(a, b string) (bool, error) {
 	if a == "" || b == "" {
 		return false, nil
 	}
-	absA, err := filepath.Abs(filepath.Clean(a))
+	absA, err := procutil.Abs(filepath.Clean(a))
 	if err != nil {
 		return false, err
 	}
-	absB, err := filepath.Abs(filepath.Clean(b))
+	absB, err := procutil.Abs(filepath.Clean(b))
 	if err != nil {
 		return false, err
 	}
@@ -5655,7 +5794,7 @@ func (s *Service) handleListSkills(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("discover workspace extensions: %w", err))
 		return
@@ -6569,6 +6708,14 @@ func (s *Service) listDirectory(root, browseRoot, current string, policy *webFil
 			node["type"] = "directory"
 		} else {
 			node["type"] = "file"
+		}
+		// Display-only metadata from the directory entry itself (no symlink
+		// follow); omitted when the entry vanished between ReadDir and Info.
+		if info, infoErr := entry.Info(); infoErr == nil {
+			if info.Mode().IsRegular() {
+				node["size"] = info.Size()
+			}
+			node["modified_at"] = info.ModTime().UTC().Format(time.RFC3339)
 		}
 		tree = append(tree, node)
 	}
@@ -8276,7 +8423,7 @@ func resolveSkillDir(rawDir string) (string, error) {
 	if filepath.IsAbs(rawDir) {
 		return filepath.Clean(rawDir), nil
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return "", err
 	}
@@ -8678,7 +8825,10 @@ func loadEmbeddedAsset(files fs.FS, name string) (*assetCacheEntry, error) {
 			return v.(*assetCacheEntry), nil
 		}
 	}
-	contentType := mime.TypeByExtension(filepath.Ext(name))
+	contentType := uiContentTypes[strings.ToLower(filepath.Ext(name))]
+	if contentType == "" {
+		contentType = mime.TypeByExtension(filepath.Ext(name))
+	}
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}

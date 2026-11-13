@@ -1,47 +1,22 @@
 package session
 
 import (
-	"errors"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // hostProcessIdentity returns a boot-scoped OS process identity when the host
-// exposes one. Linux uses boot_id + /proc/<pid>/stat starttime, so PID reuse can
-// be distinguished from the process that originally created a durable lease.
-// Unknown platforms return ok=false and callers retain conservative PID-only
-// behavior.
+// exposes one, so PID reuse can be distinguished from the process that
+// originally created a durable lease. Linux uses boot_id + /proc/<pid>/stat
+// starttime (process_liveness_procfs.go); darwin uses kern.bootsessionuuid +
+// kern.proc.pid p_starttime (process_liveness_darwin.go). Unknown platforms
+// return ok=false and callers retain conservative PID-only behavior.
 var hostProcessIdentity = func(pid int) (string, bool) {
 	if pid <= 0 {
 		return "", false
 	}
-	bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return "", false
-	}
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return "", false
-	}
-	statText := strings.TrimSpace(string(stat))
-	closeParen := strings.LastIndex(statText, ")")
-	if closeParen < 0 || closeParen+1 >= len(statText) {
-		return "", false
-	}
-	fields := strings.Fields(statText[closeParen+1:])
-	// fields starts at proc stat field 3 (state); starttime is field 22.
-	const startTimeIndex = 22 - 3
-	if len(fields) <= startTimeIndex {
-		return "", false
-	}
-	boot := strings.TrimSpace(string(bootID))
-	startTicks := strings.TrimSpace(fields[startTimeIndex])
-	if boot == "" || startTicks == "" {
-		return "", false
-	}
-	return "linux:" + boot + ":" + startTicks, true
+	return platformProcessIdentity(pid)
 }
 
 func hostProcessOwnerAlive(pid int, expectedIdentity string) bool {
@@ -90,8 +65,8 @@ func pidFromProcessStartID(processStartID string) int {
 
 // hostProcessAlive reports whether a PID belongs to a live process on this host.
 // It is conservative: when liveness cannot be determined (no /proc, unexpected
-// stat error) it returns true so the reaper never reclaims a job that might
-// still be owned by a healthy worker.
+// stat or sysctl error, permission denied) it returns true so the reaper never
+// reclaims a job that might still be owned by a healthy worker.
 var hostProcessAlive = func(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -99,13 +74,7 @@ var hostProcessAlive = func(pid int) bool {
 	if pid == os.Getpid() {
 		return true
 	}
-	if _, err := os.Stat("/proc"); err != nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid))); err != nil {
-		return !errors.Is(err, os.ErrNotExist)
-	}
-	return true
+	return platformProcessAlive(pid)
 }
 
 // queueJobOwnerAlive reports whether the process that currently holds a job's

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"aegis-agent/internal/procutil"
 )
 
 type TrustMode string
@@ -114,7 +116,7 @@ func ValidateToolName(name string, reserved map[string]struct{}) error {
 }
 
 func safeRoot(workdir string) (string, error) {
-	abs, err := filepath.Abs(workdir)
+	abs, err := procutil.Abs(workdir)
 	if err != nil {
 		return "", err
 	}
@@ -133,7 +135,7 @@ func safeRoot(workdir string) (string, error) {
 }
 
 func safeChild(root, path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	abs, err := procutil.Abs(path)
 	if err != nil {
 		return "", err
 	}

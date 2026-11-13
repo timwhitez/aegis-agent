@@ -1,0 +1,607 @@
+/* Page views (feature-owned by the history/skills worker): the Sessions
+   (history) list and the Skills catalog. Every rule is scoped by a history-,
+   skill(s)- or page-skills prefix; the shared page toolbar, search,
+   segmented filter, count line, alerts, empty states, link button and
+   pagination live in components.css. Tokens only; no gradients. */
+
+/* ---- Sessions (history) ----------------------------------------------------- */
+.history-clear-btn .icon {
+  color: var(--danger);
+}
+
+.history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+}
+
+.history-list.is-loading {
+  padding: var(--space-2) var(--space-4);
+}
+
+.history-skeleton + .history-skeleton {
+  border-top: 1px solid var(--border);
+}
+
+.history-skeleton {
+  padding: var(--space-2) 0;
+}
+
+.history-node + .history-node,
+.history-children > .history-node {
+  border-top: 1px solid var(--border);
+}
+
+.history-node:first-child > .history-row {
+  border-top-left-radius: var(--radius-3);
+  border-top-right-radius: var(--radius-3);
+}
+
+.history-list > .history-node:last-child > .history-row:last-child,
+.history-list > .history-node:last-child > .history-children > .history-node:last-child > .history-row {
+  border-bottom-left-radius: var(--radius-3);
+  border-bottom-right-radius: var(--radius-3);
+}
+
+.history-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-height: 60px;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+  transition: background-color var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
+}
+
+.history-row:hover,
+.history-row:focus-within {
+  background: #fafaf8;
+}
+
+.history-row.is-child {
+  padding-left: calc(var(--space-4) + var(--space-6));
+  background: #fcfcfa;
+}
+
+.history-row.is-child::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--space-4) + 7px);
+  width: 1px;
+  background: var(--border-strong);
+}
+
+.history-row.is-child:hover,
+.history-row.is-child:focus-within {
+  background: #f8f8f5;
+}
+
+.history-row.is-pending {
+  opacity: 0.6;
+}
+
+.history-row.is-focused {
+  animation: history-focus 2.6s var(--ease);
+}
+
+@keyframes history-focus {
+  0%, 55% { background: var(--brand-soft); box-shadow: inset 3px 0 0 var(--brand); }
+  100% { background: transparent; box-shadow: inset 3px 0 0 transparent; }
+}
+
+.history-row-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+/* The title link itself is a full hit target (var(--hit) tall); negative
+   margins keep the row layout at one title line. */
+.history-row-link {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--hit);
+  margin-block: calc((var(--text-md) * var(--leading-tight) - var(--hit)) / 2);
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: var(--leading-tight);
+  text-decoration: none;
+  border-radius: var(--radius-1);
+}
+
+.history-row-link > .history-row-title {
+  min-width: 0;
+}
+
+/* Stretched link: the whole row opens the session; side controls sit above. */
+.history-row-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+
+.history-row-link:focus-visible {
+  outline: none;
+}
+
+.history-row-link:focus-visible::after {
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px var(--brand);
+}
+
+.history-row-title {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 550;
+  line-height: var(--leading-tight);
+}
+
+.history-row-title.is-fallback {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.history-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-3);
+  min-width: 0;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+.history-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.history-meta-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-meta-path,
+.history-meta-id {
+  font-family: var(--font-mono);
+}
+
+.history-child-badge {
+  height: 18px;
+  padding: 0 6px;
+}
+
+.history-row-error {
+  overflow: hidden;
+  color: var(--danger);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.history-row-side {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: var(--space-3);
+}
+
+.history-row-time {
+  min-width: 64px;
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.history-children-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: var(--hit-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.history-children-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.history-children-toggle[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+
+.history-confirm-target,
+.skill-confirm-target {
+  display: block;
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-2);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.history-confirm-text,
+.skill-confirm-text {
+  display: block;
+}
+
+/* ---- Skills ------------------------------------------------------------------- */
+.page-skills.is-drag-active .page-inner {
+  cursor: copy;
+}
+
+.skills-dropzone {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease), background-color var(--motion-fast) var(--ease);
+}
+
+.skills-dropzone.is-active {
+  border-color: var(--brand);
+  border-style: solid;
+  background: var(--brand-soft);
+}
+
+.skills-dropzone.is-pending {
+  border-style: solid;
+  background: var(--surface-2);
+}
+
+.skills-dropzone-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-3);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.skills-dropzone.is-active .skills-dropzone-icon {
+  background: var(--surface);
+  color: var(--brand-strong);
+}
+
+.skills-dropzone-text {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.skills-dropzone-title {
+  font-weight: 600;
+}
+
+.skills-dropzone-hint {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.skills-upload-error {
+  position: relative;
+  flex: 1 1 100%;
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3) calc(var(--hit-sm) + var(--space-3)) var(--space-3) var(--space-4);
+  border: 1px solid #f3c7c2;
+  border-radius: var(--radius-2);
+  background: var(--danger-soft);
+}
+
+.skills-upload-error-title {
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.skills-upload-error-text {
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.skills-upload-error-close {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+}
+
+.skills-section {
+  margin-top: var(--space-8);
+}
+
+.skills-section-head {
+  display: grid;
+  gap: 2px;
+  margin-bottom: var(--space-3);
+}
+
+.skills-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.skills-section-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-section-hint {
+  color: var(--text-3);
+  font-size: var(--text-sm);
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skills-grid.is-loading {
+  margin-top: var(--space-8);
+}
+
+.skills-grid > li {
+  display: flex;
+  min-width: 0;
+}
+
+.skill-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3);
+  background: var(--surface);
+  transition: border-color var(--motion-fast) var(--ease), box-shadow var(--motion-fast) var(--ease), opacity var(--motion-fast) var(--ease);
+}
+
+.skill-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+}
+
+.skill-card.is-pending {
+  opacity: 0.6;
+}
+
+.skill-card.kind-discovered {
+  background: #fcfcfa;
+}
+
+.skill-card-skeleton {
+  min-height: 160px;
+}
+
+.skill-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.skill-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: var(--radius-2);
+  background: var(--brand-soft);
+  color: var(--brand-strong);
+}
+
+.skill-card.kind-discovered .skill-icon,
+.skill-card.kind-readonly .skill-icon {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.skill-card-titles {
+  flex: 1;
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.skill-name {
+  overflow: hidden;
+  font-size: var(--text-md);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.skill-id {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.skill-state {
+  flex-shrink: 0;
+}
+
+.skill-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.skill-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: var(--text-xs);
+}
+
+.skill-fact {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.skill-fact dt {
+  flex-shrink: 0;
+  min-width: 40px;
+  color: var(--text-3);
+}
+
+.skill-fact dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.skill-fact code {
+  font-size: var(--text-xs);
+}
+
+.skill-card-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-1);
+}
+
+.skill-uninstall-btn .icon {
+  color: var(--danger);
+}
+
+.skill-note {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+
+/* ---- Responsive ---------------------------------------------------------------- */
+@media (max-width: 768px) {
+  .history-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-3);
+  }
+
+  .history-row.is-child {
+    padding-left: calc(var(--space-3) + var(--space-5));
+  }
+
+  .history-row.is-child::before {
+    left: calc(var(--space-3) + 7px);
+  }
+
+  .history-row-main {
+    flex: 1 1 100%;
+    padding-right: calc(var(--hit) + var(--space-2));
+  }
+
+  .history-row-side {
+    position: static;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .history-row-side .menu {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+  }
+
+  .history-row-time {
+    min-width: 0;
+    text-align: left;
+  }
+
+  .skills-dropzone {
+    padding: var(--space-4);
+  }
+
+  .skills-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skills-section {
+    margin-top: var(--space-6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-row.is-focused {
+    animation: none;
+    background: var(--brand-soft);
+  }
+}

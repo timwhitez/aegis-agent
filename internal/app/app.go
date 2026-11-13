@@ -24,6 +24,7 @@ import (
 	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/hooks"
 	"aegis-agent/internal/output"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/provider"
 	"aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
@@ -266,7 +267,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *inputFormat == "stream-json" && len(fs.Args()) > 0 {
 		return fmt.Errorf("positional prompt arguments are not allowed with --input-format stream-json")
 	}
-	invokeCWD, err := os.Getwd()
+	invokeCWD, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -603,7 +604,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return err
 	}
 	*approvePlan = *approvePlan || approvalFlags.latest
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -704,7 +705,7 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if fs.NArg() < 1 {
 		return fmt.Errorf("steer requires <session-id>")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -751,7 +752,7 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -789,7 +790,7 @@ func sessionsContextCommand(args []string, stdout io.Writer) error {
 	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
 		return errors.New("sessions context requires <session-id>")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -850,7 +851,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	default:
 		return fmt.Errorf("unknown goal subcommand: %s", subcommand)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -962,7 +963,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	sessionID := fs.Arg(0)
 	switch subcommand {
 	case "show":
-		cwd, err := os.Getwd()
+		cwd, err := procutil.Getwd()
 		if err != nil {
 			return err
 		}
@@ -1011,7 +1012,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return nil
 	case "check":
-		cwd, err := os.Getwd()
+		cwd, err := procutil.Getwd()
 		if err != nil {
 			return err
 		}
@@ -1030,7 +1031,7 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		printMissionCoverage(stdout, coverage)
 		return nil
 	case "approve":
-		cwd, err := os.Getwd()
+		cwd, err := procutil.Getwd()
 		if err != nil {
 			return err
 		}
@@ -1323,7 +1324,7 @@ func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
 	if subcommand != "show" {
 		return fmt.Errorf("unknown goal validation subcommand: %s", subcommand)
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -1551,7 +1552,7 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 	if fs.NArg() < 1 {
 		return fmt.Errorf("tasks requires <session-id>")
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -1609,7 +1610,7 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -1861,7 +1862,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		return err
 	}
 
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -2414,7 +2415,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 			metadataSelected = true
 		}
 	})
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}
@@ -2502,7 +2503,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	if target == "" {
 		return fmt.Errorf("config path is required")
 	}
-	target, err = filepath.Abs(filepath.Clean(target))
+	target, err = procutil.Abs(filepath.Clean(target))
 	if err != nil {
 		return err
 	}

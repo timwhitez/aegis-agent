@@ -37,6 +37,7 @@ session 系统保证下面四件事同时成立：
 
 - session 根目录默认 `0700`
 - `session.json`、`state.json`、`messages.jsonl`、`events.jsonl` 默认 `0600`
+- 每次写操作前 Store 先 lstat 校验目标路径每一级都不是 symlink，再逐级确保 store 根到目标目录：已是真实目录且权限位（含 setuid/setgid/sticky）恰为 `dir_mode` 的层级不再重复 `MkdirAll`/chmod（结果相同，但在装有 Endpoint Security 客户端的主机上每次 no-symlink open/fchmod 都是毫秒级授权往返）；缺失或权限漂移的层级照旧创建、复查 symlink 并 chmod。追加写入的文件若打开后的描述符已是目标模式则跳过按路径 chmod。随后的文件操作本身仍走 no-symlink open，symlink 拒绝与 owner-only 修复语义不变
 - 读取 `session.json`、`state.json` 等 JSON 文件必须复用 no-symlink regular-file reader，并拒绝超大单文件；读取 `messages.jsonl`、`events.jsonl`、`control/*.jsonl` 等 JSONL 日志时必须限制单条记录大小，避免损坏或恶意扩大的 session 文件在恢复、列表或 Web 查询时造成内存型拒绝服务
 
 ## 3. 文件职责

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/skills"
 	"aegis-agent/internal/tools"
@@ -2672,7 +2673,7 @@ const agentsChainMaxDepth = 16
 // directory and read with fileutil.ReadRegularFileNoSymlink, so symlink-escaped
 // documents stay excluded.
 func loadAgentsChain(workdir string) []agentsDoc {
-	current, err := filepath.Abs(workdir)
+	current, err := procutil.Abs(workdir)
 	if err != nil {
 		return nil
 	}

@@ -101,7 +101,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - 默认 `zh-CN` 与持久化 `en` 都要覆盖静态和动态文案、ARIA/placeholder/title、日期/数字 locale；截图确认浅色主题不随系统深色偏好漂移
 - browser localization acceptance 必须在两个 locale 截取 populated Context inspector 并断言 operator label，同时保持 report ID/role 原文
 - raw-fact collision fixture 至少覆盖匹配 UI 词汇的 Task owner、缺失 Task description、Skill author prefix 与空 background-notification fallback；text audit 只跳过显式 raw descendant，不能跳过整个 Task/Skill/notification card
-- 键盘验收覆盖 tab 语义、Enter/Space 激活、dialog focus trap/restore、Esc 关闭和移动端 inspector；所有高频交互 target 的可点击尺寸至少为 44×44 CSS px
+- 键盘验收覆盖 tab 语义、Enter/Space 激活、dialog focus trap/restore、Esc 关闭和移动端 inspector；高频交互 target 的可点击尺寸在精确指针下至少 32×32 CSS px，在粗指针或 ≤768px 视口下至少 44×44 CSS px
 - focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
 - focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
 
@@ -110,6 +110,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - 优先使用标准库和 `httptest`
 - 尽量不使用 mock framework
 - 优先用 fake provider、fake tool、fake session store
+- 测试只写自己的临时目录：使用 queue/delegate/isolation 的测试 config 必须把 `runtime.isolation.root_dir` 指向 `t.TempDir()`，不能落到真实 HOME 的默认 `~/.aegis-agent/_worktrees`；提速不得通过放松 fsync 或路径安全语义实现
 
 ## 4. 关键测试场景
 
@@ -118,6 +119,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 - `read_file` 正常读取
 - 越界路径被拒绝
 - symlink 越界被拒绝
+- `internal/fileutil` 在 darwin 用单次 `O_NOFOLLOW_ANY` open 解析 no-symlink 路径（每次 open 在装有 Endpoint Security 客户端的主机上都有毫秒级成本），失败一律回退逐级 `O_NOFOLLOW` walk 以保持错误分类与测试钩子；永久测试覆盖祖先/末级 symlink 拒绝与 walk 同一身份（walk 部分在所有 unix 上运行，快速路径部分仅 darwin）。已知且保留的权限差异：walk 以 `O_RDONLY` 打开每级祖先，所以祖先只有 search（x）而无 read（r）权限（如 `0311`）时 walk 返回 EACCES；darwin 快速路径与普通路径 open(2) 一样只要求祖先 search 权限，因此在该祖先下读取已有文件、打开已有目录、chmod、对已存在目录 `MkdirAll` 会成功，需要新建路径分量或回退 walk 的操作仍返回 EACCES。symlink 拒绝不受影响；不补齐该差异，因为等价检查需要逐级 open（正是快速路径要省掉的成本）或 `access(2)`（与 open 的 ACL/沙箱/特权判定不可证明等价）。`TestNoSymlinkHelpersBelowSearchOnlyAncestor` 固定了两种平台行为。非独占 `O_CREAT` 因并发创建同名文件得到的 ENOENT 有界重试，`O_EXCL` 与父目录真实删除仍 fail closed
 - `write_file` 创建父目录
 - `edit_file` 替换失败时报错
 - `finish` 设置 `final`
@@ -280,7 +282,7 @@ Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只�
 
 ### 4.7 Web Console
 
-- embedded shell 首页与 `app.js` / `styles.css` 资产可直接从本地 service 获取
+- embedded shell（`/` 与 SPA 应用路由）和 `/ui/*` 资产可直接从本地 service 获取，JavaScript 以 JavaScript MIME 返回；legacy 与旧资源路由返回 404
 - Web 发起的 session `start` 能进入 `awaiting_input`
 - focused retry-resume follow-up 里，`continue` 至少要保留 durable `retry_policy.max_attempts=2` 并真实写出 `provider.retry`
 - 若 retry-resume proof 已拿到上述 durable evidence，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 completion quirk / follow-up note，而不是误判成 retry-policy 失败
@@ -314,9 +316,8 @@ fixture 内容：
 
 - `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
 - `gofmt -l cmd internal pkg validation/cmd` 结果为空
-- `node --check internal/webconsole/assets/*.js`
-- Web Console v2 资源目录存在后，额外执行 `node --check internal/webconsole/assets-v2/*.js`
-- `node --test validation/scripts/webconsole_utils_test.mjs`
+- `node --check` 覆盖 `internal/webconsole/ui/` 下全部 JavaScript
+- `node --test validation/scripts/*_test.mjs`
 
 可选增强：
 

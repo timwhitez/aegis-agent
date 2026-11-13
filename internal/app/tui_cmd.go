@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"aegis-agent/internal/procutil"
 	agenttui "aegis-agent/internal/tui"
 )
 
@@ -22,7 +23,7 @@ func tuiCommand(args []string, stdout, stderr io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cwd, err := os.Getwd()
+	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
 	}

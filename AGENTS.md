@@ -23,6 +23,14 @@ DO NOT send optional commentary
 - provider 的 generation / reasoning / store 选项必须通过 runtime/session 元数据传递，不能只停留在一次性 CLI 参数里。
 - Web 控制台只能复用 session store、queue store、runtime facade 和本地文件事实源；不能维护第二套权威状态。
 
+## Web 控制台前端
+
+- 前端位于 `internal/webconsole/ui/`：原生 ES Modules、无构建步骤，内嵌 Preact + htm（`ui/vendor/`）。改前端前先读 `spec/17-web-console-frontend.md`，模块契约见其 §5.1。
+- 不引入 CDN、npm 运行时依赖、import map、内联脚本或 `eval`；升级 vendor 时同步更新 `ui/vendor/THIRD_PARTY_NOTICES.md` 的版本与 SHA-256。
+- `ui/src/lib/` 只放无 DOM 的纯逻辑并配 `node:test`；只有 `ui/src/state/` 写 store，组件通过 `useStore` 订阅；REST 请求只经过 `lib/api.js`。
+- 界面文案一律走 `t()` / `tx()`，在对应区域词典 `ui/src/i18n/<area>.js` 同时补齐 `zh-CN` 与 `en`；用户输入、模型输出、工具负载、路径、ID 等 durable 原文放在 `translate="no"` 节点，不翻译。
+- 保持 `data-testid` 契约稳定，浏览器验收依赖它。前端资源在 `go build` 时嵌入二进制，改完 UI 要重新构建再做浏览器验证。
+
 ## Runtime Guard 与模型自主性
 
 - 模型是 agent，runtime / tool schema 负责提供能力描述、事实记录和安全边界；不要用 `prompt.go` 或 tool guard 固定审计路线、委派策略、阅读顺序、taskboard 节奏等本应由模型判断的工作流。
@@ -52,6 +60,12 @@ DO NOT send optional commentary
 - 给 Multica gocli runtime 的全局配置应只让任务执行扫描 `./skills`：这是 Multica workspace shared skills 的动态注入目录，成员创建、从 URL 导入或从本地运行时复制后的 skills 都通过这里对 agent 生效。不要默认扫描 `~/.codex/skills`；本地运行时 skills 在复制到 Multica workspace 前是私有来源。
 - `gpt-5.5` 由 aegis-agent 内置 context window 表默认按 `300000 * 4 * 0.85 = 1020000` 字符触发压缩；当远端 Codex `debug models` 显示 `gpt-5.5` 的 `context_window=272000` 且 `effective_context_window_percent=95` 时，若需要与 Codex 精确对齐，gocli 全局配置仍应给 `openai/gpt-5.5` 设置最高优先级覆盖 `runtime.compact.context_profiles.openai/gpt-5.5.input_char_threshold: 1033600`，即 `272000 * 0.95 * 4` 的 v1 字符近似；`hysteresis_delta_chars` 可设为 `258400`。
 - 在远端主机按端口重启或替换服务时，必须先把 `ss` / `lsof` / `pgrep` 输出限定到目标端口或目标命令，再提取 PID；不要对整份监听列表做全局 `sed` / `awk` 取第一个 `pid=`，避免误杀同机其他服务，例如 `coco-sandbox-ui` 的 `:8000` 进程。
+
+## 验证
+
+- 全量：`./test.sh`（gofmt、UI JavaScript 语法、`node --test validation/scripts/*_test.mjs`、Go 测试）；浏览器验收：`npm run test:e2e`。
+- 聚焦：`go test ./internal/<package> -count=1`；`internal/webconsole` 全量约 10 分钟，迭代时用 `-run` 缩小范围。
+- macOS 上 `/tmp`、`/var` 是符号链接，runtime 拒绝经符号链接父目录写入；本地跑 Go 测试时设置 `TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)/"`。
 
 ## Git 纪律
 

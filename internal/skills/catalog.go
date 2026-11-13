@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"aegis-agent/internal/fileutil"
+	"aegis-agent/internal/procutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -192,9 +193,15 @@ func (c *Catalog) TrustedCommandTools(cwd string) []CommandTool {
 	if strings.TrimSpace(cwd) != "" {
 		anchors = append(anchors, cwd)
 	}
-	if processCwd, err := os.Getwd(); err == nil && strings.TrimSpace(processCwd) != "" {
-		anchors = append(anchors, processCwd)
+	// The process working directory is an exclusion anchor. When it cannot be
+	// determined (for example it was removed; darwin getcwd would otherwise
+	// report a stale path), trust no command tools instead of silently
+	// dropping the exclusion.
+	processCwd, err := procutil.Getwd()
+	if err != nil || strings.TrimSpace(processCwd) == "" {
+		return nil
 	}
+	anchors = append(anchors, processCwd)
 	anchorReals := make([]string, 0, len(anchors))
 	for _, anchor := range anchors {
 		real, err := realOrAbs(anchor)
@@ -230,7 +237,7 @@ func pathWithinAny(anchors []string, target string) bool {
 }
 
 func realOrAbs(path string) (string, error) {
-	abs, err := filepath.Abs(path)
+	abs, err := procutil.Abs(path)
 	if err != nil {
 		return "", err
 	}
