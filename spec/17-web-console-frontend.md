@@ -71,7 +71,8 @@ internal/webconsole/ui/
   其他非 `/api/`、非 `/ui/` 的 GET 路径返回 `index.html`，前端将未知路由导向 `/`。
 - 前端使用 History API；会话 URL 可直接打开、刷新和前进/后退。
   打开的 session 不存在时提示一次并回到 `/`，停止对其轮询。
-- `/legacy*`、`/v2-assets/*`、`/shared-assets/*` 不再提供（404）。
+- 已退役前端的路径 `/legacy`、`/v2-assets`、`/shared-assets` 及其子路径（如 `/legacy/`、`/legacy/index.html`）不再提供（404）。
+  匹配按完整路径段进行：仅前缀相同的其他路径（如 `/legacyx`）不属于退役路由，按上条规则返回 `index.html`。
   配置字段 `web.legacy_ui_enabled` 作为已弃用的无效字段继续被解析以兼容旧配置文件，不再出现在 API 与 Settings 中。
 - Host 校验、Basic Auth、安全头、ETag/gzip 与 `Cache-Control: no-cache` 行为不变。
 
@@ -82,7 +83,8 @@ internal/webconsole/ui/
 - 会话数据只来自 `GET /api/sessions/{id}` 及其 `messages` / `context` 子接口；
   加载过的更早消息按 message id 去重合并，后续轮询不得丢弃。
 - 乐观消息、失败草稿与实时 engine 事件只存在于内存；成功请求不产生失败草稿。
-- 实时策略保持 polling-first：活动 session 1.5s、侧栏 overview 2s；页面隐藏时暂停；
+- 实时策略保持 polling-first：活动 session 1.5s、侧栏 overview 2s；页面隐藏时暂停轮询，
+  `/ws` 刷新提示与重连也不再触发 REST 刷新，页面恢复可见时立即刷新一次；
   `/ws` 只作为连接状态与刷新提示（指数退避重连），不承载控制动作。
 - 所有控制动作走 `api.js` 中的 REST 封装；提交中的按钮进入 pending/disabled，防止重复提交。
 
@@ -110,7 +112,8 @@ internal/webconsole/ui/
 - 工作区浏览路径偏好按 `workspace_root + session` 分桶存入 `aegis-agent.workspace-paths.v1`；工作区页通过 `features/workspace/workspace-session.js` 记住最近打开的会话，用于从会话进入时定位其 workdir。
 - 会话摘要（overview、sessions、history）带只读 `title`：Web 适配层从 `messages.jsonl` 头部有界读取首条用户消息并在内存缓存；工作区列表条目带 `size`（普通文件）与 `modified_at`。
 - 会话标题优先使用摘要 DTO 的 `title`；`overview.titles` 只作内存补充（来自本页打开过的会话的首条 prompt），用于摘要尚未带标题的情况。
-- 轮询取回的消息尾部与已加载窗口没有任何重叠时（两次刷新之间新增超过一页），前端用 `before_id` 向前分页补齐缺口（每页 200 条，最多 10 页）；仍补不齐时只保留最新窗口并允许"加载更早"，不会静默丢失消息。会话切换会递增 epoch，过期的刷新或更早分页结果一律丢弃。
+- 轮询取回的消息尾部与已加载窗口没有任何重叠时（两次刷新之间新增超过一页），前端用 `before_id` 向前分页补齐缺口（每页 200 条，最多 10 页）；仍补不齐时只保留最新窗口并允许"加载更早"，不会静默丢失消息。补缺口不阻塞 detail：每次成功刷新都立即应用 detail（状态、计划/目标事实、活动等）；同一次会话访问同时最多只有一个补缺口请求链，期间的刷新只记录最新尾部，补齐后与最新窗口合并（最新尾部仍不重叠时再串行补一次）。会话切换会递增 epoch，过期的刷新、补缺口或更早分页结果一律丢弃。
+- `session.generating` 是独立的"运行活跃"事实：detail 的 `state.status` 为 `running`，或存在活动运行句柄（`lib/send-recovery.js` 的 `detailHasLiveRunHandle`，不含正在释放的 settling 句柄：状态不是 running 且 `state.updated_at` 不早于句柄 `started_at`），或本地已接受的启动/继续及 relay 的 running 提示新于已加载 detail。它不等同于显示状态。
 - 偏好 `sidebarCollapsed`、`inspectorOpen`、`inspectorTab` 持久化到 `aegis-agent.ui-prefs.v1`；语言偏好持久化到 `aegis-agent.locale.v1`。
 
 **订阅与动作**：
@@ -124,7 +127,7 @@ internal/webconsole/ui/
 - `state/dialogs.js`：`confirmDialog({ title, body, confirmLabel, danger })` 返回 `Promise<boolean>`；`promptDialog({ title, label, initialValue, validate })` 返回 `Promise<string|null>`。
 - `state/selectors.js`：`currentDisplayStatus`、`currentSessionTitle`（返回 `{ text, raw }`，`raw` 为 true 时放入 `translate="no"`）、`canStopSession`、`canInterruptSession`。
 - `state/session-actions.js` 由会话、审批、目标的 feature 实现，函数名不可更改：`submitComposer`、`startRun`、`continueRun`、`steerRun`、`stopRun`、`interruptRun`、`approvePlan`、`revisePlan`、`cancelPlan`、`answerPlanInput`、`createGoal`、`updateGoal`、`pauseGoal`、`resumeGoal`、`completeGoal`、`clearGoal`、`restoreFailedDraft`、`discardFailedDraft`。所有请求必须经过 `lib/api.js`；提交期间把 `composer.submitting` 设为 true。
-- 轮询（`state/polling.js`）：会话详情每 1.5s、overview 每 2s。页面隐藏时暂停；只在以下情况下轮询：生成中、当前进程持有句柄、存在活动子任务、实时通道未连接、侧栏有运行中的会话。WebSocket（`state/relay.js`）只提供刷新提示，采用指数退避重连；收到格式错误的消息时提示一次，不抛错。
+- 轮询（`state/polling.js`）：会话详情每 1.5s、overview 每 2s。页面隐藏时暂停（`state/actions.js` 的 `queueRefresh` 同样在隐藏时不触发 relay 刷新）；只在以下情况下轮询：生成中、当前进程持有句柄、存在活动子任务、实时通道未连接、侧栏有运行中的会话。WebSocket（`state/relay.js`）只提供刷新提示，采用指数退避重连；收到格式错误的消息时提示一次，不抛错。
 
 **布局与组件**：
 
@@ -142,7 +145,7 @@ internal/webconsole/ui/
 - 词典按区域拆分：每个区域文件 `src/i18n/<area>.js` 导出 `{ 'zh-CN': {...}, en: {...} }`，可选 `prefixes` 声明该区域拥有的 lib 键族（例如 session 拥有 `step.`、`activity.`，composer 拥有 `send.`、`approval.`，inspector 拥有 `event.`、`timeline.`）。区域包括 common、shell、session、composer、inspector、history、skills、workspace、settings。键必须以 `<area>.` 或所声明前缀开头，前缀不得跨区域重叠，两种语言键集与占位符一致。`src/i18n/index.js` 负责合并，遇到重复键时报错。
 - lib 模块返回 `{ key, params }` 描述对象，由 `lib/i18n.js` 的 `tx()` 渲染：键缺失时回退 `params.fallback`；`status.*` 别名到 `common.status.*`。每个 lib 模块头部列出其输出的全部键，`validation/scripts/ui_i18n_*_keys_test.mjs` 校验各区域覆盖。
 - `lib/html.js` 的元素工厂把字符串 `translate` 规范化为布尔值，保证 `translate="no"` 真正渲染为 `translate="no"`。
-- 样式文件中，`tokens.css`、`base.css`、`components.css`、`layout.css` 由基础层拥有；`session.css`、`composer.css`、`inspector.css`、`pages.css` 由对应 feature 拥有。`app.css` 按上述顺序 `@import` 这些文件。点击目标尺寸使用 `var(--hit)`：精确指针下为 32px，粗指针或宽度 ≤768px 时为 44px。
+- 样式文件中，`tokens.css`、`base.css`、`components.css`、`layout.css` 由基础层拥有；`session.css`、`composer.css`、`inspector.css`、`pages.css`、`workspace.css`、`settings.css` 由对应 feature 拥有（后两者属于工作区页与设置页）。`app.css` 按上述顺序 `@import` 这十个文件。点击目标尺寸使用 `var(--hit)`：精确指针下为 32px，粗指针或宽度 ≤768px 时为 44px。
 
 **测试 id**：`sidebar`、`sidebar-drawer`、`session-list`、`session-row`（带 `data-session-id` 和 `data-status`）、`session-search`、`new-session`、`connection-status`、`topbar`、`session-title`、`status-badge`、`session-actions`、`inspector-toggle`、`language-toggle`、`session-view`、`empty-session`、`starter-suggestion`、`message`（带 `data-role`）、`tool-step`、`composer`、`composer-input`、`send-button`、`stop-button`、`approval-card`、`plan-input-card`、`goal-banner`、`failed-drafts`、`todo-strip`、`load-earlier`、`back-to-latest`、`inspector`、`inspector-tab-<id>`、`command-palette`、`command-palette-input`、`shortcut-help`、`confirm-dialog`、`prompt-dialog`、`toast`、`page-<sessions|skills|workspace|settings>`、`nav-<route>`、`session-group-toggle`、`topbar-palette`、`topbar-page-title`、`inspector-tab-loading`、`inspector-goal-goto-approval`。各 feature 的细粒度测试 id 以组件源码为准，浏览器验收只依赖本列表与各页面根 id。
 
@@ -182,8 +185,10 @@ internal/webconsole/ui/
 - 工具行：Goal 与 Plan 切换（仅在可 start/continue 时出现）、运行中的"打断当前步骤"开关、
   provider/model 选择（仅新会话与 continue 时可改，默认继承）。
 - 主按钮：空闲时为发送；运行中输入为空时变为停止，有内容时为追加指令（steer）。
-  只有已加载 detail 的 `state.status` 为 `running` 且有活动运行事实（本地 generating 或活动句柄）时才路由为追加指令；
-  启动窗口（已接受的 start 尚未加载 detail，或已有活动标记/句柄而状态尚未进入 running）显示禁用的“启动中…”，不发送注定被拒绝的请求。
+  路由与服务端一致：服务端只要 durable `state.status` 为 `running` 就接受 steer（不区分句柄归属），因此已加载 detail 为 `running` 时路由为追加指令（包括无句柄的孤儿 running）。
+  启动窗口优先于 continue 判断：已接受的 start 尚未加载 detail，或已有活动句柄（不含 settling 句柄）/活动标记（`session.generating`）而状态尚未进入 `running`
+  （包括 continue、批准、修订计划或 completed root 追问被接受后的 paused / awaiting_input / completed / 计划待批准状态）时，显示禁用的“启动中…”，不发送注定被拒绝的请求；
+  此时顶栏显示运行中，不闪现“已完成”。已结束运行的 settling 句柄不阻止 continue（服务端会等待句柄释放后接受）。
 - Enter 发送，Shift+Enter 换行，输入法组合输入期间不发送。
 - 失败草稿以卡片显示在 Composer 上方，标注原 session，并区分"被拒绝"和"未确认是否送达"；
   只有在当前输入为空时才能恢复草稿，不自动重发。

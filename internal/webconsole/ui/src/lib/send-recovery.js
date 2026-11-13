@@ -37,6 +37,8 @@
  *   kind.start | kind.continue | kind.steer | kind.revise   send kind labels
  */
 
+import { sessionHandleIsSettling } from './status.js';
+
 /** Allowed send kinds. */
 export const SEND_KINDS = Object.freeze(['start', 'continue', 'steer', 'revise']);
 
@@ -79,30 +81,47 @@ export function sameSessionRef(a, b) {
 const LAUNCH_STATUSES = Object.freeze(['', 'queued', 'pending']);
 
 /**
- * Whether a composer send may steer the open session (spec/17-web-console.md
- * §7.7, §8.2). The server accepts steer only while the durable state.status
- * is 'running', so the decision uses the loaded detail facts: a running state
- * plus a known live run (the local generating flag or a live active handle).
- * A live flag or handle without a running state is the launch window
- * ('starting': show a disabled "Starting…" composer instead of a send that the
- * server refuses); anything else is not steerable ('none').
+ * How a composer send relates to the open run (spec/17-web-console.md §7.6,
+ * §7.7, §8.2; spec/17-web-console-frontend.md §7.2). Mirrors the server:
+ *   - Runner.Steer accepts a steer exactly while the durable state.status is
+ *     'running' (any owner, with or without a handle): 'steer'.
+ *   - A live run handle (detailHasLiveRunHandle: not merely settling) on any
+ *     other status is the launch window: the run has not claimed the session
+ *     yet, so the server refuses both steer and a second continue/approve/
+ *     revise until the state is 'running': 'starting'.
+ *   - The live marker (session.generating: an accepted local launch or a relay
+ *     'running' hint newer than the loaded detail) on a launch or continuable
+ *     status is the same window: 'starting'.
+ *   - Anything else: 'none' (callers then route continuable statuses to
+ *     continue). Callers must check this BEFORE the continuable check.
  * @param {{status?: string, generating?: boolean, liveHandle?: boolean}} facts
  * @returns {'steer'|'starting'|'none'}
  */
 export function steerReadiness({ status = '', generating = false, liveHandle = false } = {}) {
-  const live = Boolean(generating) || Boolean(liveHandle);
   const value = str(status).trim().toLowerCase();
-  if (value === 'running') return live ? 'steer' : 'none';
-  return live && LAUNCH_STATUSES.includes(value) ? 'starting' : 'none';
+  if (value === 'running') return 'steer';
+  if (liveHandle) return 'starting';
+  if (generating && (LAUNCH_STATUSES.includes(value) || CONTINUABLE_STATUSES.includes(value))) return 'starting';
+  return 'none';
 }
 
 /**
  * True when the session detail reports a live run handle: one owned by this
- * server process, or a running session owned by another live process.
+ * server process that is not merely settling (status.js
+ * sessionHandleIsSettling), or a running session owned by another live process.
  */
 export function detailHasLiveRunHandle(detail) {
+  if (sessionHandleIsSettling(detail)) return false;
   const owner = str(detail?.active_handle_owner?.state);
   return detail?.active_handle === true || owner === 'current_process' || owner === 'running_not_owned';
+}
+
+/**
+ * The session.generating fact a detail implies: the durable state is running
+ * or a live run handle exists (a starting run counts as live).
+ */
+export function detailRunIsLive(detail) {
+  return str(detail?.state?.status).trim().toLowerCase() === 'running' || detailHasLiveRunHandle(detail);
 }
 
 /** True for POST /api/sessions/start|continue async 202 responses. */
@@ -129,13 +148,15 @@ export function resolveSendRoute(ctx = {}) {
   if (ctx.launchInFlight && !durable) {
     return { ok: false, reason: 'launchInFlight', notice: { key: 'send.launchInFlight', tone: 'info' } };
   }
-  const status = str(ctx.status).toLowerCase();
-  const routesToContinue = durable && CONTINUABLE_STATUSES.includes(status);
-  const readiness = durable && !routesToContinue ? steerReadiness({ status, generating: ctx.generating, liveHandle: ctx.liveHandle }) : 'none';
-  const routesToSteer = readiness === 'steer';
+  const status = str(ctx.status).trim().toLowerCase();
+  // The launch window outranks the continuable check: a continuable status with
+  // a live handle or marker is a launch the server has not started yet.
+  const readiness = durable ? steerReadiness({ status, generating: ctx.generating, liveHandle: ctx.liveHandle }) : 'none';
   if (readiness === 'starting') {
     return { ok: false, reason: 'starting', notice: { key: 'send.starting', tone: 'info' } };
   }
+  const routesToSteer = readiness === 'steer';
+  const routesToContinue = durable && !routesToSteer && CONTINUABLE_STATUSES.includes(status);
   if (durable && !routesToContinue && !routesToSteer) {
     return { ok: false, reason: 'notReady', notice: { key: 'send.notReady', tone: 'error' } };
   }

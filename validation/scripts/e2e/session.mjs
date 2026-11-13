@@ -169,16 +169,11 @@ export async function runSession(h) {
     await tid(page, 'inspector-context-refresh').click();
     await page.waitForFunction(() => !document.querySelector('[data-testid="inspector-context-refresh"]')?.disabled);
     assert.equal(contextRequests.length, 2, 'refresh issues exactly one more request');
-    const refreshedAt = await storeState(page, 'session.lastRefreshedAt');
     await openInspectorTab(page, 'tasks');
     await openInspectorTab(page, 'context');
     await panel.getByText('根会话峰值', { exact: true }).waitFor();
-    // Without a detail refresh in between, switching back reuses the loaded context.
-    if (refreshedAt === await storeState(page, 'session.lastRefreshedAt') && contextRequests.length !== 2) {
-      assert.equal(contextRequests.length, 3, 'at most one extra request');
-      const shot = await h.capture(page, 'session-context-refetch-zh-desktop', { audit: false });
-      h.reportKnownBug('context-refetch-on-tab-switch', 'inspector Context: switching back reuses the loaded context', 'Tasks → Context re-requested /context without a detail change', shot);
-    }
+    // Reuse is per session visit (spec/17-web-console.md §7.4.1), whatever detail refreshes happened meanwhile.
+    assert.equal(contextRequests.length, 2, 'switching back to Context reuses the loaded report');
   }, { page });
   await h.capture(page, 'session-context-zh-desktop');
   await h.check('inspector Context in English restores every operator label', async () => {

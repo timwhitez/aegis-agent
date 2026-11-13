@@ -3,7 +3,7 @@ import * as api from '../lib/api.js';
 import { t, toggleLocale as toggleLocaleCore } from '../lib/i18n.js';
 import { sessionDetailDisplayStatus, sessionSummaryDisplayStatus } from '../lib/status.js';
 import { bridgeMessageGap, firstPromptFromMessages, mergeMessageWindows, rootSessions, windowsDisjoint } from '../lib/session-list.js';
-import { isLocalActivitySettled } from '../lib/send-recovery.js';
+import { detailRunIsLive, isLocalActivitySettled } from '../lib/send-recovery.js';
 import { relayHints } from './relay.js';
 import { emptyComposerSlice, emptySessionSlice, getState, update } from './store.js';
 import { navigate, sessionPath } from './router.js';
@@ -19,6 +19,8 @@ let appliedSessionSeq = 0;
 // Bumped whenever the session slice is recreated (route switch) so late
 // responses for an earlier visit of the same session cannot merge into it.
 let sessionEpoch = 0;
+// The one in-flight message-gap bridge { id, epoch, tail, done } (at most one per session visit).
+let gapBridge = null;
 const GAP_PAGE_LIMIT = 200;
 const GAP_MAX_PAGES = 10;
 let overviewRequestSeq = 0;
@@ -83,13 +85,19 @@ export function handleMissingSession(id) {
   }
 }
 
-/** GET /api/sessions/{id}?limit=40 and merge the message tail into the window. */
+/**
+ * GET /api/sessions/{id}?limit=40: applies the detail (status, plan/goal facts,
+ * live activity) right away and merges the message tail into the window. A tail
+ * that shares no id with the window opens a gap bridge (see startGapBridge)
+ * instead of holding the detail back.
+ */
 export async function refreshSession({ silent = false } = {}) {
   const { session } = getState();
   const id = session.id;
   if (!id || session.missing) return null;
   const seq = ++sessionRequestSeq;
   const epoch = sessionEpoch;
+  const requestedAt = Date.now();
   const isStale = () => getState().session.id !== id || epoch !== sessionEpoch || seq < appliedSessionSeq;
   update('session', { refreshing: true });
   try {
@@ -97,44 +105,31 @@ export async function refreshSession({ silent = false } = {}) {
     if (isStale()) return null;
     appliedSessionSeq = seq;
     const tail = detail?.messages || [];
-    let current = getState().session;
-    let messages;
-    let hasMoreEarlier;
-    let earlierLoaded = current.earlierLoaded;
-    if (windowsDisjoint(current.messages, tail)) {
+    const current = getState().session;
+    let { messages, hasMoreEarlier } = current;
+    const bridge = activeGapBridge(id, epoch);
+    if (bridge) {
+      // A bridge is already closing the gap: it merges this newer tail when it resolves.
+      bridge.tail = tail;
+    } else if (windowsDisjoint(current.messages, tail)) {
       // More messages arrived than one tail holds (e.g. a hidden tab during a
       // long run): page backwards to close the gap instead of hiding it.
-      const bridge = await bridgeMessageGap({
-        known: current.messages,
-        tail,
-        fetchPage: (beforeId) => api.getSessionMessages(id, { beforeId, limit: GAP_PAGE_LIMIT }),
-        maxPages: GAP_MAX_PAGES,
-      });
-      if (getState().session.id !== id || epoch !== sessionEpoch || seq < appliedSessionSeq) return null;
-      current = getState().session;
-      if (bridge.bridged && !bridge.reachedStart) {
-        messages = mergeMessageWindows(current.messages, bridge.messages);
-        hasMoreEarlier = current.hasMoreEarlier;
-      } else {
-        messages = bridge.messages;
-        hasMoreEarlier = !bridge.reachedStart;
-        earlierLoaded = false;
-      }
+      startGapBridge(id, epoch, current.messages, tail);
     } else {
       messages = mergeMessageWindows(current.messages, tail);
-      hasMoreEarlier = current.messages.length === 0 && !current.earlierLoaded
-        ? Boolean(detail?.has_more_messages)
-        : current.hasMoreEarlier;
+      if (current.messages.length === 0 && !current.earlierLoaded) hasMoreEarlier = Boolean(detail?.has_more_messages);
     }
-    const displayStatus = sessionDetailDisplayStatus(detail);
-    const generating = displayStatus === 'running';
+    // generating is its own fact: the detail's live run (running state or live
+    // handle), or an accepted local launch newer than this detail's request.
+    const detailLive = detailRunIsLive(detail);
+    const launchPending = !detailLive && current.generating && current.activity?.kind !== 'steer' && Number(current.activity?.at || 0) > requestedAt;
+    const generating = detailLive || launchPending;
     // Local send feedback ends once the run settled after it (or it aged out).
     const activity = current.activity && isLocalActivitySettled(current.activity, { detail, generating }) ? null : current.activity;
     update('session', {
       detail,
       messages,
       hasMoreEarlier,
-      earlierLoaded,
       loading: false,
       refreshing: false,
       error: null,
@@ -143,7 +138,7 @@ export async function refreshSession({ silent = false } = {}) {
       lastRefreshedAt: Date.now(),
     });
     learnSessionTitle(id, messages, hasMoreEarlier);
-    reconcileOverviewStatus(id, displayStatus);
+    reconcileOverviewStatus(id, sessionDetailDisplayStatus(detail));
     return detail;
   } catch (error) {
     // An older request that failed after a newer one succeeded must not mark fresh data as failed.
@@ -156,6 +151,59 @@ export async function refreshSession({ silent = false } = {}) {
     if (!silent) toastError(error, 'shell.session.loadFailed');
     return null;
   }
+}
+
+function activeGapBridge(id, epoch) {
+  return gapBridge && gapBridge.id === id && gapBridge.epoch === epoch ? gapBridge : null;
+}
+
+/**
+ * Starts the single gap bridge of this session visit: pages backwards from
+ * `tail` until it meets `known` (lib/session-list.js bridgeMessageGap).
+ * Refreshes during the bridge keep applying their detail and only record their
+ * newer tail in bridge.tail.
+ */
+function startGapBridge(id, epoch, known, tail) {
+  const bridge = { id, epoch, tail };
+  gapBridge = bridge;
+  bridge.done = runGapBridge(bridge, known, tail);
+  return bridge;
+}
+
+async function runGapBridge(bridge, known, tail) {
+  let result = null;
+  try {
+    result = await bridgeMessageGap({
+      known,
+      tail,
+      fetchPage: (beforeId) => api.getSessionMessages(bridge.id, { beforeId, limit: GAP_PAGE_LIMIT }),
+      maxPages: GAP_MAX_PAGES,
+    });
+  } catch {
+    // Paging failed: the next refresh that still sees the gap starts a new bridge.
+  }
+  if (gapBridge === bridge) gapBridge = null;
+  const current = getState().session;
+  if (!result || current.id !== bridge.id || bridge.epoch !== sessionEpoch) return;
+  let messages;
+  let { hasMoreEarlier, earlierLoaded } = current;
+  if (result.bridged && !result.reachedStart) {
+    // The latest window (with any earlier page loaded meanwhile) + the gap + the bridged tail.
+    messages = mergeMessageWindows(current.messages, result.messages);
+  } else {
+    // History start reached (the fetched history is complete) or the gap is too
+    // large: keep the newest window; older messages stay behind "load earlier".
+    messages = result.messages;
+    hasMoreEarlier = !result.reachedStart;
+    earlierLoaded = false;
+  }
+  const newest = bridge.tail;
+  const chained = windowsDisjoint(messages, newest);
+  if (!chained) messages = mergeMessageWindows(messages, newest);
+  update('session', { messages, hasMoreEarlier, earlierLoaded });
+  learnSessionTitle(bridge.id, messages, hasMoreEarlier);
+  // Even the newest tail outran the bridge: close that gap too (still one bridge at a time).
+  if (chained) startGapBridge(bridge.id, bridge.epoch, messages, newest);
 }
 
 /**
@@ -230,11 +278,17 @@ export async function refreshMeta() {
   }
 }
 
-/** Debounced refresh used by relay hints. */
+/**
+ * Debounced refresh used by relay hints and relay reconnects. Paused while the
+ * page is hidden (spec/17-web-console-frontend.md §5): main.js refreshes the
+ * overview and the open session when the page becomes visible again.
+ */
 export function queueRefresh(channel, delay) {
+  if (!getState().connection.pageVisible) return;
   if (pendingRefresh[channel]) clearTimeout(pendingRefresh[channel]);
   pendingRefresh[channel] = setTimeout(() => {
     pendingRefresh[channel] = null;
+    if (!getState().connection.pageVisible) return;
     if (channel === 'session') refreshSession({ silent: true });
     else refreshOverview({ silent: true });
   }, delay);
@@ -273,6 +327,11 @@ export function reportMalformedRelayFrame() {
 
 export function setPageVisible(visible) {
   update('connection', { pageVisible: Boolean(visible) });
+  if (visible) return;
+  for (const channel of Object.keys(pendingRefresh)) {
+    if (pendingRefresh[channel]) clearTimeout(pendingRefresh[channel]);
+    pendingRefresh[channel] = null;
+  }
 }
 
 export function setOnline(online) {

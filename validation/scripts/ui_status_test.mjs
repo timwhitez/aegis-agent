@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  isAttentionStatus, planModeActionDisplayStatus, sessionDetailDisplayStatus, sessionDetailHasActiveDescendants,
-  sessionHasCurrentProcessHandle, sessionHasDirectControl, sessionSummaryDisplayStatus, statusLabelKey, statusTone,
+  handleStartedNoLaterThanState, isAttentionStatus, planModeActionDisplayStatus, sessionDetailDisplayStatus, sessionDetailHasActiveDescendants,
+  sessionHandleIsSettling, sessionHasCurrentProcessHandle, sessionHasDirectControl, sessionSummaryDisplayStatus, statusLabelKey, statusTone,
 } from '../../internal/webconsole/ui/src/lib/status.js';
 
 test('plan-mode actions outrank the runtime status', () => {
@@ -15,15 +15,31 @@ test('plan-mode actions outrank the runtime status', () => {
   assert.equal(sessionSummaryDisplayStatus({}), 'unknown');
 });
 
-test('a current-process handle means running unless completed', () => {
+test('a live current-process handle means running unless it is only settling', () => {
   assert.equal(sessionDetailDisplayStatus({ state: { status: 'paused' }, active_handle: true }), 'running');
   assert.equal(sessionDetailDisplayStatus({ state: { status: 'awaiting_input' }, active_handle_owner: { owned_by_current_process: true } }), 'running');
-  assert.equal(sessionDetailDisplayStatus({ state: { status: 'completed' }, active_handle: true }), 'completed');
+  // The server prunes settled handles of completed sessions, so a handle on a
+  // completed root is its accepted follow-up: no "completed" flash while it starts.
+  assert.equal(sessionDetailDisplayStatus({ state: { status: 'completed', updated_at: '2026-11-13T12:00:00Z' }, active_handle: true, active_handle_owner: { state: 'current_process', owned_by_current_process: true, started_at: '2026-11-13T12:00:01Z' } }), 'running');
+  // Settling: the run wrote its final state after the handle started; the release is pending.
+  const settling = { state: { status: 'awaiting_input', updated_at: '2026-11-13T12:00:05.5Z' }, active_handle: true, active_handle_owner: { state: 'current_process', owned_by_current_process: true, started_at: '2026-11-13T12:00:01Z' } };
+  assert.equal(sessionHandleIsSettling(settling), true);
+  assert.equal(sessionDetailDisplayStatus(settling), 'awaiting_input');
+  assert.equal(sessionHandleIsSettling({ ...settling, state: { ...settling.state, status: 'running' } }), false, 'a running state is never settling');
   assert.equal(sessionDetailDisplayStatus({ state: { status: 'failed' } }), 'failed');
   assert.equal(sessionDetailDisplayStatus(null), 'unknown');
   assert.equal(sessionHasCurrentProcessHandle({ active_handle: false, active_handle_owner: { owned_by_current_process: false } }), false);
   assert.equal(sessionHasDirectControl({ active_handle: true, active_handle_owner: { owned_by_current_process: false } }), false);
   assert.equal(sessionHasDirectControl({ active_handle: true, active_handle_owner: { owned_by_current_process: true } }), true);
+});
+
+test('handleStartedNoLaterThanState mirrors the server comparison with nanosecond precision', () => {
+  assert.equal(handleStartedNoLaterThanState('2026-11-13T12:00:00.123456789Z', '2026-11-13T12:00:00.1234568Z'), true);
+  assert.equal(handleStartedNoLaterThanState('2026-11-13T12:00:00.1234568Z', '2026-11-13T12:00:00.123456789Z'), false, 'same millisecond, later nanoseconds');
+  assert.equal(handleStartedNoLaterThanState('2026-11-13T12:00:00Z', '2026-11-13T12:00:00Z'), true, 'equal times');
+  assert.equal(handleStartedNoLaterThanState('2026-11-13T20:00:00+08:00', '2026-11-13T12:00:00.5Z'), true, 'offsets');
+  assert.equal(handleStartedNoLaterThanState('', '2026-11-13T12:00:00Z'), false, 'missing start time');
+  assert.equal(handleStartedNoLaterThanState('2026-11-13T12:00:00Z', 'not-a-time'), false, 'unparseable state time');
 });
 
 test('active descendants are queued/pending/running children or jobs', () => {

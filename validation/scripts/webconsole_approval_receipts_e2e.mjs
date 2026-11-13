@@ -658,32 +658,18 @@ async function legacyRecovery(env) {
   const freshTarget = await displayedTarget(a);
   assert.equal(freshTarget.plan_version, linkedReview.plan_mode.plan_version + 1);
   assert.notEqual(freshTarget.expected_revision, linkedReview.plan_mode.approval_revision);
-  // Expected: approving the newly reviewed target starts a new operation in this browser.
-  let approver = a;
+  // Approving the newly reviewed target starts a new operation in this browser.
   const postsBefore = linkedTraffic.posts.length;
   const queriesBefore = linkedTraffic.queries.length;
-  const pendingA = nextPost(a, h, linked, 'planmode/approve');
+  const accepted = nextPost(a, h, linked, 'planmode/approve');
+  accepted.catch(() => {});
   await clickApprove(h, a);
   const outcome = await h.until(async () => {
     if (linkedTraffic.posts.length > postsBefore) return 'posted';
     if (linkedTraffic.queries.length > queriesBefore && !(await storeState(a, 'session.pendingAction'))) return 'rechecked-old-id';
     return null;
-  }, 'Approve on the fresh target either posts or re-checks', 30000, 50);
-  let accepted;
-  if (outcome === 'posted') {
-    accepted = pendingA;
-  } else {
-    assert.equal(linkedTraffic.queries.at(-1).id, uiRequest.approval_request_id, 'only the refused request id was re-checked');
-    const shot = await h.capture(a, 'approval-receipts-recovery-blocks-new-target-' + env.suffix, { audit: false });
-    h.reportKnownBug('approval-recovery-intent-blocks-new-target', 'approval receipts: a newly reviewed target after a refused linked legacy approval starts a new operation (' + env.suffix + ')',
-      'Approve re-checked ' + uiRequest.approval_request_id + ' instead of posting the reviewed v' + freshTarget.plan_version, shot);
-    // Server-side contract through the independent client B (its own storage).
-    approver = env.b;
-    await openApproval(approver, linked);
-    assert.deepEqual(await displayedTarget(approver), freshTarget);
-    accepted = nextPost(approver, h, linked, 'planmode/approve');
-    await clickApprove(h, approver);
-  }
+  }, 'Approve on the fresh target posts', 30000, 50);
+  assert.equal(outcome, 'posted', 'Approve on the reviewed v' + freshTarget.plan_version + ' posts a new operation instead of re-checking ' + uiRequest.approval_request_id);
   const response = await accepted;
   assert.equal(response.status(), 202, await response.text());
   const freshRequest = response.request().postDataJSON();
@@ -697,10 +683,10 @@ async function legacyRecovery(env) {
   assert.equal(ledger.requests[uiRequest.approval_request_id], undefined);
   assert.equal(await providerCalls(h, linked), linkedBefore + 5);
   const linkedExecution = await providerExecution(h, linked, linkedSettled, linkedBefore, FIVE_TOOLS);
-  assert.equal(linkedTraffic.posts.length, approver === a ? 2 : 1, 'the refused request never retries automatically');
+  assert.equal(linkedTraffic.posts.length, 2, 'the refused request never retries automatically');
   linkedTraffic.dispose();
-  await assertNotGenerating(h, approver);
-  await assertNotice(approver, locale, freshRequest.approval_request_id);
+  await assertNotGenerating(h, a);
+  await assertNotice(a, locale, freshRequest.approval_request_id);
   return { session_id: id, linked_session_id: linked, linked_refused_request_id: uiRequest.approval_request_id,
     linked_fresh_request_id: freshRequest.approval_request_id, linked_execution: linkedExecution,
     provider_delta: { legacy_approval: 0, explicit_ordinary_continue: 1, linked_refused_approval: 0, linked_api_fact_repair: 0, linked_fresh_target_admission: 5 },

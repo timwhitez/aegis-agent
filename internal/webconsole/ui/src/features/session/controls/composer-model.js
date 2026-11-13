@@ -10,11 +10,14 @@ const lower = (value) => String(value || '').trim().toLowerCase();
 
 /**
  * composerMode(state) -> { kind: 'start'|'continue'|'steer'|'revise'|'starting'|'loading'|'blocked', … }
- * kind follows resolveSendRoute: continuable status first, then a live run
- * (steer only while the loaded state is 'running', send-recovery.js
- * steerReadiness). 'starting' is the launch window: an accepted start whose
- * detail has not loaded yet, or a live run that has not reached the running
- * state; the composer is disabled instead of offering a send the server refuses.
+ * kind follows resolveSendRoute (send-recovery.js steerReadiness): steer while
+ * the loaded state is 'running' (the server's steer rule), then the launch
+ * window, then continuable statuses. 'starting' is the launch window: an
+ * accepted start whose detail has not loaded yet, or a live run handle/marker
+ * whose state has not reached 'running' (also on paused/awaiting_input/
+ * completed or a plan awaiting approval right after an accepted continue,
+ * approve or revise); the composer is disabled instead of offering a send the
+ * server refuses.
  */
 export function composerMode(state) {
   const isNew = state.route.name !== 'session';
@@ -26,10 +29,11 @@ export function composerMode(state) {
   let kind;
   if (isNew) kind = 'start';
   else if (!detail) kind = launching ? 'starting' : 'loading';
-  else if (CONTINUABLE_STATUSES.includes(status)) kind = planStatus === 'awaiting_approval' ? 'revise' : 'continue';
   else {
     const readiness = steerReadiness({ status, generating, liveHandle: detailHasLiveRunHandle(detail) });
-    kind = readiness === 'steer' ? 'steer' : readiness === 'starting' ? 'starting' : 'blocked';
+    if (readiness !== 'none') kind = readiness;
+    else if (CONTINUABLE_STATUSES.includes(status)) kind = planStatus === 'awaiting_approval' ? 'revise' : 'continue';
+    else kind = 'blocked';
   }
   const planPending = PENDING_PLAN_STATUSES.includes(planStatus);
   return {

@@ -42,6 +42,48 @@ test('launch window: the composer shows "starting" (disabled) until the run is r
   assert.equal(launching.canInterrupt, false);
 });
 
+// Detail as GET /api/sessions/{id} reports it right after an accepted continue/approve/revise/follow-up
+// (handle started after the last state write) or while the finished run's handle is settling.
+function handleState(status, { planStatus = '', settling = false, generating = false } = {}) {
+  const base = state({ status, planStatus, generating });
+  const startedAt = settling ? '2026-11-13T12:00:00Z' : '2026-11-13T12:00:09Z';
+  base.session.detail = {
+    ...base.session.detail,
+    state: { status, updated_at: '2026-11-13T12:00:05Z' },
+    active_handle: true,
+    active_handle_owner: { state: 'current_process', owned_by_current_process: true, started_at: startedAt },
+  };
+  return base;
+}
+
+test('launch window: a live handle on a non-running state is "starting" before the continuable check', () => {
+  for (const status of ['paused', 'awaiting_input', 'completed', 'failed']) {
+    const mode = composerMode(handleState(status));
+    assert.equal(mode.kind, 'starting', status + ' + handle');
+    assert.equal(canSubmit(mode, { text: 'x', submitting: false }), false, status + ' + handle never submits');
+    assert.equal(placeholderKey(mode, {}), 'composer.placeholder.starting');
+    assert.deepEqual([mode.canPlan, mode.canPickModel, mode.canInterrupt], [false, false, false]);
+  }
+  const approving = composerMode(handleState('awaiting_input', { planStatus: 'awaiting_approval' }));
+  assert.equal(approving.kind, 'starting', 'approve/revise accepted: no second revise');
+  // An accepted local launch newer than the loaded detail (no handle in it yet).
+  assert.equal(composerMode(state({ status: 'completed', generating: true })).kind, 'starting');
+  // The settling handle of a finished run: the server accepts the continue (it waits for the release).
+  assert.equal(composerMode(handleState('awaiting_input', { settling: true })).kind, 'continue');
+  assert.equal(composerMode(handleState('awaiting_input', { settling: true, planStatus: 'awaiting_approval' })).kind, 'revise');
+  // Once the run claimed the session the same handle steers.
+  assert.equal(composerMode(handleState('running')).kind, 'steer');
+});
+
+test('an orphaned running state steers, as the server accepts steer for any running state', () => {
+  const orphan = composerMode(state({ status: 'running' }));
+  assert.equal(orphan.kind, 'steer');
+  assert.equal(canSubmit(orphan, { text: 'x', submitting: false }), true);
+  const notOwned = state({ status: 'running' });
+  notOwned.session.detail.active_handle_owner = { state: 'running_not_owned', owned_by_current_process: false };
+  assert.equal(composerMode(notOwned).kind, 'steer');
+});
+
 test('toolbar controls only where they apply', () => {
   const start = composerMode(state({ route: 'new' }));
   assert.deepEqual([start.canGoal, start.canPlan, start.canInterrupt, start.canPickModel], [true, true, false, true]);

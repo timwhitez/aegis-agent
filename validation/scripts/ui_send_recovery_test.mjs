@@ -6,6 +6,7 @@ import {
   SendRecoveryStore,
   classifySendFailure,
   detailHasLiveRunHandle,
+  detailRunIsLive,
   failedDraftView,
   isAcceptedLaunchResponse,
   isEphemeralSessionId,
@@ -23,6 +24,12 @@ function store() {
   let clock = Date.parse('2026-11-13T00:00:00Z');
   return new SendRecoveryStore({ createId: () => 'req_' + (++serial), now: () => (clock += 1000) });
 }
+
+// Detail with a current-process handle that started after (launch window) or
+// before (settling) the last state write.
+const ownedHandle = (startedAt) => ({ active_handle: true, active_handle_owner: { state: 'current_process', owned_by_current_process: true, started_at: startedAt } });
+const launchDetail = (status) => ({ state: { status, updated_at: '2026-11-13T12:00:00Z' }, ...ownedHandle('2026-11-13T12:00:01.000000001Z') });
+const settlingDetail = (status) => ({ state: { status, updated_at: '2026-11-13T12:00:05Z' }, ...ownedHandle('2026-11-13T12:00:01Z') });
 
 const rawPrompt = '  多行输入 <script>原文</script>\n  第二行  \n';
 const routeContexts = {
@@ -198,9 +205,10 @@ test('ephemeral identities are part of the binding', () => {
 test('route resolution mirrors the composer state machine', () => {
   assert.deepEqual(resolveSendRoute({ rawText: '   ' }), { ok: false, reason: 'empty', notice: null });
   assert.equal(resolveSendRoute({ rawText: 'x', sessionId: '0x1', backed: false, launchInFlight: true }).reason, 'launchInFlight');
-  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'running', generating: false }).reason, 'notReady');
-  // Durable awaiting-input routes to continue even while the handle is tearing down.
-  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'awaiting_input', generating: true }).kind, 'continue');
+  // The server accepts steer whenever the durable state is running (Runner.Steer), handle or not.
+  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'running', generating: false }).kind, 'steer');
+  // Durable awaiting-input routes to continue even while the handle is tearing down (settling).
+  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'awaiting_input', liveHandle: detailHasLiveRunHandle(settlingDetail('awaiting_input')) }).kind, 'continue');
   assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'completed' }).kind, 'continue');
   assert.deepEqual(CONTINUABLE_STATUSES, ['awaiting_input', 'paused', 'failed', 'completed']);
   const steer = resolveSendRoute(routeContexts.steer.rawText ? routeContexts.steer : { ...routeContexts.steer, rawText: 'x' });
@@ -209,13 +217,20 @@ test('route resolution mirrors the composer state machine', () => {
   assert.equal(resolveSendRoute({ ...routeContexts.start, rawText: 'x' }).allowsGoalDraft, true);
 });
 
-test('steer routes only while the durable state is running (launch window is "starting")', () => {
+test('steer routes exactly while the durable state is running; a live handle or marker otherwise means "starting"', () => {
+  // Server rule (runtime Runner.Steer): steer is accepted iff state.status == running, whatever the owner.
   assert.equal(steerReadiness({ status: 'running', generating: true }), 'steer');
   assert.equal(steerReadiness({ status: 'running', liveHandle: true }), 'steer');
-  assert.equal(steerReadiness({ status: 'running' }), 'none', 'a running state without any live run fact is stale');
+  assert.equal(steerReadiness({ status: 'running' }), 'steer', 'an orphaned running state is still accepted by the server');
   for (const status of ['', 'queued', 'pending']) {
     assert.equal(steerReadiness({ status, generating: true }), 'starting', status + ' + generating');
     assert.equal(steerReadiness({ status, liveHandle: true }), 'starting', status + ' + handle');
+    assert.equal(steerReadiness({ status }), 'none');
+  }
+  // Launch window of an accepted continue/approve/revise/follow-up: the handle exists, the state is not running yet.
+  for (const status of ['paused', 'awaiting_input', 'failed', 'completed']) {
+    assert.equal(steerReadiness({ status, liveHandle: true }), 'starting', status + ' + handle');
+    assert.equal(steerReadiness({ status, generating: true }), 'starting', status + ' + accepted local launch');
     assert.equal(steerReadiness({ status }), 'none');
   }
   for (const status of ['cancelled', 'error', 'unknown']) assert.equal(steerReadiness({ status, generating: true }), 'none', status);
@@ -223,12 +238,26 @@ test('steer routes only while the durable state is running (launch window is "st
   assert.equal(detailHasLiveRunHandle({ active_handle: false, active_handle_owner: { state: 'running_not_owned' } }), true);
   assert.equal(detailHasLiveRunHandle({ active_handle: false, active_handle_owner: { state: 'settled' } }), false);
   assert.equal(detailHasLiveRunHandle(null), false);
+  assert.equal(detailHasLiveRunHandle(launchDetail('awaiting_input')), true, 'handle started after the last state write');
+  assert.equal(detailHasLiveRunHandle(settlingDetail('awaiting_input')), false, 'handle started before the final state write');
+  assert.equal(detailRunIsLive({ state: { status: 'running' } }), true);
+  assert.equal(detailRunIsLive(launchDetail('completed')), true);
+  assert.equal(detailRunIsLive(settlingDetail('paused')), false);
+  assert.equal(detailRunIsLive({ state: { status: 'awaiting_input' } }), false);
   const durable = { rawText: 'x', sessionId: 's', backed: true };
   assert.deepEqual(resolveSendRoute({ ...durable, status: 'queued', generating: true }), { ok: false, reason: 'starting', notice: { key: 'send.starting', tone: 'info' } });
   assert.equal(resolveSendRoute({ ...durable, status: '', liveHandle: true }).reason, 'starting');
   assert.equal(resolveSendRoute({ ...durable, status: 'cancelled', generating: true }).reason, 'notReady', 'the local flag alone never steers');
   assert.equal(resolveSendRoute({ ...durable, status: 'running', liveHandle: true }).kind, 'steer');
-  assert.equal(resolveSendRoute({ ...durable, status: 'completed', generating: true }).kind, 'continue', 'continuable states win over a stale flag');
+  assert.equal(resolveSendRoute({ ...durable, status: 'running' }).kind, 'steer', 'orphaned running: the server accepts steer');
+  for (const status of ['paused', 'awaiting_input', 'completed']) {
+    const route = resolveSendRoute({ ...durable, status, liveHandle: detailHasLiveRunHandle(launchDetail(status)) });
+    assert.equal(route.reason, 'starting', status + ' + live handle never sends a continue the server refuses (409)');
+    assert.equal(resolveSendRoute({ ...durable, status, liveHandle: detailHasLiveRunHandle(settlingDetail(status)) }).kind, 'continue', status + ' + settling handle continues (the server waits for the release)');
+  }
+  assert.equal(resolveSendRoute({ ...durable, status: 'awaiting_input', planModeStatus: 'awaiting_approval', liveHandle: true }).reason, 'starting', 'approve/revise accepted: no second revise');
+  assert.equal(resolveSendRoute({ ...durable, status: 'completed', generating: true }).reason, 'starting', 'an accepted local launch newer than the detail');
+  assert.equal(resolveSendRoute({ ...durable, status: 'completed' }).kind, 'continue');
 });
 
 test('success feedback is expressed as keys', () => {
