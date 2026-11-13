@@ -143,7 +143,7 @@ internal/webconsole/ui/
 - `lib/html.js` 的元素工厂把字符串 `translate` 规范化为布尔值，保证 `translate="no"` 真正渲染为 `translate="no"`。
 - 样式文件中，`tokens.css`、`base.css`、`components.css`、`layout.css` 由基础层拥有；`session.css`、`composer.css`、`inspector.css`、`pages.css` 由对应 feature 拥有。`app.css` 按上述顺序 `@import` 这些文件。点击目标尺寸使用 `var(--hit)`：精确指针下为 32px，粗指针或宽度 ≤768px 时为 44px。
 
-**测试 id**：`sidebar`、`sidebar-drawer`、`session-list`、`session-row`（带 `data-session-id` 和 `data-status`）、`session-search`、`new-session`、`connection-status`、`topbar`、`session-title`、`status-badge`、`session-actions`、`inspector-toggle`、`language-toggle`、`session-view`、`empty-session`、`starter-suggestion`、`message`（带 `data-role`）、`tool-step`、`composer`、`composer-input`、`send-button`、`stop-button`、`approval-card`、`plan-input-card`、`goal-banner`、`failed-drafts`、`todo-strip`、`load-earlier`、`back-to-latest`、`inspector`、`inspector-tab-<id>`、`command-palette`、`command-palette-input`、`shortcut-help`、`confirm-dialog`、`prompt-dialog`、`toast`、`page-<sessions|skills|workspace|settings>`、`nav-<route>`。
+**测试 id**：`sidebar`、`sidebar-drawer`、`session-list`、`session-row`（带 `data-session-id` 和 `data-status`）、`session-search`、`new-session`、`connection-status`、`topbar`、`session-title`、`status-badge`、`session-actions`、`inspector-toggle`、`language-toggle`、`session-view`、`empty-session`、`starter-suggestion`、`message`（带 `data-role`）、`tool-step`、`composer`、`composer-input`、`send-button`、`stop-button`、`approval-card`、`plan-input-card`、`goal-banner`、`failed-drafts`、`todo-strip`、`load-earlier`、`back-to-latest`、`inspector`、`inspector-tab-<id>`、`command-palette`、`command-palette-input`、`shortcut-help`、`confirm-dialog`、`prompt-dialog`、`toast`、`page-<sessions|skills|workspace|settings>`、`nav-<route>`、`session-group-toggle`、`topbar-palette`、`topbar-page-title`、`inspector-tab-loading`、`inspector-goal-goto-approval`。各 feature 的细粒度测试 id 以组件源码为准，浏览器验收只依赖本列表与各页面根 id。
 
 ## 6. 信息架构与布局
 
@@ -151,6 +151,8 @@ internal/webconsole/ui/
   会话列表、底部导航（会话管理、技能、工作区、设置）与本地连接状态。
   - 会话列表只列 root session；"进行中/待处理"（running、awaiting_input、待审批、待回答）置顶，
     其余按今天 / 昨天 / 近 7 天 / 更早分组；每行显示标题（首条 prompt 或 agent 名）、状态点与相对时间。
+    每组默认最多显示 6 行，其余通过"显示其余 N 个"展开，当前会话始终可见；搜索结果不受上限限制。
+    当前会话所在行使用与顶栏相同的显示状态，二者不得不一致。
   - 搜索在已加载列表内即时过滤标题、ID 与 workdir；"查看全部"进入会话管理页。
 - **顶栏**：侧栏开关（收起或窄屏时）、会话标题、状态徽标、provider/model、workdir 摘要；
   右侧为会话操作菜单（中断、停止、复制 ID、在会话管理中查看）、检查器开关与 `中文 / EN` 切换。
@@ -205,7 +207,7 @@ internal/webconsole/ui/
 
 - 普通 start / steer / continue / 批准不弹确认；删除、清空历史、覆盖率豁免、保存配置/API key
   等风险动作使用应用内确认对话框（焦点陷阱、Esc 取消、恢复触发焦点）。
-- toast 用于一次性反馈（`aria-live`），对象级错误内联显示并保留后端 `detail/action`。
+- toast 用于一次性反馈（`aria-live`），桌面端位于右上角（顶栏下方，检查器打开时让开），移动端位于顶部居中，最多同时显示 3 条，不得遮挡 Composer、审批卡等主操作；对象级错误（含发送失败）内联显示并保留后端 `detail/action`，不再重复弹 toast。
 
 ## 8. 设计系统
 
