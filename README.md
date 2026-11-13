@@ -42,7 +42,7 @@ features, remote terminals, or a fixed workflow engine.
 
 ## Quick start
 
-Requirements: Go 1.26.10+ on Linux, macOS, or WSL.
+Requirements: Go 1.26.11+ on Linux, macOS, or WSL.
 
 ```sh
 ./build.sh
@@ -150,7 +150,7 @@ remain the source of truth. Details: [CLI and config](./spec/02-cli-and-config.m
 
 ## Development
 
-Validation requires Go 1.26.10+ and Node.js 22+.
+Validation requires Go 1.26.11+ and Node.js 22+.
 
 ```sh
 ./test.sh                                   # gofmt, JS syntax, JS unit tests, Go tests
