@@ -30,11 +30,13 @@ npm run test:e2e
 ```
 
 The browser gate covers Chinese-by-default and persistent English switching,
-light-theme behavior even when the OS requests dark mode, minimum 44px action
-targets, keyboard/modal semantics, session start/continue/steer/interrupt/stop,
-Goal and Plan Mode, Todo/task grouping, workspace CRUD/download, skill package
-install/removal, provider settings probe, legacy rollback enablement, history
-deletion/clear, desktop/mobile layouts, and console/request errors. It writes
+light-theme behavior even when the OS requests dark mode, hit targets (32px for
+fine pointers, 44px on touch/mobile), keyboard/modal semantics, the session
+sidebar, command palette and shortcuts, session start/continue/steer/interrupt/
+stop, Goal and inline Plan Mode approvals/questions/receipts, send recovery,
+Todo/task grouping, workspace CRUD/download, skill package install/removal,
+provider settings probe, history deletion/clear, desktop/mobile layouts, removed
+legacy routes, and console/request errors. It writes
 populated Context screenshots in both locales and exercises Task, Skill, and
 notification raw-fact collisions so fallbacks translate without rewriting
 durable values. The suite writes

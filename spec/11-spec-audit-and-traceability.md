@@ -321,7 +321,7 @@ writer 必须继续被 Store 拒绝。不得用 flock 排队、goroutine 栈或 
 - Web 控制台的后台并发执行必须建立在真实 worker / child session 之上，而不是前端假进度条
 - Web 控制台当前采用 polling-first，不承诺 SSE / WebSocket 作为 v1 前提
 - 高频用户交互默认应简洁：start、steer、continue、Plan approve 不需要层层确认；queue submit 保留在 CLI/API advanced 面；validation coverage override、删除/清理、API key/config 写入、外部暴露服务等风险动作才需要显式确认
-- 默认 operator page 是基于 Agent UI MIT 组件模式二开的 Web Console v2；只复用 chat-first UI 模式，不引入 AgentOS runtime。旧页面默认禁用并仅作为显式配置的回滚入口
+- 默认 operator page 是仓库内维护的模块化前端（内嵌 Preact + htm，无构建步骤），对齐主流 agent 平台的 chat-first 交互；不引入第三方 agent runtime、CDN 或 hosted 依赖。legacy 页面与回滚入口已移除
 
 ### 4.2.2 Multi-agent 工具面的当前产品决策
 

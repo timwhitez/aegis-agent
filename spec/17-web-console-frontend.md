@@ -1,6 +1,6 @@
 # Web Console Frontend (v3)
 
-> 本文档替代 `17-web-console-v2-migration.md`，定义默认 Web 控制台前端的技术架构、模块边界、
+> 本文档取代原 Web Console v2 迁移方案，定义默认 Web 控制台前端的技术架构、模块边界、
 > 信息架构、交互契约、设计系统和验收方式。产品边界、REST/WebSocket 契约与后端行为仍以
 > `17-web-console.md` 为准；两者冲突时先修 spec，再改实现。
 
@@ -49,7 +49,7 @@ internal/webconsole/ui/
       settings-model.js      时长解析、推理选项、配置 payload 构造
       commands.js            命令面板命令注册与模糊匹配
     state/                   store 实例、actions、轮询与 WebSocket relay
-    i18n/                    zh-CN.js、en.js 词典（键值一一对应）
+    i18n/                    按区域拆分的词典（<area>.js 导出 zh-CN 与 en，键一一对应）
     ui/                      通用组件（Button、IconButton、Icon、Badge、Tabs、Dialog、Menu、Toast…）
     shell/                   App、Sidebar、TopBar、CommandPalette、ShortcutHelp、路由视图切换
     features/
@@ -105,6 +105,10 @@ internal/webconsole/ui/
 
 - `error` 字段统一为 `{ message, detail, action, status }`，保留后端的 detail 和 action。
 - `session.messages` 是"更早分页 + 轮询尾部"按 id 去重合并后的窗口（`lib/session-list.js` 的 `mergeMessageWindows`），轮询不会丢弃已加载的更早消息。
+- `session.optimistic` 保存 `SendRecoveryStore` 产生的乐观用户消息，由消息流追加到末尾；`session.approval` 保存当前会话的审批操作展示状态；`session.pendingAction` 标记进行中的控制动作；`session.activity` 是本地动作（启动、继续、追加指令）的即时活动描述，新的 engine 事件或会话收敛后清除。
+- Composer 草稿（文本与 Goal/Plan/打断开关）按会话保存在内存中（`state/composer-drafts.js`），切换回会话时恢复；新会话草稿独立。失败草稿只存在于内存。
+- 工作区浏览路径偏好按 `workspace_root + session` 分桶存入 `aegis-agent.workspace-paths.v1`；工作区页通过 `features/workspace/workspace-session.js` 记住最近打开的会话，用于从会话进入时定位其 workdir。
+- 会话摘要（overview、sessions、history）带只读 `title`：Web 适配层从 `messages.jsonl` 头部有界读取首条用户消息并在内存缓存；工作区列表条目带 `size`（普通文件）与 `modified_at`。
 - `overview.titles` 只保存在内存中，来自打开过的会话的首条 prompt；当前摘要 DTO 没有标题字段。
 - 偏好 `sidebarCollapsed`、`inspectorOpen`、`inspectorTab` 持久化到 `aegis-agent.ui-prefs.v1`；语言偏好持久化到 `aegis-agent.locale.v1`。
 
@@ -134,7 +138,9 @@ internal/webconsole/ui/
 
 **i18n 与样式**：
 
-- 词典按区域拆分，并非 §3 所写的单一 `zh-CN.js` / `en.js`。每个区域文件 `src/i18n/<area>.js` 导出 `{ 'zh-CN': {...}, en: {...} }`，区域包括 common、shell、session、composer、inspector、history、skills、workspace、settings。键必须以 `<area>.` 开头，在两个语言中都存在，且占位符一致。`src/i18n/index.js` 负责合并，遇到重复键时报错。
+- 词典按区域拆分：每个区域文件 `src/i18n/<area>.js` 导出 `{ 'zh-CN': {...}, en: {...} }`，可选 `prefixes` 声明该区域拥有的 lib 键族（例如 session 拥有 `step.`、`activity.`，composer 拥有 `send.`、`approval.`，inspector 拥有 `event.`、`timeline.`）。区域包括 common、shell、session、composer、inspector、history、skills、workspace、settings。键必须以 `<area>.` 或所声明前缀开头，前缀不得跨区域重叠，两种语言键集与占位符一致。`src/i18n/index.js` 负责合并，遇到重复键时报错。
+- lib 模块返回 `{ key, params }` 描述对象，由 `lib/i18n.js` 的 `tx()` 渲染：键缺失时回退 `params.fallback`；`status.*` 别名到 `common.status.*`。每个 lib 模块头部列出其输出的全部键，`validation/scripts/ui_i18n_*_keys_test.mjs` 校验各区域覆盖。
+- `lib/html.js` 的元素工厂把字符串 `translate` 规范化为布尔值，保证 `translate="no"` 真正渲染为 `translate="no"`。
 - 样式文件中，`tokens.css`、`base.css`、`components.css`、`layout.css` 由基础层拥有；`session.css`、`composer.css`、`inspector.css`、`pages.css` 由对应 feature 拥有。`app.css` 按上述顺序 `@import` 这些文件。点击目标尺寸使用 `var(--hit)`：精确指针下为 32px，粗指针或宽度 ≤768px 时为 44px。
 
 **测试 id**：`sidebar`、`sidebar-drawer`、`session-list`、`session-row`（带 `data-session-id` 和 `data-status`）、`session-search`、`new-session`、`connection-status`、`topbar`、`session-title`、`status-badge`、`session-actions`、`inspector-toggle`、`language-toggle`、`session-view`、`empty-session`、`starter-suggestion`、`message`（带 `data-role`）、`tool-step`、`composer`、`composer-input`、`send-button`、`stop-button`、`approval-card`、`plan-input-card`、`goal-banner`、`failed-drafts`、`todo-strip`、`load-earlier`、`back-to-latest`、`inspector`、`inspector-tab-<id>`、`command-palette`、`command-palette-input`、`shortcut-help`、`confirm-dialog`、`prompt-dialog`、`toast`、`page-<sessions|skills|workspace|settings>`、`nav-<route>`。

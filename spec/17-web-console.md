@@ -70,7 +70,7 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 
 ## 4. 信息架构
 
-页面采用单页控制台布局。
+页面采用单页控制台布局。本节给出产品层信息架构要求；当前前端的具体布局（侧栏会话列表、顶栏、内联审批与提问、检查器、命令面板）以 `spec/17-web-console-frontend.md` §6–7 为准。
 
 ### 4.1 顶部栏
 
@@ -89,8 +89,9 @@ Web-first v1 要提供一个完整的本地控制台，而不是只有只读页�
 
 固定区域：
 
-- Session
-- Sessions
+- 新建会话
+- 会话列表（root session，进行中/待处理置顶，其余按日期分组，可搜索）
+- Sessions（会话管理）
 - Skills
 - Workspace
 - Settings
@@ -116,7 +117,7 @@ Session 工作区是新用户的默认落点，展示：
 - 输入区提供一个简单 Goal 开关；普通 prompt 不受影响，选中后用户仍只写 prompt，后端用 prompt 作为 objective，agent 在运行中自行拆分 criteria、validation、features / milestones
 - 输入区提供一个简单 Plan 开关；选中后后端创建 `planmode.json`，规划阶段只允许 read/search、`request_user_input` 和 `submit_plan`，不把普通 prompt 文案自动解释为硬 Plan Mode
 - 输入区不展示 agent name 或 agent role 选择器；默认 session 由 agent 自行决定是否需要后续 role hints / child / queue 委派
-- 最近 session rail：只显示可直接打开的 session 摘要
+- 侧栏会话列表：只显示可直接打开的 root session 摘要（标题取首条 prompt）
 - 中央执行流：消息、工具调用、运行态和错误都在同一条 session timeline 中出现
 - 当前 session 的执行流：消息、工具调用、运行态、错误和 timeline 摘要在同一主视图中出现
 - Queue / child / background 只保留为后端 API、CLI fallback、service tests 与文件事实源能力；默认前端不再提供 Background / Queue tracker、Open job 或 selected job facts 面板
@@ -176,7 +177,7 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 - Goal progress 工具的调用预览、调用正文、结果预览与最新进度卡片必须将模型/用户提供的 summary、kind 和身份值放在独立 raw descendant；固定操作标题、kind label、计数、计划状态及缺失事实时的 fallback 仍参与语言审计，不能翻译原始进度内容或整块跳过卡片。
 - Context inspector 的 heading、metric label、bounded-view copy 与 empty/loading state 属于 operator-owned 文案；deterministic browser acceptance 必须让 populated Context panel 分别保持可见并产出一张 `zh-CN` 和一张 `en` 截图
 - Task/Todo fallback、Skill author prefix 与 background-notification fallback 必须和 durable value 分离成独立 DOM text node；i18n audit 只能跳过显式标记的 raw descendant，不能排除整个 Task/Skill/notification container
-- 高频 button/tab target 至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
+- 高频 button/tab target 在精确指针下至少 `32×32 CSS px`，在粗指针或 ≤768px 视口下至少 `44×44 CSS px`；tabs 提供 `tablist/tab/tabpanel` 语义与键盘激活
 - modal 与移动 inspector 必须 trap focus、Esc 关闭、恢复触发焦点，并让背景不可交互
 - 移动 inspector 每次从关闭状态重新打开时必须把 slide-out 滚动容器复位到顶部，使标题、状态和关闭按钮立即可见；已经打开时的普通 re-render 不得重置用户正在查看的位置
 - 清空历史在任何 queued/running/blocked queue work 或 running session 未收敛时返回 conflict；reaper 状态迁移不能产生允许清理的窗口
@@ -272,15 +273,16 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 
 ### 5.2 设计系统
 
-基于 `ui-ux-pro-max` 的建议，本实现采用：
+设计 tokens 与组件约定见 `spec/17-web-console-frontend.md` §8，要点：
 
-- pattern：session cockpit
+- pattern：chat-first session workspace + 可收起侧栏 + 按需检查器
 - typography：系统字体栈 + 本地 monospace 栈，不依赖外部 font CDN
-- primary accent：蓝色用于主操作、导航聚焦和运行态
-- semantic success：绿色用于完成与健康状态
+- primary action：墨色主按钮，每个界面只有一个主操作
+- brand accent：品牌绿用于焦点、选中与导航高亮
+- semantic：蓝表示运行，绿表示完成，琥珀表示等待/暂停，红表示失败与危险操作
 - neutral：暖灰用于背景、弱分割和信息层级
 
-为避免纯黑压迫感和过密监控墙感，页面使用“暖浅背景 + 白色纸面 + 蓝色主强调 + 语义状态色”的本地控制台风格，而不是全黑监控墙或多边框管理后台。
+页面使用“暖浅背景 + 白色纸面 + 墨色主操作 + 语义状态色”的本地控制台风格，而不是全黑监控墙或多边框管理后台。
 
 ### 5.3 组件要求
 
@@ -289,15 +291,15 @@ Todo 的 `in progress` 数字必须直接统计 todo snapshot 中的 `in_progres
 - 时间线卡片：消息与事件混合流
 - 数据表格：children；queue jobs 只属于 API/CLI/文件事实验证面
 - 摘要卡：session health / recovery / provider options / current focus
-- 过滤工具栏：session rail / timeline 的 search + filter
-- 右侧 action panel：统一提交交互
-- 左侧 session rail：支持快速扫视 status / provider / role / 最近更新时间
+- 过滤工具栏：会话列表 / timeline 的 search + filter
+- 底部 Composer：统一提交交互（发送、追加指令、停止）
+- 左侧会话列表：支持快速扫视标题 / status / 最近更新时间
 - mini action chips：从 queue/children/notification 等卡片直接跳到相关 session
 - Worker pool 不作为默认可见组件
 
 ### 5.4 可访问性
 
-- 所有交互目标至少 44x44
+- 交互目标在精确指针下至少 32×32，在粗指针或 ≤768px 视口下至少 44×44
 - icon-only 按钮必须有 `aria-label`
 - focus ring 可见
 - 颜色对比满足 WCAG AA
@@ -369,14 +371,11 @@ WebConsole 可选 `web.basic_auth` adapter guard：同时配置 `username` 与 b
 - `/ws` 只作为连接状态与可选事件 relay 通道；不得启动、恢复、steer、interrupt 或 stop session；浏览器 WebSocket upgrade 必须拒绝 foreign `Origin`，无 `Origin` 的本地非浏览器 client 可继续用于测试/诊断。
 - `/ws` 收到历史 `{"type":"chat"}` 或 `{"type":"stop"}` 控制消息时必须返回 `WEBSOCKET_CONTROL_DEPRECATED`，且不得创建、继续或修改 session。
 - 后端请求 DTO 使用命名结构体维护；错误响应统一为 `{"error","code","detail","action"}`，其中 `code/detail/action` 可为空但对 `UNKNOWN_PROVIDER`、`ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`WEBSOCKET_CONTROL_DEPRECATED` 必须稳定。
-- 前端 REST payload 构造、统一错误解析和控制面 wrapper 集中在 `api.js`；`app.js` 不应继续手写 WebSocket session-control payload。
-- timeline/event descriptor、event refresh filter 和 live-activity event promotion helper 集中在 `events.js`；`app.js` 只调用这些 helper，不重复维护事件文案映射。
-- Settings view 的 render 与 save handler 集中在 `settings-view.js`；`app.js` 只负责视图切换时调用 `renderSettings()`。
-- Workspace browser render、path normalization 和 file/directory loading helper 集中在 `workspace-view.js`；`app.js` 只负责视图切换时调用 `fetchWorkspace()`。
-- Workspace 当前浏览目录是 localStorage 中的纯 UI preference，按 `workspace_root + selected session id` 分桶；new-session composer 使用独立 bucket。普通页面切换、polling 和同一 session detail 刷新只能刷新当前目录，不能把手动浏览路径重新覆盖为 session workdir。首次选中 session、切换 session 或同一 session 的 metadata workdir 真实变化时，`syncWorkspaceToCurrentSession()` 才同步初始目录；已有 bucket preference 优先用于浏览器刷新恢复。持久化路径失效时逐级回退到最近可访问父目录，最后回到 workspace 根，并只提示一次。该 preference 不是 session 执行状态，start/continue 提交的 workdir 仍由后端做 workspace safety 校验。
+- 前端模块边界见 `spec/17-web-console-frontend.md` §3 与 §5.1：REST payload 构造、统一错误解析和控制面 wrapper 集中在 `ui/src/lib/api.js`；timeline/event descriptor、刷新过滤与实时活动派生集中在 `ui/src/lib/session-model.js`；会话控制动作集中在 `ui/src/state/session-actions.js`；Settings 与 Workspace 的纯逻辑分别位于 `ui/src/lib/settings-model.js`、`ui/src/lib/workspace-model.js`。视图组件只订阅 store 并调用这些 action，不手写 WebSocket session-control payload，也不重复维护事件文案映射。
+- Workspace 当前浏览目录是 localStorage 中的纯 UI preference，按 `workspace_root + selected session id` 分桶；new-session composer 使用独立 bucket。普通页面切换、polling 和同一 session detail 刷新只能刷新当前目录，不能把手动浏览路径重新覆盖为 session workdir。首次选中 session、切换 session 或同一 session 的 metadata workdir 真实变化时，`syncWorkspaceToSession()`（`ui/src/lib/workspace-model.js`）才同步初始目录；已有 bucket preference 优先用于浏览器刷新恢复。持久化路径失效时逐级回退到最近可访问父目录，最后回到 workspace 根，并只提示一次。该 preference 不是 session 执行状态，start/continue 提交的 workdir 仍由后端做 workspace safety 校验。
 - Workspace browser 可保留 workspace 的父级导航，但必须隐藏并拒绝读取或下载 `.env`、`.env.*`（示例/模板除外）、`.envrc`、SSH / cloud / kube / docker 凭据目录、private-key 文件名，以及 `credentials` / `client_secret` / `service_account` 这类 credential-like 路径；这属于本地控制台泄露防护，不是对 session/report 内容的默认脱敏。
 - Workspace 上传、文件重命名、创建文件夹、删除文件和删除文件夹属于本地控制台风险动作：必须复用 unsafe API guard 和审计事件；写操作只能作用于默认 `workspace/` 根内的非敏感路径，不能把父级导航扩展成修改服务 cwd 或仓库元数据的入口。上传采用 multipart 单文件请求，文件内容和整个请求都有硬上限，目标已存在时拒绝覆盖，并通过同目录临时文件 + no-replace rename 原子发布。文件重命名只允许普通文件在原目录内改名，拒绝覆盖、目录移动、symlink、敏感源/目标名与越界路径。批量删除必须先完成所有选中路径的安全预检，再执行删除事务；任一选中路径越界、指向敏感路径、为 symlink 或其目录子树包含敏感路径时，整个批量删除失败且不得删除其他已选项。
-- Session workspace 的 rail、message/timeline stream、tasks/children/background cards 与 inspector render helper 集中在 `session-view.js`；`app.js` 只负责状态、polling、routing 与调用 `renderCurrentSession()`。
+- Session 工作区的消息流、步骤组、内联审批与提问、Goal 横幅和 Composer 位于 `ui/src/features/session/`，检查器位于 `ui/src/features/inspector/`；状态、轮询、路由与实时通道由 `ui/src/state/` 负责。
 - parent detail 在 child 创建期间读取 children 时必须容忍 `session.json` 已发布而 `state.json` 尚未发布的短暂窗口；固定 inspector 隐藏的 compact layout 仍必须把同一 inspector HTML 渲染到 slide-out，不能打开空面板。
 - 当 listen 地址不是 loopback 时，启动输出必须明确提示本地 WebConsole 可写配置与 `.env` API key、删除 session、管理 skill、读取/下载/上传/重命名 workspace 文件，以及在 workspace 内创建文件夹或删除单个/多个文件夹和文件；`run.sh` 的默认 `0.0.0.0:3940` 为 WSL 便利保留，但也必须输出同类提示。
 - `Service.ServeHTTP` 是唯一统一安全入口：Host 校验（默认 `localhost`、`*.localhost`、IPv4/IPv6 字面量，外加 `web.allowed_hosts` 显式条目）必须先于 Basic Auth、路由和任何数据读取执行，覆盖静态资源、REST API 与 WebSocket 握手及全部方法；不可信 Host 一律 403，且不返回 auth challenge。WebSocket upgrade 使用与服务实例一致的 Origin/scheme 判定（含 allowlist），不允许绕过写请求的 same-origin 规则。

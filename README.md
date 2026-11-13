@@ -20,9 +20,10 @@ imposing a fixed workflow engine.
 
 ## What it supports
 
-- Local Web Console v2: session start, steer, continue, Goal and Plan Mode
-  controls, provider settings, timeline, tasks, children, and bounded background
-  result summaries.
+- Local Web Console: chat-first session workspace with a searchable session
+  sidebar, collapsible tool steps, live activity, inline Plan Mode approvals and
+  questions, Goal controls, a contextual inspector (tasks, children, context,
+  timeline, file changes), a command palette, and provider settings.
 - CLI fallback: `init`, `run`, `exec`, `steer`, `continue`, `sessions`,
   `goal`, `tasks`, `probe-provider`, and `doctor`.
 - Provider adapters for OpenAI Responses, Anthropic Messages, Google Gemini
@@ -58,12 +59,14 @@ Keep the Web console on loopback unless the network is trusted. A non-loopback
 console can run agents, manage provider settings and skills, mutate workspace
 files, and delete session history.
 
-Web Console v2 is the default UI. The original page remains packaged but is
-disabled by default; its temporary `/legacy/` rollback route can be enabled in
-Settings or with `web.legacy_ui_enabled: true`.
+The console is a no-build ES module app embedded in the binary
+(`internal/webconsole/ui`); it needs no CDN or npm runtime. Press `⌘K` /
+`Ctrl+K` for the command palette and `?` for keyboard shortcuts. The former
+`/legacy/` page has been removed; `web.legacy_ui_enabled` is still accepted in
+config files but has no effect.
 
 The console uses a light theme and starts in Simplified Chinese. Use the `EN` /
-`中文` control in the header to switch languages; the browser stores the choice
+`中文` control in the top bar to switch languages; the browser stores the choice
 locally. Session prompts, model output, tool payloads, file contents, and other
 operator data are preserved verbatim rather than translated.
 
