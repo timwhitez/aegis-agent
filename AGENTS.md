@@ -1,81 +1,65 @@
-DO NOT send optional commentary
+# Aegis Agent 工程规则
 
-# Aegis Agent
+本文件覆盖仓库根目录及其子目录。它定义协作时必须保持的边界；具体实现细节以当前代码和测试为准。
 
-本文件作用域覆盖整个 `aegis-agent/` 目录树。
+## 先建立事实
 
-## 工作方式
+- 先读与改动直接相关的源码和测试，再读 [文档地图](./spec/README.md) 中对应规范。不要根据旧提交、旧截图或不存在的入口推断当前行为。
+- 任何用户可见行为、API、配置、持久化格式或安全边界改变，都要在同一提交更新相应文档和测试。
+- 代码、测试和 CI 不能通过的行为不能写成“已支持”。如果是计划内容，明确写成计划，不要放进当前能力说明。
 
-- 先看 spec，再改代码。开始实现前至少阅读 `spec/00-product.md`、`spec/01-runtime-architecture.md`、`spec/03-provider-contracts.md`、`spec/09-phase-plan.md`、`spec/11-spec-audit-and-traceability.md`、`spec/12-task-system.md`、`spec/13-live-input-and-steering.md`。
-- 严格按 phase 推进，不要跨 phase 偷渡功能。
-- 当前项目是 Web-first 本地 agent harness；默认用户入口是 `aegis-agent web` 本地控制台，CLI 保留为脚本化、CI、故障恢复和高级调试 fallback。
-- Web-first 不等于 hosted SaaS、复杂 IDE 或重型 TUI；不要引入复杂面板布局、鼠标驱动 workflow、浏览器端文件编辑器、远程终端或图形化状态权威源。
-- 保持“模型是 agent，harness 提供环境”的边界，不要把固定 DAG、硬编码 workflow engine、重型 orchestration 塞进 runtime。
-- 当前默认主路径是 `web` + CLI fallback：`init/run/exec/steer/continue/sessions/goal/tasks/probe-provider/doctor`。
-- `delegate` / `children` / `queue` 可以作为 Web-first large-project profile 的轻量入口和观测面存在；细粒度 orchestration、worker internals、isolation tuning 和 `tui` 仍属于高级/扩展面，不要让它们主导默认 Web 页面或根文档。
+## 不能改变的架构边界
 
-## 架构约束
+- runtime 是唯一的执行事实源。Web、CLI、SDK 和 TUI 都是适配器，不能各自维护一套会话状态或 provider replay 逻辑。
+- session 的消息、事件、状态、Goal、任务、队列和审批事实必须可从本地文件恢复。内存结构可以做缓存或并发协调，不能成为唯一事实。
+- provider 差异留在 `internal/provider`；不要让 UI、CLI 或通用 tool 代码拼接 provider-specific wire payload。
+- compaction 只改变发送给模型的视图，不覆盖原始 transcript 和事件。
+- 模型决定任务路线、是否委派以及工具调用顺序。runtime 负责协议、事实、安全和恢复，不要把特定任务写成固定 workflow engine。
+- 项目是本地 operator tool。不要引入 hosted SaaS、远程终端、浏览器 IDE、第二套浏览器权威状态或未经用户要求的固定流程面板。
 
-- `core runtime`、`sdk facade`、`web app/service adapter`、`cli adapter` 必须分离。
-- provider 差异留在 adapter 层处理，不要让 Web、CLI 或 tool 层承载 provider-specific replay 逻辑。
-- session / state / messages / events 必须是事实源，不能把关键执行状态只留在内存里。
-- compaction 只能改变发给模型的上下文视图，不能覆盖原始日志。
-- provider 的 generation / reasoning / store 选项必须通过 runtime/session 元数据传递，不能只停留在一次性 CLI 参数里。
-- Web 控制台只能复用 session store、queue store、runtime facade 和本地文件事实源；不能维护第二套权威状态。
+## CLI、配置与持久化
+
+- 根命令是 `init`、`models`、`web`、`run`、`exec`、`continue`、`steer`、`sessions`、`goal`、`tasks`、`probe-provider` 和 `doctor`。`delegate`、`children`、`queue`、`tui` 通过 `experimental` 进入。
+- 不要让缺失配置静默触发 provider 请求。显式 `--config`、`AEGIS_AGENT_CONFIG` 或明确的 `--allow-builtin-config` 才能决定执行配置。
+- 路径必须经过现有 `fileutil`、`procutil` 和 session store 的安全边界；不要只用字符串 `Clean` 或 `Rel` 处理 symlink escape。
 
 ## Web 控制台前端
 
-- 前端位于 `internal/webconsole/ui/`：原生 ES Modules、无构建步骤，内嵌 Preact + htm（`ui/vendor/`）。改前端前先读 `spec/17-web-console-frontend.md`，模块契约见其 §5.1。
-- 不引入 CDN、npm 运行时依赖、import map、内联脚本或 `eval`；升级 vendor 时同步更新 `ui/vendor/THIRD_PARTY_NOTICES.md` 的版本与 SHA-256。
-- `ui/src/lib/` 只放无 DOM 的纯逻辑并配 `node:test`；只有 `ui/src/state/` 写 store，组件通过 `useStore` 订阅；REST 请求只经过 `lib/api.js`。
-- 界面文案一律走 `t()` / `tx()`，在对应区域词典 `ui/src/i18n/<area>.js` 同时补齐 `zh-CN` 与 `en`；用户输入、模型输出、工具负载、路径、ID 等 durable 原文放在 `translate="no"` 节点，不翻译。
-- 保持 `data-testid` 契约稳定，浏览器验收依赖它。前端资源在 `go build` 时嵌入二进制，改完 UI 要重新构建再做浏览器验证。
-
-## Runtime Guard 与模型自主性
-
-- 模型是 agent，runtime / tool schema 负责提供能力描述、事实记录和安全边界；不要用 `prompt.go` 或 tool guard 固定审计路线、委派策略、阅读顺序、taskboard 节奏等本应由模型判断的工作流。
-- 优先通过 tool description、system prompt、skill 文档和 harness reminder 引导决策；一次 session 暴露的问题先优化描述与可观测事实，避免把 runtime 写成 task-specific workflow engine。
-- hard guard 只用于安全/权限边界、workspace/path escape、用户显式指定的交付路径/模板/字面锚点、恢复一致性、provider/tool 协议完整性，以及用户最新 steer 的明确约束。
-- sub-agent/child-agent 是否使用必须 model-led；优化 `agent_spawn` / `agent_status` / `agent_list` 描述和 child prompt 模板来提示委派时机，不要用 runtime guard 强迫或阻止委派。
-- durable project memory、todo/taskboard 和 long-run checkpoint 主要用于恢复与协作提醒；除非 finish 会留下明显过期或矛盾的 durable state，不要阻断 agent handoff 或普通执行动作。
-- 不要把报告、prompt、session、compaction 或 provider view 脱敏写成 runtime / spec 的默认规范；如需脱敏，由用户在当轮 prompt 中明确要求，并作为任务交付内容处理。
+- 前端源码只在 `internal/webconsole/ui/`；它是无构建 ES Module 树，运行时资源由 Go `embed` 打包。不要加入 CDN、import map、内联脚本、`eval` 或 npm runtime 依赖。
+- `ui/src/lib/` 放无 DOM 的纯逻辑，使用 `node:test` 覆盖；`ui/src/state/` 是 store 和 action 的边界，组件通过 hook 订阅。
+- REST payload 和统一错误处理经过 `ui/src/lib/api.js`；实时 relay 经过现有 state action。组件不要直接复制 API 形状或维护第二套 session 状态。
+- 所有界面文案在对应区域同时维护 `zh-CN` 和 `en`；用户输入、模型输出、工具参数、路径和 ID 等 durable 原文保持 `translate="no"`。
+- 保持已有 `data-testid`、键盘语义、移动端触控尺寸和 light theme 行为。UI 改动完成后必须重新构建 binary，再运行对应 Node 单测和 Playwright 区域。
 
 ## 安全与恢复
 
-- 文件工具必须防止 workspace escape，并处理 symlink escape，不要只做 `Clean`/`Rel`。
-- `shell` 工具必须有 timeout、输出截断和最小环境变量 allowlist。
-- 中断发生在 tool call 之后时，要写入可重放的中断错误结果，避免恢复时出现 dangling tool call。
-- session 目录与 agent 产物默认使用 owner-only 权限。
+- shell 必须保留超时、输出限额和环境变量白名单；新命令不能绕过现有执行策略。
+- Web mutation 必须保留 Host 校验、same-origin 或 mutation header、JSON body policy、请求大小限制和审计路径。
+- 中断发生在 tool call 后必须留下可恢复的工具结果，避免 dangling tool call；审批和 receipt 的重放不能静默重复 provider side effect。
+- 默认监听 loopback，session 与 agent 产物使用 owner-only 权限；文档、日志、测试输出中不得出现真实凭据或敏感 transcript。
+- 不要修改现有安全边界来迁就测试。若边界确实需要改变，先补充能复现风险的测试，再更新安全文档。
 
-## 文档纪律
+## 文档规则
 
-- root `README.md` 和本 `AGENTS.md` 保持简短、稳定、可检索。
-- 详细设计写在 `spec/`，不要把实现细节堆回根说明文件。
-- 不要在文档里引用当前仓库不存在的脚本或路径。
+- 根 README 讲使用者需要知道的路径；本文件讲贡献者需要遵守的规则；细节放在 `spec/`。
+- 文档只引用当前仓库存在的脚本、目录、路由和命令。旧前端、旧资源路由和退役开关不能作为当前入口描述。
+- 不在根文档堆放某个临时 provider、某次评审或某个外部部署环境的数字；专题部署信息放在对应的 `spec/` 文档。
 
-## Multica 兼容部署经验
+## 验证与提交
 
-- `gocli-stream-json` 是 Multica 与本仓库的唯一耦合面；需要扩展时优先更新 `spec/multica-integration/`，再改 `internal/streamjson` 和 CLI flag。
-- Multica 远端部署推荐用 `AEGIS_AGENT_CONFIG` 指向全局 aegis-agent 配置，而不是只在 `MULTICA_GOCLI_ARGS` 里加 `--config`；这样 `models --json` 和 `exec` 会读同一份配置。
-- 给 Multica gocli runtime 的全局配置应只让任务执行扫描 `./skills`：这是 Multica workspace shared skills 的动态注入目录，成员创建、从 URL 导入或从本地运行时复制后的 skills 都通过这里对 agent 生效。不要默认扫描 `~/.codex/skills`；本地运行时 skills 在复制到 Multica workspace 前是私有来源。
-- `gpt-5.5` 由 aegis-agent 内置 context window 表默认按 `300000 * 4 * 0.85 = 1020000` 字符触发压缩；当远端 Codex `debug models` 显示 `gpt-5.5` 的 `context_window=272000` 且 `effective_context_window_percent=95` 时，若需要与 Codex 精确对齐，gocli 全局配置仍应给 `openai/gpt-5.5` 设置最高优先级覆盖 `runtime.compact.context_profiles.openai/gpt-5.5.input_char_threshold: 1033600`，即 `272000 * 0.95 * 4` 的 v1 字符近似；`hysteresis_delta_chars` 可设为 `258400`。
-- 在远端主机按端口重启或替换服务时，必须先把 `ss` / `lsof` / `pgrep` 输出限定到目标端口或目标命令，再提取 PID；不要对整份监听列表做全局 `sed` / `awk` 取第一个 `pid=`，避免误杀同机其他服务，例如 `coco-sandbox-ui` 的 `:8000` 进程。
+按改动范围选择最小充分检查，合并前执行 CI 对应的完整检查：
 
-## 验证
+~~~sh
+./test.sh
+npm test
+go test ./internal/<package> -count=1
+npm run test:e2e
+go vet ./...
+staticcheck ./...
+govulncheck ./...
+go test -race -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...
+~~~
 
-- 全量：`./test.sh`（gofmt、UI JavaScript 语法、`node --test validation/scripts/*_test.mjs`、Go 测试）；浏览器验收：`npm run test:e2e`。
-- 聚焦：`go test ./internal/<package> -count=1`；`internal/webconsole` 全量约 10 分钟，迭代时用 `-run` 缩小范围。
-- macOS 上 `/tmp`、`/var` 是符号链接，runtime 拒绝经符号链接父目录写入；本地跑 Go 测试时设置 `TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)/"`。
+前端或 Web 服务改动至少运行 `npm run test:e2e`；配置、runtime、provider 或并发改动至少运行对应 Go package test，必要时加 `-race`。
 
-## Git 纪律
-
-- `aegis-agent/` 现在是独立 Git 仓库根目录；写入型改动默认在这个仓库内完成，不要依赖外层 loose workspace 的无版本状态。
-- 后续任何代码修复都必须在对应验证完成后产出真实 `git commit`；不要把“已修好”的代码留在未提交状态。
-- 如果一次修复同时涉及测试、`spec/`、`README.md` 或本 `AGENTS.md`，这些配套改动应和代码修复一起进入同一个 commit，保证提交能完整表达当轮变更。
-
-## 当前阶段
-
-- 当前阶段是“Web-first v1 收敛态”：先把 Phase 0-10 的 runtime / provider / CLI 基座与 Phase 15 的本地 Web 控制台彻底对齐，再评估更高级扩展。
-- Phase 15 Web 控制台是默认 app surface；Phase 11-14 和 Phase 16+ 视为 large-project / advanced / experimental profile，不是默认页面的复杂化理由。
-- 当用户明确要求大型项目 profile、child orchestration、隔离编辑或“超越 codex/opencode”的验证时，可以推进并验证 Phase 11-13，但要保持这些能力通过 Web 的轻量入口或显式 `experimental`/`--isolation` CLI/API 暴露，而不是把默认 Web 首页、root help 或 README 做厚。
-- 当 spec 与当前代码或用户最新指令冲突时，先修 spec，再继续实现，避免文档和实现分叉。
+每次写入型改动都要在验证后创建真实 Git commit。提交前检查 `git diff`、`git status` 和敏感文件；不要提交 binary、session、`.env`、截图运行目录或 live-provider 输出。

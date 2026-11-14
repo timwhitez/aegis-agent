@@ -1,297 +1,60 @@
-# Aegis Agent Phase Plan
+# 当前路线与变更顺序
 
-## 1. 总原则
+本文件不再维护按历史阶段堆叠的开发叙事。它只说明当前主干的稳定面、改动优先级和完成判据，避免把历史任务清单误当成产品状态。
 
-开发必须按 phase 推进。每个 phase 都需要：
+## 当前稳定面
 
-- 明确交付面
-- 明确不做的内容
-- 自动测试
-- 手工验证
+当前主干包含：
 
-当前项目明确分为两层：
+- Go runtime、provider adapter、工具注册、技能目录和文件型 session；
+- CLI 的 init/run/exec/continue/steer/sessions/goal/tasks/models/probe-provider/doctor；
+- 本地 Web 控制台、REST、WebSocket 和嵌入式无构建前端；
+- Goal、Plan Mode、提问、审批 CAS、receipt、恢复和实时活动；
+- Workspace、Skills、Settings、history、task/children/context 观测；
+- queue、child、isolation、TUI 和 browser tools 等显式扩展面；
+- 无凭据 Node/Go 测试、确定性 Playwright E2E、静态分析、漏洞扫描和 race gate。
 
-- Web-first core phases: Phase 0-10 + Phase 15 的默认本地 Web 控制台
-- Advanced / extension phases: Phase 11-14 和 Phase 16+
+“稳定面”表示已经有代码和对应验证入口，不表示所有 provider、平台和部署形态都经过本次运行。
 
-默认规则：
+## 改动优先级
 
-- 先把 Phase 0-10 做实
-- Web-first v1 还必须把 Phase 15 的本地 Web 控制台做成默认 operator surface
-- README、脚本、帮助文本、默认 smoke 路径以 Web-first 为主，同时保留 CLI fallback
-- Phase 11-14 / 16+ 可以继续存在，但高级调参与内部 payload 不允许主导默认页面
+### 1. 先保护事实和安全
 
-## 2. Phase 0 - Spec Bundle
+任何新能力先确认 session、事件、state、审批、路径、权限、shell 和 provider side effect 的事实边界。优先补失败测试，再修改实现。
 
-交付：
+### 2. 再扩展 runtime 契约
 
-- 完整 `spec/`
-- `README.md`
-- `AGENTS.md`
-- 参考资料到 spec 的收敛说明
+需要新行为时先改 core runtime、session store、provider adapter 或 tool registry，再接 CLI、Web DTO 和 UI。不要通过页面 state 临时实现 runtime 行为。
 
-完成标准：
+### 3. 最后扩展 operator surface
 
-- spec 自洽
-- 关键设计点有出处或明确写出是 v1 取舍
+默认 Web 页面保持 chat/session-first。高级 child、queue、isolation、TUI 和 browser 能力用显式命令、配置或 inspector 入口暴露，不把默认首页变成 orchestration dashboard。
 
-## 3. Phase 1 - Minimal Loop
+### 4. 每个改动闭环
 
-参考：
+同一提交必须能回答：当前行为是什么、改变了什么、事实如何落盘、失败如何恢复、哪些命令验证过、哪些平台未验证。
 
-- `learn-claude-code` `s01`
+## 允许的路线分支
 
-交付：
+| 路线 | 适用改动 | 必须保持 |
+| --- | --- | --- |
+| runtime | loop、session、provider、tool、compaction、control | Web/CLI 共享 facade，旧事实可恢复 |
+| Web service | API、DTO、WebSocket、audit、worker | Host/Origin/JSON/CSP/size/route 边界 |
+| Web frontend | state、页面、交互、i18n、样式 | 无构建、嵌入、双语、durable 原文和 test IDs |
+| automation | CLI、stream-json、run.sh、fixture | stdout/stderr、exit code、配置准入和 Bash/macOS 边界 |
+| extension | child、queue、isolation、TUI、browser | 显式入口、平台限制和默认关闭/保守默认 |
+| documentation | README、AGENTS、spec、validation、sample | 只写当前事实，链接和命令可执行 |
 
-- Go module
-- `Runner`
-- `Engine`
-- `EventBus`
-- `run` / `exec` 基础骨架
-- fake provider
+## 完成判据
 
-## 4. Phase 2 - Built-In Tools
+一个变更轨道只有在以下条件都满足时才可合并：
 
-参考：
+- 所有受影响的 source/test/doc 使用同一术语和路径；
+- 新增或改变的事实有持久化、API 或输出契约；
+- 失败、取消、重启、重复请求和并发路径有覆盖或明确列为未验证风险；
+- 所有必要的本地命令通过，CI 必需检查已运行或在 PR 中明确等待；
+- diff 不含凭据、binary、session、live transcript 和本地运行目录。
 
-- `learn-claude-code` `s02`
+## 不做的路线决策
 
-交付：
-
-- `shell`
-- `read_file`
-- `write_file`
-- `edit_file`
-- `glob`
-- `grep_files`
-- `grep`
-- `finish`
-- path safety
-- shell env allowlist
-
-## 5. Phase 3 - Session Store, Output And Todo
-
-交付：
-
-- `session.json`
-- `state.json`
-- `messages.jsonl`
-- `events.jsonl`
-- `todo.json`
-- `sessions` 命令
-- 文本 / JSON 输出基础
-
-## 6. Phase 4 - Skills And Project Docs
-
-参考：
-
-- `learn-claude-code` `s05`
-
-交付：
-
-- skill discovery
-- `load_skill`
-- `AGENTS.md` 指令链加载
-
-## 7. Phase 5 - Context Compaction
-
-参考：
-
-- `learn-claude-code` `s06`
-
-交付：
-
-- provider 输入规模估算
-- micro compaction
-- transcript / summary artifact
-
-## 8. Phase 6 - Task System
-
-参考：
-
-- `learn-claude-code` `s07`
-- `opencode` 的 session todo 分层
-
-交付：
-
-- `tasks/`
-- `task_create`
-- `task_update`
-- `task_list`
-- `task_get`
-- `tasks` 命令
-
-## 9. Phase 7 - Provider Adapters
-
-交付：
-
-- OpenAI adapter
-- Anthropic adapter
-- Google adapter
-- `openai-compatible` Responses 模式
-- generation / reasoning 选项全链路传递，包括 OpenAI-compatible provider 原生 `max` effort 在 config、Web、gocli catalog 与 session metadata 中的无损传递
-
-## 10. Phase 8 - Interrupt, Continue And Steer
-
-交付：
-
-- `continue`
-- `steer`
-- interrupt API
-- `Esc` 监听
-- `paused` / `awaiting_input`
-- `control/steer.jsonl`
-- queue-first steer
-- `--interrupt` best-effort preemption
-- 中断 tool result 补偿写回
-
-## 11. Phase 9 - Hooks v1
-
-参考：
-
-- OpenCode hooks 的轻量裁剪版
-
-交付：
-
-- hook 配置解析
-- event hooks
-- transform hooks
-- `command` / `inject` / `filter`
-
-## 12. Phase 10 - Init, Docs, SDK Facade And Hardening
-
-交付：
-
-- `init`
-- `.env.example`
-- `config.example.yaml`
-- 完整 README / AGENTS
-- `build.sh`
-- `test.sh`
-- 稳定 `pkg` 入口
-- no-TTY / WSL 基础退化路径
-
-## 13. Web-first v1 当前停止规则
-
-Web-first v1 的默认完成标准不是停在 Phase 10；它要求 Phase 0-10 的 runtime / provider / CLI 基座稳定，并把 Phase 15 的本地 Web 控制台纳入默认验收。
-
-只有以下条件都满足，才认为 Web-first v1 可交付：
-
-- spec / README / AGENTS 对齐
-- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 通过
-- 全仓 `test.sh` 对每个 Go package 保留 10 分钟硬时限，与 CI race gate 一致；并发验证时整个 runtime package 可能超过 2 分钟，不能把 package 总时限当成单项测试的耗时证明。
-- `gofmt -l` 无漂移
-- `node --check` 覆盖 `internal/webconsole/ui/` 下全部 JavaScript 并通过
-- `node --test validation/scripts/*_test.mjs` 通过
-- Web 控制台 embedded assets、本地启动、session start / steer / continue、Goal / Plan Mode 基础控制、Settings provider/model、global hard turn limit 与 optional child budget 配置主路径通过；queue job submit 由 REST API/service test 与 CLI advanced path 验证，默认 Web 不提供表单
-- `run` / `exec` / `steer` / `continue` 主路径通过
-- provider probe / doctor 主路径通过
-
-## 14. Web-first v1 收敛加固
-
-Phase 0-10 与默认 Web 控制台之后允许做收敛加固，但加固必须满足两个条件：
-
-- 不把 runtime 改造成固定 DAG 或重型 workflow engine
-- 不让 queue / delegate / isolation / TUI 高级入口反向主导默认 Web 页面
-
-当前已纳入 Web-first v1 收敛口径的加固项：
-
-- session contract snapshot：`contract.json` 与 `artifacts/contract-history.jsonl`
-- session goal snapshot：`goal.json` 与 `artifacts/goal-history.jsonl`，包含 objective、status、usage accounting、success criteria、validation plan、completion audit 与内部结构化计划摘要；默认用户入口不暴露 Goal/Mission 分叉或预算表单
-- session Plan Mode gate：`planmode.json`、`artifacts/planmode-history.jsonl`、`artifacts/planmode-plan.md`，通过 CLI/Web/API 显式进入，审批前只暴露只读/规划工具并由 `submit_plan` 进入 `awaiting_approval`
-- required artifact tracker：`artifact-tracker.json`
-- centralized completion controller：统一复用既有 guard，并补充显式 artifact / parent coordination gate
-- active goal completion gate：active goal 下 `finish` 前必须先完成目标审计并由模型调用 `update_goal(status="complete")`；completion evidence 和 criteria / validation 状态必须回写 `goal.json` 快照；若高级入口设置了预算，budget_limited 只能触发 wrap-up，不等同完成
-- explicit model park：任务未完成但受外部条件阻塞时，模型可调用 `await_input` 把 session 停靠为可恢复状态；该路径不触发 completed、不改变 active Goal，也不要求伪造 completion audit
-- mission validation coverage：`goal plan check` / Web detail / approval gate 必须从同一份 `goal.json` 派生 coverage report；mission plan approval 默认阻断 uncovered 或 invalid validation contract，除非 CLI/API 明确 override
-- structured goal progress：模型工具 `record_goal_progress` 可追加 feature / milestone / validation / evaluator / child / queue / artifact / command / blocker / handoff / budget wrap-up 事实，并同步 `goal-history.jsonl`、`goal.json`、`session.md` / checkpoint；该工具不能改变 objective 或完成状态
-- provider attempt ledger：`provider-attempts.jsonl`
-- operator session summary：`session.md`
-- long-run checkpoint：`checkpoints/longrun-latest.json`
-- explicit parent coordination：`parent-coordination.json`
-- global per-run hard/soft turn guard：hard 默认 `-1`，显式启用后覆盖 root 与 child；soft 只做一次 checkpoint reminder
-- optional child budget：per-attempt turns、active runtime 与 absolute deadline 默认全部关闭，Settings 可持久化配置；effective policy 按 job/session 快照，budget-paused child 可由 parent 显式 extension/resume 或 `agent_stop` cancel/settle，且不得伪造 child completed
-- parent child cancellation：queued/running/paused child 均有 durable cancel request、cooperative context propagation 与独立 `cancelled` outcome，不污染 failed 指标
-- workspace extension trust discovery：`.agent` 默认 discovery-only，显式 trust 前不加载
-- optional Linux shell sandbox：`runtime.shell.sandbox: bwrap`
-- context correctness stop-loss：永久移除按 tool 参数执行的通用 message-level 结果去重；只允许 `read_file` / `grep` / `grep_files` / `glob` 在 canonical arguments、版本化结果 hash、完整语义与三 provider replay 都证明等价时做单-`ToolResult` provider-view 去重，其余结果继续只使用 micro/full compaction
-- provider request hard-fit：main/semantic-summary/probe 调用共享 adapter wire estimator 和版本化预算快照；main 初始超窗后按 recoverable result pointer、oldest replay-safe tail、optional semantic summary、bounded deterministic summary 的固定顺序有界收缩，每个 accepted action 的 wire bytes 严格递减。最终仍不 fit 返回 typed `request_budget_unfit`，不调用 provider、不裁 tool schema、不进入 transport retry/auto-resume
-
-验收补充：
-
-- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...` 覆盖新增持久化、gate 与 repo-owned validation helper
-- `node --check` 覆盖 `internal/webconsole/ui/` 内嵌前端的全部 JavaScript；`node --test validation/scripts/*_test.mjs` 覆盖前端纯逻辑（消息流派生、发送恢复、审批回执、工作区分页、设置模型）、会话控制动作、i18n 词典一致性与模块 API contract
-- repo-owned browser E2E 使用 deterministic local provider 覆盖全部默认页面、关键交互、`zh-CN`/`en` 切换、桌面/移动浅色截图和无 console/page/network error manifest；CI 上传本次 commit 对应的 screenshot artifact
-- WebConsole 资源不得依赖外部 CDN，Markdown 渲染必须走本地 HTML/XSS sanitizer；这是浏览器注入防护，不是内容脱敏规则
-- goal 的验收覆盖 store round-trip、model tools、Web start payload、goal REST endpoints、CLI flag / `goal` 命令、runtime prompt/accounting/completion gate；Web 启动默认只需要 Goal 开关 + prompt；mission plan approval 必须通过 linked Plan Mode 产生真实 pending gate
-- Web-first mission controls 至少覆盖 Goal inspector 的 plan show/check/approve 与 validation coverage 展示；CLI `goal plan show/check/approve` 与 `goal validation show` 作为 fallback 读取 / 更新同一份 session store 权威事实，不维护第二套状态，也不引入 TUI
-- Plan Mode 的验收覆盖 store round-trip、tool schema 裁剪、CompletionController gate、`submit_plan` 同批 tool result 补偿、`request_user_input` active/recovery 路径、CLI `--plan/--plan-only/--approve-plan`、Web Plan inspector 与 parent-linked queue/delegate rejection；CLI `run` 还需用真实 PTY 证明回答不会被 `Esc` 监听抢读，并证明 prompt lease 释放后 `Esc` 中断恢复
-
-## 15. Extension Phases
-
-以下 phase 继续保留，但需要区分两类：
-
-- Phase 15 已上升为 Web-first v1 的默认 app surface
-- Phase 11-13 可作为 large-project profile 的高级能力面，由 Web 提供轻量入口/观测，细粒度调参继续走 CLI / API
-- Phase 14 和 Phase 16+ 仍属于实验扩展面
-
-### 15.1 Phase 11 - Worktree Isolation
-
-- `off` / `auto` / `git` / `copy`
-- session metadata 中记录 isolation
-- 当 large-project profile 被显式启用时，这一 phase 需要有真实隔离目录、requested/effective workdir 分离，以及不污染 parent workdir 的验证证据
-
-### 15.2 Phase 12 - Multi-Agent Delegation
-
-- `experimental delegate`
-- `experimental children`
-- `agent_spawn`
-- `agent_status`
-- `agent_list`
-- 当 large-project profile 被显式启用时，这一 phase 需要有 parent/child linkage、child session durability、observability 和同步/异步 child 执行证据
-- 可选 `explorer` role 使用 fresh child session 与 `explorer-readonly-v1` capability profile隔离开放式探索；是否 spawn、如何分工、何时等待仍由模型或调用方决定
-- explorer 的 role provider/reasoning/output、默认 isolation off、双层 tool capability gate 与有界 structured handoff 作为 Phase 12/13 收敛项，不引入第二套 orchestration state
-
-### 15.3 Phase 13 - Background Queue
-
-- `experimental queue submit`
-- `experimental queue list`
-- `experimental queue show`
-- `experimental queue worker`
-- parent background notification
-- 当 large-project profile 被显式启用时，这一 phase 需要有真实 worker 消费、job/session 关联和 background notification 回流证据
-- advanced context report 可递归聚合 root/child request budget、usage 与 compaction；它是 session 文件事实的只读派生视图，不改变 queue/worker 调度
-
-### 15.4 Phase 14 - Terminal TUI
-
-- `experimental tui`
-- snapshot / interactive 观测面
-
-### 15.5 Phase 15 - Web Console
-
-- Settings 的既有 role provider 区对 planner/generator/evaluator/explorer 做相同 GET/PATCH/YAML round-trip；session inspector 轻量显示 effective role/options/isolation/tool profile
-- 默认首页不增加 explorer/children dashboard，细粒度 orchestration 继续属于 advanced inspector、CLI 或 API
-- session inspector 增加懒加载、bounded 的 Context tab 与独立只读 endpoint；默认 overview/home polling 不递归扫描 lineage，也不增加 telemetry dashboard
-
-- `aegis-agent web`
-- 默认页面是内嵌模块化前端；legacy 页面与回滚开关已移除
-- 前端架构、路由、交互、设计系统与验收见 `spec/17-web-console-frontend.md`
-- 默认简体中文、可持久化切换 English，固定浅色基线与点击目标（精确指针 32px / 触控 44px）、键盘、modal accessibility gate 属于 Phase 15 完成标准
-- `experimental web` 作为旧入口兼容别名
-- 本地 HTTP API
-- 内嵌静态单页前端
-- session / queue / children / task board / timeline 可视化
-- Web 发起的 `start` / `continue` / `steer`；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
-- Web 发起的 `start` 可通过一个 optional Goal 开关附带 prompt-derived goal；session inspector 可显示 goal 状态、criteria、validation、agent 拆分出的 features/milestones，并提供用户控制的 pause/resume/clear/complete/approve plan 操作
-- Workspace 面板提供受限本地文件操作：预览、下载、上传、文件重命名、创建目录，以及删除单个或多个文件/目录；所有写操作继续受 workspace root、敏感路径、symlink、请求体上限和审计约束
-- 可配置并发 worker pool
-
-### 15.6 Phase 16+ 的规则
-
-- 即使仓库里已有对应实现，也只能作为高级或实验扩展
-- 不得反过来要求默认 Web 页面、帮助文本、smoke 脚本都围绕内部高级能力设计
-- 若用户明确要求推进扩展 phase，必须先确认 core 主路径未被破坏
-
-## Phase 16+ optional browser profile (#136)
-
-See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.
+本文件不提前承诺某个模型、provider、UI framework、远程部署或固定发布日期。此类决定必须由实际需求、源码契约和可复现验证共同确定。

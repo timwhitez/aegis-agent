@@ -1,29 +1,51 @@
-## Summary
+## 变更内容
 
-Describe the user-visible or contract-level change.
+<!-- 用触发问题和改动后的行为描述本 PR。 -->
 
-## Related issue
+## 影响范围
 
-Closes #
+- [ ] runtime / session
+- [ ] provider
+- [ ] tools / skills
+- [ ] CLI / run.sh
+- [ ] Web service / API
+- [ ] Web frontend
+- [ ] configuration
+- [ ] documentation
+- [ ] validation / CI
 
-## Specification and scope
+## 契约变化
 
-- Related specification or phase:
-- Out-of-scope behavior:
+<!-- 如果改变了命令、配置、持久化、API、WebSocket、安全边界或 UI 交互，请说明对应规范和兼容影响。 -->
 
-## Validation
+## 验证
 
-- [ ] Added or updated regression coverage
-- [ ] Ran `./test.sh`, or documented why it is not applicable
-- [ ] Ran focused static, race, provider, or browser checks required by the change
-- [ ] Added screenshots for user-visible Web console changes
+<!-- 填写实际运行过的命令和结果；不要把未运行的检查写成通过。 -->
 
-## Security and durable data
+~~~text
+./test.sh
+~~~
 
-- [ ] No credentials, live-provider transcripts, personal prompts, session data, or generated audit artifacts are committed
-- [ ] Workspace, symlink, shell, provider replay, and durable-state boundaries remain fail-closed where applicable
-- [ ] Provider-specific behavior remains in adapter code
+- [ ] 已运行受影响的聚焦测试
+- [ ] 已运行必要的 E2E 区域
+- [ ] 已运行必要的 race / vet / staticcheck / govulncheck
+- [ ] 未运行的检查已在下方说明
 
-## Documentation
+未运行或已知限制：
 
-- [ ] Updated the relevant specification and user documentation, or documented why no update is needed
+## 安全与敏感数据
+
+- [ ] 未提交 API key、token、密码、`.env`、session、个人 prompt、live-provider transcript 或生成 binary
+- [ ] Web、文件、shell、审批或恢复边界没有被绕过
+- [ ] 如涉及安全问题，已使用私下报告渠道
+
+## UI 改动（如适用）
+
+- 语言：中文 / English
+- 视口：桌面 / 移动
+- 证据目录或截图：
+
+## 文档
+
+- [ ] README / AGENTS / CONTRIBUTING / validation / spec 已按需要更新
+- [ ] 新增路径、命令、字段和链接已经在当前仓库中核对

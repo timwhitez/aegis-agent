@@ -1,425 +1,94 @@
-# Aegis Agent Testing Strategy
+# 测试策略
 
-## 1. 测试目标
+## 测试目标
 
-测试要覆盖四件事：
+测试要回答三个问题：
 
-- 运行时闭环正确
-- provider 契约正确
-- session / hooks / interrupt / awaiting_input 组合行为正确
-- Web-first 控制台的关键用户路径正确
-- spec 与实现没有明显偏移
+1. runtime 是否按 durable session 事实运行和恢复；
+2. Web、CLI、provider 和 tool adapter 是否遵守共享契约；
+3. 用户从本地控制台看到的状态是否能在真实服务、桌面和移动视口中重建。
 
-测试不只验证编译通过，还要验证核心交互语义。
+测试不把模型质量伪装成 deterministic pass，也不通过真实 API key 才能跑的实验代替仓库 gate。
 
-## 2. 测试层次
+## 测试层次
 
-### 2.1 Spec Audit
+| 层次 | 位置/命令 | 主要问题 |
+| --- | --- | --- |
+| 格式与语法 | `./test.sh` | Go format、UI JS syntax、Node/Go 默认测试面 |
+| Go 单元测试 | `go test ./internal/<package> -count=1` | store、runtime、provider、tool、配置和安全边界 |
+| Node 单元测试 | `npm test` | api、store、model、i18n、Markdown、恢复逻辑和纯前端 helpers |
+| Web 服务集成 | `internal/webconsole/*_test.go` | API、WebSocket、审批、Host/Origin、JSON policy、Workspace 和 Settings |
+| race | `go test -race -count=1 ...` | session locks、events、queue、handles 和并发控制 |
+| 静态分析 | `go vet`、`staticcheck`、`govulncheck` | 编译错误、可疑 Go 模式和已知漏洞 |
+| 浏览器验收 | `npm run test:e2e` | 真实本地服务、嵌入资源、页面交互、响应式布局和错误回显 |
 
-在代码实现前，先做文档级校验：
+## Go 与 Node 测试
 
-- spec 是否与参考资料一致
-- provider 契约是否与官方接口结构一致
-- phase 切分是否与 `learn-claude-code` 的增量构建思路一致
+默认仓库 gate 使用：
 
-### 2.2 单元测试
+~~~sh
+go test -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...
+~~~
 
-覆盖：
+`validation/` 中的运行产物和历史副本不自动扩大 Go module 测试面。改动配置、session、runtime、provider、tool、queue 或 Web service 时，先运行受影响 package，再视风险运行 race 全量。
 
-- config loader
-- event bus
-- session store
-- hook manager
-- tool registry
-- path safety
-- compaction estimator
+`ui/src/lib/` 的无 DOM 逻辑优先用 `node:test`；store、action、API wrapper、i18n parity、Markdown sanitizer、send recovery、approval operation、Workspace、Skills、Settings 和 Inspector 通过脚本测试。
 
-### 2.3 Provider Contract Tests
-
-覆盖：
-
-- OpenAI adapter
-- Anthropic adapter
-- Google adapter
-
-方式：
-
-- `httptest.Server`
-- 固定 JSON fixtures
-- 验证请求体、header、错误映射、tool call 解析、tool result 回放
-
-### 2.4 Runtime Integration Tests
-
-覆盖：
-
-- 单轮纯文本任务
-- 带工具调用任务
-- `finish` 结束
-- `await_input` 在不完成 session、不改变 active Goal 的前提下进入可恢复等待，并补齐同批后续工具的合成结果
-- `run` / `exec` 在 plain `done_candidate` 后继续 loop，直到显式 `finish` 或触发其它停止条件
-- `exec` 模式 reminder + degeneration 回路
-- running session `steer` -> 下一安全边界接纳
-- running session `steer --interrupt` -> provider cancel / tool defer
-- cancel -> `paused`
-- parent child cancel -> durable `cancel_requested` -> provider/tool/shell cooperative cancel -> `cancelled`
-- `continue` 恢复
-
-### 2.5 CLI Tests
-
-覆盖：
-
-- 子命令解析
-- `init` 生成文件
-- `sessions` 输出
-- `tasks` 输出
-- `steer` 参数解析
-- `run` / `exec --plan` 与 `exec --plan-only` 参数解析
-- `continue --plan` / `--approve-plan` / `--cancel-plan` 参数解析
-- 审批显式 target 三参数、明确 `--approve-latest`、TTY 展示并捕获 target、非交互缺 target 拒绝；普通 continue 不增加审批步骤。Web/linked alias 与 coverage override 保持实际显示 target，stale 409 两种语言提示重新审阅；同版本 linked semantic revision 变化必须拒绝，usage/evidence 不产生假冲突
-- `exec --json`
-- `exec` 未显式完成时退出码为 `6`
-- `run` 的 `awaiting_input` 提示
-
-### 2.6 Golden / Snapshot Tests
-
-针对：
-
-- JSONL 事件输出
-- 文本模式阶段输出
-
-保证 CLI 输出格式变更可审查。
-
-### 2.7 Web Console Tests
-
-Web-first v1 必须把本地 Web 控制台作为默认验收层，而不是只在触及实验扩展时补测：
-
-- embedded shell 与静态前端 assets 能由同进程 service 稳定提供
-- Web 发起的 `start` / goal create/pause/resume/clear/complete / mission plan approve / `continue` / `steer` / worker pool 更新都走真实 runtime 与文件事实；queue submit 保留在 CLI/API advanced 面，默认前端不提供独立提交表单
-- Workspace upload / rename 走真实 HTTP API 和本地文件事实；覆盖 request/body 上限、同目录 no-replace rename、敏感路径、symlink/escape 拒绝、审计事件与前端 pending/refresh 行为
-- headless browser UI smoke 能跑通关键交互链，且浏览器端无 runtime exception / console error
-- browser smoke 必须是 repo-owned、无 provider credential 的可重放入口；每次运行记录 commit SHA、浏览器版本、viewport、console/page/network error、截图路径与 SHA-256 manifest，并在 CI 上传桌面/移动截图 artifact
-- 默认 `zh-CN` 与持久化 `en` 都要覆盖静态和动态文案、ARIA/placeholder/title、日期/数字 locale；截图确认浅色主题不随系统深色偏好漂移
-- browser localization acceptance 必须在两个 locale 截取 populated Context inspector 并断言 operator label，同时保持 report ID/role 原文
-- raw-fact collision fixture 至少覆盖匹配 UI 词汇的 Task owner、缺失 Task description、Skill author prefix 与空 background-notification fallback；text audit 只跳过显式 raw descendant，不能跳过整个 Task/Skill/notification card
-- 键盘验收覆盖 tab 语义、Enter/Space 激活、dialog focus trap/restore、Esc 关闭和移动端 inspector；高频交互 target 的可点击尺寸在精确指针下至少 32×32 CSS px，在粗指针或 ≤768px 视口下至少 44×44 CSS px
-- focused live rerun 能对 durable retry restore 与 background notification dedup 产出独立证据目录
-- focused retry-resume proof 采用 evidence-first 判定：以 durable `retry_policy` 元数据和真实 `provider.retry` 事件为主，不把 bounded finish nudges 后是否落成 `completed` 当作唯一通过条件
-
-## 3. 测试依赖策略
-
-- 优先使用标准库和 `httptest`
-- 尽量不使用 mock framework
-- 优先用 fake provider、fake tool、fake session store
-- 测试只写自己的临时目录：使用 queue/delegate/isolation 的测试 config 必须把 `runtime.isolation.root_dir` 指向 `t.TempDir()`，不能落到真实 HOME 的默认 `~/.aegis-agent/_worktrees`；提速不得通过放松 fsync 或路径安全语义实现
-
-## 4. 关键测试场景
-
-### 4.1 Tools
-
-- `read_file` 正常读取
-- 越界路径被拒绝
-- symlink 越界被拒绝
-- `internal/fileutil` 在 darwin 用单次 `O_NOFOLLOW_ANY` open 解析 no-symlink 路径（每次 open 在装有 Endpoint Security 客户端的主机上都有毫秒级成本），失败一律回退逐级 `O_NOFOLLOW` walk 以保持错误分类与测试钩子；永久测试覆盖祖先/末级 symlink 拒绝与 walk 同一身份（walk 部分在所有 unix 上运行，快速路径部分仅 darwin）。已知且保留的权限差异：walk 以 `O_RDONLY` 打开每级祖先，所以祖先只有 search（x）而无 read（r）权限（如 `0311`）时 walk 返回 EACCES；darwin 快速路径与普通路径 open(2) 一样只要求祖先 search 权限，因此在该祖先下读取已有文件、打开已有目录、chmod、对已存在目录 `MkdirAll` 会成功，需要新建路径分量或回退 walk 的操作仍返回 EACCES。symlink 拒绝不受影响；不补齐该差异，因为等价检查需要逐级 open（正是快速路径要省掉的成本）或 `access(2)`（与 open 的 ACL/沙箱/特权判定不可证明等价）。`TestNoSymlinkHelpersBelowSearchOnlyAncestor` 固定了两种平台行为。非独占 `O_CREAT` 因并发创建同名文件得到的 ENOENT 有界重试，`O_EXCL` 与父目录真实删除仍 fail closed
-- `write_file` 创建父目录
-- `edit_file` 替换失败时报错
-- `finish` 设置 `final`
-- `await_input` 返回结构化等待 metadata 且不设置 `final`
-- `shell` 仅继承 allowlist 环境变量，且临时 HOME 中的 login/profile/rc 脚本不能注入变量或产生副作用；trusted command 走同一语义
-- exec policy 的 adversarial expansion gate 必须用 fail-closed verdict、深度/工作量耗尽原因和分配/派生字节预算等确定性不变量阻断回归；wall-clock 只记录为性能观测，不能用依赖共享主机负载或异构 CPU 调度的固定秒数让 correctness gate 随机失败
-- Linux 且 bwrap namespace 可用时，必须真实执行位于 `/tmp` 或其他非系统根下的 workspace：验证 namespace 内 bind target 创建顺序、稳定 descriptor cwd、命令成功，以及 profile/rc 仍不能注入变量或产生副作用；仅检查 argv 不构成该验收
-- background-wait 测试必须以持久化 `awaiting_input/background_wait` 状态同步结果注入，传播 resolver/notification 写入错误，并使用测试级有界 context；不能用固定 sleep 加无界 `context.Background()` 把失败拖到 package timeout
-- `todo_write` 仅刷新新增或发生状态推进的条目时间，未变化条目保留时间，调用方旧 timestamp 不能覆盖 runtime 时间
-- `todo_write` 允许多个 `in_progress` 并完整持久化
-- `task_create` / `task_update` 保持依赖边双向一致
-- task graph cycle 被拒绝
-- `grep` / `grep_files` 分别覆盖 0、limit-1、limit、limit+1；只在 limit+1 报 `has_more`
-- 请求 limit 超 cap 时 requested/effective/limit_capped 可观测；grep snippet 截短但集合完整时 `has_more=false`
-- include、多目录、UTF-8 snippet 与重复执行保持 deterministic ordering；`glob` 既有 exact-limit 行为不回退
-- 所有内置/skill/child/synthetic ToolResult 在 hook 后经过统一 byte cap；hook 把 1 KiB 放大到数 MiB 也不能绕过
-- artifact writer 覆盖单文件/session 字节/文件数 quota、并发竞争、跨 Store 重启重建、symlink、磁盘错误与 owner-only mode；metadata 与实际文件字节逐项一致
-- multi-call batch 按 result 独立预算并保持 ToolCallID/Name/IsError/Final/业务 metadata；messages.jsonl 只含 bounded preview/pointer
-- 同步 agent_spawn/agent_status 与 background notification 的超长 final_text 不整段进入 parent，且保留 child/session/job/artifact reference
-- read_file byte mode 覆盖 16 MiB 单行/minified JS/JSONL/无换行日志、空文件/EOF/越界 offset、UTF-8 rune 跨页与人为 mid-rune offset；按 `next_byte_offset` 重组不得重复或漏 rune
-- byte mode 的 workspace、skill、session artifact exact path、symlink file/parent 与 escape matrix 复用 line mode 安全 gate；生产路径必须可证明只调用 range reader
-- grep/grep_files/glob 覆盖 count limit、byte limit、同点触发、complete、长 path/record typed failure；v1 cursor 的 checksum/version/query fingerprint/tamper 与 current-view deterministic ordering 均有永久测试
-- 搜索 cursor footer、record/header 和 metadata 一起计入 output cap；测试确认 cap 收缩删除完整 record 或 snippet，不产生被截断的 cursor
-- command output collector 用远大于 inline/artifact cap 的分块输出验证内存上界固定，且 `raw_bytes = persisted_bytes + omitted_bytes`；测试不得只在进程退出后观察截断文本
-- shell 与 trusted skill command 对相同 stdout/stderr 序列产生同构 preview/artifact metadata，生产代码不含 `CombinedOutput()`；两个 stream 连接同一个并发安全 writer，并通过 race test
-- complete command artifact 与 collector 收到的原始合并字节逐字节一致；file/session byte quota 只发布获准的 partial prefix，file-count quota 在无法创建 reservation 时返回 unavailable，所有 partial/unavailable 路径均不出现 complete/full 文案
-- streaming reservation 覆盖并发 Store、进程重启后的 usage rebuild、dead-owner reservation/orphan temp 回收、owner-only mode、cross-session root 拒绝、symlink root/target 与 no-replace finalize
-- artifact create/write/fsync/close/rename 注入失败均返回有界 ToolResult 与可诊断 metadata；失败不能阻塞 stdout/stderr drain，也不能让未发布 temp 被 `read_file` 当成完成 artifact
-- 大输出后的正常退出、非零退出、timeout、manual interrupt、child budget cancel 与 process-group kill 都会 finalize collector；interrupted durable ToolResult 保留 command artifact metadata并补 `failure_class=interrupted`
-- current command artifact 可由 `read_file` line/byte mode 用 exact path 分页；old ephemeral provider view 复用当前 artifact，不生成第二个文件
-- micro-compaction 永久矩阵覆盖 1×N、N×1、混合 batch 与 `keep_recent_tool_results=3`，证明最多最近三个独立 result 保留完整 payload，窗口边界可落在同一 tool message 内且 sibling 的 ToolCallID/Name/IsError/Final/metadata 不串位
-- `keep_recent_tool_result_bytes` 覆盖 exact boundary、`+1` byte、count 与 bytes 同时触发、最新单 result 自身超限、已 pointerize result；重复构造 provider view 不生成嵌套 marker/重复 artifact，durable `messages.jsonl` byte-for-byte 不变
-- OpenAI multi-call、Anthropic `tool_use/tool_result`、Google `functionCall/functionResponse` 分别验证只有对应旧 result 的 call arguments/provider block 被裁剪，call/result id、name、顺序和 replay wire shape 仍合法
-- Google 无 provider call id 的连续同名 function call 必须获得跨 turn 唯一 fallback id，并在 micro-compaction 与 hard-fit 中保持新旧 replay closure 独立
-- 三个 provider adapter 在 nil event sink 下完成文本/tool 响应而不 panic；Google 空 candidates/无 block reason 返回 typed `response_parse_error`
-- `compact.started` / `compact.finished` / `compact.reused` 以及 main/semantic-summary/probe 共用的 `RequestBudgetSnapshot` 验证六个 result-level 字段：inline/compacted/pointerized 的 count 与 provider-view `llm_output` bytes；三类计数之和等于 request view 的 ToolResult 总数
-- `read_file` / `grep` / `grep_files` / `glob` canonical arguments 覆盖省略默认值、显式默认值、limit cap、tool-output byte cap、line/byte mode和 path/pattern/include/cursor 任一变化；非 allowlist 与 malformed/unknown input 必须 fail closed
-- result-content hash 覆盖 inline、超过 cap 后仍基于 cap 前原文、重复 finalizer 和 source metadata clone；没有可靠 hash 的 legacy result 不参与去重
-- 安全去重覆盖同 canonical 请求的同结果/异结果、文件或 grep 命中变化、error↔success、complete↔truncated、ProviderCallID alias 与 mixed multi-call batch；只替换目标旧 result，第二次 provider-view build 不嵌套 marker，durable `messages.jsonl` byte-for-byte 不变
-- duplicate marker 与 retained full result 的混合 batch 分别通过 OpenAI、Anthropic、Google replay serialization，保留每个 call/result id、name、顺序和 error 语义
-- `read_session_history` record mode 覆盖空 tail、exact limit、真实 `has_more`、第一页、未知 `before_message_id`、确定性顺序，以及未知字段、session/path/artifact 字段、绝对路径、模式冲突和负数/超 cap schema rejection
-- history query 覆盖大小写、无命中、match limit、512-record scan limit、byte-output limit 与连续 `next_before_message_id`；测试证明实现只保留有界 window/ring，不调用 `LoadMessages` 全量过滤
-- history message-content mode 覆盖超长 user/assistant/tool message、tool call arguments、UTF-8 mid-rune offset/end、连续 page 重组、EOF、未知 id 与过小输出预算；representation 不出现 thinking、display output、OpenAI/Anthropic/Google opaque replay sentinel
-- history 摘要保留 tool name/call id/error/final 与 artifact/source continuation reference；单条或多条摘要超预算时只在完整 record 边界收缩，输出 JSON、source ids 和 next cursor 始终完整
-- current session 能读取自己的 canonical history；把 sibling/parent/child message id 传入只能得到 not-found。schema 不提供 session/path 输入，因此 path traversal 和 cross-session 不能表达
-- symlinked `messages.jsonl`、损坏 JSON/invalid UTF-8、未知 cursor 与并发 append 分别返回稳定结果；损坏记录不能被跳过后伪装为 complete page
-- prompt-injection-shaped 旧 system/user/steer text 始终位于 `historical_reference=true` envelope，system prompt 同时说明 current system/latest external/latest steer precedence
-
-### 4.2 Hooks
-
-- 顺序执行
-- 修改 payload
-- fail-open 不阻断
-- fail-closed 阻断
-- command hook 事件落盘
-
-### 4.3 Session
-
-- 创建 session 后文件存在
-- `awaiting_input` 状态可恢复
-- 模型显式 `await_input` 会记录 `phase=model_wait`、等待原因和恢复条件，active Goal 仍为 active
-- `paused` 状态可恢复
-- `failed` 状态可恢复
-- completed root session 可恢复，并写入带 `resumed_from=completed` 的 durable `session.resumed` 事件
-- completed child / queue session 的通用 continue 被拒绝，且 child state、queue job、parent coordination 仍保持 completed 事实
-- completed Goal 的 root follow-up 保留 Goal completion audit 与 complete 状态，不自动触发 active Goal completion gate
-- `steer.jsonl` 只在接纳后转成真实 user message
-
-### 4.3.1 Plan Mode
-
-- `planmode.json`、`artifacts/planmode-history.jsonl` 与 `artifacts/planmode-plan.md` 可 round-trip
-- pending Plan Mode 下 provider schema 只暴露规划 allowlist
-- `CompletionController` 阻断 write/edit/shell/todo/task/goal mutation/agent/queue/custom tools 和 `finish`
-- `submit_plan` 后进入 `awaiting_input` + `phase=plan_approval`，同批后续 tool call 得到合成错误 result
-- `request_user_input` 有 responder、无 responder、active handle 丢失、回答和取消补偿路径都有测试
-- approve 后追加 `meta.source=planmode_approval` 的 user message；revision 追加 `meta.source=planmode_revision`
-- 以 pending Plan Mode session 为 parent 的 queue/delegate 提交被拒绝；独立新 session/job 不受影响
-
-### 4.4 Interrupt
-
-- provider 执行中 cancel
-- tool 执行中 cancel
-- `Esc` 逻辑触发 interrupt API
-- tool cancel 后写入中断错误结果
-- command tool cancel 后写入的中断错误结果保留 collector 的 raw/persisted/omitted、artifact path/completeness 与 command execution metadata；同 batch 后续调用仍得到 synthetic interrupted result
-- `steer --interrupt` 对不可取消工具退化为 deferred
-- child active-runtime/absolute deadline 能取消 provider、tool 与 shell，不等待 operation timeout
-- provider/tool operation timeout 与 child deadline 的归属优先级测试必须把两个真实计时器分开足够大的调度余量；若测试目标不是临界竞态，不得用几十毫秒对一秒这类会被共享主机停顿反转的 fixture 制造随机状态
-- parent 按 session/job 取消 running foreground/background child，cross-parent 请求被拒绝，重复 cancel 幂等
-
-### 4.4.1 Budget matrix
-
-- 全局 `max_turns_hard` finite/unlimited 同时覆盖 root、foreground child 与 queue child，并验证 per-run reset
-- child per-attempt turn、active runtime、absolute deadline 的 pause/extension/resume/cancel/settle
-- effective budget 在 job/session 创建时快照，Settings 热更新不改变旧 job，restart/reconcile 后不漂移
-- budget exceeded/extended/resumed/cancelled event 与 notification 幂等，usage/remaining/overrun/attempt/source 可由 durable files 还原
-- legacy child budget config 可以读取并迁移，new config/API/Settings round-trip 使用 canonical names
-- deterministic local-provider + headless Chrome smoke 验证 Settings 默认 hard Off / child Off、duration 保存与 config/API/audit round-trip、Explorer role provider/reasoning/output 的保存与重新读取、foreground budget pause -> parent extend/resume -> complete、background budget pause -> parent cancel/settle，以及 inspector telemetry / cancelled-not-failed 展示
-- 同一条无 credential browser smoke 还要让 scripted provider 真实调用大输出 `shell`、artifact `read_file` byte page 与 `read_session_history` record/content continuation；浏览器从 durable session detail 核对 complete artifact pointer、两段 history pagination，再验证 Context tab 只在打开时加载、Refresh 发起新请求且报告仍来自同一 session root。任何 runtime exception / console error 都使 smoke 失败
-- queue claim rename/write 与 child session metadata/state 创建窗口不得让 parent 误报 coordination deadlock，也不得让 session detail 因短暂缺少 queue/state fact 返回 404
-
-### 4.4.2 Explorer role/profile
-
-- normalize、config、CLI/API 与 Store 接受 `explorer`，未知 role 继续拒绝；旧 planner/generator/evaluator config 不迁移也能加载
-- Role Provider Overrides 的 Explorer provider/API/base/model/reasoning/max-output 完成 YAML、Web GET/PATCH 与 active config round-trip；负 max output 拒绝且不落盘
-- child option fixture 覆盖 provider/model/caller 显式优先级、parent effective options 继承、role reasoning/output override，并断言 effective options 同时进入 direct child metadata、queue job、worker-created metadata、provider TurnRequest 和事件
-- explorer 无 isolation 字段或使用兼容 `default` 时为 `off`；显式 `off` / `auto` / `git` / `copy` 原样持久化，其他 role 保持现有 fallback
-- provider schema 的工具名集合精确等于 `read_file`、`grep_files`、`grep`、`glob`、`load_skill`、`finish`；包含 trusted command skill 时集合不变
-- 对每个已注册但禁用的 built-in/trusted command 直接调用 `Registry.Execute`，都返回 `schema_reject/tool_not_allowed_for_role` 且 workspace、session、command sentinel 不变化
-- explorer system prompt 只规定只读 capability 与有界 handoff，不写固定搜索顺序、强制 delegation、固定 DAG、强制 wait 或 taskboard workflow；`agent_spawn` description 保持 model-led 信息经济 guidance
-- 普通与 initializer prompt 同样只描述 discovery/task 能力，不强制 grep-before-read、固定 taskboard 节奏或由 review 关键词推断 artifact；显式 artifact/path/template 仍保持 fail-closed validator
-- sync、background + wait、失败、暂停、取消与 parent resume/recovery 沿用现有 lifecycle；handoff 经过统一 ToolResult/background budget，deterministic fake-provider fixture 证明 parent provider messages 不含 child 原始 tool trajectory，只含有界 final/reference
-- Web Settings 渲染 Explorer row 与 reasoning/output 字段；session inspector 显示 role、provider/model、effective reasoning/output/isolation/tool profile；默认首页 fixture 不出现新的 orchestration panel
-- deterministic browser smoke 对 Explorer row 写入非默认 model/reasoning/max-output，保存后通过 `/api/config` 和重新渲染的 Settings 表单双重核对；测试只使用临时 config，不修改 operator 配置
-
-### 4.4.3 Context report 与 harness comparator
-
-- `internal/session` 用固定 event/message 时间线验证 canonical `RequestBudgetSnapshot` 反序列化、request lifecycle 归并、usage known/unknown 与稳定 source allowlist、artifact bytes 去重、RFC3339Nano 亚秒时间边界、crash 后 unknown request 与坏 lineage fail-closed
-- root/recursive-child fixture 验证 session id 去重、root peak、child peak、root/child/total aggregate、provider-view 三类 bytes、artifact bytes、known usage 与 unknown usage 数学对账；用 child id 查询仍返回同一 root tree，并保留 `requested_session_id`
-- runtime fixture 验证 main/semantic-summary、compaction lifecycle、transport retry 和 completed/failed 都带同一 request correlation；同一 request 的 transport retry 不生成新 snapshot，budget rejection、semantic-summary timeout、provider cancellation、call 前 pause 与 retry-attempt 持久化失败各只有一个 typed terminal event；event/report 中的 sentinel prompt、tool output、secret-shaped metadata value 不得出现
-- CLI `sessions context <id> --json`、SDK `Context` 与 Web `/api/sessions/<id>/context` 共享 schema version；Web detail 总预算为 64，aggregate 保持完整并明确标记 omitted session/request 数
-- headless smoke 在打开 Context tab 前记录 `/context` resource 数，打开后必须新增一次请求并渲染 report/root/aggregate；点击 Refresh 后必须再新增一次请求。默认首页和普通 settled-session polling 不得提前加载该 endpoint
-- `validation/cmd/contextharnessfixture` 生成 versioned deterministic JSON，对相同事实比较 `single_root_broad`、`single_root_narrowed`、`delegated_explorer`。普通 CI 断言 narrowed root peak 不高于 broad、delegated root peak 小于 broad、delegated child aggregate 非零、delegated total 等于 root aggregate 加 child aggregate 且单列、重复运行 JSON 完全一致
-- fixture 使用 repo-owned fixed workspace/scripted fake facts，不调用收费 provider、不要求 credential；live-provider/cost smoke 只能作为显式可选 validation，unknown usage 不参与 cost 推算
-
-### 4.5 Compaction
-
-- 超过阈值时只压缩 provider 输入视图
-- `messages.jsonl` 仍保留完整原始消息
-- compaction artifact 被写入
-- 固定同一 UTC 时间连续执行两次真实 compaction 时生成两组不同 transcript/summary；每份 summary 的 `compaction_id` 与 transcript reference 对应，预占同名目标时第二次写入 fail closed 且旧文件 byte-for-byte 不变
-- todo 与 task graph 不因 compaction 丢失
-- main 与 semantic-summary 请求都生成版本化 request budget snapshot；semantic-summary 不 fit 时确定性 compaction 仍成功
-- 已知估算超窗在本地拒绝，fake/httptest provider 调用计数保持 0；刚好等于预算可发送，超过一个 token 单位拒绝
-- hard-fit 分别构造 recoverable current/old tool payload、oldest tail、new/reused/deferred compaction view、semantic summary 与 deterministic summary；每个 accepted action 的 adapter wire bytes 严格递减、pass 不超过固定上限、第二次执行结果稳定
-- tail fixture 同时保留最新 external user message、较早但最新的 steer、最新 tool result 与 ToolCallID/ProviderCallID replay closure；OpenAI、Anthropic、Google multi-call 编码在 pointer/删尾后都无 dangling pair
-- system、tool schemas、metadata/provider envelope、不可恢复最新 tool result、最新 external instruction 和最小 deterministic summary 的单体/组合超限分别返回 typed `request_budget_unfit`；blocking component 与 estimated/available/reserved 数值稳定且事件/错误中不出现正文 sentinel
-- main local unfit 的 fake/HTTP provider、transport retry、provider auto-resume 与 max-token resume 调用/事件计数均为 0；semantic-summary unfit 继续生成 transcript 与 deterministic summary
-- compaction new/reuse 的 summary 都包含 versioned canonical `history_reference`；经 deterministic summary hard-fit 后该字段仍存在。压缩后由 `read_session_history` 找回已从 provider view 删除的早期 message/tool reference，不需重跑原工具
-- 新 history tool schema 进入 main `RequestBudgetSnapshot.ToolCount/ToolSchemaBytes`；history ToolResult 先满足自身 envelope cap，再通过 TOOL-002A finalizer 与 CTX-003 hard-fit
-
-### 4.6 Providers
-
-- OpenAI 文本输出
-- OpenAI refusal 在 nil event sink 与事件回放路径都保留有界说明、映射为 `blocked`，且 runtime 只调用 provider 一次，不进入 done-candidate degeneration retry
-- OpenAI function call
-- OpenAI `function_call_output` 回放
-- Anthropic text + `tool_use`
-- Anthropic `tool_result` 回放
-- Google text + `functionCall`
-- Google `functionResponse` 回放
-- OpenAI / Anthropic / Google adapter 各自的非 2xx 错误映射
-- provider HTTP status table 永久覆盖 auth 4xx、普通 4xx（含 413）、429 与 5xx，并验证 CLI/Web 对 corrected class 使用对应 remediation
-- OpenAI / Anthropic / Google adapter 各自的 context cancel 传播
-- provider ordinary/thinking probe 对 error stop reason、stop/tool mismatch 与 malformed/unknown-field/trailing `finish` payload fail closed，advertised schema 与 runtime closed-schema validator 保持同源，并由 runtime、CLI JSON 退出码和 Web Settings test 三层回归覆盖；Web 同时保留 typed HTTP 401/413/429 分类
-- OpenAI / Anthropic / Google estimator 与实际 HTTP body 的字段和序列化字节数一致；fake estimator 对相同请求返回确定结果
-- system、messages、tools、metadata、provider envelope、output reserve 与 safety headroom 的边界 fixture 分别可把请求推过 hard-fit
-- estimator 缺失、未知/零/负 context window、零/负 max output 与显式 config override 都有确定的 fail-closed 或兼容默认语义
-- snapshot/event 只包含尺寸、计数、ID 和非敏感 provider options；fixture prompt/tool/metadata 原文不得出现在 snapshot JSON
-
-### 4.7 Web Console
-
-- embedded shell（`/` 与 SPA 应用路由）和 `/ui/*` 资产可直接从本地 service 获取，JavaScript 以 JavaScript MIME 返回；legacy 与旧资源路由返回 404
-- Web 发起的 session `start` 能进入 `awaiting_input`
-- focused retry-resume follow-up 里，`continue` 至少要保留 durable `retry_policy.max_attempts=2` 并真实写出 `provider.retry`
-- 若 retry-resume proof 已拿到上述 durable evidence，而 bounded finish nudges 之后 session 仍停在 `awaiting_input`，应记录为 completion quirk / follow-up note，而不是误判成 retry-policy 失败
-- worker pool 更新与 queue job 提交能落到真实 queue / child session 路径；worker scaling、queue notification 去重、queue job detail 与 retry proof 主要由 API / shell / service tests 覆盖
-- todo store、`todo_write`、context-loaded event 与 compaction handoff 都能保留多个同时 `in_progress` 的 todo，不截断为单一 active item
-- parent session 的 background notification 在 queue completion 与 stale-running reconcile 重叠时仍按 `queue_job_id` 去重
-- 浏览器 UI smoke 当前覆盖 shell/assets 加载，Settings / Workspace / Skills / Sessions / Session 视图基础导航，Workspace 上传与文件重命名，start/continue 后的 session chrome、tool card、timeline 可见性、settled session polling 收敛和 history 清理；前端不再验收 Background / Queue UI，API 提交 queue job 后只验证后端 queue detail 与文件事实源
-- 浏览器端 `runtime exception` / `console error` 必须为空
-
-## 5. Fixture 组织
-
-建议：
-
-```text
-internal/provider/openai/testdata/
-internal/provider/anthropic/testdata/
-internal/provider/google/testdata/
-internal/runtime/testdata/
-```
-
-fixture 内容：
-
-- 正常响应
-- tool call 响应
-- 错误响应
-- 多轮回放样本
-
-## 6. CI 期望
-
-最小 CI 命令：
-
-- `go test ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...`
-- `gofmt -l cmd internal pkg validation/cmd` 结果为空
-- `node --check` 覆盖 `internal/webconsole/ui/` 下全部 JavaScript
-- `node --test validation/scripts/*_test.mjs`
-
-可选增强：
-
-- race test
-- Linux / macOS matrix
-
-## 7. 阶段化验收
-
-### Phase 0
-
-- spec bundle 审核完成
-
-### Phase 1
-
-- 最小 loop 测试通过
-
-### Phase 2
-
-- 内置工具测试通过
-
-### Phase 3
-
-- session store 与事件输出测试通过
-- todo 持久化测试通过
-
-### Phase 4
-
-- skill loading 测试通过
-
-### Phase 5
-
-- compaction 测试通过
-
-### Phase 6
-
-- task system 测试通过
-- goal store、model tool、completion gate 与 CLI/Web 控制面测试通过；Web start 覆盖简单 Goal 开关使用 prompt 作为 objective 的默认路径
-
-### Phase 7
-
-- provider contract tests 通过
-
-### Phase 8
-
-- interrupt / continue / steer / awaiting_input 测试通过
-
-### Phase 9
-
-- hook 测试通过
-
-### Phase 10
-
-- CLI 集成测试和 golden tests 通过
-
-## 8. 手工验证清单
-
-除自动测试外，每轮实现完成后至少做以下手工验证：
-
-- Web 控制台能启动并加载静态资源
-- Web Session 工作区能新建 session
-- 从 Settings 等非 Session 页面点击全局新建会话后，必须切回 Session、显示并聚焦 composer；真实浏览器 smoke 覆盖该导航链路
-- Web 运行中 steer 能入队并在 timeline 可见
-- Web awaiting_input / paused / failed session 与 completed root session 能 continue；completed child 返回 parent `agent_prompt` / queue requeue 恢复提示
-- Web Goal / Plan Mode 控制能按文件事实展示和执行
-- Settings provider/model 配置能保存并驱动后续 Web session start / continue；Session composer 不再暴露 per-session Advanced provider 面板
-- OpenAI-compatible `reasoning_effort: max` 必须在 config、Web Settings、`/api/config/test`、models catalog 和 `--thinking-level` 间保持一致，并用真实 Responses provider probe 证明 wire request 未被降级
-- doctor runtime probe 必须使用各 CLI 的有效版本参数（Go 为 `go version`），不能把已安装 Go 误报为 `version_error`
-- `init` 是否生成正确配置
-- `run` 是否能进入 loop 并自然停在 `awaiting_input`
-- `steer` 是否能在运行中被接纳
-- `Esc` 是否能暂停
-- `continue` 是否能恢复
-- `tasks` 是否能正确显示 ready / blocked
-- `exec` 是否能在无 TTY 场景工作
-- 若本轮触及 queue / continue 恢复链路，还要补一条 focused webconsole live 验证，确认 embedded assets、真实浏览器交互和 background notification 证据都落盘
-
-## 9. 通过标准
-
-功能完成不等于交付完成。只有在以下都通过时才算该 phase 完成：
-
-- 单元测试通过
-- phase 对应集成测试通过
-- 至少一条真实 Web 手工路径通过
-- 至少一条 CLI fallback 手工路径通过
-- spec 与实现对照检查无关键偏差
-
-审批回执阶段必须验证同 ID/同参重放、改参冲突、同 target 换 ID alias、当前目标改变后 receipt-first、新目标新 ID、coverage rejected binding 与新 ID override；实际 CLI/SDK/Web/direct-linked 并发至多一次 admission，linked executing 200 不执行，普通 follow-up 保持。按 write/file-fsync/publish/dir-fsync/after-commit 及 prepared/claim/approval/history/replay/admitted 边界注入失败和重启，验证 corrupt ledger 对任意 ID fail closed、hook 空/替换消息、addHandle 失败和 legacy 显式恢复。运行相关 race、完整 ./test.sh 及 zh-CN/en 桌面/移动实际完成回执重放/未知响应/refresh/session-switch E2E；保留所有实际红例、合法 controls 和历史环境失败。
-
-### Queue budget resume 的 lease 回归
-
-- 用本地 loopback provider 经真实 QueueSubmit → ProcessNextJob budget pause → agent_prompt extension/continue 验证恢复；不调用真实 provider。
-- 确定性覆盖预算镜像保留已取得的 running lease、跨 Store claim 临界区等待、最新 settled/foreign owner/result 保留、正常 settlement 与 requeued/reaper/missing/corrupt/foreign lease loss 的区分，以及 heartbeat 持续刷新。
-- 真正失去 ownership 后，queue resume 的执行 settlement 与准备失败 rollback 都不得覆盖新 owner；保存原始红例、基线/候选 source 与 stage/time 证据。existing budget/cap/cross-parent、reaper、cancel、CLI/SDK/Web 回归与 race gate 保持原预算和断言；单个 focused pass 不替代完整 gate。
-
-- queue resume/worker 的最终 job settlement 必须在同一 claim lock 内重新验证最新 canonical owner/outcome并发布；准备失败 rollback 仅允许当前 owned running claim。正常 child terminal 已先结算时可补充输出元数据，但不得逆转其 terminal status/session/result；使用实际 committed job 投递 coordination/events。
-
-- 唯一保留的 completed → failed handoff 例外：当前 worker 对同一非空 linked child session 的 metadata/messages/产物交付发生真实失败，使用显式 failed-handoff write mode记录非空失败事实；仍在 claim lock 内验证 current owner，不能借该例外覆盖其他 child、cancelled/reclaimed 或 foreign owner 结果。
-
-- 被动 queue full/status reader 在 child state 尚未开始更新时保留 provisional resume running claim：必须有精确 `agent_prompt:<parent>` marker、running SessionStatus、有效近期 claim/lease，以及 paused/awaiting state 的有效 UpdatedAt 不晚于 ClaimedAt。该判定跨 reader process 生效；无时间戳证明、普通 worker、stale/reclaimed claim 或 claim 之后的新 pause 继续原 reconcile 语义，不续租所有 blocked job。
-
-- 被动 reader 的 repair publication 还需在 claim lock 内对完整 canonical snapshot 做版本比较；reader 在新 resume claim 之前读到旧 blocked，或在计算 repair 时遇到 heartbeat/settlement 推进，不得 Save 旧整份事实。冲突时跳过旧 attempt 的后续 coordination/notification，full `LoadJob` / `ListJobs` 从最新 canonical facts 重新协调；成功返回 terminal job 前必须完成其幂等 parent coordination/notification/event 修复，不能依赖稍后 worker 偶然补写。重试有界，持续冲突返回显式可重试 read error，其他落盘错误原样报告；跨重试保留 snapshot 已更新的 changed 语义。status/snapshot 入口保持原有只读/轻量观测合同。
-
-## Browser adapter verification (#136)
-
-See [optional browser contracts](19-browser-tools.md). Default OFF; reuse the existing tool/session lifecycle. Offline registry/runtime/CLI/Web tests plus `AEGIS_BROWSER_E2E=1` private-install localhost acceptance are required. Real-runtime limitations must remain explicit.
+前端测试必须关注：
+
+- durable 原文不会因为 locale 切换而被改写；
+- API 错误、断线、refresh、session switch 和失败发送能恢复；
+- approval request ID、revision、receipt 和 CAS 失败不会误执行；
+- 字节分页和大文件 preview 不把字符数当成字节数；
+- vendor 文件与声明的版本、notice 和 hash 一致。
+
+## Web E2E 区域
+
+`validation/scripts/webconsole_e2e.mjs` 编排以下区域：
+
+- `server`：binary、监听、嵌入 shell、资源 MIME、CSP、Host 和退役路径；
+- `shell`：布局、sidebar、导航、快捷键、palette、locale 和连接状态；
+- `session`：start、message、tool steps、continue、steer、interrupt、stop、refresh；
+- `plan`：Plan Mode 输入、修订、取消和 linked Goal；
+- `approvals`：CAS、覆盖、coverage、跨 surface 控制；
+- `receipts`：准备、接纳、查询、重放、未知回执和恢复；
+- `recovery`：发送失败草稿、断线、页面切换和错误提示；
+- `showcase`：包含真实内容的 Context、Files、Timeline 和移动布局；
+- `pages`：Sessions、Skills、Workspace、Settings 的 CRUD 和返回；
+- `audits`：console/request 错误、原文翻译、安全路径和显示证据。
+
+迭代时可用 `--only=server,shell`、`--output=validation/runs/local` 和 `--keep-runtime`。浏览器使用确定性 scripted provider，不需要真实凭据。
+
+## 行为改动的覆盖要求
+
+| 改动 | 最少检查 |
+| --- | --- |
+| pure Go helper/config | 对应 Go package test；边界字段加失败用例 |
+| session/runtime/provider | 对应 package test；跨状态或并发时加 race |
+| Web service/API/security | Web service test；涉及页面时加对应 E2E area |
+| 前端 state/model | Node 单测；页面交互或布局改动加 E2E |
+| 前端文案/locale | 两种 locale parity test；durable 原文场景加 E2E |
+| 仅文档/config sample | 链接、字段、命令与源码检查；不强制完整行为测试 |
+
+## CI gate
+
+GitHub Actions 在 Ubuntu 24.04、Go 1.26.11、Node 22 上执行：
+
+~~~sh
+npm ci --ignore-scripts
+./test.sh
+go vet ./...
+staticcheck ./...
+govulncheck ./...
+go test -race -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/... ./validation/cmd/...
+npx --no-install playwright install --with-deps chromium
+npm run test:e2e
+~~~
+
+E2E 运行目录无论成功或失败都会上传。CI 通过表示这些命令在 CI 环境完成，不表示真实 provider、用户网络或所有平台均已验证。
+
+## 证据和失败处理
+
+失败时保留原始输出、manifest、截图和 commit 信息，先缩小到能回答问题的测试区域，再修改实现。不要删除红例后只保留绿例，也不要把真实敏感 transcript 上传到 issue 或 artifact。
+
+测试通过只能证明测试范围内的行为；对于未运行的 macOS、真实 provider、反向代理或可选 browser tools，提交说明必须明确写成未验证。
