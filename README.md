@@ -1,205 +1,118 @@
 # Aegis Agent
 
-`aegis-agent` is a Web-first local agent harness written in Go. You drive it
-from a bilingual local Web console; the CLI remains available for automation,
-recovery, CI, and advanced use.
+Aegis Agent 是一个用 Go 编写的本地 agent harness。它把模型、工具、技能、文件工作区和可恢复的 session 组合在一起，提供一个本地 Web 控制台和一套适合脚本与 CI 的 CLI。
 
-The model remains the agent. Aegis supplies provider adapters, tools, skills,
-durable session facts, compaction, live steering, and safety boundaries without
-imposing a fixed workflow engine.
+模型负责判断下一步做什么；Aegis 负责提供工具协议、provider 适配、文件持久化、执行控制和安全边界。每次执行的关键事实写入本地 session 目录，Web 和 CLI 读取同一份事实。
 
-[Quick start](#quick-start) · [Web console](#web-console) ·
-[Provider configuration](#provider-configuration) ·
-[Runtime architecture](./spec/01-runtime-architecture.md) ·
-[Web console spec](./spec/17-web-console.md) · [Security](./SECURITY.md) ·
-[Contributing](./CONTRIBUTING.md)
+> 当前项目面向 Unix-like 环境。`build.sh` 明确拒绝 Windows 目标；CI 在 Ubuntu 24.04 上运行，macOS 是受支持的本地开发平台。
 
-> **Status:** active development (`v0.1.0-dev`). The Web-first v1 surface is
-> usable; advanced orchestration and isolation remain explicit/experimental.
+## 你会得到什么
 
-![Aegis Agent Web console: a completed session with collapsed tool steps, todo progress, file changes and the task inspector](./docs/assets/web-console.png)
+- **本地 Web 控制台**：会话列表与搜索、实时消息流、工具步骤折叠、Goal、Plan Mode 审批和提问、任务与上下文检查器、Workspace、Skills、Settings、命令面板以及中英文界面。
+- **CLI**：`init`、`run`、`exec`、`continue`、`steer`、`sessions`、`goal`、`tasks`、`models`、`probe-provider` 和 `doctor`；委派、队列和 TUI 位于 `experimental` 下。
+- **Provider 适配**：OpenAI Responses、Anthropic Messages、Google Gemini `generateContent` 和 OpenAI-compatible endpoint。
+- **本地事实源**：消息、事件、状态、Goal、任务、队列工作和压缩产物写入你控制的文件目录，支持中断、继续和审计回看。
+- **安全边界**：workspace 与 symlink escape 防护、shell 超时和环境变量白名单、Plan Mode 审批、Web mutation 校验、Host 校验和 Web 审计日志。
 
-## Highlights
+Aegis Agent 不提供 hosted 多用户服务、远程终端、浏览器 IDE 或固定 workflow engine。Web 控制台是本地 operator surface，不是第二个 runtime。
 
-- **Local Web console** — chat-first session workspace with a searchable
-  session sidebar, collapsible tool steps, live activity, inline Plan Mode
-  approvals and questions, Goal controls, a contextual inspector (tasks,
-  children, context, timeline, file changes), a command palette, and provider
-  settings. Simplified Chinese by default, English one click away.
-- **CLI fallback** — `init`, `run`, `exec`, `steer`, `continue`, `sessions`,
-  `goal`, `tasks`, `probe-provider`, and `doctor`.
-- **Provider adapters** — OpenAI Responses, Anthropic Messages, Google Gemini
-  `generateContent`, and OpenAI-compatible Responses endpoints.
-- **Durable, local facts** — messages, events, state, goals, tasks, queue jobs,
-  and compaction artifacts stay in files you own and can recover from.
-- **Safety boundaries** — workspace and symlink escape protection, shell
-  timeouts and environment allowlists, Plan Mode gates, and audited Web
-  mutations.
-- Optional, default-off local [browser-use tools](./spec/19-browser-tools.md).
+## 五分钟启动
 
-Aegis deliberately does not provide a hosted multi-user service, browser IDE
-features, remote terminals, or a fixed workflow engine.
+需要 Go 1.26.11 或更新版本。第一次构建：
 
-## Quick start
-
-Requirements: Go 1.26.11+ on Linux, macOS, or WSL.
-
-```sh
+~~~sh
 ./build.sh
-./bin/aegis-agent init --force
-export OPENAI_API_KEY=...        # or the key your provider profile names
+./bin/aegis-agent init --force --config .aegis-agent/config.yaml
+export OPENAI_API_KEY=你的密钥
 ./bin/aegis-agent web --config .aegis-agent/config.yaml --listen 127.0.0.1:3940
-```
+~~~
 
-Open `http://127.0.0.1:3940`. Sessions use the local `workspace/` directory by
-default, which Git ignores.
+然后打开 `http://127.0.0.1:3940`。`init` 生成配置，`--config` 明确选择它。示例中的密钥只是占位符；不要把真实密钥、`.env`、session 或 provider transcript 提交到仓库。
 
-`init` writes a configuration file; select it explicitly with `--config`. A
-missing explicitly selected config is an error, never a silent fallback, and
-generating one does not authorize implicit workspace config loading (see
-[configuration loading](./spec/02-cli-and-config.md#7-配置文件)). Without any
-loaded config, new runs, provider probes and Web startup require an explicit
-`--allow-builtin-config`. Run `doctor --config … --skip-probe` to diagnose a
-setup without calling a provider.
+如果没有加载配置文件，provider 执行和 Web 启动会拒绝继续。只有在你明确接受内置默认值时，才使用：
 
-## Web console
+~~~sh
+./bin/aegis-agent web --allow-builtin-config
+~~~
 
-The console is a no-build ES module app embedded in the binary
-(`internal/webconsole/ui`). It needs no CDN or npm runtime and works offline.
+配置文件的选择、workspace trust 和环境文件规则见 [CLI 与配置](./spec/02-cli-and-config.md)；可复制的完整样例见 [config/config.example.yaml](./config/config.example.yaml)。
 
-- **Sidebar** — new session, search, and your sessions: running and waiting
-  sessions are pinned, the rest are grouped by date. Session pages, Skills,
-  Workspace and Settings live at the bottom.
-- **Session** — the conversation reads top to bottom: tool calls fold into step
-  groups, a live line shows what the agent is doing, and plan approvals or
-  questions appear inline where you can answer them. The composer starts,
-  steers, continues or stops the run; toggle **Goal** or **Plan** before
-  sending. Failed sends are kept as drafts you can restore — nothing is resent
-  automatically.
-- **Inspector** — opens beside the conversation on wide screens (overlay on
-  smaller ones) with only the tabs that apply: overview, plan, goal, tasks,
-  agents, context, timeline and files.
-- Every session has its own URL (`/s/<session-id>`), so reloads and the browser
-  back button work as expected.
+## Web 控制台
 
-| Shortcut (macOS / others) | Action |
+前端是嵌入二进制的无构建 ES Module 树，源码位于 `internal/webconsole/ui/`，vendor 中包含仓库管理的 Preact、hooks 和 htm。运行时不依赖 CDN 或 npm。
+
+控制台包含四个主要区域：
+
+1. 左侧会话栏：创建会话、搜索会话、查看运行状态，并进入 Sessions、Skills、Workspace 和 Settings。
+2. 中间会话流：查看消息与工具步骤，发送新任务、steer、continue、interrupt 或 stop；失败发送会保留为草稿，不会自动重发。
+3. 内联控制：在 Plan Mode、Goal 或 `request_user_input` 暂停处直接审批、修订、取消或回答。
+4. 右侧检查器：按会话显示 Overview、Plan、Goal、Tasks、Agents、Context、Timeline 和 Files 等适用信息。
+
+页面路由是 `/`、`/s/<session-id>`、`/sessions`、`/skills`、`/workspace` 和 `/settings`。资源从 `/ui/*` 提供，实时连接使用 `/ws`。被移除的旧资源路径返回 404。
+
+控制台可以启动 agent、修改 provider 配置和 `.env`、管理 skills、读写 workspace、删除 session，因此默认监听 loopback。只有在网络受信任且已配置 Host allowlist、Basic Auth 和 HTTPS 时，才考虑暴露到其他地址。
+
+常用快捷键：
+
+| 快捷键 | 作用 |
 | --- | --- |
-| `⌘K` / `Ctrl+K` | Command palette (actions, pages, recent sessions) |
-| `⌘⇧O` / `Ctrl+Shift+O` | New session |
-| `⌘B` / `Ctrl+B` | Toggle the sidebar |
-| `⌘.` / `Ctrl+.` | Toggle the inspector |
-| `/` | Focus the composer |
-| `?` | Show all shortcuts |
-| `Enter` / `Shift+Enter` | Send / new line |
+| `⌘K` / `Ctrl+K` | 打开命令面板 |
+| `⌘⇧O` / `Ctrl+Shift+O` | 新建会话 |
+| `⌘B` / `Ctrl+B` | 显示或隐藏侧栏 |
+| `⌘.` / `Ctrl+.` | 显示或隐藏检查器 |
+| `/` | 聚焦 Composer |
+| `?` | 查看快捷键 |
+| `Enter` / `Shift+Enter` | 发送 / 换行 |
 
-The console uses a light theme and starts in Simplified Chinese; switch with
-`中文 / EN` in the top bar (stored in the browser). Prompts, model output, tool
-payloads, file contents and paths are always shown verbatim, never translated.
+## CLI 入口
 
-**Keep the console on loopback unless the network is trusted.** It can run
-agents, change provider settings and API keys, manage skills, modify workspace
-files and delete session history. For other hosts, list them in
-`web.allowed_hosts` and enable `web.basic_auth` (bcrypt hash only) behind
-HTTPS; see [config/config.example.yaml](./config/config.example.yaml). The
-former `/legacy/` page has been removed; `web.legacy_ui_enabled` is still
-accepted in config files but has no effect.
+~~~sh
+# 交互执行
+./bin/aegis-agent run --config .aegis-agent/config.yaml "检查当前仓库并给出最小修复建议"
 
-## CLI
+# 适合脚本和 CI；默认要求模型显式调用 finish
+./bin/aegis-agent exec --config .aegis-agent/config.yaml --json "运行检查并返回结果"
 
-```sh
-./bin/aegis-agent run --config .aegis-agent/config.yaml \
-  "Inspect this repository and suggest the smallest safe fix."
+# 对已有 session 继续或追加 steering
+./bin/aegis-agent continue <session-id> --config .aegis-agent/config.yaml --message "继续处理失败项"
+./bin/aegis-agent steer <session-id> --config .aegis-agent/config.yaml --message "先检查测试失败原因"
+~~~
 
-./bin/aegis-agent steer <session-id> --config .aegis-agent/config.yaml --message "Focus on failing tests first."
-./bin/aegis-agent continue <session-id> --config .aegis-agent/config.yaml --message "Proceed with the next step."
-```
+`run` 连接终端时支持 Esc 中断；无交互脚本优先使用 `exec`。`exec` 可输出文本、JSON 或 `stream-json`，并支持 `--plan`、Goal 和显式 provider/model 选择。
 
-- `run` is interactive; press `Esc` to pause.
-- `exec` is for scripts and CI and succeeds only after the model calls
-  `finish`.
-- `--plan` / `--plan-only` enter the durable Plan Mode gate.
-- Before calling a provider, `run` / `exec` print the loaded config layers and
-  the resolved profile, model and endpoint on stderr; JSON and stream-json
-  records stay on stdout.
+## 开发与验证
 
-## Provider configuration
+开发依赖 Go 1.26.11+、Node.js 22+ 和 npm。前端没有独立 build step，修改 `internal/webconsole/ui/` 后重新构建 Go binary，再运行浏览器验收。
 
-Start from the file generated by `init` or from
-[`config/config.example.yaml`](./config/config.example.yaml). Credentials come
-from environment variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
-`GEMINI_API_KEY` (or the local `.env` written by Settings); never commit them.
-The Settings page can test a provider before you save.
-
-For an OpenAI-compatible gateway that rejects request `metadata`, set
-`send_metadata: false` in that complete `providers.<profile>` block, or
-persist it when generating the config:
-
-```sh
-./bin/aegis-agent init --provider openai-compatible --config gateway.yaml \
-  --base-url https://gateway.example/v1 --model gateway-model \
-  --api-key-env GATEWAY_API_KEY --send-metadata=false
-```
-
-Existing sessions keep their recorded provider options; override one explicitly
-with `continue <id> --send-metadata=false` (or `exec --resume <id> …`). With
-layered configuration, a later layer replaces a whole profile entry.
-`init --reasoning-effort <value>` persists an explicit OpenAI API-family effort.
-Provider-side storage stays disabled where supported so local session files
-remain the source of truth. Details: [CLI and config](./spec/02-cli-and-config.md),
-[provider contracts](./spec/03-provider-contracts.md).
-
-## Development
-
-Validation requires Go 1.26.11+ and Node.js 22+.
-
-```sh
-./test.sh                                   # gofmt, JS syntax, JS unit tests, Go tests
-go test ./internal/<package> -count=1       # focused Go work
-node --test validation/scripts/*_test.mjs   # frontend logic and i18n tests
-```
-
-The browser acceptance suite drives the real local service with a
-deterministic provider fixture (no credentials) and writes screenshots plus a
-hashed manifest under `validation/runs/` (uploaded by CI):
-
-```sh
+~~~sh
+./test.sh
+npm test
+go test ./internal/<package> -count=1
 npm ci --ignore-scripts
 npx playwright install chromium
 npm run test:e2e
-```
+~~~
 
-Frontend work has no build step: edit `internal/webconsole/ui`, rebuild the
-binary (assets are embedded at build time) and reload. Read
-[`spec/17-web-console-frontend.md`](./spec/17-web-console-frontend.md) first.
+CI 还运行 `go vet ./...`、`staticcheck ./...`、`govulncheck ./...` 和 `go test -race`。完整检查说明见 [测试策略](./spec/07-testing-strategy.md) 和 [validation/README](./validation/README.md)。
 
-On macOS, `/tmp` and `/var` are symlinks and the runtime refuses to write
-through symlinked parents; run Go tests with
-`TMPDIR="$(cd "${TMPDIR:-/tmp}" && pwd -P)/"`.
+macOS 的系统临时目录可能经过符号链接；遇到路径边界测试失败时，使用一个已经解析为真实目录的 `TMPDIR` 再运行 Go 测试。验证脚本本身会为浏览器运行解析临时根。
 
-Binaries, sessions, workspace contents, validation output, local skills and
-archives are ignored. Do not commit live-provider transcripts, API keys,
-personal prompts or generated audit artifacts.
+## 仓库地图
 
-## Repository layout
+| 目录 | 责任 |
+| --- | --- |
+| `cmd/aegis-agent` | 二进制入口 |
+| `internal/app` | CLI 命令解析和 Web 启动 |
+| `internal/runtime` | agent loop、控制、Goal、Plan Mode、压缩、委派和队列 |
+| `internal/provider` | provider adapter、请求重试和响应解析 |
+| `internal/session` | 文件型 session store 与持久化事实 |
+| `internal/tools` | 内置工具、workspace 安全和输出限额 |
+| `internal/webconsole` | 本地 HTTP/WebSocket 服务及嵌入资源 |
+| `internal/webconsole/ui` | 无构建前端源码 |
+| `pkg/agent` | 面向 Go 调用方的 facade |
+| `validation` | 无凭据 fixture、Node 单测和 Playwright 验收 |
+| `spec` | 产品、架构、操作和验证契约 |
 
-- [`cmd/aegis-agent`](./cmd/aegis-agent): CLI entrypoint.
-- [`internal/runtime`](./internal/runtime): agent loop, lifecycle, compaction,
-  delegation, and completion controls.
-- [`internal/provider`](./internal/provider): provider adapters and replay.
-- [`internal/session`](./internal/session): durable file-backed state.
-- [`internal/tools`](./internal/tools): built-in tools and workspace safety.
-- [`internal/webconsole`](./internal/webconsole): local HTTP service;
-  [`ui/`](./internal/webconsole/ui) holds the embedded frontend.
-- [`pkg/agent`](./pkg/agent): runtime-first Go facade.
-- [`spec`](./spec): product, runtime, provider, and validation contracts.
-- [`validation`](./validation): deterministic validation helpers and fixtures.
+从 [文档地图](./spec/README.md) 进入详细规范。贡献流程见 [CONTRIBUTING](./CONTRIBUTING.md)，安全问题见 [SECURITY](./SECURITY.md)。
 
-## Documentation and contribution
-
-The product and architectural contracts live in [`spec/`](./spec). Start with
-[`spec/00-product.md`](./spec/00-product.md) and
-[`spec/09-phase-plan.md`](./spec/09-phase-plan.md). Contributor expectations
-are in [`CONTRIBUTING.md`](./CONTRIBUTING.md); report suspected
-vulnerabilities privately via [`SECURITY.md`](./SECURITY.md).
-
-This project is distributed under the [MIT License](./LICENSE).
+本项目使用 [MIT License](./LICENSE)。
