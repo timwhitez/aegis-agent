@@ -79,7 +79,7 @@ Goal banner、Plan input card、approval card 和 approval receipt 显示当前 
 
 ### Inspector、Workspace、Skills、Settings
 
-Inspector 只展示当前 session 适用 tabs。Workspace 列表按服务返回的 bytes、modified_at 和 pagination cursor 展示；Skills 安装/卸载、Settings save/probe 和 session delete 都使用 confirm dialog 与错误 recovery。
+Inspector 只展示当前 session 适用 tabs；Context tab 在一次 session 访问内只请求一次 `/context`，切到其他 tab 再回来复用结果，点击 Refresh 或切换 session 才重新请求。Workspace 列表一次显示服务返回的整个目录（含文件大小和 modified_at，没有列表分页）；文件预览只使用服务返回的字节 offset/cursor 分页，并丢弃过期页。删除 session、清空历史、卸载 skill、删除 Workspace 文件或目录（单个与批量）、保存 Settings 以及带未保存修改离开 Settings 前使用 confirm dialog；新建目录和重命名使用 prompt dialog 输入名称；上传 skill、上传文件和 Settings 连接测试直接执行，失败时就地显示错误。
 
 ### 命令面板与快捷键
 

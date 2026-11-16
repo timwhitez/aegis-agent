@@ -3,7 +3,7 @@
 // Credential-free: builds aegis-agent and the scripted provider fixture
 // (validation/cmd/budgetsmokeprovider), renders a temporary config, starts
 // both on random ports and drives Chromium through every area of
-// spec/17-web-console-frontend.md §10 / spec/17-web-console.md §12.
+// spec/17-web-console-frontend.md「验证」and spec/17-web-console.md「修改 Web 的验收」.
 // Screenshots, provider decisions and manifest.json are written to
 // validation/runs/webconsole-e2e-<stamp>/ (or --output=<dir>).
 //

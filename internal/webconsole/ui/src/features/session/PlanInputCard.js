@@ -1,4 +1,4 @@
-// Inline Plan Mode question card (spec/17-web-console-frontend.md §7.3):
+// Inline Plan Mode question card (spec/17-web-console-frontend.md「Goal、Plan Mode 与提问」):
 // shown while plan_mode.status === 'awaiting_user_input'. Every question is
 // a single choice among the offered options or a free-form "Other" answer;
 // answers are built with session-model.js collectPlanInputAnswers() and

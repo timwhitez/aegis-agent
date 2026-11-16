@@ -215,7 +215,7 @@ export async function runSession(h) {
     await openInspectorTab(page, 'tasks');
     await openInspectorTab(page, 'context');
     await panel.getByText('根会话峰值', { exact: true }).waitFor();
-    // Reuse is per session visit (spec/17-web-console.md §7.4.1), whatever detail refreshes happened meanwhile.
+    // Reuse is per session visit (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」), whatever detail refreshes happened meanwhile.
     assert.equal(contextRequests.length, 2, 'switching back to Context reuses the loaded report');
   }, { page });
   await h.capture(page, 'session-context-zh-desktop');

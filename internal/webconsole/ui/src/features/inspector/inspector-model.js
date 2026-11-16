@@ -564,7 +564,7 @@ export function contextReportView(report) {
 }
 
 /**
- * Context tab load decision (spec 17 §7.4.1: /context is requested only when
+ * Context tab load decision (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」: /context is requested only when
  * the tab is opened or Refresh is clicked). cached = { report, visit } kept by
  * the tab for a session; visit identifies the current visit of that session
  * and changes on every session switch. Re-opening the tab during the same

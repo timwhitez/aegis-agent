@@ -1,5 +1,4 @@
-// Runtime token coverage (spec/17-web-console-frontend.md §9, spec/17-web-console.md
-// §4.5): every event type and session phase the Go runtime can emit has an
+// Runtime token coverage (spec/17-web-console-frontend.md「i18n 与原文」): every event type and session phase the Go runtime can emit has an
 // inspector-owned eventType.<type> / phase.<phase> entry in both locales, so the
 // zh-CN Timeline / Overview never fall back to humanized English ("Task created",
 // "Plan approval"). The tokens are scanned from the non-test Go sources under

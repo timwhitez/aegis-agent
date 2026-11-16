@@ -1,4 +1,4 @@
-// Approval CAS browser acceptance (spec/17-web-console.md §7.13): the browser
+// Approval CAS browser acceptance (spec/17-web-console.md「Goal 与 Plan Mode」): the browser
 // approves exactly the target it displayed. Stale versions, linked mission
 // edits (reviewed in the Goal tab, approved on the single inline approval
 // path) and coverage confirmation against a changed scope are rejected before

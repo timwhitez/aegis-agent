@@ -1,4 +1,4 @@
-// Composer (spec/17-web-console-frontend.md §7.2): auto-growing input with
+// Composer (spec/17-web-console-frontend.md「会话流和 Composer」): auto-growing input with
 // state-aware placeholder, Goal / Plan / interrupt toggles, provider/model
 // override and a primary button that morphs send ↔ steer ↔ stop.
 // Sending, drafts and recovery live in state/session-actions.js; this

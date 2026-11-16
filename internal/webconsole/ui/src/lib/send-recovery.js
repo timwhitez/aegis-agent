@@ -1,6 +1,6 @@
 /**
  * Composer send intents, optimistic messages and failed drafts
- * (spec/17-web-console.md §8.1.1). Pure in-memory model: no DOM, no fetch,
+ * (spec/17-web-console-frontend.md「会话流和 Composer」). Pure in-memory model: no DOM, no fetch,
  * no localStorage. Failed drafts deliberately never leave memory.
  *
  * Rules implemented here:
@@ -95,8 +95,8 @@ export function sameSessionRef(a, b) {
 const LAUNCH_STATUSES = Object.freeze(['', 'queued', 'pending']);
 
 /**
- * How a composer send relates to the open run (spec/17-web-console.md §7.6,
- * §7.7, §8.2; spec/17-web-console-frontend.md §7.2). Mirrors the server:
+ * How a composer send relates to the open run (spec/17-web-console.md
+ * 「继续、steer、中断和 stop」; spec/17-web-console-frontend.md「会话流和 Composer」). Mirrors the server:
  *   - Runner.Steer accepts a steer exactly while the durable state.status is
  *     'running' (any owner, with or without a handle): 'steer'.
  *   - A live run handle (detailHasLiveRunHandle: not merely settling) on any

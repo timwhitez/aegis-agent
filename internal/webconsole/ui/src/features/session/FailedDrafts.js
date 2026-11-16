@@ -1,4 +1,4 @@
-// Failed sends above the composer (spec/17-web-console.md §8.1.1): memory
+// Failed sends above the composer (spec/17-web-console-frontend.md「会话流和 Composer」): memory
 // only, labelled with the original session, distinguishing an explicit
 // rejection from "未确认是否送达". Restore copies the raw text back only into
 // an empty composer and never resends; dismiss drops the card. The card is

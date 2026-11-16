@@ -1,4 +1,4 @@
-// Session message stream (spec 17-web-console-frontend §7.1).
+// Session message stream (spec/17-web-console-frontend.md「会话流和 Composer」).
 // Contract: export function MessageList(); no props. Reads session.messages,
 // session.optimistic (optional, pending local user messages), session.detail,
 // session.generating, session.liveEvents, session.activity (optional override)

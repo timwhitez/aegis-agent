@@ -10,7 +10,7 @@ export const MAX_VISIBLE_TOASTS = 3;
 const TOAST_PARTS = Object.freeze(['message', 'detail', 'action']);
 
 /**
- * Normalizes the raw marker of a toast (spec/17-web-console-frontend.md §9):
+ * Normalizes the raw marker of a toast (spec/17-web-console-frontend.md「i18n 与原文」):
  * true marks every part, an object marks parts by name. Raw parts are durable
  * backend text (error message/detail/action) and render inside translate="no";
  * operator copy from t() stays translatable.

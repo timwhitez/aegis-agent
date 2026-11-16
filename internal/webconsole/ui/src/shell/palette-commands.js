@@ -1,4 +1,4 @@
-// Builds the command palette command list from the current state (spec §7.4).
+// Builds the command palette command list from the current state (spec/17-web-console-frontend.md「命令面板与快捷键」).
 import { t } from '../lib/i18n.js';
 import { shortId } from '../lib/format.js';
 import { summaryTitle } from '../lib/session-list.js';

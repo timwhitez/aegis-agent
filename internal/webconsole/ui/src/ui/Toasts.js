@@ -23,7 +23,7 @@ export function toastPlacement(state) {
 
 /**
  * Labelled toast line (detail / action). Raw backend text sits in its own
- * translate="no" node after the translatable label (spec §9); operator copy
+ * translate="no" node after the translatable label (spec/17-web-console-frontend.md「i18n 与原文」); operator copy
  * is interpolated into the label as usual.
  */
 function labelledLine(key, param, value, raw) {

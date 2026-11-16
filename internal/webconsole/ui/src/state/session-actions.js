@@ -1,5 +1,5 @@
-// Session control actions (spec/17-web-console-frontend.md §5.1, §7.2–7.3;
-// spec/17-web-console.md §7.5–7.13 and §8.1–8.3). Function names are fixed by
+// Session control actions (spec/17-web-console-frontend.md「交互契约」;
+// spec/17-web-console.md「运行控制」). Function names are fixed by
 // the module contract; extra exports are additive.
 //
 // createSessionActions(deps) builds every action against injected

@@ -1,6 +1,6 @@
 // Workspace page (route /workspace, data-testid page-workspace): a restricted
-// file manager over the server cwd (spec/17-web-console.md §2.2, §7 workspace
-// rules, §7.19). Browsing may reach the parent cwd; uploads, new folders,
+// file manager over the server cwd (spec/17-web-console-frontend.md「Inspector、Workspace、
+// Skills、Settings」 and the /api/files routes in spec/17-web-console.md). Browsing may reach the parent cwd; uploads, new folders,
 // renames and deletes are limited to the workspace/ root (server enforced; the
 // UI disables them outside it). The browsed path is a UI preference bucketed
 // by (workspace root, last session) and follows the session workdir only per

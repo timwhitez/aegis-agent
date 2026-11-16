@@ -280,7 +280,7 @@ export async function refreshMeta() {
 
 /**
  * Debounced refresh used by relay hints and relay reconnects. Paused while the
- * page is hidden (spec/17-web-console-frontend.md §5): main.js refreshes the
+ * page is hidden (spec/17-web-console-frontend.md「启动与数据流」): main.js refreshes the
  * overview and the open session when the page becomes visible again.
  */
 export function queueRefresh(channel, delay) {

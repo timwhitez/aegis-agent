@@ -1,3 +1,58 @@
+# Web 控制台服务
+
+本文描述 `internal/webconsole` 提供的本地 HTTP 服务：路由、运行控制、实时状态、安全边界和验收要求。前端模块、交互和验证见 [Web 控制台前端实现](./17-web-console-frontend.md)，配置字段见 [CLI 与配置](./02-cli-and-config.md)。
+
+## 范围
+
+- `aegis-agent web` 启动的本地 HTTP 服务，默认监听 `127.0.0.1:3940`，并嵌入无构建前端；
+- REST API 读取 session 文件事实并发起控制，runtime 负责实际执行，服务不维护第二套执行循环；
+- 不提供 hosted 多用户、远程终端或浏览器 IDE；HTTPS 由外层负责。
+
+## 路由
+
+除 `/ui/*`、退役路径和下表中的 API 外，其余 GET/HEAD 路径（`/`、`/s/{id}`、`/sessions`、`/skills`、`/workspace`、`/settings` 等）都返回嵌入的 `index.html`，由前端 router 渲染；其他方法返回 405。
+
+| 路由 | 方法 | 用途 |
+| --- | --- | --- |
+| `/ui/*` | GET、HEAD | 嵌入的前端资源；缺失文件和目录返回 404，不回退到页面 shell |
+| `/legacy`、`/v2-assets`、`/shared-assets` 及其子路径 | 全部 | 退役前端路由，返回 404 |
+| `/api/meta` | GET | 服务元信息：session/workspace 根、provider、worker 数和能力 |
+| `/api/overview` | GET | 侧栏数据：计数、最近会话、job、worker、失败和 feed |
+| `/api/history` | GET | 分页会话历史（`page`、`page_size`） |
+| `/api/sessions` | GET | 会话摘要列表（`limit`，最多 200） |
+| `/api/sessions/start` | POST | 启动新会话，返回 202 accepted |
+| `/api/sessions/clear` | POST | 清空历史；有活动 handle 或未结算 job 时返回冲突 |
+| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话 |
+| `/api/sessions/{id}/messages` | GET | 消息分页（`before_id`、`limit`） |
+| `/api/sessions/{id}/children`、`tasks`、`file-changes`、`context` | GET | 子会话与队列 job、任务板、文件变更、上下文报告 |
+| `/api/sessions/{id}/continue`、`steer`、`interrupt`、`stop` | POST | 运行控制 |
+| `/api/sessions/{id}/goal` | GET、POST、PATCH、DELETE | 读取、创建、修改、清除 Goal |
+| `/api/sessions/{id}/goal/complete`、`pause`、`resume` | POST | 修改 Goal 状态 |
+| `/api/sessions/{id}/mission/plan`、`mission/validation` | PATCH | 修改 mission plan 与 validation |
+| `/api/sessions/{id}/mission/plan/approve` | POST | 批准 linked mission plan |
+| `/api/sessions/{id}/planmode` | GET | Plan Mode 状态与审批目标 |
+| `/api/sessions/{id}/planmode/approve`、`revise`、`cancel`、`input` | POST | 审批、修订、取消计划，回答计划提问 |
+| `/api/sessions/{id}/approval-receipts/{request_id}` | GET | 审批 receipt 查询，先于当前 session metadata 检查 |
+| `/api/queue/jobs`、`/api/queue/jobs/{id}` | GET、POST；GET | 后台队列 job 列表与创建；job 详情 |
+| `/api/workers` | GET、POST | worker 快照；调整 worker 数量 |
+| `/api/config` | GET、POST | 读取与保存 provider 配置和 `.env` API key |
+| `/api/config/test` | POST | 用表单值测试 provider 连接，不保存 |
+| `/api/files` | GET、DELETE | Workspace 目录列表（一次返回整个目录）；删除单个路径 |
+| `/api/files/mkdir`、`upload`、`delete` | POST | 新建目录、上传文件、批量删除 |
+| `/api/files/rename` | PATCH | 重命名 |
+| `/api/file/read`、`/api/file/download` | GET | 按字节 offset 分页预览；下载 |
+| `/api/skills` | GET | 技能列表 |
+| `/api/skills/upload` | POST | 上传 zip 技能包并安装 |
+| `/api/skills/{id}/uninstall` | POST | 卸载 managed skill |
+| `/api/skills/{id}/install` | POST | 返回 501：不支持市场安装，需上传 zip |
+| `/ws`（别名 `/api/ws`） | GET 升级 | WebSocket 连接状态与旧控制消息弃用提示，见下文 |
+
+未匹配的 `/api/*` 返回 404，不回退到页面 shell。
+
+## 运行控制
+
+### 启动
+
 `POST /api/sessions/start` 创建或接入当前进程的 launch handle，runtime 负责真实执行。服务关闭时释放 handle、停止 worker/reaper 并取消仍在等待的 launch。HTTP 返回 accepted 不等于 provider 已完成。
 
 ### 继续、steer、中断和 stop
@@ -12,7 +67,7 @@
 
 Goal、mission plan、validation、Plan Mode 输入和审批都必须经过 session store 的版本/CAS 边界。审批 payload 带 review target、request ID 和 revision；receipt 查询先于当前 session metadata 检查，支持响应丢失后的重放判断。未知、已接纳或内容已变化的操作要求显式恢复，不自动再次执行。
 
-### 实时流
+### 实时状态与刷新
 
 WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，只在收到旧的 `chat` 或 `stop` 控制消息时返回弃用提示，不执行隐藏控制。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
 
