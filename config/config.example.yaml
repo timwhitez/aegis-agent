@@ -95,6 +95,8 @@ web:
   #   - agent.example.internal
   # Browser-facing origins of an outer proxy that terminates TLS. Without this,
   # an https Origin over the console's plain HTTP is rejected as cross-origin.
+  # Write hosts as browsers send them: punycode for non-ASCII names and
+  # dotted-decimal IPv4.
   # public_origins:
   #   - https://agent.example.internal
 

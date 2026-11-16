@@ -1,8 +1,10 @@
 package webconsole
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -108,6 +110,9 @@ func parseWebPublicOrigins(entries []string) (webPublicOrigins, error) {
 		if parsed.User != nil || parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 			return nil, fmt.Errorf("web.public_origins[%d] must be scheme://host[:port] without user info, path, query or fragment: %q", i, entry)
 		}
+		if err := checkWebOriginHost(parsed.Hostname()); err != nil {
+			return nil, fmt.Errorf("web.public_origins[%d] %w: %q", i, err, entry)
+		}
 		normalized, ok := normalizeWebOrigin(parsed)
 		if !ok {
 			return nil, fmt.Errorf("web.public_origins[%d] must use http or https with a host and a valid port: %q", i, entry)
@@ -117,10 +122,42 @@ func parseWebPublicOrigins(entries []string) (webPublicOrigins, error) {
 	return origins, nil
 }
 
+// checkWebOriginHost rejects configured host spellings that a browser
+// rewrites before sending them in Origin, so they could never match: non-ASCII
+// names, sent in punycode, and IPv4 hosts not written in dotted decimal, which
+// browsers parse as numbers (127.1, 0x7f.0.0.1 and 127.000.000.001 all become
+// 127.0.0.1). IPv6 literals are canonicalized by normalizeWebOrigin instead.
+func checkWebOriginHost(host string) error {
+	host = strings.ToLower(host)
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			return errors.New("must write a non-ASCII host in its ASCII (punycode) form")
+		}
+	}
+	if strings.Contains(host, ":") {
+		return nil
+	}
+	// A host whose last label is a number is an IPv4 address to a browser.
+	labels := strings.Split(strings.TrimSuffix(host, "."), ".")
+	last := labels[len(labels)-1]
+	numeric := last != "" && strings.Trim(last, "0123456789") == ""
+	if hex, ok := strings.CutPrefix(last, "0x"); ok {
+		numeric = strings.Trim(hex, "0123456789abcdef") == ""
+	}
+	if !numeric {
+		return nil
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && addr.Is4() && addr.String() == host {
+		return nil
+	}
+	return errors.New("must write an IPv4 host in dotted-decimal form such as 127.0.0.1")
+}
+
 // normalizeWebOrigin returns the canonical lowercase scheme://host[:port] form
 // of an http(s) origin, dropping the scheme's default port the way browsers
-// do in the Origin header. ok is false for other schemes, a missing host, a
-// non-IP host containing ':' or an invalid port.
+// do in the Origin header. IPv6 literals are reduced to one canonical spelling
+// so equal addresses compare equal. ok is false for other schemes, a missing
+// host, a non-IP host containing ':', an IPv6 zone or an invalid port.
 func normalizeWebOrigin(u *url.URL) (string, bool) {
 	if u == nil {
 		return "", false
@@ -130,8 +167,15 @@ func normalizeWebOrigin(u *url.URL) (string, bool) {
 		return "", false
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "" || strings.ContainsAny(host, "[]") || (strings.Contains(host, ":") && net.ParseIP(host) == nil) {
+	if host == "" || strings.ContainsAny(host, "[]") {
 		return "", false
+	}
+	if strings.Contains(host, ":") {
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Zone() != "" {
+			return "", false
+		}
+		host = addr.String()
 	}
 	port := u.Port()
 	if port != "" {
