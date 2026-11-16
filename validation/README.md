@@ -5,9 +5,10 @@
 ## 目录职责
 
 - `cmd/`：Go fixture 和脚本运行所需的小型测试 provider。
-- `scripts/*_test.mjs`：前端 API、store、i18n、Markdown sanitizer、session、审批、发送恢复、Workspace、Settings、Skills 和 vendor 完整性测试。
-- `scripts/webconsole_e2e.mjs`：启动当前工作树的 binary 和本地服务，编排浏览器验收区域。
-- `scripts/e2e/`：按功能拆分的 server、shell、session、plan、approvals、receipts、recovery、showcase、pages 和 audits 区域。
+- `scripts/*_test.mjs`：前端 API、store、i18n、Markdown sanitizer、session、审批、发送恢复、Workspace、Settings、Skills、vendor 完整性测试，以及 E2E 区域文档与 runner 的一致性检查。
+- `scripts/webconsole_e2e.mjs`：启动当前工作树的 binary 和本地服务，按 `AREAS` 顺序编排浏览器验收区域。
+- `scripts/e2e/`：`server`、`shell`、`session`、`plan`、`showcase` 和 `pages` 区域，以及共享的 harness、UI helper、审批 fixture 和横切审计 `audits.mjs`。
+- `scripts/webconsole_approval_cas_e2e.mjs`、`scripts/webconsole_approval_receipts_e2e.mjs` 和 `scripts/webconsole_send_recovery_e2e.mjs`：`approvals`、`receipts` 和 `recovery` 区域。
 - `runs/`、`sessions/`、`tmp/`：本地运行产物，不应提交。
 
 ## 常用命令
@@ -38,7 +39,9 @@ E2E_APPROVAL_PROFILES=all npm run test:e2e
 E2E_WEB_WORKERS=4 npm run test:e2e
 ~~~
 
-`--only` 可用区域为：`server`、`shell`、`session`、`plan`、`approvals`、`receipts`、`recovery`、`showcase`、`pages` 和 `audits`。
+`--only` 可用区域为：`server`、`shell`、`session`、`plan`、`approvals`、`receipts`、`recovery`、`showcase` 和 `pages`。
+
+`audits.mjs` 不是可单独选择的区域。harness 每次截图都会运行其中的横切审计：当前语言下混入另一语言的界面文案、`translate="yes"`、点击区域尺寸（鼠标 32px，触控或窄屏 44px）、宽度不超过 400px 时的横向溢出和 `html lang`，违规记为 `audit <截图名>` 检查；对话框场景复用其中的焦点契约断言。每个区域结束时，harness 还会把未声明的 console 错误、页面异常、失败请求和 HTTP 错误记为失败检查。
 
 ## 验证覆盖
 

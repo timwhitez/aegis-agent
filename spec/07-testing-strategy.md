@@ -44,18 +44,19 @@ go test -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/... ./validation/cm
 
 ## Web E2E 区域
 
-`validation/scripts/webconsole_e2e.mjs` 编排以下区域：
+`validation/scripts/webconsole_e2e.mjs` 按以下顺序编排区域，`--only` 只接受这些名称：
 
-- `server`：binary、监听、嵌入 shell、资源 MIME、CSP、Host 和退役路径；
-- `shell`：布局、sidebar、导航、快捷键、palette、locale 和连接状态；
-- `session`：start、message、tool steps、continue、steer、interrupt、stop、refresh；
-- `plan`：Plan Mode 输入、修订、取消和 linked Goal；
-- `approvals`：CAS、覆盖、coverage、跨 surface 控制；
-- `receipts`：准备、接纳、查询、重放、未知回执和恢复；
-- `recovery`：发送失败草稿、断线、页面切换和错误提示；
-- `showcase`：包含真实内容的 Context、Files、Timeline 和移动布局；
-- `pages`：Sessions、Skills、Workspace、Settings 的 CRUD 和返回；
-- `audits`：console/request 错误、原文翻译、安全路径和显示证据。
+- `server`：退役路由与缺失 `/ui` 资源返回 404、ES module 与样式的 MIME、SPA app shell、CSP 和无外部 CDN；
+- `shell`：默认路由与 light theme、sidebar 分组和搜索、深链与缺失 session、sidebar 折叠偏好、命令面板、快捷键、语言切换和移动端 drawer；
+- `session`：start、消息流和 tool step、Inspector 各 tab、steer、interrupt、stop、带 model override 的 continue、Goal、child agent、load earlier 和移动布局；
+- `plan`：Plan Mode 审批、修订、取消确认、plan input 回答、英文卡片和移动布局；
+- `approvals`：审批 CAS，过期版本、Goal tab 中的 linked mission 修改和 coverage 范围变化都在执行前被拒绝，覆盖中英文和桌面/移动；
+- `receipts`：未知响应、reload 后的 pending、迟到响应隔离、coverage override 的新 request ID、completed alias 和 legacy recovery；
+- `recovery`：start、continue、steer 和 plan revision 的被拒与未确认草稿、会话切换、迟到的 launch 拒绝、已投递但响应丢失和移动端草稿；
+- `showcase`：在只含 showcase session 的独立 runtime 中生成 README 用的 1440×900 中英文截图，包含折叠步骤、todo strip、file changes、Tasks 面板和 sidebar；
+- `pages`：Sessions、Skills、Workspace、Settings 的 CRUD 和返回。
+
+`e2e/audits.mjs` 不是独立区域：harness 在每次截图时运行它的界面文案语言、`translate="yes"`、点击区域、窄屏溢出和 `html lang` 审计，并在每个区域结束时检查未声明的 console、页面、请求和 HTTP 错误。
 
 迭代时可用 `--only=server,shell`、`--output=validation/runs/local` 和 `--keep-runtime`。浏览器使用确定性 scripted provider，不需要真实凭据。
 
