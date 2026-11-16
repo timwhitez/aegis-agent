@@ -70,7 +70,7 @@ Goal、mission plan、validation、Plan Mode 输入和审批都必须经过 sess
 
 ### 实时状态与刷新
 
-WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，只在收到旧的 `chat` 或 `stop` 控制消息时返回弃用提示，不执行隐藏控制。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
+WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，也不执行任何控制。客户端发来的消息只会得到错误帧：旧的 `chat`、`stop` 和其他未知类型返回 `WEBSOCKET_CONTROL_DEPRECATED`，无法解析的 JSON 返回 `invalid websocket payload`；`reset_session` 不回包。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
 
 ## 安全边界
 
@@ -78,7 +78,7 @@ WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件�
 
 API mutation 必须满足：
 
-- 有同源 `Origin`（Host 与 scheme 都与请求一致，或等于 `web.public_origins` 中声明的外部 origin），或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝，`/ws` 握手使用同一规则，不信任 `X-Forwarded-*`；
+- 有同源 `Origin`（Host 与 scheme 都与请求一致，或等于 `web.public_origins` 中声明的外部 origin），或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝，不信任 `X-Forwarded-*`。`/ws` 握手带 Origin 时使用同一同源规则；不带 Origin 时放行，也不要求 `X-Aegis-Agent-Web`，因为浏览器总会发送 Origin，而 `/ws` 不推送 session 数据也不执行控制；
 - 要求 JSON 的路由必须是 `application/json`，body 有统一大小上限；
 - unsafe 方法通过 JSON body policy 分为 required、optional 和 none；
 - 资源路径拒绝 segment separator、traversal 和不安全 symlink；
