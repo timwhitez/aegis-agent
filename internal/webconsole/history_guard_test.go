@@ -305,3 +305,41 @@ func TestServiceDeleteAndLaunchRefuseEachOther(t *testing.T) {
 	}
 	finish()
 }
+
+// The clear mark is the only guard against a launch or start that registers
+// after clear's early check, because addHandle and promotePendingStart do not
+// look at marks.
+func TestBeginHistoryClearRefusesLaunchesAndStartsRegisteredAfterPreflight(t *testing.T) {
+	svc, err := New(testConfig(t, ""), Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	defer svc.Close()
+	release, err := svc.reserveLaunch("late_launch")
+	if err != nil {
+		t.Fatalf("reserve launch: %v", err)
+	}
+	if _, err := svc.beginHistoryClear(); !errors.Is(err, errActiveHistory) {
+		t.Fatalf("clear mark with a launch reservation: got %v, want errActiveHistory", err)
+	}
+	release()
+	id, err := svc.registerPendingStart(func() {})
+	if err != nil {
+		t.Fatalf("register pending start: %v", err)
+	}
+	if _, err := svc.beginHistoryClear(); !errors.Is(err, errActiveHistory) {
+		t.Fatalf("clear mark with a pending start: got %v, want errActiveHistory", err)
+	}
+	svc.removePendingStart(id)
+	finish, err := svc.beginHistoryClear()
+	if err != nil {
+		t.Fatalf("clear mark with nothing in flight: %v", err)
+	}
+	if _, err := svc.reserveLaunch("late_launch"); !errors.Is(err, errHistoryMutation) {
+		t.Fatalf("launch during the clear mark: got %v, want errHistoryMutation", err)
+	}
+	if _, err := svc.registerPendingStart(func() {}); !errors.Is(err, errHistoryMutation) {
+		t.Fatalf("start during the clear mark: got %v, want errHistoryMutation", err)
+	}
+	finish()
+}
