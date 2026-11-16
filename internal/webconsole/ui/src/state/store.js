@@ -1,5 +1,5 @@
-// The application store instance. See spec/17-web-console-frontend.md §5
-// "模块契约" for the slice contract; only state/ modules mutate it.
+// The application store instance. See spec/17-web-console-frontend.md「目录边界」
+// and「启动与数据流」for the slice contract; only state/ modules mutate it.
 import { createStore } from '../lib/store.js';
 import { getLocale } from '../lib/i18n.js';
 import { loadUIPrefs } from './prefs.js';

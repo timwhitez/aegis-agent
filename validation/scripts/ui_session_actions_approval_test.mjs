@@ -140,7 +140,7 @@ test('saved unresolved approvals are re-checked once when the session loads', as
   assert.equal(h.calls.length, 1, 'restore runs once per session');
 });
 
-test('refused recovery: the same target only re-checks; a newly reviewed target posts with a NEW id (spec 17 §7.13)', async () => {
+test('refused recovery: the same target only re-checks; a newly reviewed target posts with a NEW id (spec/17-web-console.md「Goal 与 Plan Mode」)', async () => {
   const recovery = () => apiError('legacy executing plan needs explicit recovery', { status: 409, code: 'APPROVAL_RECOVERY_REQUIRED', action: 'use ordinary continue' });
   const h = createHarness({ api: { approvePlanMode: (_id, payload) => { if (payload.plan_version === 2) throw recovery(); return admitted(payload); } } });
   h.openSession('sess_a', detail());

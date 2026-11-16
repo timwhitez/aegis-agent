@@ -43,7 +43,7 @@ flowchart LR
 4. engine 读取 durable messages、events、state、Goal、Plan Mode、skills 和 tool schema，生成 provider 请求视图。
 5. provider adapter 发起请求并把增量文本、tool call、usage、错误和 terminal outcome 转成统一事件。
 6. runtime 校验 tool call，执行工具，限制输出，写入 tool result，再决定下一次 provider turn。
-7. event bus 为 CLI renderer、WebSocket 和诊断输出提供观察事件；事件显示失败不能改变执行结果。
+7. event bus 为 CLI renderer 和诊断输出提供观察事件，Web 启动 session 时只用它取得 session ID；事件显示失败不能改变执行结果。
 8. terminal 或 awaiting 状态写入 session。Web/CLI 后续读取相同的事实恢复页面或继续执行。
 
 ## 持久化事实
@@ -107,7 +107,7 @@ queue worker、child session 和 stale reaper 使用 durable job、lease、heart
 
 ## Web 与 CLI 的事实关系
 
-Web 的 REST handler 负责 JSON、HTTP status、Host/Origin/CSP、请求大小和 DTO；runtime 负责实际控制。WebSocket 主要传递事件和实时状态，session control 使用 REST。CLI renderer 负责 text、json、stream-json，不改变 runtime 事件含义。
+Web 的 REST handler 负责 JSON、HTTP status、Host/Origin/CSP、请求大小和 DTO；runtime 负责实际控制。WebSocket 只报告连接状态，页面通过 REST 读取并轮询事实，session control 使用 REST。CLI renderer 负责 text、json、stream-json，不改变 runtime 事件含义。
 
 任何新增 Web 页面都必须能够在刷新后从 API 重建；任何 CLI 输出都必须能够从 session/runtime 事实重建。UI state、进程内 handle、poller 和 relay 都不能替代文件事实。
 

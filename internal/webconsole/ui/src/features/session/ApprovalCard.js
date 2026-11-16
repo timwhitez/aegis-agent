@@ -1,5 +1,5 @@
-// Inline Plan Mode approval card (spec/17-web-console-frontend.md §7.3,
-// spec/17-web-console.md §7.13). Rendered after the stream while
+// Inline Plan Mode approval card (spec/17-web-console-frontend.md「Goal、Plan Mode 与提问」,
+// spec/17-web-console.md「Goal 与 Plan Mode」). Rendered after the stream while
 // plan_mode.status === 'awaiting_approval' (and, as a compact receipt card,
 // while a saved approval is unresolved or belongs to the displayed plan). This is the only place with
 // approval buttons. Approval target, coverage override, stale review and

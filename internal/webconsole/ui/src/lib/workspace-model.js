@@ -1,6 +1,6 @@
 /**
- * Workspace browser model (spec/17-web-console.md §7 Workspace rules and
- * §7.19 byte paging). Pure: no DOM, no fetch, no storage access. Loaders are
+ * Workspace browser model (spec/17-web-console-frontend.md「Inspector、Workspace、
+ * Skills、Settings」: whole-directory listing, byte-offset preview paging). Pure: no DOM, no fetch, no storage access. Loaders are
  * injected where a flow needs I/O.
  *
  * - Paths are workspace-relative, '/'-separated, without leading/trailing

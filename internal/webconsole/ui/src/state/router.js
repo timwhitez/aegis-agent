@@ -1,4 +1,4 @@
-// History API router. Routes (spec §4): / · /s/{id} · /sessions · /skills ·
+// History API router. Routes (spec/17-web-console-frontend.md「路由与资源」): / · /s/{id} · /sessions · /skills ·
 // /workspace · /settings. Unknown paths are replaced with /.
 import { getState, update } from './store.js';
 

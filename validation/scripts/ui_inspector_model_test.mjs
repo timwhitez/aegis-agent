@@ -37,7 +37,7 @@ test('files tab follows inferred changes from the merged message window', () => 
   assert.equal(withMessages(base, []), base);
 });
 
-test('Context loads once per session visit; Refresh and a session switch load again (spec 17 §7.4.1)', () => {
+test('Context loads once per session visit; Refresh and a session switch load again (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」)', () => {
   const report = { schema_version: 1, root_session_id: 'session_a' };
   assert.deepEqual(contextLoadPlan(undefined, { visit: 3 }), { report: null, load: true }, 'first open loads');
   assert.deepEqual(contextLoadPlan({ report, visit: 3 }, { visit: 3 }), { report, load: false }, 'Tasks → Context reuses the loaded report');

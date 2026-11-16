@@ -1,4 +1,4 @@
-// Approval receipt browser acceptance (spec/17-web-console.md §7.13): the
+// Approval receipt browser acceptance (spec/17-web-console.md「Goal 与 Plan Mode」): the
 // browser keeps a pending approval intent (request id + reviewed target +
 // parameters), checks the real receipt endpoint when a response is unknown,
 // retries only the same id, never lets a late or peer response revive a

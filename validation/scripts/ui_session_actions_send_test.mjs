@@ -152,6 +152,20 @@ test('not-ready sessions are validated before the composer is cleared', async ()
   assert.equal((await h.actions.submitComposer()).reason, 'empty');
 });
 
+test('a completed child session never posts a continue; the composer keeps the text and points to the parent', async () => {
+  const h = createHarness();
+  h.openSession('child_a', { metadata: { id: 'child_a', parent_session_id: 'parent_a' }, state: { status: 'completed' } });
+  h.setComposer({ text: 'one more thing' });
+  const result = await h.actions.submitComposer();
+  assert.deepEqual([result.ok, result.reason], [false, 'notReady']);
+  assert.equal(h.calls.length, 0, 'no request the server would refuse with 409');
+  assert.equal(h.state().composer.text, 'one more thing');
+  assert.equal(h.toasts[0].message, t('send.childCompleted'));
+  h.openSession('child_a', { metadata: { id: 'child_a', parent_session_id: 'parent_a' }, state: { status: 'awaiting_input' } });
+  await h.actions.submitComposer();
+  assert.equal(h.calls[0].name, 'continueSession', 'a resumable child still continues');
+});
+
 test('explicit 4xx rejection becomes a failed draft that keeps the raw text', async () => {
   const raw = '  first line\n  second line  ';
   const h = createHarness({ api: { continueSession: () => { throw apiError('session not resumable', { status: 409, detail: 'child session', action: 'use parent' }); } } });

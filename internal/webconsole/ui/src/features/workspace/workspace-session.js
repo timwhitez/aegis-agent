@@ -1,6 +1,6 @@
 // Tracks the session the operator last worked in, so the Workspace page can
 // bucket its browsed path by (workspace root, session) and start at the
-// session workdir (spec/17-web-console.md §7 workspace rules). The session
+// session workdir (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」). The session
 // slice is cleared on page routes, so the last session-route context is kept
 // here. Read-only: subscribes to the store, never writes it.
 import { store } from '../../state/store.js';

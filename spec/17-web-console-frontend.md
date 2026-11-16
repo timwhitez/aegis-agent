@@ -48,8 +48,8 @@ internal/webconsole/ui/
 1. router 根据 location 选择页面并同步当前 session ID；
 2. `lib/api.js` 统一 REST 请求、JSON decode、错误对象和控制 wrapper；
 3. `state/actions.js` 把 API/relay 结果写入 store，并维护 loading/error/refresh；
-4. `state/relay.js` 连接 `/ws`，只接收事件和实时状态；
-5. poller 在页面可见或 relay 不完整时刷新 overview/session；
+4. `state/relay.js` 连接 `/ws`，只用于连接状态；当前服务端不在 `/ws` 推送 session 事件，`relayHints()` 只在收到 session/status/message/engine_event 帧时触发 REST refresh；
+5. poller 在页面可见时始终刷新 overview/session：运行中、首次加载或 relay 断开时 session 每 1.5s、overview 每 2s，空闲时两者都每 5s；页面隐藏时暂停，重新可见时立即刷新。这样其他标签页、CLI 或其他进程写入的变化也会出现在页面上；
 6. feature model 从 store 派生 timeline、status、tool steps、workspace preview 和 inspector cards；
 7. component 只渲染派生结果并触发 action。
 
@@ -71,7 +71,7 @@ internal/webconsole/ui/
 
 ### 会话流和 Composer
 
-消息按时间顺序显示，tool call/result 归入可折叠 step group。Composer 根据 session status 显示 start、send、steer、continue、interrupt、stop 和失败 draft restore。失败发送保留 draft，不能自动重发。
+消息按时间顺序显示，tool call/result 归入可折叠 step group。Composer 根据 session status 显示 start、send、steer、continue、interrupt、stop 和失败 draft restore。失败发送保留 draft，不能自动重发。可继续的状态与 runtime `ValidateContinueTarget` 一致：`completed` 只对根会话提供 continue，已完成的子会话显示阻断提示，引导到父会话追加任务。
 
 ### Goal、Plan Mode 与提问
 
@@ -79,7 +79,7 @@ Goal banner、Plan input card、approval card 和 approval receipt 显示当前 
 
 ### Inspector、Workspace、Skills、Settings
 
-Inspector 只展示当前 session 适用 tabs。Workspace 列表按服务返回的 bytes、modified_at 和 pagination cursor 展示；Skills 安装/卸载、Settings save/probe 和 session delete 都使用 confirm dialog 与错误 recovery。
+Inspector 只展示当前 session 适用 tabs；Context tab 在一次 session 访问内只请求一次 `/context`，切到其他 tab 再回来复用结果，点击 Refresh 或切换 session 才重新请求。Workspace 列表一次显示服务返回的整个目录（含文件大小和 modified_at，没有列表分页）；文件预览只使用服务返回的字节 offset/cursor 分页，并丢弃过期页。删除 session、清空历史、卸载 skill、删除 Workspace 文件或目录（单个与批量）、保存 Settings 以及带未保存修改离开 Settings 前使用 confirm dialog；新建目录和重命名使用 prompt dialog 输入名称；上传 skill、上传文件和 Settings 连接测试直接执行，失败时就地显示错误。
 
 ### 命令面板与快捷键
 

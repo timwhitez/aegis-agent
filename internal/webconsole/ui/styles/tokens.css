@@ -1,4 +1,4 @@
-/* Design tokens (spec §8). Light theme only. */
+/* Design tokens. Light theme only; theme and touch-target rules live in AGENTS.md (Web 控制台前端). */
 :root {
   color-scheme: light;
 

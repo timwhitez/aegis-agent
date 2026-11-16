@@ -137,6 +137,7 @@ type Service struct {
 	workers       *workerPool
 	basicAuth     *basicAuthenticator
 	hostAllowlist webHostAllowlist
+	publicOrigins webPublicOrigins
 	wsUpgrader    websocket.Upgrader
 
 	// beforeAppendAuditEvent is set only by package tests to force deterministic
@@ -374,6 +375,10 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 	if err != nil {
 		return nil, newWebSettingsValidationError("%s", err)
 	}
+	publicOrigins, err := parseWebPublicOrigins(serviceCfg.Web.PublicOrigins)
+	if err != nil {
+		return nil, newWebSettingsValidationError("%s", err)
+	}
 	store := runtime.NewStoreView(serviceCfg).Store()
 	svc := &Service{
 		cfg:             serviceCfg,
@@ -382,6 +387,7 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		uiFS:            uiFS,
 		basicAuth:       basicAuth,
 		hostAllowlist:   hostAllowlist,
+		publicOrigins:   publicOrigins,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
 		setProcessEnv:   os.Setenv,
@@ -9059,9 +9065,17 @@ func isUnsafeMethod(method string) bool {
 	}
 }
 
+// sameOriginRequest is the CSRF guard for unsafe REST methods and the /ws
+// handshake. The Origin must name the request's own trusted Host with the
+// scheme the request arrived on, or equal one of the operator-declared
+// web.public_origins (an outer proxy that terminates TLS and may rewrite
+// Host). The request Host itself was already checked by requestHostAllowed.
 func (s *Service) sameOriginRequest(origin *url.URL, r *http.Request) bool {
 	if origin == nil || r == nil || strings.TrimSpace(origin.Host) == "" || strings.TrimSpace(r.Host) == "" {
 		return false
+	}
+	if s.publicOrigins.contains(origin) {
+		return true
 	}
 	if !s.requestHostAllowed(&http.Request{Host: origin.Host}) || !s.requestHostAllowed(r) {
 		return false

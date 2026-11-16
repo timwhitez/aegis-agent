@@ -1,5 +1,5 @@
 // Common UI helpers for the Web console browser suite. Selectors use the
-// data-testid contract from spec/17-web-console-frontend.md §5.1.
+// data-testid attributes rendered by internal/webconsole/ui/src.
 import assert from 'node:assert/strict';
 
 export const tid = (page, id) => page.getByTestId(id);

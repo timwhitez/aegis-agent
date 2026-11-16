@@ -1,4 +1,4 @@
-// Composer send recovery (spec/17-web-console.md §8.1.1) against the real
+// Composer send recovery (spec/17-web-console-frontend.md「会话流和 Composer」) against the real
 // service. Only the send POST is intercepted to produce an explicit
 // rejection (HTTP 400), an unknown result (HTTP 500 or a network abort) or a
 // delivered request whose response is lost; the running-steer view uses a

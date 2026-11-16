@@ -8,7 +8,7 @@ Aegis Agent 是一个用 Go 编写的本地 agent harness。它把模型、工�
 
 ## 你会得到什么
 
-- **本地 Web 控制台**：会话列表与搜索、实时消息流、工具步骤折叠、Goal、Plan Mode 审批和提问、任务与上下文检查器、Workspace、Skills、Settings、命令面板以及中英文界面。
+- **本地 Web 控制台**：会话列表与搜索、自动刷新的消息流、工具步骤折叠、Goal、Plan Mode 审批和提问、任务与上下文检查器、Workspace、Skills、Settings、命令面板以及中英文界面。
 - **CLI**：`init`、`run`、`exec`、`continue`、`steer`、`sessions`、`goal`、`tasks`、`models`、`probe-provider` 和 `doctor`；委派、队列和 TUI 位于 `experimental` 下。
 - **Provider 适配**：OpenAI Responses、Anthropic Messages、Google Gemini `generateContent` 和 OpenAI-compatible endpoint。
 - **本地事实源**：消息、事件、状态、Goal、任务、队列工作和压缩产物写入你控制的文件目录，支持中断、继续和审计回看。
@@ -48,9 +48,9 @@ export OPENAI_API_KEY=你的密钥
 3. 内联控制：在 Plan Mode、Goal 或 `request_user_input` 暂停处直接审批、修订、取消或回答。
 4. 右侧检查器：按会话显示 Overview、Plan、Goal、Tasks、Agents、Context、Timeline 和 Files 等适用信息。
 
-页面路由是 `/`、`/s/<session-id>`、`/sessions`、`/skills`、`/workspace` 和 `/settings`。资源从 `/ui/*` 提供，实时连接使用 `/ws`。被移除的旧资源路径返回 404。
+页面路由是 `/`、`/s/<session-id>`、`/sessions`、`/skills`、`/workspace` 和 `/settings`。资源从 `/ui/*` 提供，`/ws` 只报告连接状态（页面数据通过 REST 轮询刷新）。被移除的旧资源路径返回 404。
 
-控制台可以启动 agent、修改 provider 配置和 `.env`、管理 skills、读写 workspace、删除 session，因此默认监听 loopback。只有在网络受信任且已配置 Host allowlist、Basic Auth 和 HTTPS 时，才考虑暴露到其他地址。
+控制台可以启动 agent、修改 provider 配置和 `.env`、管理 skills、读写 workspace、删除 session，因此默认监听 loopback。只有在网络受信任且已配置 Host allowlist、Basic Auth 和 HTTPS 时，才考虑暴露到其他地址；由外层反向代理提供 HTTPS 时，把浏览器访问的 origin（如 `https://agent.example`）写入 `web.public_origins`，否则浏览器的写操作会被当作跨源请求拒绝。
 
 常用快捷键：
 

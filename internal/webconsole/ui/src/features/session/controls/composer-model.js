@@ -2,7 +2,7 @@
 // state, which toolbar controls apply, and the placeholder / primary action.
 // Mirrors send-recovery.js resolveSendRoute() so the UI never offers a mode
 // the send pipeline would reject. Tested by validation/scripts/ui_composer_model_test.mjs.
-import { CONTINUABLE_STATUSES, detailHasLiveRunHandle, steerReadiness } from '../../../lib/send-recovery.js';
+import { acceptsContinue, detailHasLiveRunHandle, steerReadiness } from '../../../lib/send-recovery.js';
 
 export const PENDING_PLAN_STATUSES = Object.freeze(['planning', 'awaiting_user_input', 'awaiting_approval']);
 
@@ -17,7 +17,8 @@ const lower = (value) => String(value || '').trim().toLowerCase();
  * whose state has not reached 'running' (also on paused/awaiting_input/
  * completed or a plan awaiting approval right after an accepted continue,
  * approve or revise); the composer is disabled instead of offering a send the
- * server refuses.
+ * server refuses. A completed child session is 'blocked' (childCompleted): the
+ * runtime never resumes it, so the composer explains to follow up from the parent.
  */
 export function composerMode(state) {
   const isNew = state.route.name !== 'session';
@@ -26,13 +27,14 @@ export function composerMode(state) {
   const planStatus = lower(detail?.plan_mode?.status);
   const generating = !isNew && Boolean(state.session.generating);
   const launching = !isNew && !detail && state.session.activity?.kind === 'start';
+  const child = !isNew && String(detail?.metadata?.parent_session_id || '').trim() !== '';
   let kind;
   if (isNew) kind = 'start';
   else if (!detail) kind = launching ? 'starting' : 'loading';
   else {
     const readiness = steerReadiness({ status, generating, liveHandle: detailHasLiveRunHandle(detail) });
     if (readiness !== 'none') kind = readiness;
-    else if (CONTINUABLE_STATUSES.includes(status)) kind = planStatus === 'awaiting_approval' ? 'revise' : 'continue';
+    else if (acceptsContinue(status, { child })) kind = planStatus === 'awaiting_approval' ? 'revise' : 'continue';
     else kind = 'blocked';
   }
   const planPending = PENDING_PLAN_STATUSES.includes(planStatus);
@@ -40,6 +42,7 @@ export function composerMode(state) {
     kind,
     status,
     completed: status === 'completed',
+    childCompleted: kind === 'blocked' && child && status === 'completed',
     canGoal: kind === 'start',
     canPlan: (kind === 'start' || kind === 'continue') && !planPending,
     canInterrupt: kind === 'steer',
@@ -125,6 +128,7 @@ export function placeholderKey(mode, composer) {
     case 'starting':
       return 'composer.placeholder.starting';
     default:
+      if (mode.childCompleted) return 'composer.placeholder.childCompleted';
       // A run that is settling (handle release, plan submission) accepts input again shortly.
       return ['running', 'queued', 'pending'].includes(mode.status) || mode.planAwaitingApproval ? 'composer.placeholder.settling' : 'composer.placeholder.blocked';
   }

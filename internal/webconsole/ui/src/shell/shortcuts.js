@@ -1,4 +1,4 @@
-// Global keyboard shortcuts (spec §7.4). Matching is pure (lib/shortcuts.js).
+// Global keyboard shortcuts (spec/17-web-console-frontend.md「命令面板与快捷键」). Matching is pure (lib/shortcuts.js).
 import { isEditableTarget, isMacPlatform, matchShortcut } from '../lib/shortcuts.js';
 import { getState } from '../state/store.js';
 import { closePalette, focusComposer, newSession, openPalette, openShortcuts, toggleInspector, toggleSidebar } from '../state/actions.js';

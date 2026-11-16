@@ -1,5 +1,5 @@
 // Relay hints never trigger REST refreshes while the page is hidden
-// (spec/17-web-console-frontend.md §5 "页面隐藏时暂停"); visibilitychange
+// (spec/17-web-console-frontend.md「启动与数据流」: paused while hidden); visibilitychange
 // refreshes on resume. Drives the real state/actions.js with a stubbed fetch.
 import test from 'node:test';
 import assert from 'node:assert/strict';

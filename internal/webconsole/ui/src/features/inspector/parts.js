@@ -182,7 +182,7 @@ function prefersReducedMotion() {
 /**
  * Scrolls the conversation to an inline card ([data-testid=<testId>]) and
  * moves focus to it. From the overlay inspector the sheet closes first so the
- * background is no longer inert (spec 17 §7.3).
+ * background is no longer inert (spec/17-web-console-frontend.md「Goal、Plan Mode 与提问」).
  */
 export function revealInlineCard(testId, mode = 'panel') {
   if (mode === 'overlay') toggleInspector(false);

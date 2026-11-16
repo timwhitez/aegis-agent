@@ -1,4 +1,4 @@
-// In-app confirm/prompt dialogs (spec §7.5). Rendered by ui/DialogHost.js.
+// In-app confirm/prompt dialogs (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」). Rendered by ui/DialogHost.js.
 import { update } from './store.js';
 
 let nextDialogId = 1;

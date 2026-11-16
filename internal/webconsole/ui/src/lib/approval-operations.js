@@ -1,7 +1,7 @@
 /**
  * Plan Mode / linked mission approval intents and receipt coordination
- * (spec/17-web-console.md §7.13). Port of assets/approval-operations.mjs with
- * unchanged storage and receipt semantics, plus the pure approval-target,
+ * (spec/17-web-console.md「Goal 与 Plan Mode」). Ported from the retired v2
+ * console's approval-operations module with unchanged storage and receipt semantics, plus the pure approval-target,
  * admission-presentation and notice helpers that lived in app.js.
  *
  * The controller stores pending user intent only. Receipts and current run
@@ -76,7 +76,7 @@ function sameTarget(a, b) {
 
 /**
  * Whether Approve on `parameters` starts a NEW operation (new request id)
- * instead of re-checking the saved intent (spec/17-web-console.md §7.13).
+ * instead of re-checking the saved intent (spec/17-web-console.md「Goal 与 Plan Mode」).
  * Admitted and explicitly failed operations are complete. A rejected or
  * recovery_required operation proves its target was not admitted: the same
  * target is only re-checked (never silently resent with the old id), while a

@@ -1,5 +1,5 @@
 // Context tab: GET /api/sessions/{id}/context, requested only when this tab
-// is opened or Refresh is clicked (spec 17 §7.4.1). The report is loaded once
+// is opened or Refresh is clicked (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」). The report is loaded once
 // per visit of a session: switching to another tab and back reuses it
 // (contextLoadPlan), Refresh loads again, and after a session switch the last
 // report is shown while a fresh one loads. Memory only.

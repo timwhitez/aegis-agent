@@ -5,7 +5,7 @@
 // coverage and linked facts, completion audit, success criteria, validation
 // plan, mission plan (features / milestones / roles), recent progress and
 // goal history. A completed goal on a session that keeps running is shown as
-// historical (spec 17 §7.6).
+// historical (spec/17-web-console-frontend.md「Goal、Plan Mode 与提问」).
 import { html, useState } from '../../lib/html.js';
 import { t } from '../../lib/i18n.js';
 import {

@@ -3,7 +3,7 @@
 // key; reasoning; guardrails and the global turn guard; sub-agent budget;
 // role provider overrides; read-only browser runtime. Saving writes config and
 // .env, so it needs a confirmation; "测试连接" probes the current form values
-// without persisting (spec/17-web-console.md §7 Settings API). Form state is
+// without persisting (/api/config and /api/config/test in spec/17-web-console.md「路由」). Form state is
 // page-local; all payloads come from lib/settings-model.js.
 import { html, useEffect, useRef, useState } from '../../lib/html.js';
 import { t, tx } from '../../lib/i18n.js';

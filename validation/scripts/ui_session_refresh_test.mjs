@@ -1,8 +1,8 @@
 // Drives the real state/actions.js refreshSession against a stubbed global
 // fetch: the detail is applied on every refresh, overlapping refreshes share
 // one message-gap bridge per session visit, and the bridged window stays
-// contiguous (spec/17-web-console-frontend.md §5.1). Also covers the
-// session.generating fact across an accepted local launch (§7.2).
+// contiguous (spec/17-web-console-frontend.md「启动与数据流」). Also covers the
+// session.generating fact across an accepted local launch (「会话流和 Composer」).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getState, update } from '../../internal/webconsole/ui/src/state/store.js';

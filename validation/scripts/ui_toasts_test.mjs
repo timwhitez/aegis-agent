@@ -1,4 +1,4 @@
-// Toasts keep backend text raw (spec/17-web-console-frontend.md §9): the
+// Toasts keep backend text raw (spec/17-web-console-frontend.md「i18n 与原文」): the
 // message/detail/action of an API error render inside translate="no" nodes,
 // separate from the translatable operator copy and labels.
 import test, { afterEach } from 'node:test';

@@ -115,6 +115,12 @@ type WebConfig struct {
 	// and IP literals are always allowed) with explicit proxy or LAN hostnames
 	// for deployments behind a reverse proxy.
 	AllowedHosts []string `yaml:"allowed_hosts,omitempty"`
+	// PublicOrigins lists the browser-facing origins (scheme://host[:port]) of
+	// an outer proxy, for example "https://agent.example" when TLS terminates
+	// before the console. The same-origin guard for REST mutations and /ws
+	// accepts exactly these Origin values; X-Forwarded-* headers are never
+	// trusted.
+	PublicOrigins []string `yaml:"public_origins,omitempty"`
 }
 
 // DeprecatedBool is the type of retired boolean configuration keys. It still

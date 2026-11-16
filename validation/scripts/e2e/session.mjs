@@ -215,7 +215,7 @@ export async function runSession(h) {
     await openInspectorTab(page, 'tasks');
     await openInspectorTab(page, 'context');
     await panel.getByText('根会话峰值', { exact: true }).waitFor();
-    // Reuse is per session visit (spec/17-web-console.md §7.4.1), whatever detail refreshes happened meanwhile.
+    // Reuse is per session visit (spec/17-web-console-frontend.md「Inspector、Workspace、Skills、Settings」), whatever detail refreshes happened meanwhile.
     assert.equal(contextRequests.length, 2, 'switching back to Context reuses the loaded report');
   }, { page });
   await h.capture(page, 'session-context-zh-desktop');
@@ -358,6 +358,9 @@ export async function runSession(h) {
     await h.capture(page, 'session-agents-zh-desktop');
     await row.locator('[data-testid="inspector-agent-open"]').click();
     await waitSessionLoaded(page, childId);
+    // A completed child is settled with its parent: the composer explains instead of offering continue (409).
+    await page.locator('[data-testid="composer"][data-kind="blocked"]').waitFor();
+    assert.equal(await tid(page, 'composer-input').getAttribute('placeholder'), '子会话已完成，请在父会话中追加任务');
     await openInspectorTab(page, 'overview');
     await page.locator('[data-testid="inspector-link-parent"][data-session-id="' + id + '"]').waitFor();
     await closeInspector(page);

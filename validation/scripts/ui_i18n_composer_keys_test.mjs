@@ -84,6 +84,7 @@ test('keys emitted by the lib helpers exist', () => {
   }
   keys.add(resolveSendRoute({ rawText: 'x', sessionId: '', launchInFlight: true }).notice.key);
   keys.add(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'queued' }).notice.key);
+  keys.add(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'completed', parentSessionId: 'p' }).notice.key);
   const store = new SendRecoveryStore();
   const intent = store.begin({ session: { sessionId: 's', backed: true }, kind: 'continue', rawText: 'x' });
   store.fail(intent.id, { status: 0 });
