@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createStore, shallowEqual } from '../../internal/webconsole/ui/src/lib/store.js';
 import { filterSessions, firstPromptFromMessages, groupSessions, mergeMessageWindows, rootSessions, summaryTitle } from '../../internal/webconsole/ui/src/lib/session-list.js';
 import { parseRoute } from '../../internal/webconsole/ui/src/state/router.js';
-import { createPoller, shouldPollOverview, shouldPollSession, POLL_OVERVIEW_MS, POLL_SESSION_MS } from '../../internal/webconsole/ui/src/state/polling.js';
+import { createPoller, overviewPollInterval, sessionPollInterval, shouldPollOverview, shouldPollSession, POLL_IDLE_MS, POLL_OVERVIEW_MS, POLL_SESSION_MS } from '../../internal/webconsole/ui/src/state/polling.js';
 import { backoffDelay, createRelay, parseRelayFrame, relayHints } from '../../internal/webconsole/ui/src/state/relay.js';
 import { emptySessionSlice, getState, initialState, setState } from '../../internal/webconsole/ui/src/state/store.js';
 import * as actions from '../../internal/webconsole/ui/src/state/actions.js';
@@ -103,26 +103,36 @@ function stateWith(patch = {}) {
   };
 }
 
-test('polling runs only while needed and never while hidden', () => {
+test('visible pages always poll: fast while live or before the first load, idle cadence otherwise; never while hidden (issue #155)', () => {
   const idleDetail = { state: { status: 'completed' }, active_handle: false, children: { sessions: [], jobs: [] } };
   const quietOverview = { recent_sessions: [{ id: 'a', status: 'completed' }] };
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: idleDetail } })), false);
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: null } })), true, 'until first detail');
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: idleDetail, generating: true } })), true);
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: { ...idleDetail, active_handle: true } } })), true);
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: { ...idleDetail, children: { sessions: [{ status: 'running' }] } } } })), true);
-  assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: idleDetail }, connection: { relay: 'closed' } })), true, 'relay down');
+  assert.deepEqual([POLL_SESSION_MS, POLL_OVERVIEW_MS, POLL_IDLE_MS], [1500, 2000, 5000]);
+  // The relay carries no session events, so an idle page with an open relay still polls.
+  const idleSession = stateWith({ session: { id: 's', detail: idleDetail } });
+  assert.equal(shouldPollSession(idleSession), true, 'idle session with the relay open');
+  assert.equal(sessionPollInterval(idleSession), POLL_IDLE_MS);
+  const fast = (patch, label) => {
+    const state = stateWith(patch);
+    assert.equal(shouldPollSession(state), true, label);
+    assert.equal(sessionPollInterval(state), POLL_SESSION_MS, label);
+  };
+  fast({ session: { id: 's', detail: null } }, 'until first detail');
+  fast({ session: { id: 's', detail: idleDetail, generating: true } }, 'generating');
+  fast({ session: { id: 's', detail: { ...idleDetail, active_handle: true } } }, 'current-process handle');
+  fast({ session: { id: 's', detail: { ...idleDetail, children: { sessions: [{ status: 'running' }] } } } }, 'active child');
+  fast({ session: { id: 's', detail: idleDetail }, connection: { relay: 'closed' } }, 'relay down');
   assert.equal(shouldPollSession(stateWith({ session: { id: 's', detail: null }, connection: { pageVisible: false } })), false, 'hidden');
   assert.equal(shouldPollSession(stateWith({ session: { id: 's', missing: true } })), false, 'missing');
-  assert.equal(shouldPollSession(stateWith({ session: { id: '' } })), false);
+  assert.equal(shouldPollSession(stateWith({ session: { id: '' } })), false, 'no open session');
 
-  assert.equal(shouldPollOverview(stateWith({ overview: { data: null } })), true);
-  assert.equal(shouldPollOverview(stateWith({ overview: { data: quietOverview } })), false);
-  assert.equal(shouldPollOverview(stateWith({ overview: { data: { recent_sessions: [{ id: 'a', status: 'running' }] } } })), true, 'live sidebar status');
-  assert.equal(shouldPollOverview(stateWith({ overview: { data: quietOverview }, connection: { relay: 'closed' } })), true);
-  assert.equal(shouldPollOverview(stateWith({ overview: { data: null }, connection: { pageVisible: false } })), false);
-  assert.equal(POLL_SESSION_MS, 1500);
-  assert.equal(POLL_OVERVIEW_MS, 2000);
+  const quiet = stateWith({ overview: { data: quietOverview } });
+  assert.equal(shouldPollOverview(quiet), true, 'idle sidebar with the relay open');
+  assert.equal(overviewPollInterval(quiet), POLL_IDLE_MS);
+  assert.equal(overviewPollInterval(stateWith({ overview: { data: null } })), POLL_OVERVIEW_MS, 'until first load');
+  assert.equal(overviewPollInterval(stateWith({ overview: { data: { recent_sessions: [{ id: 'a', status: 'running' }] } } })), POLL_OVERVIEW_MS, 'live sidebar status');
+  assert.equal(overviewPollInterval(stateWith({ overview: { data: quietOverview }, connection: { relay: 'closed' } })), POLL_OVERVIEW_MS, 'relay down');
+  assert.equal(overviewPollInterval(stateWith({ overview: { data: quietOverview }, session: { id: 's', detail: idleDetail, generating: true } })), POLL_OVERVIEW_MS, 'open session generating');
+  assert.equal(shouldPollOverview(stateWith({ overview: { data: null }, connection: { pageVisible: false } })), false, 'hidden');
 });
 
 test('createPoller schedules one request per channel and stops when no longer needed', async () => {
@@ -152,7 +162,20 @@ test('createPoller schedules one request per channel and stops when no longer ne
   assert.equal(active().filter((timer) => timer.ms === 1500).length, 1, 'rescheduled after the request settles');
   state = stateWith({ session: { id: 's', detail: { state: { status: 'completed' } } }, overview: { data: { recent_sessions: [] } } });
   listeners.forEach((fn) => fn());
-  assert.equal(active().length, 0, 'idle state stops both channels');
+  const overviewTimer = active().find((timer) => timer.ms === 2000);
+  overviewTimer.fired = true;
+  await overviewTimer.fn();
+  const sessionIdle = active().find((timer) => timer.ms === 1500);
+  sessionIdle.fired = true;
+  await sessionIdle.fn();
+  assert.deepEqual(active().map((timer) => timer.ms).sort(), [5000, 5000], 'idle state keeps both channels at the idle cadence');
+  // A run starts: the pending idle timers are pulled in to the fast cadence.
+  state = stateWith({ session: { id: 's', detail: { state: { status: 'running' } }, generating: true }, overview: { data: { recent_sessions: [] } } });
+  listeners.forEach((fn) => fn());
+  assert.deepEqual(active().map((timer) => timer.ms).sort(), [1500, 2000], 'live state switches back to the fast cadence at once');
+  state = stateWith({ session: { id: 's', detail: null }, connection: { pageVisible: false }, overview: { data: { recent_sessions: [] } } });
+  listeners.forEach((fn) => fn());
+  assert.equal(active().length, 0, 'a hidden page stops both channels');
   poller.stop();
 });
 
@@ -223,7 +246,7 @@ test('opening a missing session toasts once, returns to / and stops polling it',
   let state = getState();
   assert.equal(state.route.name, 'new');
   assert.equal(state.toasts.filter((toast) => toast.message.includes('gone')).length, 1);
-  assert.equal(shouldPollSession({ ...state, connection: { ...state.connection, relay: 'closed' } }), false);
+  assert.equal(shouldPollSession({ ...state, connection: { ...state.connection, relay: 'closed' } }), false, 'a missing session is never polled');
   actions.syncSessionForRoute({ name: 'session', path: '/s/gone', params: { id: 'gone' } });
   await actions.refreshSession();
   state = getState();

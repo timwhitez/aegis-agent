@@ -23,7 +23,7 @@ Aegis Agent 是一个运行在用户机器上的 agent harness。它连接一个
 
 ### 观察和控制
 
-Web 通过 REST 读取事实，通过 WebSocket 接收实时事件。用户可以继续已有 session、发送 steer、interrupt 或 stop；这些控制必须经过 runtime 的 active handle 和 session 状态检查。
+Web 通过 REST 读取事实，并在页面可见时轮询刷新；WebSocket 只报告连接状态。用户可以继续已有 session、发送 steer、interrupt 或 stop；这些控制必须经过 runtime 的 active handle 和 session 状态检查。
 
 ### 计划和审批
 

@@ -1,5 +1,8 @@
-// WebSocket relay on /ws: connection status and refresh hints only (no control
-// actions). Exponential backoff with jitter; paused while the page is hidden.
+// WebSocket relay on /ws: connection status (no control actions). The current
+// server pushes no frames on it; relayHints() still turns session/status/
+// message/engine_event frames into refresh hints should a server send them,
+// and polling.js keeps the page fresh either way. Exponential backoff with
+// jitter; reconnects are paused while the page is hidden.
 
 export const RELAY_BACKOFF_BASE_MS = 1000;
 export const RELAY_BACKOFF_MAX_MS = 15000;

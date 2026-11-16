@@ -14,7 +14,7 @@ Goal、mission plan、validation、Plan Mode 输入和审批都必须经过 sess
 
 ### 实时流
 
-WebSocket 传递事件和实时状态，页面可以在断线后通过 REST refresh 重建。当前 session control 使用 REST；WS 收到旧的 `chat` 或 `stop` 控制消息时返回弃用提示，不执行隐藏控制。
+WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，只在收到旧的 `chat` 或 `stop` 控制消息时返回弃用提示，不执行隐藏控制。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
 
 ## 安全边界
 
@@ -33,7 +33,7 @@ API mutation 必须满足：
 
 ## 前端与后端的权威关系
 
-前端 store 保存路由、加载状态、draft、relay 状态和当前视图；session/status/messages/Goal/Plan/Files/Skills/Settings 的最终值来自 API 或实时事件。页面刷新、切换 session、断线和 service 重启都必须能重新读取事实。
+前端 store 保存路由、加载状态、draft、relay 状态和当前视图；session/status/messages/Goal/Plan/Files/Skills/Settings 的最终值来自 API。页面刷新、切换 session、断线和 service 重启都必须能重新读取事实。
 
 服务端错误使用稳定 code、message、action 和恢复提示；前端显示原始错误中的路径、ID 和模型输出时保持 `translate=no`。不把错误 toast 或 optimistic state 当作成功事实。
 

@@ -8,7 +8,7 @@ Aegis Agent 是一个用 Go 编写的本地 agent harness。它把模型、工�
 
 ## 你会得到什么
 
-- **本地 Web 控制台**：会话列表与搜索、实时消息流、工具步骤折叠、Goal、Plan Mode 审批和提问、任务与上下文检查器、Workspace、Skills、Settings、命令面板以及中英文界面。
+- **本地 Web 控制台**：会话列表与搜索、自动刷新的消息流、工具步骤折叠、Goal、Plan Mode 审批和提问、任务与上下文检查器、Workspace、Skills、Settings、命令面板以及中英文界面。
 - **CLI**：`init`、`run`、`exec`、`continue`、`steer`、`sessions`、`goal`、`tasks`、`models`、`probe-provider` 和 `doctor`；委派、队列和 TUI 位于 `experimental` 下。
 - **Provider 适配**：OpenAI Responses、Anthropic Messages、Google Gemini `generateContent` 和 OpenAI-compatible endpoint。
 - **本地事实源**：消息、事件、状态、Goal、任务、队列工作和压缩产物写入你控制的文件目录，支持中断、继续和审计回看。

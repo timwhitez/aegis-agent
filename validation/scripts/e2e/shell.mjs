@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { assertDialogContract } from './audits.mjs';
-import { gotoApp, htmlLang, setLocale, spaGo, tid, waitSessionLoaded } from './ui.mjs';
+import { gotoApp, htmlLang, setLocale, spaGo, storeState, tid, waitSessionLoaded } from './ui.mjs';
 
 const DAY = 86400000;
 
@@ -255,6 +255,26 @@ export async function runShell(h) {
   await waitSessionLoaded(page, attentionId);
   await h.capture(page, 'shell-session-en-desktop');
   await setLocale(page, 'zh-CN');
+
+  // Issue #155: /ws pushes no session events, so an idle page must keep polling
+  // to see what another tab, the CLI or another process changes.
+  await h.check('idle page with the relay open shows sessions started and continued by another client without a reload', async () => {
+    await spaGo(page, '/');
+    await tid(page, 'empty-session').waitFor();
+    await h.until(async () => (await storeState(page, 'connection.relay')) === 'open', 'relay open', 15000, 100);
+    const externalId = await settledSession(h, 'E2E_UI_AWAIT 另一客户端启动 external-start');
+    await page.locator('[data-testid="sidebar"] [data-testid="session-row"][data-session-id="' + externalId + '"]').waitFor({ timeout: 15000 });
+    await spaGo(page, '/s/' + encodeURIComponent(externalId));
+    await waitSessionLoaded(page, externalId);
+    const followUp = '另一客户端继续 external-continue';
+    const result = await h.api('POST', '/api/sessions/' + encodeURIComponent(externalId) + '/continue', { message: followUp });
+    assert.equal(result.status, 202, result.text);
+    await h.waitDetail(externalId, (d) => d.state?.status === 'completed' && !d.active_handle, 'continued by another client');
+    await h.until(async () => ((await storeState(page, 'session.messages')) || []).some((m) => m.role === 'user' && m.text === followUp),
+      'the follow-up appears without a reload', 15000, 200);
+    await h.until(async () => (await storeState(page, 'session.detail.state.status')) === 'completed', 'completed status shown', 15000, 200);
+    assert.equal(await storeState(page, 'connection.relay'), 'open', 'the relay stayed open: the idle poll, not the relay-down fallback, refreshed the page');
+  }, { page });
   await context.close();
 
   for (const locale of ['zh-CN', 'en']) {
