@@ -1261,7 +1261,7 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
-	hasActiveHandle, err := s.hasActiveDescendantHandle(sessionID)
+	hasActiveHandle, err := s.hasActiveTreeHandle(sessionID)
 	if err != nil {
 		writeError(w, sessionStoreStatus(err), err)
 		return
@@ -7101,12 +7101,16 @@ func (s *Service) hasAnyActiveHandle() bool {
 	return len(s.handles) > 0
 }
 
-func (s *Service) hasActiveDescendantHandle(sessionID string) (bool, error) {
+// hasActiveTreeHandle reports whether sessionID itself or any descendant
+// holds a live handle in this process. A run blocked in Plan Mode
+// request_user_input keeps its handle while its state is awaiting_input, so
+// the running-status check alone does not cover it.
+func (s *Service) hasActiveTreeHandle(sessionID string) (bool, error) {
 	handles, err := s.activeDescendantHandles(sessionID)
 	if err != nil {
 		return false, err
 	}
-	return len(handles) > 0, nil
+	return len(handles) > 0 || s.hasActiveHandle(sessionID), nil
 }
 
 func (s *Service) activeDescendantHandles(sessionID string) ([]*launchHandle, error) {
