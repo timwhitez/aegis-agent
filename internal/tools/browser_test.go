@@ -428,8 +428,13 @@ func TestBrowserCancellationAndDeadDaemonNoReplay(t *testing.T) {
 	for _, kind := range []string{"timeout", "cancel", "dead"} {
 		t.Run(kind, func(t *testing.T) {
 			r, ec := browserFixture(t)
-			browserRun(t, r, ec, "print('initialized')")
+			// A failed warm-up closes the session, so the call below would start
+			// a fresh attempt and never exercise this case (#164).
+			if warm := browserRun(t, r, ec, "print('initialized')"); warm.IsError {
+				t.Fatalf("warm-up call failed; %s case not exercised: %v", kind, warm)
+			}
 			s := r.browser.sessions[ec.Store.SessionDir(ec.SessionID)]
+			warmRoot := s.root
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			code := "import time;time.sleep(30)"
@@ -449,6 +454,9 @@ func TestBrowserCancellationAndDeadDaemonNoReplay(t *testing.T) {
 			}
 			raw, _ := json.Marshal(map[string]string{"code": code})
 			got, err := r.Execute(ctx, "browser_exec", ec, raw)
+			if s.root != warmRoot {
+				t.Fatalf("call under test started a fresh attempt instead of using the warmed-up one: %v", got)
+			}
 			if !got.IsError || got.Metadata[MetadataFailureClass] != want || (kind == "cancel" && !errors.Is(err, context.Canceled)) {
 				t.Fatal(got, err)
 			}
