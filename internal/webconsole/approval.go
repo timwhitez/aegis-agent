@@ -175,6 +175,13 @@ func (s *Service) respondApproval(w http.ResponseWriter, r *http.Request, req ru
 // Only a new durable admission creates a Web handle. Receipt lookup deliberately
 // precedes current metadata, state, handle and provider-default checks.
 func (s *Service) launchApproval(ctx context.Context, req runtime.ContinueRequest) (ApprovalResponse, int, error) {
+	// Hold the reservation through PrepareApprovalOperation, which writes run
+	// claims and receipts, until the handle exists.
+	release, err := s.reserveLaunch(req.SessionID)
+	if err != nil {
+		return ApprovalResponse{}, http.StatusConflict, err
+	}
+	defer release()
 	cfg, err := s.configSnapshot()
 	if err != nil {
 		return ApprovalResponse{}, http.StatusInternalServerError, err
@@ -221,7 +228,7 @@ func (s *Service) launchApproval(ctx context.Context, req runtime.ContinueReques
 	}
 	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	handle := newLaunchHandle(req.SessionID, runner, cancel)
-	if err := s.addSessionHandle(handle); err != nil {
+	if err := s.addHandle(handle); err != nil {
 		cancel()
 		cause := errors.Join(err, runner.AbortPreparedApproval(prepared.Prepared, err))
 		lookup, lookupErr := runner.ApprovalReceipt(req.SessionID, req.ApprovalRequestID)

@@ -21,8 +21,8 @@
 | `/api/history` | GET | 分页会话历史（`page`、`page_size`） |
 | `/api/sessions` | GET | 会话摘要列表（`limit`，最多 200） |
 | `/api/sessions/start` | POST | 启动新会话，返回 202 accepted |
-| `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle 或正在启动的 session、存在未结算的队列 job 或仍有 session 在运行时返回冲突 |
-| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话树，目标或其后代在本进程有活动 handle、仍在运行或有未结算的队列 job 时返回冲突 |
+| `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle 或正在启动、继续的 session，存在未结算的队列 job，或仍有 session 在运行时返回冲突 |
+| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话树；目标或其后代在本进程有活动 handle 或正在继续、审批，仍在运行，或关联了会执行的队列 job（树内会话已暂停或等待输入的 blocked job 除外）时返回冲突 |
 | `/api/sessions/{id}/messages` | GET | 消息分页（`before_id`、`limit`） |
 | `/api/sessions/{id}/children`、`tasks`、`file-changes`、`context` | GET | 子会话与队列 job、任务板、文件变更、上下文报告 |
 | `/api/sessions/{id}/continue`、`steer`、`interrupt`、`stop` | POST | 运行控制 |
@@ -58,7 +58,7 @@
 ### 继续、steer、中断和 stop
 
 - continue 写入普通 follow-up 或显式恢复请求；
-- continue、Plan Mode 输入和审批登记 handle、start 登记启动时都与删除和清空历史串行：要么先登记、令后者返回冲突，要么在其完成后进行，会话已被移除时返回 404；
+- continue、Plan Mode 输入和审批从校验会话起就在本进程内预留该会话，直到登记 handle；start 在拿到 session ID 前登记为 pending start。删除或清空遇到预留或活动 handle 时返回冲突，清空遇到 pending start 也返回冲突；删除或清空正在移除该会话（清空时为全部会话）时，这些请求立即返回 409，不排队等待；会话已被移除后再请求返回 404；
 - steer 写入 durable control，可按请求选择 interrupt；
 - interrupt 请求停止当前 owner，但不删除已写入的消息和事件；
 - stop 结束当前执行并协调 descendants/queue；

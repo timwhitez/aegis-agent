@@ -88,6 +88,9 @@ const (
 var (
 	errWebServiceClosing       = errors.New("web service is closing")
 	errSessionAlreadyActive    = errors.New("session is already active in this web console")
+	errHistoryMutation         = errors.New("session history is being deleted or cleared; retry when that finishes")
+	errActiveSessionTree       = errors.New("cannot delete an active session tree")
+	errActiveHistory           = errors.New("cannot clear history while sessions are active in this web console")
 	errJSONMutationContentType = errors.New("JSON API mutation requires Content-Type: application/json")
 	errWorkspaceDeleteDenied   = errors.New("workspace directory contains restricted paths")
 
@@ -174,6 +177,14 @@ type Service struct {
 
 	pendingStartSeq int
 	pendingStarts   map[int]context.CancelFunc
+
+	// Guarded by mu. launching counts, per session, launches between their
+	// first check and their handle; historyDeleting and historyClearing mark
+	// what a delete or clear is removing. Each side refuses the other with 409
+	// instead of waiting, so a launch never queues behind a slow delete.
+	launching       map[string]int
+	historyDeleting map[string]struct{}
+	historyClearing bool
 
 	launchWG sync.WaitGroup
 
@@ -390,6 +401,8 @@ func New(cfg *config.Config, opts Options) (*Service, error) {
 		publicOrigins:   publicOrigins,
 		handles:         map[string]*launchHandle{},
 		pendingStarts:   map[int]context.CancelFunc{},
+		launching:       map[string]int{},
+		historyDeleting: map[string]struct{}{},
 		setProcessEnv:   os.Setenv,
 		unsetProcessEnv: os.Unsetenv,
 		titles:          newSessionTitleCache(sessionTitleCacheMaxEntries),
@@ -1267,7 +1280,7 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	if hasActiveHandle {
-		writeError(w, http.StatusConflict, errors.New("cannot delete an active session tree"))
+		writeError(w, http.StatusConflict, errActiveSessionTree)
 		return
 	}
 	if err := s.reconcileStaleRunningSessionTree(sessionID, "delete_session"); err != nil {
@@ -1278,6 +1291,17 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 		writeError(w, http.StatusConflict, err)
 		return
 	}
+	items, _, err := s.store.ListPage(1000000, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	finishRemoval, err := s.beginSessionTreeRemoval(sessionTreeTargetIDs(sessionID, items))
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	defer finishRemoval()
 	if err := s.ensureAuditLogWritable(); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -1320,7 +1344,7 @@ func (s *Service) handleClearSessions(w http.ResponseWriter, r *http.Request) {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	if s.hasAnyActiveHandle() {
-		writeError(w, http.StatusConflict, errors.New("cannot clear history while sessions are active in this web console"))
+		writeError(w, http.StatusConflict, errActiveHistory)
 		return
 	}
 	hasUnsettledJobs, err := s.hasUnsettledQueueJobs("")
@@ -1345,6 +1369,12 @@ func (s *Service) handleClearSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	finishClear, err := s.beginHistoryClear()
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	defer finishClear()
 	clearTx, err := s.prepareClearHistoryTransaction()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -2631,7 +2661,10 @@ func (s *Service) handleStartSession(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		status := http.StatusInternalServerError
-		if isClientStartError(err) {
+		switch {
+		case errors.Is(err, errHistoryMutation):
+			status = http.StatusConflict
+		case isClientStartError(err):
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err)
@@ -2736,6 +2769,12 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	release, err := s.reserveLaunch(sessionID)
+	if err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	defer release()
 	state, err := s.store.LoadState(sessionID)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -2791,14 +2830,11 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if err := s.addSessionHandle(handle); err != nil {
+	if err := s.addHandle(handle); err != nil {
 		cancel()
 		status := http.StatusServiceUnavailable
-		switch {
-		case errors.Is(err, errSessionAlreadyActive):
+		if errors.Is(err, errSessionAlreadyActive) {
 			status = http.StatusConflict
-		case errors.Is(err, fs.ErrNotExist):
-			status = http.StatusNotFound
 		}
 		writeError(w, status, err)
 		return
@@ -3033,6 +3069,11 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	if req.ApprovePlan {
 		return errors.New("approval operations require the receipt-aware launcher")
 	}
+	release, err := s.reserveLaunch(sessionID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	meta, err := s.store.LoadMetadata(sessionID)
 	if err != nil {
 		return err
@@ -3066,7 +3107,7 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if err := s.addSessionHandle(handle); err != nil {
+	if err := s.addHandle(handle); err != nil {
 		cancel()
 		return err
 	}
@@ -3105,7 +3146,7 @@ func planModeActionStatus(err error) int {
 	if errors.Is(err, fs.ErrNotExist) {
 		return http.StatusNotFound
 	}
-	if errors.Is(err, errSessionAlreadyActive) || errors.Is(err, session.ErrApprovalConflict) {
+	if errors.Is(err, errSessionAlreadyActive) || errors.Is(err, errHistoryMutation) || errors.Is(err, session.ErrApprovalConflict) {
 		return http.StatusConflict
 	}
 	if errors.Is(err, session.ErrMissingApprovalTarget) {
@@ -3418,28 +3459,77 @@ func (s *Service) addHandle(handle *launchHandle) error {
 	return nil
 }
 
-// addSessionHandle registers a live handle for an existing session under
-// historyMu. Delete and clear hold historyMu from their conflict checks to
-// their file moves, so they either observe this handle or have already
-// removed the session, which is reported as fs.ErrNotExist.
-func (s *Service) addSessionHandle(handle *launchHandle) error {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
-	if _, err := s.store.LoadMetadata(handle.sessionID); err != nil {
-		return err
+// reserveLaunch marks sessionID as launching until release is called, from
+// before a launch validates the session until its handle exists, so a delete
+// or clear refuses the session meanwhile. While a delete or clear is already
+// removing the session it fails with errHistoryMutation instead of waiting.
+func (s *Service) reserveLaunch(sessionID string) (release func(), err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, deleting := s.historyDeleting[sessionID]; deleting || s.historyClearing {
+		return nil, errHistoryMutation
 	}
-	return s.addHandle(handle)
+	s.launching[sessionID]++
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.launching[sessionID] <= 1 {
+			delete(s.launching, sessionID)
+		} else {
+			s.launching[sessionID]--
+		}
+	}, nil
 }
 
-// registerPendingStart takes historyMu so a start is registered either before
-// clear's conflict check (which then refuses) or after clear has finished.
+// beginSessionTreeRemoval marks targets as being deleted until finish is
+// called. It fails if any target holds a live handle or a launch reservation.
+// Deletes and clears are serialized by historyMu, so marks never overlap.
+func (s *Service) beginSessionTreeRemoval(targets map[string]struct{}) (finish func(), err error) {
+	s.pruneInactiveHandles()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range targets {
+		if _, live := s.handles[id]; live || s.launching[id] > 0 {
+			return nil, errActiveSessionTree
+		}
+	}
+	for id := range targets {
+		s.historyDeleting[id] = struct{}{}
+	}
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for id := range targets {
+			delete(s.historyDeleting, id)
+		}
+	}, nil
+}
+
+// beginHistoryClear marks the whole history as being cleared until finish is
+// called. It fails while any handle, pending start or launch reservation exists.
+func (s *Service) beginHistoryClear() (finish func(), err error) {
+	s.pruneInactiveHandles()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.handles) > 0 || len(s.pendingStarts) > 0 || len(s.launching) > 0 {
+		return nil, errActiveHistory
+	}
+	s.historyClearing = true
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.historyClearing = false
+	}, nil
+}
+
 func (s *Service) registerPendingStart(cancel context.CancelFunc) (int, error) {
-	s.historyMu.Lock()
-	defer s.historyMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return 0, errors.New("web service is closing")
+	}
+	if s.historyClearing {
+		return 0, errHistoryMutation
 	}
 	s.pendingStartSeq++
 	id := s.pendingStartSeq
@@ -7114,13 +7204,13 @@ func latestActiveOwnerFromEvents(eventsList []events.Event) ActiveHandleOwner {
 	return ActiveHandleOwner{}
 }
 
-// hasAnyActiveHandle reports live handles and starts that have not yet
-// promoted to a handle; clear must refuse both.
+// hasAnyActiveHandle reports live handles, starts that have not yet promoted
+// to a handle, and launches still validating; clear must refuse all of them.
 func (s *Service) hasAnyActiveHandle() bool {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.handles) > 0 || len(s.pendingStarts) > 0
+	return len(s.handles) > 0 || len(s.pendingStarts) > 0 || len(s.launching) > 0
 }
 
 // hasActiveTreeHandle reports whether sessionID itself or any descendant
