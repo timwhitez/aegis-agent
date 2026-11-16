@@ -816,3 +816,28 @@ func TestExplicitWorkspaceTrustEnvironmentLoadsWorkspaceConfig(t *testing.T) {
 		t.Fatal("explicit process trust was not recognized")
 	}
 }
+
+func TestWebPublicOriginsRoundTripAndStrictParse(t *testing.T) {
+	path := writeStrictConfigFixture(t, "web:\n  allowed_hosts:\n    - agent.example\n  public_origins:\n    - https://agent.example\n")
+	cfg, err := Load(path, t.TempDir())
+	if err != nil {
+		t.Fatalf("web.public_origins must load under strict parsing: %v", err)
+	}
+	if len(cfg.Web.PublicOrigins) != 1 || cfg.Web.PublicOrigins[0] != "https://agent.example" {
+		t.Fatalf("public origins not loaded: %#v", cfg.Web)
+	}
+	data, err := MarshalYAML(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if !strings.Contains(string(data), "public_origins:") || !strings.Contains(string(data), "https://agent.example") {
+		t.Fatalf("public origins must be written back:\n%s", data)
+	}
+	cloned, err := Clone(cfg)
+	if err != nil {
+		t.Fatalf("clone config: %v", err)
+	}
+	if len(cloned.Web.PublicOrigins) != 1 || cloned.Web.PublicOrigins[0] != "https://agent.example" {
+		t.Fatalf("clone lost public origins: %#v", cloned.Web)
+	}
+}

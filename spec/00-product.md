@@ -62,7 +62,7 @@ Workspace 操作经过服务端路径检查，列出文件时返回大小和修�
 - 默认数据留在用户配置的 session、workspace、skills 和 artifact 目录。
 - provider key 通过进程环境或受控 `.env` 读取，不写入公开文档；Web Settings 写入 `.env` 时保留现有文件安全检查。
 - session 与 agent 产物默认 owner-only；原始消息、工具负载、路径和模型输出按原文保存，不由 UI 翻译或擅自脱敏。
-- Web 默认 loopback。非回环监听会警告；使用网络暴露时，用户必须自己提供受信任网络、Host allowlist、Basic Auth 和 HTTPS。
+- Web 默认 loopback。非回环监听会警告；使用网络暴露时，用户必须自己提供受信任网络、Host allowlist、Basic Auth 和 HTTPS，外层 HTTPS 代理的浏览器 origin 通过 `web.public_origins` 显式声明。
 - 文件工具必须同时防范普通路径穿越和 symlink 穿越；shell 必须有 timeout、输出上限和环境变量白名单。
 
 ## 能力状态的写法

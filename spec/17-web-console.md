@@ -18,11 +18,11 @@ WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件�
 
 ## 安全边界
 
-请求处理顺序是 Host → Basic Auth → API/UI routing。Host 默认允许 localhost、`*.localhost`、IP literal 和 `web.allowed_hosts` 中的值。Basic Auth 可选，若配置则 username 与 bcrypt `password_hash` 必须同时存在；服务自身提供 HTTP，HTTPS 由外层负责。
+请求处理顺序是 Host → Basic Auth → API/UI routing。Host 默认允许 localhost、`*.localhost`、IP literal 和 `web.allowed_hosts` 中的值。Basic Auth 可选，若配置则 username 与 bcrypt `password_hash` 必须同时存在；服务自身提供 HTTP，HTTPS 由外层负责，外层代理的浏览器 origin 写入 `web.public_origins`。
 
 API mutation 必须满足：
 
-- 有同源 `Origin`，或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝；
+- 有同源 `Origin`（Host 与 scheme 都与请求一致，或等于 `web.public_origins` 中声明的外部 origin），或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝，`/ws` 握手使用同一规则，不信任 `X-Forwarded-*`；
 - 要求 JSON 的路由必须是 `application/json`，body 有统一大小上限；
 - unsafe 方法通过 JSON body policy 分为 required、optional 和 none；
 - 资源路径拒绝 segment separator、traversal 和不安全 symlink；

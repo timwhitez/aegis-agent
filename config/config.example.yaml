@@ -93,6 +93,10 @@ web:
   # Host names besides localhost, *.localhost and IP literals need listing.
   # allowed_hosts:
   #   - agent.example.internal
+  # Browser-facing origins of an outer proxy that terminates TLS. Without this,
+  # an https Origin over the console's plain HTTP is rejected as cross-origin.
+  # public_origins:
+  #   - https://agent.example.internal
 
 session:
   dir: .aegis-agent/sessions
