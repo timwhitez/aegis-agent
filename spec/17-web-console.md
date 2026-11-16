@@ -21,7 +21,7 @@
 | `/api/history` | GET | 分页会话历史（`page`、`page_size`） |
 | `/api/sessions` | GET | 会话摘要列表（`limit`，最多 200） |
 | `/api/sessions/start` | POST | 启动新会话，返回 202 accepted |
-| `/api/sessions/clear` | POST | 清空历史；有活动 handle 或未结算 job 时返回冲突 |
+| `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle、存在未结算的队列 job 或仍有 session 在运行时返回冲突 |
 | `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话 |
 | `/api/sessions/{id}/messages` | GET | 消息分页（`before_id`、`limit`） |
 | `/api/sessions/{id}/children`、`tasks`、`file-changes`、`context` | GET | 子会话与队列 job、任务板、文件变更、上下文报告 |

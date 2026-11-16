@@ -48,7 +48,7 @@ export OPENAI_API_KEY=你的密钥
 3. 内联控制：在 Plan Mode、Goal 或 `request_user_input` 暂停处直接审批、修订、取消或回答。
 4. 右侧检查器：按会话显示 Overview、Plan、Goal、Tasks、Agents、Context、Timeline 和 Files 等适用信息。
 
-页面路由是 `/`、`/s/<session-id>`、`/sessions`、`/skills`、`/workspace` 和 `/settings`。资源从 `/ui/*` 提供，实时连接使用 `/ws`。被移除的旧资源路径返回 404。
+页面路由是 `/`、`/s/<session-id>`、`/sessions`、`/skills`、`/workspace` 和 `/settings`。资源从 `/ui/*` 提供，`/ws` 只报告连接状态（页面数据通过 REST 轮询刷新）。被移除的旧资源路径返回 404。
 
 控制台可以启动 agent、修改 provider 配置和 `.env`、管理 skills、读写 workspace、删除 session，因此默认监听 loopback。只有在网络受信任且已配置 Host allowlist、Basic Auth 和 HTTPS 时，才考虑暴露到其他地址；由外层反向代理提供 HTTPS 时，把浏览器访问的 origin（如 `https://agent.example`）写入 `web.public_origins`，否则浏览器的写操作会被当作跨源请求拒绝。
 
