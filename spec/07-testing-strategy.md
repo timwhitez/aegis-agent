@@ -48,15 +48,15 @@ go test -count=1 -timeout=10m ./cmd/... ./internal/... ./pkg/... ./validation/cm
 
 - `server`：退役路由与缺失 `/ui` 资源返回 404、ES module 与样式的 MIME、SPA app shell、CSP 和无外部 CDN；
 - `shell`：默认路由与 light theme、sidebar 分组和搜索、深链与缺失 session、sidebar 折叠偏好、命令面板、快捷键、语言切换和移动端 drawer；
-- `session`：start、消息流和 tool step、Inspector 各 tab、steer、interrupt、stop、带 model override 的 continue、Goal、child agent、load earlier 和移动布局；
+- `session`：start、消息流和 tool step、Inspector 的 Overview、Tasks、Files、Timeline、Context、Goal 和 Agents tab、steer、interrupt、stop、带 model override 的 continue、Goal、child agent、load earlier 和移动布局；
 - `plan`：Plan Mode 审批、修订、取消确认、plan input 回答、英文卡片和移动布局；
-- `approvals`：审批 CAS，过期版本、Goal tab 中的 linked mission 修改和 coverage 范围变化都在执行前被拒绝，覆盖中英文和桌面/移动；
+- `approvals`：审批 CAS，过期版本、在 Goal tab 审阅并经唯一 inline 审批入口批准的 linked mission 修改，以及 coverage 范围变化都在执行前被拒绝，覆盖中英文和桌面/移动；
 - `receipts`：未知响应、reload 后的 pending、迟到响应隔离、coverage override 的新 request ID、completed alias 和 legacy recovery；
 - `recovery`：start、continue、steer 和 plan revision 的被拒与未确认草稿、会话切换、迟到的 launch 拒绝、已投递但响应丢失和移动端草稿；
 - `showcase`：在只含 showcase session 的独立 runtime 中生成 README 用的 1440×900 中英文截图，包含折叠步骤、todo strip、file changes、Tasks 面板和 sidebar；
 - `pages`：Sessions、Skills、Workspace、Settings 的 CRUD 和返回。
 
-`e2e/audits.mjs` 不是独立区域：harness 在每次截图时运行它的界面文案语言、`translate="yes"`、点击区域、窄屏溢出和 `html lang` 审计，并在每个区域结束时检查未声明的 console、页面、请求和 HTTP 错误。
+`e2e/audits.mjs` 不是独立区域：harness 在每次 `h.capture()` 截图时运行它的界面文案语言、`translate="yes"`、点击区域、窄屏溢出和 `html lang` 审计，并在每个区域结束时检查未声明的 console、页面、请求和 HTTP 错误。
 
 迭代时可用 `--only=server,shell`、`--output=validation/runs/local` 和 `--keep-runtime`。浏览器使用确定性 scripted provider，不需要真实凭据。
 
