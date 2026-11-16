@@ -221,7 +221,7 @@ func (s *Service) launchApproval(ctx context.Context, req runtime.ContinueReques
 	}
 	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	handle := newLaunchHandle(req.SessionID, runner, cancel)
-	if err := s.addHandle(handle); err != nil {
+	if err := s.addSessionHandle(handle); err != nil {
 		cancel()
 		cause := errors.Join(err, runner.AbortPreparedApproval(prepared.Prepared, err))
 		lookup, lookupErr := runner.ApprovalReceipt(req.SessionID, req.ApprovalRequestID)

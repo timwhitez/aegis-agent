@@ -2791,11 +2791,14 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if err := s.addHandle(handle); err != nil {
+	if err := s.addSessionHandle(handle); err != nil {
 		cancel()
 		status := http.StatusServiceUnavailable
-		if errors.Is(err, errSessionAlreadyActive) {
+		switch {
+		case errors.Is(err, errSessionAlreadyActive):
 			status = http.StatusConflict
+		case errors.Is(err, fs.ErrNotExist):
+			status = http.StatusNotFound
 		}
 		writeError(w, status, err)
 		return
@@ -3063,7 +3066,7 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	runner := runtime.NewRunner(cfg)
 	runCtx, cancel := context.WithCancel(context.Background())
 	handle := newLaunchHandle(sessionID, runner, cancel)
-	if err := s.addHandle(handle); err != nil {
+	if err := s.addSessionHandle(handle); err != nil {
 		cancel()
 		return err
 	}
@@ -3415,7 +3418,24 @@ func (s *Service) addHandle(handle *launchHandle) error {
 	return nil
 }
 
+// addSessionHandle registers a live handle for an existing session under
+// historyMu. Delete and clear hold historyMu from their conflict checks to
+// their file moves, so they either observe this handle or have already
+// removed the session, which is reported as fs.ErrNotExist.
+func (s *Service) addSessionHandle(handle *launchHandle) error {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if _, err := s.store.LoadMetadata(handle.sessionID); err != nil {
+		return err
+	}
+	return s.addHandle(handle)
+}
+
+// registerPendingStart takes historyMu so a start is registered either before
+// clear's conflict check (which then refuses) or after clear has finished.
 func (s *Service) registerPendingStart(cancel context.CancelFunc) (int, error) {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -7094,11 +7114,13 @@ func latestActiveOwnerFromEvents(eventsList []events.Event) ActiveHandleOwner {
 	return ActiveHandleOwner{}
 }
 
+// hasAnyActiveHandle reports live handles and starts that have not yet
+// promoted to a handle; clear must refuse both.
 func (s *Service) hasAnyActiveHandle() bool {
 	s.pruneInactiveHandles()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.handles) > 0
+	return len(s.handles) > 0 || len(s.pendingStarts) > 0
 }
 
 // hasActiveTreeHandle reports whether sessionID itself or any descendant
