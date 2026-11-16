@@ -139,6 +139,7 @@ func TestPublicOriginsValidation(t *testing.T) {
 		"zero-padded IPv4":    "https://127.000.000.001",
 		"short IPv4":          "https://127.1",
 		"hex IPv4":            "https://0x7f.0.0.1",
+		"hex final label":     "https://1.2.3.0x4",
 		"IPv4 trailing dot":   "https://127.0.0.1.",
 		"numeric final label": "https://agent.123",
 		"IPv6 zone":           "https://[fe80::1%25eth0]",
