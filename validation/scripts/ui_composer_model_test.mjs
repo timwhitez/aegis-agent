@@ -6,12 +6,12 @@ import {
   APPROVAL_WAIT_KEYS, approvalCardState, canSubmit, composerMode, effectiveToggles, placeholderKey, primaryAction, primaryLabelKey,
 } from '../../internal/webconsole/ui/src/features/session/controls/composer-model.js';
 
-function state({ route = 'session', status = '', planStatus = '', generating = false, detail = true, handle = false, activity = null, composer = {} } = {}) {
+function state({ route = 'session', status = '', planStatus = '', generating = false, detail = true, handle = false, activity = null, composer = {}, parent = '' } = {}) {
   const base = initialState();
   return {
     ...base,
     route: route === 'new' ? { name: 'new', path: '/', params: {} } : { name: 'session', path: '/s/a', params: { id: 'a' } },
-    session: { ...base.session, id: route === 'new' ? '' : 'a', generating, activity, detail: detail ? { state: { status }, active_handle: handle, plan_mode: planStatus ? { status: planStatus, plan_version: 3 } : null } : null },
+    session: { ...base.session, id: route === 'new' ? '' : 'a', generating, activity, detail: detail ? { metadata: { id: 'a', parent_session_id: parent }, state: { status }, active_handle: handle, plan_mode: planStatus ? { status: planStatus, plan_version: 3 } : null } : null },
     composer: { ...base.composer, ...composer },
   };
 }
@@ -97,6 +97,24 @@ test('toolbar controls only where they apply', () => {
   assert.deepEqual(effectiveToggles(steer, { goalEnabled: true, planEnabled: true, interrupt: true }), { goal: false, plan: false, interrupt: true });
 });
 
+test('a completed child session is blocked with a parent hint; its resumable statuses still continue (runtime ValidateContinueTarget)', () => {
+  const child = composerMode(state({ status: 'completed', parent: 'parent_1' }));
+  assert.equal(child.kind, 'blocked');
+  assert.equal(child.childCompleted, true);
+  assert.equal(placeholderKey(child, {}), 'composer.placeholder.childCompleted');
+  assert.equal(canSubmit(child, { text: 'follow up', submitting: false }), false);
+  assert.deepEqual([child.canGoal, child.canPlan, child.canInterrupt, child.canPickModel], [false, false, false, false]);
+  for (const status of ['paused', 'awaiting_input', 'failed']) {
+    const mode = composerMode(state({ status, parent: 'parent_1' }));
+    assert.equal(mode.kind, 'continue', 'child ' + status);
+    assert.equal(mode.childCompleted, false);
+  }
+  const root = composerMode(state({ status: 'completed' }));
+  assert.equal(root.kind, 'continue', 'a completed root session takes a follow-up');
+  assert.equal(root.childCompleted, false);
+  assert.equal(composerMode(state({ status: 'queued', parent: 'parent_1' })).childCompleted, false, 'only the completed state gets the parent hint');
+});
+
 test('placeholder and primary action', () => {
   const start = composerMode(state({ route: 'new' }));
   assert.equal(placeholderKey(start, { goalEnabled: true }), 'composer.placeholder.goal');
@@ -122,8 +140,8 @@ test('every key the composer model can return exists in both locales', () => {
     for (const status of statuses) {
       for (const planStatus of ['', 'awaiting_approval', 'awaiting_user_input']) {
         for (const generating of [false, true]) {
-          for (const detail of [true, false]) {
-            const mode = composerMode(state({ route, status, planStatus, generating, detail, activity: detail ? null : { kind: 'start', at: 1 } }));
+          for (const [detail, parent] of [[true, ''], [true, 'parent_1'], [false, '']]) {
+            const mode = composerMode(state({ route, status, planStatus, generating, detail, parent, activity: detail ? null : { kind: 'start', at: 1 } }));
             for (const composer of [{}, { goalEnabled: true }, { planEnabled: true }, { interrupt: true }]) keys.add(placeholderKey(mode, composer));
             for (const text of ['', 'x']) keys.add(primaryLabelKey(primaryAction(mode, text), mode));
           }

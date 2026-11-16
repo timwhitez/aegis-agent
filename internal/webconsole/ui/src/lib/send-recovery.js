@@ -21,6 +21,7 @@
  * i18n keys emitted:
  *   send.launchInFlight            a new-session launch is still pending
  *   send.notReady                  session state does not allow continue/steer
+ *   send.childCompleted            a completed child session is settled and never continued
  *   send.starting                  the run is still starting (steer not accepted yet)
  *   send.draft.title               failed draft card heading
  *   send.draft.rejected            explicit rejection notice
@@ -44,6 +45,19 @@ export const SEND_KINDS = Object.freeze(['start', 'continue', 'steer', 'revise']
 
 /** Session statuses that route a composer send to continue. */
 export const CONTINUABLE_STATUSES = Object.freeze(['awaiting_input', 'paused', 'failed', 'completed']);
+
+/**
+ * True when a durable session in this status accepts a continue. Mirrors the
+ * runtime rule (internal/runtime ValidateContinueTarget): a completed child
+ * session is settled with its parent and is never resumed (the server answers
+ * 409 SESSION_NOT_RESUMABLE); its other continuable statuses still resume.
+ * @param {string} status
+ * @param {{child?: boolean}} [options] child: the session has a parent_session_id
+ */
+export function acceptsContinue(status, { child = false } = {}) {
+  const value = str(status).trim().toLowerCase();
+  return CONTINUABLE_STATUSES.includes(value) && !(child && value === 'completed');
+}
 
 function str(value) {
   return value === undefined || value === null ? '' : String(value);
@@ -133,8 +147,10 @@ export function isAcceptedLaunchResponse(value) {
  * Decide how a composer submission is routed. Must run (and any Goal/Plan
  * draft validation must pass) before the composer is cleared.
  * @param {{rawText: string, sessionId?: string, backed?: boolean, status?: string,
- *   generating?: boolean, liveHandle?: boolean, planModeStatus?: string, launchInFlight?: boolean}} ctx
+ *   generating?: boolean, liveHandle?: boolean, planModeStatus?: string, launchInFlight?: boolean,
+ *   parentSessionId?: string}} ctx
  *   liveHandle: detailHasLiveRunHandle(detail) of the loaded session
+ *   parentSessionId: metadata.parent_session_id of the loaded session ('' for a root session)
  * @returns {{ok: true, kind: string, text: string, rawText: string, session: object,
  *   allowsGoalDraft: boolean, allowsPlanDraft: boolean} |
  *   {ok: false, reason: 'empty'|'launchInFlight'|'starting'|'notReady', notice: object|null}}
@@ -156,9 +172,11 @@ export function resolveSendRoute(ctx = {}) {
     return { ok: false, reason: 'starting', notice: { key: 'send.starting', tone: 'info' } };
   }
   const routesToSteer = readiness === 'steer';
-  const routesToContinue = durable && !routesToSteer && CONTINUABLE_STATUSES.includes(status);
+  const child = str(ctx.parentSessionId).trim() !== '';
+  const routesToContinue = durable && !routesToSteer && acceptsContinue(status, { child });
   if (durable && !routesToContinue && !routesToSteer) {
-    return { ok: false, reason: 'notReady', notice: { key: 'send.notReady', tone: 'error' } };
+    const key = child && status === 'completed' ? 'send.childCompleted' : 'send.notReady';
+    return { ok: false, reason: 'notReady', notice: { key, tone: 'error' } };
   }
   const revising = routesToContinue && str(ctx.planModeStatus).toLowerCase() === 'awaiting_approval';
   const kind = routesToSteer ? 'steer' : revising ? 'revise' : routesToContinue ? 'continue' : 'start';

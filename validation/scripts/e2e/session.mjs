@@ -358,6 +358,9 @@ export async function runSession(h) {
     await h.capture(page, 'session-agents-zh-desktop');
     await row.locator('[data-testid="inspector-agent-open"]').click();
     await waitSessionLoaded(page, childId);
+    // A completed child is settled with its parent: the composer explains instead of offering continue (409).
+    await page.locator('[data-testid="composer"][data-kind="blocked"]').waitFor();
+    assert.equal(await tid(page, 'composer-input').getAttribute('placeholder'), '子会话已完成，请在父会话中追加任务');
     await openInspectorTab(page, 'overview');
     await page.locator('[data-testid="inspector-link-parent"][data-session-id="' + id + '"]').waitFor();
     await closeInspector(page);

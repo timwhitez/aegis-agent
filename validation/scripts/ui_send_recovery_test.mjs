@@ -210,6 +210,14 @@ test('route resolution mirrors the composer state machine', () => {
   // Durable awaiting-input routes to continue even while the handle is tearing down (settling).
   assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'awaiting_input', liveHandle: detailHasLiveRunHandle(settlingDetail('awaiting_input')) }).kind, 'continue');
   assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'completed' }).kind, 'continue');
+  // A completed child session is settled with its parent; the runtime refuses to resume it (409).
+  const settledChild = resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'completed', parentSessionId: 'parent_1' });
+  assert.deepEqual([settledChild.ok, settledChild.reason, settledChild.notice.key], [false, 'notReady', 'send.childCompleted']);
+  for (const status of ['awaiting_input', 'paused', 'failed']) {
+    assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status, parentSessionId: 'parent_1' }).kind, 'continue', 'child ' + status);
+  }
+  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'queued', parentSessionId: 'parent_1' }).notice.key, 'send.notReady');
+  assert.equal(resolveSendRoute({ rawText: 'x', sessionId: 's', backed: true, status: 'running', parentSessionId: 'parent_1' }).kind, 'steer', 'a running child still takes steer');
   assert.deepEqual(CONTINUABLE_STATUSES, ['awaiting_input', 'paused', 'failed', 'completed']);
   const steer = resolveSendRoute(routeContexts.steer.rawText ? routeContexts.steer : { ...routeContexts.steer, rawText: 'x' });
   assert.equal(steer.allowsPlanDraft, false);

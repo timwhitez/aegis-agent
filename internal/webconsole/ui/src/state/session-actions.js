@@ -90,6 +90,7 @@ export function sendContextFromState(state, drafts, launching = new Set()) {
     liveHandle: backed && detailHasLiveRunHandle(state.session.detail),
     planModeStatus: backed ? str(state.session.detail?.plan_mode?.status) : '',
     launchInFlight: !backed && launching.has(sessionId),
+    parentSessionId: backed ? str(state.session.detail?.metadata?.parent_session_id) : '',
   };
 }
 

@@ -71,7 +71,7 @@ internal/webconsole/ui/
 
 ### 会话流和 Composer
 
-消息按时间顺序显示，tool call/result 归入可折叠 step group。Composer 根据 session status 显示 start、send、steer、continue、interrupt、stop 和失败 draft restore。失败发送保留 draft，不能自动重发。
+消息按时间顺序显示，tool call/result 归入可折叠 step group。Composer 根据 session status 显示 start、send、steer、continue、interrupt、stop 和失败 draft restore。失败发送保留 draft，不能自动重发。可继续的状态与 runtime `ValidateContinueTarget` 一致：`completed` 只对根会话提供 continue，已完成的子会话显示阻断提示，引导到父会话追加任务。
 
 ### Goal、Plan Mode 与提问
 
