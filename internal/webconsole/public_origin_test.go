@@ -104,6 +104,20 @@ func TestPublicOriginsAllowTheWebSocketHandshake(t *testing.T) {
 	}
 }
 
+// Issue #162: a browser sends an IPv6 origin in its compressed lowercase
+// form, so every configured spelling of the same address must match it.
+func TestPublicOriginsMatchEveryIPv6Spelling(t *testing.T) {
+	svc := publicOriginService(t, "https://[0:0:0:0:0:0:0:1]:8443", "https://[::FFFF:7F00:1]")
+	for _, origin := range []string{"https://[::1]:8443", "https://[::ffff:7f00:1]", "https://[::ffff:127.0.0.1]"} {
+		if recorder := postWorkers(svc, "[::1]:3940", origin); recorder.Code != http.StatusAccepted {
+			t.Fatalf("Origin=%s: status %d, want %d (body %s)", origin, recorder.Code, http.StatusAccepted, recorder.Body.String())
+		}
+	}
+	if recorder := postWorkers(svc, "[::1]:3940", "https://[::2]:8443"); recorder.Code != http.StatusForbidden {
+		t.Fatalf("a different IPv6 address must stay cross-origin: status %d", recorder.Code)
+	}
+}
+
 func TestPublicOriginsValidation(t *testing.T) {
 	for name, entry := range map[string]string{
 		"empty":          " ",
@@ -120,6 +134,15 @@ func TestPublicOriginsValidation(t *testing.T) {
 		"port too large": "https://agent.example:70000",
 		"bad port":       "https://agent.example:https",
 		"space":          "https://agent .example",
+		// Issue #162: spellings a browser rewrites before sending Origin.
+		"non-ASCII host":      "https://bücher.example",
+		"zero-padded IPv4":    "https://127.000.000.001",
+		"short IPv4":          "https://127.1",
+		"hex IPv4":            "https://0x7f.0.0.1",
+		"hex final label":     "https://1.2.3.0x4",
+		"IPv4 trailing dot":   "https://127.0.0.1.",
+		"numeric final label": "https://agent.123",
+		"IPv6 zone":           "https://[fe80::1%25eth0]",
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := testConfig(t, "")
@@ -129,11 +152,11 @@ func TestPublicOriginsValidation(t *testing.T) {
 			}
 		})
 	}
-	origins, err := parseWebPublicOrigins([]string{"https://Agent.Example:443/", "http://[::1]:8080", "http://proxy.local:80"})
+	origins, err := parseWebPublicOrigins([]string{"https://Agent.Example:443/", "http://[::1]:8080", "http://proxy.local:80", "https://xn--bcher-kva.example", "https://10.0.0.1", "https://[0:0:0:0:0:0:0:2]:8443"})
 	if err != nil {
 		t.Fatalf("valid origins rejected: %v", err)
 	}
-	for _, want := range []string{"https://agent.example", "http://[::1]:8080", "http://proxy.local"} {
+	for _, want := range []string{"https://agent.example", "http://[::1]:8080", "http://proxy.local", "https://xn--bcher-kva.example", "https://10.0.0.1", "https://[::2]:8443"} {
 		if _, ok := origins[want]; !ok {
 			t.Fatalf("normalized origins %v missing %s", origins, want)
 		}

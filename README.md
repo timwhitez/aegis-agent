@@ -4,6 +4,8 @@ Aegis Agent 是一个用 Go 编写的本地 agent harness。它把模型、工�
 
 模型负责判断下一步做什么；Aegis 负责提供工具协议、provider 适配、文件持久化、执行控制和安全边界。每次执行的关键事实写入本地 session 目录，Web 和 CLI 读取同一份事实。
 
+![Aegis Agent Web 控制台：左侧会话栏，中间是折叠的工具步骤、文件变更和待办进度，右侧检查器显示任务](./docs/assets/web-console.png)
+
 > 当前项目面向 Unix-like 环境。`build.sh` 明确拒绝 Windows 目标；CI 在 Ubuntu 24.04 上运行，macOS 是受支持的本地开发平台。
 
 ## 你会得到什么

@@ -96,7 +96,7 @@ hooks: {}
 
 - `web.basic_auth.username/password_hash` 要么同时配置，要么都不配置；password 必须是 bcrypt hash，服务不会启动 HTTPS。
 - `web.allowed_hosts` 扩展 Host allowlist；localhost、`*.localhost` 和 IP literal 默认允许。
-- `web.public_origins` 声明浏览器实际访问控制台的外部 origin（`scheme://host[:port]`，例如外层 HTTPS 反向代理的 `https://agent.example`）。同源检查对这些 origin 的 mutation 和 `/ws` 握手放行，代理改写 `Host` 时也有效；条目只能是 http/https origin，不能带路径、用户信息、查询或通配符，默认端口会归一化。服务不信任 `X-Forwarded-*` 头；代理保留原始 `Host` 时，该 host 仍需在 `web.allowed_hosts` 中。
+- `web.public_origins` 声明浏览器实际访问控制台的外部 origin（`scheme://host[:port]`，例如外层 HTTPS 反向代理的 `https://agent.example`）。同源检查对这些 origin 的 mutation 和 `/ws` 握手放行，代理改写 `Host` 时也有效；条目只能是 http/https origin，不能带路径、用户信息、查询或通配符，默认端口会归一化；主机名要写成浏览器在 Origin 中发送的形式：非 ASCII 域名写 punycode，IPv4 写点分十进制（`127.1`、`0x7f.0.0.1`、`127.000.000.001` 等写法启动时被拒绝），IPv6 的不同写法会归一化为同一地址。服务不信任 `X-Forwarded-*` 头；代理保留原始 `Host` 时，该 host 仍需在 `web.allowed_hosts` 中。
 - `session.dir` 默认 `.aegis-agent/sessions`，`dir_mode` 默认 `0700`。
 - `skills.dirs` 默认 `./skills`，支持多个目录；skill 正文和 command tools 仍受 catalog trust 规则约束。
 

@@ -48,7 +48,7 @@ internal/webconsole/ui/
 1. router 根据 location 选择页面并同步当前 session ID；
 2. `lib/api.js` 统一 REST 请求、JSON decode、错误对象和控制 wrapper；
 3. `state/actions.js` 把 API/relay 结果写入 store，并维护 loading/error/refresh；
-4. `state/relay.js` 连接 `/ws`，只用于连接状态；当前服务端不在 `/ws` 推送 session 事件，`relayHints()` 只在收到 session/status/message/engine_event 帧时触发 REST refresh；
+4. `state/relay.js` 连接 `/ws`，只用于连接状态；当前服务端不在 `/ws` 推送 session 事件，`relayHints()` 只在收到 session/status/message/engine_event 帧，或不带 session、属于当前 session 的 error 帧时触发 REST refresh（error 帧带错误文本时还会弹出提示）；
 5. poller 在页面可见时始终刷新 overview/session：运行中、首次加载或 relay 断开时 session 每 1.5s、overview 每 2s，空闲时两者都每 5s；页面隐藏时暂停，重新可见时立即刷新。这样其他标签页、CLI 或其他进程写入的变化也会出现在页面上；
 6. feature model 从 store 派生 timeline、status、tool steps、workspace preview 和 inspector cards；
 7. component 只渲染派生结果并触发 action。

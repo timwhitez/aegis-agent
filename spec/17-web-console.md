@@ -21,8 +21,8 @@
 | `/api/history` | GET | 分页会话历史（`page`、`page_size`） |
 | `/api/sessions` | GET | 会话摘要列表（`limit`，最多 200） |
 | `/api/sessions/start` | POST | 启动新会话，返回 202 accepted |
-| `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle、存在未结算的队列 job 或仍有 session 在运行时返回冲突 |
-| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话 |
+| `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle 或正在启动、继续的 session，存在未结算的队列 job，或仍有 session 在运行时返回冲突 |
+| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话树；目标或其后代在本进程有活动 handle 或正在继续、审批，仍在运行，或关联了会执行的队列 job（树内会话已暂停或等待输入的 blocked job 除外）时返回冲突 |
 | `/api/sessions/{id}/messages` | GET | 消息分页（`before_id`、`limit`） |
 | `/api/sessions/{id}/children`、`tasks`、`file-changes`、`context` | GET | 子会话与队列 job、任务板、文件变更、上下文报告 |
 | `/api/sessions/{id}/continue`、`steer`、`interrupt`、`stop` | POST | 运行控制 |
@@ -58,6 +58,7 @@
 ### 继续、steer、中断和 stop
 
 - continue 写入普通 follow-up 或显式恢复请求；
+- continue、Plan Mode 输入和审批从校验会话起就在本进程内预留该会话，直到登记 handle；start 在拿到 session ID 前登记为 pending start。删除或清空遇到预留或活动 handle 时返回冲突，清空遇到 pending start 也返回冲突；删除或清空正在移除该会话（清空时为全部会话）时，这些请求立即返回 409，不排队等待；会话已被移除后再请求返回 404；
 - steer 写入 durable control，可按请求选择 interrupt；
 - interrupt 请求停止当前 owner，但不删除已写入的消息和事件；
 - stop 结束当前执行并协调 descendants/queue；
@@ -69,7 +70,7 @@ Goal、mission plan、validation、Plan Mode 输入和审批都必须经过 sess
 
 ### 实时状态与刷新
 
-WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，只在收到旧的 `chat` 或 `stop` 控制消息时返回弃用提示，不执行隐藏控制。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
+WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件，也不执行任何控制。客户端发来的消息只会得到错误帧：旧的 `chat`、`stop` 和其他未知类型返回 `WEBSOCKET_CONTROL_DEPRECATED`，无法解析的 JSON 返回 `invalid websocket payload`；`reset_session` 不回包。页面通过 REST 读取事实，并在页面可见时按状态轮询（运行中快速、空闲时低频，见前端规范的启动与数据流），因此其他标签页、CLI 或其他进程造成的变化无需刷新也会出现；session control 使用 REST。
 
 ## 安全边界
 
@@ -77,7 +78,7 @@ WebSocket `/ws` 目前只用于连接状态：服务端不推送 session 事件�
 
 API mutation 必须满足：
 
-- 有同源 `Origin`（Host 与 scheme 都与请求一致，或等于 `web.public_origins` 中声明的外部 origin），或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝，`/ws` 握手使用同一规则，不信任 `X-Forwarded-*`；
+- 有同源 `Origin`（Host 与 scheme 都与请求一致，或等于 `web.public_origins` 中声明的外部 origin），或在无 Origin 时带 `X-Aegis-Agent-Web: 1`；跨源 mutation 拒绝，不信任 `X-Forwarded-*`。`/ws` 握手带 Origin 时使用同一同源规则；不带 Origin 时放行，也不要求 `X-Aegis-Agent-Web`，因为浏览器总会发送 Origin，而 `/ws` 不推送 session 数据也不执行控制；
 - 要求 JSON 的路由必须是 `application/json`，body 有统一大小上限；
 - unsafe 方法通过 JSON body policy 分为 required、optional 和 none；
 - 资源路径拒绝 segment separator、traversal 和不安全 symlink；
