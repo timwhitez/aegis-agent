@@ -347,9 +347,10 @@ export async function runSession(h) {
 
   await h.check('CHILDREN (workers ≥2): Agents tab lists the child; it opens and links back', async () => {
     const { id } = await startFromComposer(page, 'E2E_UI_CHILDREN 拆分并验证子任务');
-    // The child runs synchronously, so the server must report it completed
-    // together with its parent.
-    const detail = await h.waitDetail(id, (d) => d.state?.status === 'completed' && !d.active_handle && (d.children?.sessions || []).length === 1 && d.children.sessions[0].status === 'completed', 'children', 60000);
+    const detail = await h.waitDetail(id, (d) => d.state?.status === 'completed' && !d.active_handle && (d.children?.sessions || []).length === 1, 'children', 60000);
+    // The child runs synchronously, so the same detail must already report it
+    // completed together with its parent.
+    assert.equal(detail.children.sessions[0].status, 'completed', 'server reports the synchronous child completed with its parent');
     const childId = detail.children.sessions[0].id;
     await openInspectorTab(page, 'agents');
     const row = page.locator('[data-testid="inspector-agent-row"][data-session-id="' + childId + '"]');
@@ -357,7 +358,9 @@ export async function runSession(h) {
     assert.match(await row.innerText(), /e2e-child/);
     // The page may still hold a detail polled while the child was running;
     // wait for its next poll instead of reading the status once.
-    await page.locator('[data-testid="inspector-agent-row"][data-session-id="' + childId + '"][data-status="completed"]').waitFor({ timeout: 15000 });
+    await page.locator('[data-testid="inspector-agent-row"][data-session-id="' + childId + '"][data-status="completed"]').waitFor({ timeout: 15000 }).catch(async (err) => {
+      throw new Error('child row never showed completed (last data-status=' + await row.getAttribute('data-status') + '): ' + err.message);
+    });
     assert.equal(await row.locator('.insp-card-title').getAttribute('translate'), 'no');
     await h.capture(page, 'session-agents-zh-desktop');
     await row.locator('[data-testid="inspector-agent-open"]').click();
