@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -3250,21 +3251,72 @@ func TestStoreListChildrenToleratesTransientStateCreationWindow(t *testing.T) {
 	if err := store.SaveMetadata(meta.ID, meta); err != nil {
 		t.Fatalf("save metadata: %v", err)
 	}
-	saved := make(chan error, 1)
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		saved <- store.SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"})
-	}()
+	// Publish state.json from inside the read window, after ListChildren has
+	// already seen it missing once (#168: a sleeping goroutine could miss the
+	// window on a loaded runner).
+	var retries []int
+	var saveErr error
+	store.beforeSessionSummaryStateRetry = func(sessionID string, attempt int) {
+		retries = append(retries, attempt)
+		if sessionID == meta.ID && attempt == 1 {
+			// A separate Store stands in for the creating process and keeps
+			// the write independent of any lock the listing Store might hold.
+			saveErr = NewStore(store.Root()).SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"})
+		}
+	}
 
 	children, err := store.ListChildren(parentID, 10)
+	if saveErr != nil {
+		t.Fatalf("save state: %v", saveErr)
+	}
 	if err != nil {
 		t.Fatalf("list children during state creation: %v", err)
 	}
-	if saveErr := <-saved; saveErr != nil {
-		t.Fatalf("save state: %v", saveErr)
+	if len(retries) != 1 {
+		t.Fatalf("expected exactly one retry before the state was visible, got attempts %v", retries)
 	}
 	if len(children) != 1 || children[0].ID != meta.ID || children[0].Status != StatusRunning {
-		t.Fatalf("expected newly completed child snapshot, got %#v", children)
+		t.Fatalf("expected newly published child snapshot, got %#v", children)
+	}
+}
+
+func TestStoreListChildrenReportsStateMissingAfterReadWindow(t *testing.T) {
+	store := NewStore(t.TempDir())
+	parentID := "missing_state_parent"
+	meta := SessionMetadata{
+		SchemaVersion:    1,
+		ID:               NewSessionID(),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Workdir:          t.TempDir(),
+		Mode:             ModeExec,
+		Provider:         "fake",
+		Model:            "fake",
+		CompletionPolicy: CompletionPolicyAutonomous,
+		ParentSessionID:  parentID,
+		RootSessionID:    parentID,
+		Depth:            1,
+	}
+	if err := store.SaveMetadata(meta.ID, meta); err != nil {
+		t.Fatalf("save metadata: %v", err)
+	}
+	retries := 0
+	store.beforeSessionSummaryStateRetry = func(string, int) { retries++ }
+
+	started := time.Now()
+	_, err := store.ListChildren(parentID, 10)
+	elapsed := time.Since(started)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "state.json") {
+		t.Fatalf("a state that stays missing must be reported after the read window, got %v", err)
+	}
+	if retries != sessionSummaryStateReadAttempts-1 {
+		t.Fatalf("expected %d retries before giving up, got %d", sessionSummaryStateReadAttempts-1, retries)
+	}
+	// The window must span real time, about 100 ms (5 retries 20 ms apart),
+	// not only a retry count. The floor is fixed rather than derived from the
+	// constants so that shrinking the delay to nothing is caught. time.Sleep
+	// never returns early, so this lower bound cannot fail on a loaded runner.
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("read window collapsed: gave up after %s, want at least 100ms", elapsed)
 	}
 }
 

@@ -53,6 +53,10 @@ type Store struct {
 	// Set once by package tests to advance canonical facts before a reader CAS.
 	// Invoked without Store or claim locks; use a separate Store for writes.
 	beforeQueueJobRepairCheck func(expected QueueJob, repaired *QueueJob)
+	// Set only by package tests to publish or withhold state.json inside the
+	// session-summary read window. Invoked without Store locks after a read
+	// found no state.json and before the retry delay; attempt counts from 1.
+	beforeSessionSummaryStateRetry func(sessionID string, attempt int)
 }
 
 type harnessReminderIndex struct {
@@ -2250,6 +2254,9 @@ func (s *Store) loadSessionSummaryState(sessionID string) (State, error) {
 		}
 		lastErr = err
 		if attempt+1 < sessionSummaryStateReadAttempts {
+			if s.beforeSessionSummaryStateRetry != nil {
+				s.beforeSessionSummaryStateRetry(sessionID, attempt+1)
+			}
 			time.Sleep(sessionSummaryStateReadRetryDelay)
 		}
 	}
