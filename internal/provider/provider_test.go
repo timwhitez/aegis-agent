@@ -2744,10 +2744,19 @@ func TestOpenAIAdapterRetriesRetryable5xx(t *testing.T) {
 func TestOpenAIAdapterRetriesTransportTimeout(t *testing.T) {
 	var attempts int32
 	var retryClass string
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := atomic.AddInt32(&attempts, 1)
 		if attempt == 1 {
-			time.Sleep(60 * time.Millisecond)
+			// Hold the first attempt until the client gives up on it, so it
+			// times out however slow the runner is. The server notices the
+			// closed connection only after the request body is consumed.
+			_, _ = io.Copy(io.Discard, r.Body)
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -2758,9 +2767,14 @@ func TestOpenAIAdapterRetriesTransportTimeout(t *testing.T) {
 		}`))
 	}))
 	defer server.Close()
+	// Runs before server.Close, so a held handler can never block it.
+	defer close(release)
 
+	// The timeout only has to expire on the held first attempt; the second
+	// attempt answers at once and gets the same generous budget (#171: a 20 ms
+	// budget failed the successful retry on a loaded runner).
 	client := server.Client()
-	client.Timeout = 20 * time.Millisecond
+	client.Timeout = 500 * time.Millisecond
 	adapter := NewOpenAIWithRetry(server.URL, "key", client, RetryConfig{
 		MaxAttempts:    2,
 		BaseDelay:      time.Millisecond,
