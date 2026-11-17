@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -83,23 +82,54 @@ func TestAtomicWriteFileNoSymlinkReplacesRegularFile(t *testing.T) {
 func TestChmodAfterAtomicRenameRetriesTransientMissingPath(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "session.json")
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(15 * time.Millisecond)
-		_ = os.WriteFile(path, []byte("{}"), 0o600)
+	// Create the file right before the second attempt, after the first one has
+	// seen it missing (#170: a sleeping goroutine could miss the retry window
+	// on a loaded runner).
+	attempts := 0
+	restore := beforeChmodAfterAtomicRenameOpen
+	beforeChmodAfterAtomicRenameOpen = func(chmodPath string) error {
+		attempts++
+		if attempts == 2 {
+			return os.WriteFile(chmodPath, []byte("{}"), 0o644)
+		}
+		return nil
+	}
+	defer func() {
+		beforeChmodAfterAtomicRenameOpen = restore
 	}()
 
 	if err := chmodAfterAtomicRename(path, 0o600); err != nil {
 		t.Fatalf("expected retry to observe file creation, got %v", err)
 	}
-	<-done
+	if attempts != 2 {
+		t.Fatalf("expected the file to be found on the second attempt, got %d attempts", attempts)
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat path: %v", err)
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("expected mode 0600, got %v", info.Mode().Perm())
+	}
+}
+
+func TestChmodAfterAtomicRenameReportsPathMissingAfterRetries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	attempts := 0
+	restore := beforeChmodAfterAtomicRenameOpen
+	beforeChmodAfterAtomicRenameOpen = func(string) error {
+		attempts++
+		return nil
+	}
+	defer func() {
+		beforeChmodAfterAtomicRenameOpen = restore
+	}()
+
+	if err := chmodAfterAtomicRename(path, 0o600); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a path that stays missing must be reported after the retries, got %v", err)
+	}
+	if attempts != 6 {
+		t.Fatalf("expected 6 bounded attempts, got %d", attempts)
 	}
 }
 
