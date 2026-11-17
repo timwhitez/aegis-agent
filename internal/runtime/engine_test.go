@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -101,13 +102,14 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	defer cancel()
 	resolverErr := make(chan error, 1)
 	runDone := make(chan struct{})
+	waitBlocks, _ := observeBackgroundWaitBlocks(engine)
 	go func() {
 		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
 			resolverErr <- err
 			cancel()
 			return
 		}
-		if err := requireRunStillWaiting(runDone); err != nil {
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
 			resolverErr <- err
 			return
 		}
@@ -140,11 +142,8 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
 	close(runDone)
 	cancel()
-	if resolverErr := <-resolverErr; resolverErr != nil {
-		t.Fatalf("resolve background notification: %v", resolverErr)
-	}
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
+		t.Fatalf("run err=%v result=%#v; resolve background notification: %v", err, result, resolveErr)
 	}
 	if result.FinalText != "continued" || result.Status != session.StatusAwaitingInput {
 		t.Fatalf("expected continue result, got %#v", result)
@@ -246,6 +245,15 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	resolverDone := make(chan struct{})
 	resolverErr := make(chan error, 1)
 	runDone := make(chan struct{})
+	waitBlocks, waitBlockCount := observeBackgroundWaitBlocks(engine)
+	// Elapsed times since start and the wait-block count at the moment the
+	// result was written, recorded by the resolver before resolverDone closes
+	// and reported on failure. A wait that blocks again after the result was
+	// written read no pending result: one extra block can race the write, more
+	// mean the engine ignored a pending result.
+	start := time.Now()
+	var sawWaitAfter, reportedAfter time.Duration
+	var blocksAtReport int64
 	t.Cleanup(func() { <-resolverDone })
 	go func() {
 		defer close(resolverDone)
@@ -254,7 +262,8 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 			cancel()
 			return
 		}
-		if err := requireRunStillWaiting(runDone); err != nil {
+		sawWaitAfter = time.Since(start)
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
 			resolverErr <- err
 			return
 		}
@@ -269,18 +278,27 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 			cancel()
 			return
 		}
+		reportedAfter = time.Since(start)
+		blocksAtReport = waitBlockCount.Load()
 		resolverErr <- nil
 	}()
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
 
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	runReturnedAfter := time.Since(start)
 	close(runDone)
 	cancel()
 	<-resolverDone
 	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
 		finalState, stateErr := engine.store.LoadState(meta.ID)
-		t.Fatalf("run err=%v result=%#v turns=%d; resolver err=%v; state=%#v (load err %v)", err, result, turns, resolveErr, finalState, stateErr)
+		notifications, notificationsErr := engine.store.LoadBackgroundNotifications(meta.ID)
+		blocksAfterReport := int64(-1)
+		if reportedAfter > 0 {
+			blocksAfterReport = waitBlockCount.Load() - blocksAtReport
+		}
+		t.Fatalf("run err=%v result=%#v turns=%d; resolver err=%v; elapsed: background_wait seen %s, result reported %s, Run returned %s; wait blocks after report=%d (-1: not reported); notifications=%#v (load err %v); state=%#v (load err %v)",
+			err, result, turns, resolveErr, sawWaitAfter, reportedAfter, runReturnedAfter, blocksAfterReport, notifications, notificationsErr, finalState, stateErr)
 	}
 	if result.FinalText != "continued" || len(runner.requests) != 1 {
 		t.Fatalf("expected background continue after agent_wait, result=%#v requests=%#v", result, runner.requests)
@@ -327,18 +345,37 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	}
 }
 
-// requireRunStillWaiting gives the engine time to reach its background wait
-// loop after background_wait is saved, then checks that Run is still blocked
-// before a background result is reported. A correct engine cannot return
-// before that result exists, so this never fails on it; an engine that stops
-// blocking returns within the grace period and is reported.
-func requireRunStillWaiting(runDone <-chan struct{}) error {
-	select {
-	case <-runDone:
-		return errors.New("Run returned before any background result was reported; background_wait did not block")
-	case <-time.After(50 * time.Millisecond):
-		return nil
+// observeBackgroundWaitBlocks reports, on the returned channel, each time the
+// engine's background wait is about to block, and counts every such block.
+// The hook runs only after a ready check found no pending result. Sends never
+// block the engine; polls between two receives coalesce.
+func observeBackgroundWaitBlocks(engine *Engine) (<-chan struct{}, *atomic.Int64) {
+	blocks := make(chan struct{}, 1)
+	count := new(atomic.Int64)
+	engine.beforeBackgroundWaitBlock = func() {
+		count.Add(1)
+		select {
+		case blocks <- struct{}{}:
+		default:
+		}
 	}
+	return blocks, count
+}
+
+// requireRunStillWaiting returns once the background wait has blocked twice
+// with no result to drain, which requires the wait loop to have slept at least
+// once. It fails only if Run returns first. A correct engine cannot return
+// before a background result exists, so this never fails on it, and an engine
+// whose wait returns instead of blocking always fails it.
+func requireRunStillWaiting(blocks <-chan struct{}, runDone <-chan struct{}) error {
+	for i := 0; i < 2; i++ {
+		select {
+		case <-blocks:
+		case <-runDone:
+			return errors.New("Run returned before any background result was reported; background_wait did not block")
+		}
+	}
+	return nil
 }
 
 func waitForEngineStatePhase(ctx context.Context, store *session.Store, sessionID, status, phase string) error {
@@ -546,13 +583,14 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	defer cancel()
 	resolverErr := make(chan error, 1)
 	runDone := make(chan struct{})
+	waitBlocks, _ := observeBackgroundWaitBlocks(engine)
 	go func() {
 		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
 			resolverErr <- err
 			cancel()
 			return
 		}
-		if err := requireRunStillWaiting(runDone); err != nil {
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
 			resolverErr <- err
 			return
 		}
@@ -588,11 +626,8 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
 	close(runDone)
 	cancel()
-	if resolverError := <-resolverErr; resolverError != nil {
-		t.Fatalf("deliver background notification: %v", resolverError)
-	}
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
+		t.Fatalf("run err=%v result=%#v; deliver background notification: %v", err, result, resolveErr)
 	}
 	if result.FinalText != "continued" || len(runner.requests) != 1 || runner.requests[0].Source != continueSourceBackground {
 		t.Fatalf("expected any completed child to wake background continue, result=%#v requests=%#v", result, runner.requests)
