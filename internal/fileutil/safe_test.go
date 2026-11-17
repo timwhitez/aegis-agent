@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -125,11 +126,20 @@ func TestChmodAfterAtomicRenameReportsPathMissingAfterRetries(t *testing.T) {
 		beforeChmodAfterAtomicRenameOpen = restore
 	}()
 
-	if err := chmodAfterAtomicRename(path, 0o600); !errors.Is(err, os.ErrNotExist) {
+	started := time.Now()
+	err := chmodAfterAtomicRename(path, 0o600)
+	elapsed := time.Since(started)
+	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a path that stays missing must be reported after the retries, got %v", err)
 	}
 	if attempts != 6 {
 		t.Fatalf("expected 6 bounded attempts, got %d", attempts)
+	}
+	// The retries must back off in real time (10+20+30+40+50 ms between the six
+	// attempts). time.Sleep never returns early, so this lower bound cannot
+	// fail on a loaded runner.
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("retry backoff collapsed: gave up after %s, want at least 150ms", elapsed)
 	}
 }
 

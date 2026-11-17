@@ -3259,7 +3259,9 @@ func TestStoreListChildrenToleratesTransientStateCreationWindow(t *testing.T) {
 	store.beforeSessionSummaryStateRetry = func(sessionID string, attempt int) {
 		retries = append(retries, attempt)
 		if sessionID == meta.ID && attempt == 1 {
-			saveErr = store.SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"})
+			// A separate Store stands in for the creating process and keeps
+			// the write independent of any lock the listing Store might hold.
+			saveErr = NewStore(store.Root()).SaveState(meta.ID, State{Status: StatusRunning, Phase: "prepare"})
 		}
 	}
 
@@ -3300,12 +3302,21 @@ func TestStoreListChildrenReportsStateMissingAfterReadWindow(t *testing.T) {
 	retries := 0
 	store.beforeSessionSummaryStateRetry = func(string, int) { retries++ }
 
+	started := time.Now()
 	_, err := store.ListChildren(parentID, 10)
+	elapsed := time.Since(started)
 	if err == nil || !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "state.json") {
 		t.Fatalf("a state that stays missing must be reported after the read window, got %v", err)
 	}
 	if retries != sessionSummaryStateReadAttempts-1 {
 		t.Fatalf("expected %d retries before giving up, got %d", sessionSummaryStateReadAttempts-1, retries)
+	}
+	// The window must span real time, about 100 ms (5 retries 20 ms apart),
+	// not only a retry count. The floor is fixed rather than derived from the
+	// constants so that shrinking the delay to nothing is caught. time.Sleep
+	// never returns early, so this lower bound cannot fail on a loaded runner.
+	if elapsed < 100*time.Millisecond {
+		t.Fatalf("read window collapsed: gave up after %s, want at least 100ms", elapsed)
 	}
 }
 
