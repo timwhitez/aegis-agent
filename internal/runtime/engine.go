@@ -50,6 +50,10 @@ type Engine struct {
 	// Set only by tests to interleave a goal mutation after the matched
 	// approval snapshot and before the budget wrap-up reads its current goal.
 	beforeGoalBudgetWrapUpTurn func()
+	// beforeBackgroundWaitBlock is set only by package tests. It runs each time
+	// the background wait finds no result and is about to block, so a test can
+	// tell an engine that blocks from one that returns early.
+	beforeBackgroundWaitBlock func()
 }
 
 type RunnerInterface interface {
@@ -2007,6 +2011,9 @@ func (e *Engine) waitForBackgroundResult(ctx context.Context, meta session.Sessi
 				return 0, fmt.Errorf("record session.background.wait_timeout event: %w", err)
 			}
 			return 0, nil
+		}
+		if e.beforeBackgroundWaitBlock != nil {
+			e.beforeBackgroundWaitBlock()
 		}
 		select {
 		case <-ctx.Done():

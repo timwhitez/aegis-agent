@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,10 +101,16 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	resolverErr := make(chan error, 1)
+	runDone := make(chan struct{})
+	waitBlocks, _ := observeBackgroundWaitBlocks(engine)
 	go func() {
 		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
 			resolverErr <- err
 			cancel()
+			return
+		}
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
+			resolverErr <- err
 			return
 		}
 		job := session.QueueJob{
@@ -133,12 +140,10 @@ func TestEngineParksAndContinuesAfterBackgroundNotification(t *testing.T) {
 	})
 
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	close(runDone)
 	cancel()
-	if resolverErr := <-resolverErr; resolverErr != nil {
-		t.Fatalf("resolve background notification: %v", resolverErr)
-	}
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
+		t.Fatalf("run err=%v result=%#v; resolve background notification: %v", err, result, resolveErr)
 	}
 	if result.FinalText != "continued" || result.Status != session.StatusAwaitingInput {
 		t.Fatalf("expected continue result, got %#v", result)
@@ -194,6 +199,25 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("save parent coordination: %v", err)
 	}
+	// The unresolved job must exist and be able to progress. A missing job is a
+	// coordination deadlock, which wakes the parent at once instead of waiting
+	// for the resolver below (#166).
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := engine.store.SaveJob(session.QueueJob{
+		SchemaVersion:   1,
+		ID:              "job_unresolved",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		Status:          session.QueueStatusQueued,
+		ParentSessionID: meta.ID,
+		RootSessionID:   meta.ID,
+		Prompt:          "child work",
+		Mode:            session.ModeExec,
+		Background:      true,
+		IsolationMode:   "off",
+	}); err != nil {
+		t.Fatalf("save queued job: %v", err)
+	}
 	turns := 0
 	fake := provider.NewFake(
 		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
@@ -220,12 +244,27 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	// fail with "directory not empty".
 	resolverDone := make(chan struct{})
 	resolverErr := make(chan error, 1)
+	runDone := make(chan struct{})
+	waitBlocks, waitBlockCount := observeBackgroundWaitBlocks(engine)
+	// Elapsed times since start and the wait-block count at the moment the
+	// result was written, recorded by the resolver before resolverDone closes
+	// and reported on failure. A wait that blocks again after the result was
+	// written read no pending result: one extra block can race the write, more
+	// mean the engine ignored a pending result.
+	start := time.Now()
+	var sawWaitAfter, reportedAfter time.Duration
+	var blocksAtReport int64
 	t.Cleanup(func() { <-resolverDone })
 	go func() {
 		defer close(resolverDone)
 		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
 			resolverErr <- err
 			cancel()
+			return
+		}
+		sawWaitAfter = time.Since(start)
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
+			resolverErr <- err
 			return
 		}
 		if err := resolveParentQueueJob(engine.store, meta.ID, "job_unresolved", session.QueueStatusCompleted); err != nil {
@@ -239,19 +278,27 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 			cancel()
 			return
 		}
+		reportedAfter = time.Since(start)
+		blocksAtReport = waitBlockCount.Load()
 		resolverErr <- nil
 	}()
 	runner := &backgroundContinueRecorder{result: RunResult{SessionID: meta.ID, Status: session.StatusAwaitingInput, FinalText: "continued"}}
 	engine.SetRunner(runner)
 
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	runReturnedAfter := time.Since(start)
+	close(runDone)
 	cancel()
 	<-resolverDone
-	if resolverErr := <-resolverErr; resolverErr != nil {
-		t.Fatalf("resolve queued background work: %v", resolverErr)
-	}
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
+		finalState, stateErr := engine.store.LoadState(meta.ID)
+		notifications, notificationsErr := engine.store.LoadBackgroundNotifications(meta.ID)
+		blocksAfterReport := int64(-1)
+		if reportedAfter > 0 {
+			blocksAfterReport = waitBlockCount.Load() - blocksAtReport
+		}
+		t.Fatalf("run err=%v result=%#v turns=%d; resolver err=%v; elapsed: background_wait seen %s, result reported %s, Run returned %s; wait blocks after report=%d (-1: not reported); notifications=%#v (load err %v); state=%#v (load err %v)",
+			err, result, turns, resolveErr, sawWaitAfter, reportedAfter, runReturnedAfter, blocksAfterReport, notifications, notificationsErr, finalState, stateErr)
 	}
 	if result.FinalText != "continued" || len(runner.requests) != 1 {
 		t.Fatalf("expected background continue after agent_wait, result=%#v requests=%#v", result, runner.requests)
@@ -259,19 +306,76 @@ func TestEngineBlocksRunAwaitingInputWithUnresolvedBackgroundWork(t *testing.T) 
 	if turns != 2 {
 		t.Fatalf("expected reminder to force a second provider turn, got %d", turns)
 	}
+	// The parent must resume because the resolver reported the child result,
+	// not because a deadlock wake ended the wait early.
+	eventsList, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	for _, event := range eventsList {
+		if event.Type == "parent.coordination.deadlock" {
+			t.Fatalf("background wait ended through a deadlock wake instead of the child result: %#v", event)
+		}
+	}
+	notifications, err := engine.store.LoadBackgroundNotifications(meta.ID)
+	if err != nil {
+		t.Fatalf("load background notifications: %v", err)
+	}
+	if len(notifications) != 1 || notifications[0].QueueJobID != "job_unresolved" || notifications[0].DeliveryStatus != session.BackgroundNotificationAccepted {
+		t.Fatalf("expected only the resolved child notification to be accepted, got %#v", notifications)
+	}
 	messages, err := engine.store.LoadMessages(meta.ID)
 	if err != nil {
 		t.Fatalf("load messages: %v", err)
 	}
-	var foundReminder bool
+	var foundReminder, foundChildResult bool
 	for _, msg := range messages {
 		if msg.Meta["kind"] == "background_work_unresolved" && strings.Contains(msg.Text, "any background result arrives") && strings.Contains(msg.Text, "agent_wait") {
 			foundReminder = true
+		}
+		if msg.Meta["source"] == "background_results" && strings.Contains(msg.Text, "child finished") {
+			foundChildResult = true
 		}
 	}
 	if !foundReminder {
 		t.Fatalf("expected unresolved background reminder, got %#v", messages)
 	}
+	if !foundChildResult {
+		t.Fatalf("expected the child result in the resumed context, got %#v", messages)
+	}
+}
+
+// observeBackgroundWaitBlocks reports, on the returned channel, each time the
+// engine's background wait is about to block, and counts every such block.
+// The hook runs only after a ready check found no pending result. Sends never
+// block the engine; polls between two receives coalesce.
+func observeBackgroundWaitBlocks(engine *Engine) (<-chan struct{}, *atomic.Int64) {
+	blocks := make(chan struct{}, 1)
+	count := new(atomic.Int64)
+	engine.beforeBackgroundWaitBlock = func() {
+		count.Add(1)
+		select {
+		case blocks <- struct{}{}:
+		default:
+		}
+	}
+	return blocks, count
+}
+
+// requireRunStillWaiting returns once the background wait has blocked twice
+// with no result to drain, which requires the wait loop to have slept at least
+// once. It fails only if Run returns first. A correct engine cannot return
+// before a background result exists, so this never fails on it, and an engine
+// whose wait returns instead of blocking always fails it.
+func requireRunStillWaiting(blocks <-chan struct{}, runDone <-chan struct{}) error {
+	for i := 0; i < 2; i++ {
+		select {
+		case <-blocks:
+		case <-runDone:
+			return errors.New("Run returned before any background result was reported; background_wait did not block")
+		}
+	}
+	return nil
 }
 
 func waitForEngineStatePhase(ctx context.Context, store *session.Store, sessionID, status, phase string) error {
@@ -478,10 +582,16 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	resolverErr := make(chan error, 1)
+	runDone := make(chan struct{})
+	waitBlocks, _ := observeBackgroundWaitBlocks(engine)
 	go func() {
 		if err := waitForEngineStatePhase(ctx, engine.store, meta.ID, session.StatusAwaitingInput, "background_wait"); err != nil {
 			resolverErr <- err
 			cancel()
+			return
+		}
+		if err := requireRunStillWaiting(waitBlocks, runDone); err != nil {
+			resolverErr <- err
 			return
 		}
 		job := session.QueueJob{
@@ -514,12 +624,10 @@ func TestEngineAgentWaitWakesOnAnyBackgroundNotification(t *testing.T) {
 	})
 
 	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	close(runDone)
 	cancel()
-	if resolverError := <-resolverErr; resolverError != nil {
-		t.Fatalf("deliver background notification: %v", resolverError)
-	}
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if resolveErr := <-resolverErr; resolveErr != nil || err != nil {
+		t.Fatalf("run err=%v result=%#v; deliver background notification: %v", err, result, resolveErr)
 	}
 	if result.FinalText != "continued" || len(runner.requests) != 1 || runner.requests[0].Source != continueSourceBackground {
 		t.Fatalf("expected any completed child to wake background continue, result=%#v requests=%#v", result, runner.requests)
