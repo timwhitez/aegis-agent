@@ -78,10 +78,10 @@ type Provider struct {
 	ReasoningEffort     string   `yaml:"reasoning_effort,omitempty"`
 	ReasoningSummary    string   `yaml:"reasoning_summary,omitempty"`
 	TextVerbosity       string   `yaml:"text_verbosity,omitempty"`
-	ThinkingBudget  *int   `yaml:"thinking_budget,omitempty"`
-	ThinkingMode    string `yaml:"thinking_mode,omitempty"`
-	ThinkingDisplay string `yaml:"thinking_display,omitempty"`
-	IncludeThoughts *bool  `yaml:"include_thoughts,omitempty"`
+	ThinkingBudget      *int     `yaml:"thinking_budget,omitempty"`
+	ThinkingMode        string   `yaml:"thinking_mode,omitempty"`
+	ThinkingDisplay     string   `yaml:"thinking_display,omitempty"`
+	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
 	// OutputConfigEffort maps to the Anthropic Messages `output_config.effort`
 	// field (official Anthropic API on effort-capable Claude models, and the
 	// OpenAI effort scale on MiniMax and compatible gateways). It is
