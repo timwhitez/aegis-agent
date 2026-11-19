@@ -65,6 +65,12 @@ const defaultSteerMaxMessageChars = 12000
 const defaultWorkspaceDirName = "workspace"
 const StopWithoutFinishSteerMessage = "Stop this run without finishing so a later continue can close the task. Preserve partial output and wait for continue."
 
+// InterruptWithoutFinishSteerMessage asks a run owned by another process to
+// interrupt at the next safe boundary without finishing the task. It stays
+// distinct from StopWithoutFinishSteerMessage so stop reconciliation never
+// mistakes a cross-process interrupt for a stop fallback request.
+const InterruptWithoutFinishSteerMessage = "Interrupt this run now at the next safe boundary without finishing the task. Preserve partial output and wait for further instructions."
+
 type RunLifecycleHooks struct {
 	OnSessionActive   func(session.SessionMetadata, *Runner) error
 	OnSessionInactive func(session.SessionMetadata, *Runner, RunResult, error)
@@ -2421,6 +2427,17 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	}); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record session.started event: %w", err))
 	}
+	// Every run path (start, continue, approval resume, delegated child, queue
+	// worker) reaches the engine here, so the durable owner fact is recorded
+	// once for all adapters. The release is deferred so an engine error or panic
+	// still leaves a readable ownership fact behind.
+	owner := CurrentProcessOwner()
+	if err := r.appendEvent(meta.ID, RunOwnerAcquiredEventType, "prepare", owner.acquiredEventData()); err != nil {
+		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record %s event: %w", RunOwnerAcquiredEventType, err))
+	}
+	defer func() {
+		_ = r.appendEvent(meta.ID, RunOwnerReleasedEventType, "control", owner.releasedEventData(time.Now().UTC().Format(time.RFC3339Nano)))
+	}()
 	return r.engine.Run(ctx, meta, state, systemOverride, adapter, catalog, registry, hookManager)
 }
 

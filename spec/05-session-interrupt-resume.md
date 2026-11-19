@@ -247,6 +247,7 @@ completed child / queue session 不允许走通用 `continue`。child 完成时 
 
 ### 10.3 抢占与退化
 
+- 属主进程不是当前控制方时（例如 Web 控制台控制 CLI 启动的运行），控制方只能追加 durable interrupt steer 请求，由属主进程的 steer watcher 消费；控制方不得改写 session state，也不得抢占仍在运行的属主
 - `interrupt=true` 时，runtime 尽量取消当前 provider 调用
 - 若当前阶段无法立即安全打断，则保留 pending steer，请求在最近安全边界接纳
 - `deferred` 仍是保留状态，留给后续更细粒度的中断结果分类；当前实现重点保证“不丢请求、能在下一安全边界接纳”

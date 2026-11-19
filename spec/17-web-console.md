@@ -62,7 +62,11 @@
 - steer 写入 durable control，可按请求选择 interrupt；
 - interrupt 请求停止当前 owner，但不删除已写入的消息和事件；
 - stop 结束当前执行并协调 descendants/queue；
-- active handle 不属于当前进程时返回冲突和下一步动作，不能静默接管。
+- 本进程没有内存 handle 时，stop 与 interrupt 先读 durable 属主线索（Web 自己的 `webconsole.handle.*` 与 runtime 的 `run.owner.*`），因此 CLI、SDK 和 queue worker 启动的运行同样受控：
+  - 属主进程已死：走既有的 stale-owner reconcile，把 session 收敛为 `paused` 并写 `session.paused`，之后可以删除；队列 reaper 的周期扫描按同一规则自动协调这类 `running` session；
+  - 属主进程仍存活但不是本进程：不返回冲突，也不抢占。追加一条 durable interrupt steer（stop 用 `StopWithoutFinishSteerMessage`，interrupt 用 `InterruptWithoutFinishSteerMessage`）并返回 202，由属主进程自己的 steer watcher 在安全边界消费；已有等价 pending/deferred 请求时不重复追加，仍返回 202；
+  - 没有任何属主事件、无法证明归属时，保持既有的 `ACTIVE_HANDLE_NOT_OWNED` 冲突响应和下一步动作。
+- 跨进程控制只写 durable 请求，不写 session state、不做状态 CAS，因此不会协调或抢占另一个存活进程的运行；active handle 不属于当前进程时也不会静默接管。
 
 ### Goal 与 Plan Mode
 
