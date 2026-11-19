@@ -329,8 +329,9 @@ role capability 约束在进入 adapter 之前完成：
 }
 ```
 
-- 只有 `output_config_effort` 非空时才发送该键；未配置的 profile 必须完全省略它，上游 Anthropic 不会收到未知字段。
-- 部分网关（MiniMax 及兼容聚合端点）在 Messages wire 上实现 OpenAI 的 effort 档位而不是 Anthropic 原生 budget。这些 profile 用 `output_config_effort` 表达档位，可以与 `thinking` 同时发送。
+- `output_config.effort` 是 Anthropic Messages API 的正式字段，支持 effort 的 Claude 模型可以直接使用；各档位的可用性随模型而定（例如不是所有支持 `max` 的模型都支持 `xhigh`），不支持该字段或该档位的模型和网关会返回错误。
+- 只有 `output_config_effort` 非空时才发送该键；未配置的 profile 必须完全省略它，因此不支持该字段的模型或网关不受影响。
+- 部分网关（MiniMax 及兼容聚合端点）在 Messages wire 上用该字段实现 OpenAI 的 effort 档位，而 `thinking.budget_tokens` 对思考深度没有效果。这些 profile 用 `output_config_effort` 表达档位，可以与 `thinking` 同时发送。
 - 配置加载时 provider 与角色覆盖的 `output_config_effort` 都会去除首尾空白并转为小写；adapter 不再校验取值，`low | medium | high | xhigh | max` 中哪些被当前模型接受由真实 probe/request 判定。
 - `--thinking-level` 只在 profile 已声明 `output_config_effort` 时才改写该字段；未声明的 profile 保持原有 budget-only 映射。
 - raw provider 诊断记录 `output_config_effort`，`thinking_strategy` 取值为 `output_config_effort`、`manual_budget+output_config_effort`、`off+output_config_effort` 或原有取值。

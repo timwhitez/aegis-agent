@@ -58,10 +58,10 @@ func buildAnthropicRequestBody(req TurnRequest) (map[string]any, error) {
 		// thinking budget cannot produce an illegal body.
 		body["max_tokens"] = anthropicMaxTokensWithThinking(anthropicMaxTokens(req.MaxOutputTokens), req.ThinkingBudget)
 	}
-	// output_config.effort is a separate wire field from thinking. Gateways
-	// that expose the OpenAI effort scale on the Messages wire (MiniMax and
-	// compatible aggregators) read it; upstream Anthropic ignores profiles that
-	// never set it, so an empty value must not add the key at all.
+	// output_config.effort is a separate wire field from thinking. Anthropic
+	// accepts it on effort-capable Claude models, and MiniMax and compatible
+	// gateways use it for the OpenAI effort scale. Older models and gateways
+	// may reject it, so an empty value must not add the key at all.
 	if effort := strings.TrimSpace(req.OutputConfigEffort); effort != "" {
 		body["output_config"] = map[string]any{"effort": effort}
 	}

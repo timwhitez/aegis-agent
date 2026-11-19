@@ -693,7 +693,7 @@ func TestProviderOptionsForThinkingLevelSetsOutputConfigEffort(t *testing.T) {
 	}
 
 	// Profiles that never opted into the wire field must keep the budget-only
-	// mapping so upstream Anthropic is unaffected.
+	// mapping so endpoints that reject output_config are unaffected.
 	options, err = providerOptionsForThinkingLevel("max", config.Default(), "anthropic")
 	if err != nil {
 		t.Fatalf("provider options: %v", err)

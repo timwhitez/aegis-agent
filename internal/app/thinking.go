@@ -43,9 +43,10 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 			ThinkingBudget:  thinkingBudgetForLevel(level),
 		}
 		// Profiles that opted into the Messages output_config.effort wire field
-		// (MiniMax and compatible gateways) express the level there instead of
-		// through the Anthropic-native budget. Profiles without the field keep
-		// the budget-only mapping so upstream Anthropic is unchanged.
+		// (effort-capable Claude models, MiniMax and compatible gateways) also
+		// carry the level there. Profiles without the field keep the
+		// budget-only mapping, so endpoints or models that do not accept
+		// output_config never receive it.
 		if strings.TrimSpace(providerCfg.OutputConfigEffort) != "" {
 			opts.OutputConfigEffort = level
 		}

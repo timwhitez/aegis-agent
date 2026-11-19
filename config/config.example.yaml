@@ -32,9 +32,10 @@ providers:
       retry_transport: true
     anthropic_version: 2023-06-01
     prompt_cache: true
-    # Gateways that expose the OpenAI effort scale on the Messages wire
-    # (MiniMax and compatible aggregators) read output_config.effort instead of
-    # the Anthropic-native thinking budget. Leave unset for upstream Anthropic.
+    # Optional Messages API output_config.effort (low|medium|high|xhigh|max).
+    # Effort-capable Claude models accept it natively; MiniMax and compatible
+    # gateways use it instead of the thinking budget. Levels a model does not
+    # support are rejected by the endpoint. Unset sends no output_config.
     # output_config_effort: max
 
   google:

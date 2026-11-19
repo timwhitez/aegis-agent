@@ -3003,7 +3003,7 @@ func TestAnthropicAdapterOutputConfigEffort(t *testing.T) {
 			t.Fatalf("run: %v", err)
 		}
 		if _, ok := body["output_config"]; ok {
-			t.Fatalf("upstream Anthropic must not receive output_config, got %#v", body["output_config"])
+			t.Fatalf("an unset effort must not send output_config, got %#v", body["output_config"])
 		}
 		if result.RawProvider["thinking_strategy"] != "provider_default" {
 			t.Fatalf("unexpected thinking strategy: %#v", result.RawProvider["thinking_strategy"])

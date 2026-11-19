@@ -41,9 +41,10 @@ type TurnRequest struct {
 	ThinkingBudget   int
 	IncludeThoughts  *bool
 	// OutputConfigEffort is the Anthropic Messages `output_config.effort`
-	// value. It is independent of ThinkingBudget: gateways that implement the
-	// OpenAI-style effort scale on the Messages wire (MiniMax and compatible
-	// aggregators) accept it alongside or instead of `thinking`.
+	// value. It is independent of ThinkingBudget: effort-capable Claude models
+	// and gateways that implement the OpenAI-style effort scale on the
+	// Messages wire (MiniMax and compatible aggregators) accept it alongside
+	// or instead of `thinking`.
 	OutputConfigEffort string
 	PromptCache        *bool
 	Store              *bool
