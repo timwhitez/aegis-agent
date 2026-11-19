@@ -569,6 +569,40 @@ func TestNormalizeConfigDefaultsHardTurnLimitToDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadParsesOutputConfigEffort(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.yaml")
+	raw := `default_provider: anthropic
+providers:
+  anthropic:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.minimax.cn/anthropic
+    model: MiniMax-M3.1-Flash
+    output_config_effort: MAX
+role_providers:
+  planner:
+    output_config_effort: High
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path, root)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	provider, ok := cfg.Providers["anthropic"]
+	if !ok {
+		t.Fatalf("anthropic provider missing: %#v", cfg.Providers)
+	}
+	if provider.OutputConfigEffort != "MAX" {
+		t.Fatalf("expected the provider value to pass through unchanged, got %q", provider.OutputConfigEffort)
+	}
+	if got := cfg.RoleProviders.Planner.OutputConfigEffort; got != "high" {
+		t.Fatalf("expected the role override to normalize to lower case, got %q", got)
+	}
+}
+
 func TestLoadEnvFileSetsValuesWhenEnvIsEmpty(t *testing.T) {
 	envPath := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=from-file\n# comment\n"), 0o600); err != nil {

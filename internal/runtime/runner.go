@@ -923,8 +923,9 @@ func resolvedChildProviderOptions(cfg *config.Config, parentMeta *session.Sessio
 		}
 	}
 	roleOptions := session.ProviderOptions{
-		ReasoningEffort: strings.TrimSpace(roleOverride.ReasoningEffort),
-		MaxOutputTokens: roleOverride.MaxOutputTokens,
+		ReasoningEffort:    strings.TrimSpace(roleOverride.ReasoningEffort),
+		OutputConfigEffort: strings.TrimSpace(roleOverride.OutputConfigEffort),
+		MaxOutputTokens:    roleOverride.MaxOutputTokens,
 	}
 	defaults = mergeProviderOptions(defaults, roleOptions)
 	if strings.TrimSpace(requested.APIProvider) != "" {
@@ -2553,19 +2554,20 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		Messages: []session.Message{
 			session.NewMessage("user", prompt),
 		},
-		Tools:            toolSchemas,
-		Temperature:      providerCfg.Temperature,
-		TopP:             providerCfg.TopP,
-		MaxOutputTokens:  providerCfg.MaxOutputTokens,
-		ProviderProfile:  providerName,
-		APIProvider:      apiProvider,
-		ReasoningEffort:  strings.TrimSpace(providerCfg.ReasoningEffort),
-		ReasoningSummary: reasoningSummary,
-		TextVerbosity:    strings.TrimSpace(providerCfg.TextVerbosity),
-		ThinkingBudget:   providerCfg.ThinkingBudget,
-		IncludeThoughts:  providerCfg.IncludeThoughts,
-		PromptCache:      defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
-		Store:            defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
+		Tools:              toolSchemas,
+		Temperature:        providerCfg.Temperature,
+		TopP:               providerCfg.TopP,
+		MaxOutputTokens:    providerCfg.MaxOutputTokens,
+		ProviderProfile:    providerName,
+		APIProvider:        apiProvider,
+		ReasoningEffort:    strings.TrimSpace(providerCfg.ReasoningEffort),
+		ReasoningSummary:   reasoningSummary,
+		TextVerbosity:      strings.TrimSpace(providerCfg.TextVerbosity),
+		ThinkingBudget:     providerCfg.ThinkingBudget,
+		IncludeThoughts:    providerCfg.IncludeThoughts,
+		OutputConfigEffort: strings.TrimSpace(providerCfg.OutputConfigEffort),
+		PromptCache:        defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
+		Store:              defaultStoreForAPIProvider(apiProvider, providerCfg.Store),
 	}
 	fitted, err := fitProviderRequestToBudget(adapter, turnRequest, newRequestBudgetPolicy(model, providerCfg.ContextWindowTokens, r.cfg.Runtime.Compact.UtilizationFactor), requestBudgetContext{
 		RequestKind: requestKindProbe,
@@ -3119,6 +3121,7 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 	cfg.ReasoningEffort = opts.ReasoningEffort
 	cfg.ReasoningSummary = opts.ReasoningSummary
 	cfg.TextVerbosity = opts.TextVerbosity
+	cfg.OutputConfigEffort = opts.OutputConfigEffort
 	if opts.ThinkingBudget > 0 {
 		cfg.ThinkingBudget = opts.ThinkingBudget
 	}
@@ -3162,6 +3165,7 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		TextVerbosity:       strings.TrimSpace(cfg.TextVerbosity),
 		ThinkingBudget:      cfg.ThinkingBudget,
 		IncludeThoughts:     cfg.IncludeThoughts,
+		OutputConfigEffort:  strings.TrimSpace(cfg.OutputConfigEffort),
 		PromptCache:         defaultPromptCacheForAPIProvider(apiProvider, cfg.PromptCache),
 		Store:               defaultStoreForAPIProvider(apiProvider, cfg.Store),
 		SendMetadata:        cfg.SendMetadata,
@@ -3242,6 +3246,9 @@ func mergeProviderOptions(defaults, override session.ProviderOptions) session.Pr
 	if override.IncludeThoughts != nil {
 		out.IncludeThoughts = override.IncludeThoughts
 	}
+	if strings.TrimSpace(override.OutputConfigEffort) != "" {
+		out.OutputConfigEffort = strings.TrimSpace(override.OutputConfigEffort)
+	}
 	if override.PromptCache != nil {
 		out.PromptCache = override.PromptCache
 	}
@@ -3276,6 +3283,7 @@ func preserveDurableProviderOptionDefaults(merged, current session.ProviderOptio
 	merged.ReasoningSummary = strings.TrimSpace(current.ReasoningSummary)
 	merged.TextVerbosity = strings.TrimSpace(current.TextVerbosity)
 	merged.ThinkingBudget = current.ThinkingBudget
+	merged.OutputConfigEffort = strings.TrimSpace(current.OutputConfigEffort)
 	if current.IncludeThoughts == nil {
 		merged.IncludeThoughts = nil
 	}

@@ -2914,6 +2914,103 @@ func TestJSONClientClassifiesStreamIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestAnthropicAdapterOutputConfigEffort(t *testing.T) {
+	newServer := func(capture *map[string]any) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer r.Body.Close()
+			data, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(data, capture)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"id":"msg_1",
+				"stop_reason":"end_turn",
+				"content":[{"type":"text","text":"done"}],
+				"usage":{"input_tokens":8,"output_tokens":4}
+			}`))
+		}))
+	}
+
+	t.Run("effort travels next to an independent thinking budget", func(t *testing.T) {
+		var body map[string]any
+		server := newServer(&body)
+		defer server.Close()
+
+		includeThoughts := true
+		adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+		result, err := adapter.RunTurn(context.Background(), TurnRequest{
+			SessionID:          "s1",
+			Model:              "MiniMax-M3.1-Flash",
+			Messages:           []session.Message{session.NewMessage("user", "hello")},
+			MaxOutputTokens:    2048,
+			ThinkingBudget:     1024,
+			IncludeThoughts:    &includeThoughts,
+			OutputConfigEffort: "max",
+		}, func(string, map[string]any) {})
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		outputConfig, ok := body["output_config"].(map[string]any)
+		if !ok || outputConfig["effort"] != "max" {
+			t.Fatalf("expected output_config.effort max, got %#v", body["output_config"])
+		}
+		thinking, ok := body["thinking"].(map[string]any)
+		if !ok || thinking["budget_tokens"] != float64(1024) {
+			t.Fatalf("expected the thinking budget to stay independent, got %#v", body["thinking"])
+		}
+		if result.RawProvider["output_config_effort"] != "max" {
+			t.Fatalf("expected the raw envelope to report the effort, got %#v", result.RawProvider)
+		}
+		if result.RawProvider["thinking_strategy"] != "manual_budget+output_config_effort" {
+			t.Fatalf("unexpected thinking strategy: %#v", result.RawProvider["thinking_strategy"])
+		}
+	})
+
+	t.Run("effort alone reports its own strategy", func(t *testing.T) {
+		var body map[string]any
+		server := newServer(&body)
+		defer server.Close()
+
+		adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+		result, err := adapter.RunTurn(context.Background(), TurnRequest{
+			SessionID:          "s1",
+			Model:              "MiniMax-M3.1-Flash",
+			Messages:           []session.Message{session.NewMessage("user", "hello")},
+			OutputConfigEffort: "high",
+		}, func(string, map[string]any) {})
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if _, ok := body["thinking"]; ok {
+			t.Fatalf("expected no thinking block, got %#v", body["thinking"])
+		}
+		if result.RawProvider["thinking_strategy"] != "output_config_effort" {
+			t.Fatalf("unexpected thinking strategy: %#v", result.RawProvider["thinking_strategy"])
+		}
+	})
+
+	t.Run("an unset effort never adds the key", func(t *testing.T) {
+		var body map[string]any
+		server := newServer(&body)
+		defer server.Close()
+
+		adapter := NewAnthropic(server.URL, "key", "2023-06-01", server.Client())
+		result, err := adapter.RunTurn(context.Background(), TurnRequest{
+			SessionID: "s1",
+			Model:     "claude-sonnet-4-6",
+			Messages:  []session.Message{session.NewMessage("user", "hello")},
+		}, func(string, map[string]any) {})
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if _, ok := body["output_config"]; ok {
+			t.Fatalf("upstream Anthropic must not receive output_config, got %#v", body["output_config"])
+		}
+		if result.RawProvider["thinking_strategy"] != "provider_default" {
+			t.Fatalf("unexpected thinking strategy: %#v", result.RawProvider["thinking_strategy"])
+		}
+	})
+}
+
 func TestAnthropicAdapterSendsGenerationFields(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

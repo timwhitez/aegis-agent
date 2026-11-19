@@ -675,6 +675,34 @@ func TestRunCommandResumeThinkingLevelProviderOptions(t *testing.T) {
 	}
 }
 
+func TestProviderOptionsForThinkingLevelSetsOutputConfigEffort(t *testing.T) {
+	cfg := config.Default()
+	provider := cfg.Providers["anthropic"]
+	provider.OutputConfigEffort = "low"
+	cfg.Providers["anthropic"] = provider
+
+	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic")
+	if err != nil {
+		t.Fatalf("provider options: %v", err)
+	}
+	if options.OutputConfigEffort != "max" {
+		t.Fatalf("expected the level to drive output_config_effort, got %#v", options)
+	}
+	if options.ThinkingBudget != 32000 {
+		t.Fatalf("expected the Anthropic-native budget mapping to stay, got %#v", options)
+	}
+
+	// Profiles that never opted into the wire field must keep the budget-only
+	// mapping so upstream Anthropic is unaffected.
+	options, err = providerOptionsForThinkingLevel("max", config.Default(), "anthropic")
+	if err != nil {
+		t.Fatalf("provider options: %v", err)
+	}
+	if options.OutputConfigEffort != "" {
+		t.Fatalf("expected no output_config_effort without profile opt-in, got %#v", options)
+	}
+}
+
 func TestProviderOptionsForThinkingLevelMapsMaxThinkingBudget(t *testing.T) {
 	cfg := config.Default()
 	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic")

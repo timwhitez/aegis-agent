@@ -58,6 +58,13 @@ func buildAnthropicRequestBody(req TurnRequest) (map[string]any, error) {
 		// thinking budget cannot produce an illegal body.
 		body["max_tokens"] = anthropicMaxTokensWithThinking(anthropicMaxTokens(req.MaxOutputTokens), req.ThinkingBudget)
 	}
+	// output_config.effort is a separate wire field from thinking. Gateways
+	// that expose the OpenAI effort scale on the Messages wire (MiniMax and
+	// compatible aggregators) read it; upstream Anthropic ignores profiles that
+	// never set it, so an empty value must not add the key at all.
+	if effort := strings.TrimSpace(req.OutputConfigEffort); effort != "" {
+		body["output_config"] = map[string]any{"effort": effort}
+	}
 	return body, nil
 }
 
@@ -74,7 +81,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if err != nil {
 		return TurnResult{}, err
 	}
-	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts)
+	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts, req.OutputConfigEffort)
 	var resp struct {
 		ID         string `json:"id"`
 		StopReason string `json:"stop_reason"`
@@ -239,6 +246,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			"thinking_visible_observed":   len(thinkingParts) > 0,
 			"thinking_replay_observed":    thinkingReplayObserved,
 			"thinking_strategy":           thinkingStrategy,
+			"output_config_effort":        strings.TrimSpace(req.OutputConfigEffort),
 			"prompt_cache_enabled":        promptCacheEnabled(req.PromptCache),
 			"cache_creation_input_tokens": usage.CacheCreationInputTokens,
 			"cache_read_input_tokens":     usage.CacheReadInputTokens,
@@ -297,14 +305,21 @@ func anthropicThinking(budget int, includeThoughts *bool) map[string]any {
 	}
 }
 
-func anthropicThinkingStrategy(budget int, includeThoughts *bool) string {
-	if includeThoughts != nil && !*includeThoughts {
-		return "off"
+func anthropicThinkingStrategy(budget int, includeThoughts *bool, outputConfigEffort string) string {
+	base := "provider_default"
+	switch {
+	case includeThoughts != nil && !*includeThoughts:
+		base = "off"
+	case budget > 0:
+		base = "manual_budget"
 	}
-	if budget > 0 {
-		return "manual_budget"
+	if strings.TrimSpace(outputConfigEffort) == "" {
+		return base
 	}
-	return "provider_default"
+	if base == "provider_default" {
+		return "output_config_effort"
+	}
+	return base + "+output_config_effort"
 }
 
 func anthropicTools(tools []ToolSchema, enableCache bool) []map[string]any {

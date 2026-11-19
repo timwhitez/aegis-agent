@@ -55,6 +55,9 @@ func buildFakeRequestBody(req TurnRequest) map[string]any {
 	if strings.TrimSpace(req.TextVerbosity) != "" {
 		body["text_verbosity"] = req.TextVerbosity
 	}
+	if strings.TrimSpace(req.OutputConfigEffort) != "" {
+		body["output_config_effort"] = req.OutputConfigEffort
+	}
 	if req.ThinkingBudget > 0 {
 		body["thinking_budget"] = req.ThinkingBudget
 	}

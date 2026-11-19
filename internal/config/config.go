@@ -80,10 +80,14 @@ type Provider struct {
 	TextVerbosity       string   `yaml:"text_verbosity,omitempty"`
 	ThinkingBudget      int      `yaml:"thinking_budget,omitempty"`
 	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
-	PromptCache         *bool    `yaml:"prompt_cache,omitempty"`
-	Store               *bool    `yaml:"store,omitempty"`
-	SendMetadata        *bool    `yaml:"send_metadata,omitempty"`
-	RawSidecar          *bool    `yaml:"raw_sidecar,omitempty"`
+	// OutputConfigEffort maps to the Anthropic Messages `output_config.effort`
+	// field used by MiniMax and compatible gateways. It is independent of
+	// ThinkingBudget and is only sent when non-empty.
+	OutputConfigEffort string `yaml:"output_config_effort,omitempty"`
+	PromptCache        *bool  `yaml:"prompt_cache,omitempty"`
+	Store              *bool  `yaml:"store,omitempty"`
+	SendMetadata       *bool  `yaml:"send_metadata,omitempty"`
+	RawSidecar         *bool  `yaml:"raw_sidecar,omitempty"`
 }
 
 type RoleProvidersConfig struct {
@@ -94,12 +98,13 @@ type RoleProvidersConfig struct {
 }
 
 type RoleProviderOverride struct {
-	Provider        string `yaml:"provider,omitempty"`
-	APIProvider     string `yaml:"api_provider,omitempty"`
-	BaseURL         string `yaml:"base_url,omitempty"`
-	Model           string `yaml:"model,omitempty"`
-	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
-	MaxOutputTokens int    `yaml:"max_output_tokens,omitempty"`
+	Provider           string `yaml:"provider,omitempty"`
+	APIProvider        string `yaml:"api_provider,omitempty"`
+	BaseURL            string `yaml:"base_url,omitempty"`
+	Model              string `yaml:"model,omitempty"`
+	ReasoningEffort    string `yaml:"reasoning_effort,omitempty"`
+	OutputConfigEffort string `yaml:"output_config_effort,omitempty"`
+	MaxOutputTokens    int    `yaml:"max_output_tokens,omitempty"`
 }
 
 // WebConfig controls the local WebConsole adapter. The runtime and session
@@ -705,6 +710,7 @@ func normalizeRoleProviderOverride(override *RoleProviderOverride) {
 	override.BaseURL = strings.TrimSpace(override.BaseURL)
 	override.Model = strings.TrimSpace(override.Model)
 	override.ReasoningEffort = strings.ToLower(strings.TrimSpace(override.ReasoningEffort))
+	override.OutputConfigEffort = strings.ToLower(strings.TrimSpace(override.OutputConfigEffort))
 	if override.MaxOutputTokens < 0 {
 		override.MaxOutputTokens = 0
 	}

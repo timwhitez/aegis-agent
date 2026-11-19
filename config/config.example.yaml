@@ -32,6 +32,10 @@ providers:
       retry_transport: true
     anthropic_version: 2023-06-01
     prompt_cache: true
+    # Gateways that expose the OpenAI effort scale on the Messages wire
+    # (MiniMax and compatible aggregators) read output_config.effort instead of
+    # the Anthropic-native thinking budget. Leave unset for upstream Anthropic.
+    # output_config_effort: max
 
   google:
     api_provider: google

@@ -186,7 +186,11 @@ type RoleProviderOverrideRequest struct {
 	BaseURL         string `json:"base_url"`
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoning_effort"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
+	// OutputConfigEffort is optional on the wire. A role override is replaced
+	// wholesale from this request, so an absent key must preserve the
+	// configured value instead of clearing it; send an explicit "" to clear.
+	OutputConfigEffort *string `json:"output_config_effort"`
+	MaxOutputTokens    int     `json:"max_output_tokens"`
 }
 
 type TestConfigResponse struct {
@@ -202,6 +206,7 @@ type TestConfigResponse struct {
 	StopReason                   string `json:"stop_reason,omitempty"`
 	FinishMessage                string `json:"finish_message,omitempty"`
 	ReasoningEffort              string `json:"reasoning_effort,omitempty"`
+	OutputConfigEffort           string `json:"output_config_effort,omitempty"`
 	ReasoningSummaryObserved     bool   `json:"reasoning_summary_observed,omitempty"`
 	ReasoningEncryptedObserved   bool   `json:"reasoning_encrypted_observed,omitempty"`
 	ReasoningTokens              int    `json:"reasoning_tokens,omitempty"`
