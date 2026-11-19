@@ -10939,7 +10939,7 @@ func TestServiceConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t *te
 	anthropicProvider := cfg.Providers["anthropic"]
 	enabled := true
 	anthropicProvider.APIProvider = "anthropic-compatible"
-	anthropicProvider.ThinkingBudget = settingsThinkingMaxBudget
+	anthropicProvider.ThinkingBudget = config.IntPtr(settingsThinkingMaxBudget)
 	anthropicProvider.IncludeThoughts = &enabled
 	anthropicProvider.MaxOutputTokens = settingsThinkingMaxOutputTokens
 	cfg.Providers["anthropic"] = anthropicProvider
@@ -10976,7 +10976,7 @@ func TestServiceConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t *te
 		t.Fatalf("expected OpenAI reasoning fields to clear for thinking adapter, got %#v", switchedThinking)
 	}
 	switchedOpenAI := updated.Providers["anthropic"]
-	if switchedOpenAI.ThinkingBudget != 0 || switchedOpenAI.IncludeThoughts != nil {
+	if switchedOpenAI.ThinkingBudget != nil || switchedOpenAI.IncludeThoughts != nil {
 		t.Fatalf("expected thinking fields to clear for OpenAI adapter, got %#v", switchedOpenAI)
 	}
 
@@ -10988,7 +10988,7 @@ func TestServiceConfigClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t *te
 		t.Fatalf("expected thinking adapter payload without stale OpenAI reasoning fields, got %#v", openaiPayload)
 	}
 	anthropicPayload, _ := providers["anthropic"].(map[string]any)
-	if anthropicPayload["effective_api_provider"] != "openai-compatible" || anthropicPayload["thinking_budget"].(float64) != 0 || anthropicPayload["include_thoughts"] != nil {
+	if anthropicPayload["effective_api_provider"] != "openai-compatible" || anthropicPayload["thinking_budget"] != nil || anthropicPayload["include_thoughts"] != nil {
 		t.Fatalf("expected OpenAI adapter payload without stale thinking fields, got %#v", anthropicPayload)
 	}
 
@@ -11444,7 +11444,7 @@ func TestServiceConfigTestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t
 	anthropicProvider := cfg.Providers["anthropic"]
 	enabled := true
 	anthropicProvider.BaseURL = providerServer.URL
-	anthropicProvider.ThinkingBudget = settingsThinkingMaxBudget
+	anthropicProvider.ThinkingBudget = config.IntPtr(settingsThinkingMaxBudget)
 	anthropicProvider.IncludeThoughts = &enabled
 	cfg.Providers["anthropic"] = anthropicProvider
 	svc, err := New(cfg, Options{WorkerCount: 0})
@@ -11474,7 +11474,7 @@ func TestServiceConfigTestClearsStaleReasoningFieldsWhenSwitchingAdapterFamily(t
 		"base_url":     providerServer.URL,
 		"model":        "gpt-test",
 	}, http.StatusOK, &openAIResult)
-	if openAIResult.EffectiveAPIProvider != "openai-compatible" || openAIResult.ThinkingBudget != 0 || openAIResult.IncludeThoughts != nil {
+	if openAIResult.EffectiveAPIProvider != "openai-compatible" || openAIResult.ThinkingBudget != nil || openAIResult.IncludeThoughts != nil {
 		t.Fatalf("expected OpenAI probe response without stale thinking fields, got %#v", openAIResult)
 	}
 }

@@ -5861,8 +5861,8 @@ func validateProviderOptions(options ProviderOptions) error {
 	if options.ContextWindowTokens < 0 {
 		return errors.New("provider_options.context_window_tokens must be non-negative")
 	}
-	if options.ThinkingBudget < 0 {
-		return errors.New("provider_options.thinking_budget must be non-negative")
+	if options.ThinkingBudget != nil && *options.ThinkingBudget < -1 {
+		return errors.New("provider_options.thinking_budget must be -1 or non-negative")
 	}
 	if options.RetryPolicy != nil {
 		if options.RetryPolicy.MaxAttempts < 0 {

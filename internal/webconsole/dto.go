@@ -210,7 +210,9 @@ type TestConfigResponse struct {
 	ReasoningSummaryObserved     bool   `json:"reasoning_summary_observed,omitempty"`
 	ReasoningEncryptedObserved   bool   `json:"reasoning_encrypted_observed,omitempty"`
 	ReasoningTokens              int    `json:"reasoning_tokens,omitempty"`
-	ThinkingBudget               int    `json:"thinking_budget,omitempty"`
+	ThinkingBudget               *int   `json:"thinking_budget,omitempty"`
+	ThinkingMode                 string `json:"thinking_mode,omitempty"`
+	ThinkingDisplay              string `json:"thinking_display,omitempty"`
 	ThinkingVisibleObserved      bool   `json:"thinking_visible_observed,omitempty"`
 	ThinkingReplayObserved       bool   `json:"thinking_replay_observed,omitempty"`
 	ThinkingDetail               string `json:"thinking_detail,omitempty"`

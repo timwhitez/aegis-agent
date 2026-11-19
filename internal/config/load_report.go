@@ -90,6 +90,9 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 	if err := ValidateBrowserConfig(cfg.Tools.Browser); err != nil {
 		return nil, report, err
 	}
+	if err := ValidateProvidersThinking(cfg); err != nil {
+		return nil, report, err
+	}
 	report.Complete = true
 	cfg.loadReport = cloneLoadReport(report)
 	return cfg, report, nil

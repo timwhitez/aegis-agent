@@ -646,7 +646,7 @@ func TestRunCommandThinkingLevelProviderOptions(t *testing.T) {
 		t.Fatalf("expected one start call, got %d", len(fake.startCalls))
 	}
 	opts := fake.startCalls[0].ProviderOptions
-	if opts.IncludeThoughts == nil || !*opts.IncludeThoughts || opts.ThinkingBudget != 8192 {
+	if opts.IncludeThoughts == nil || !*opts.IncludeThoughts || config.ThinkingBudgetValue(opts.ThinkingBudget) != 8192 {
 		t.Fatalf("expected anthropic high thinking options, got %#v", opts)
 	}
 }
@@ -681,20 +681,20 @@ func TestProviderOptionsForThinkingLevelSetsOutputConfigEffort(t *testing.T) {
 	provider.OutputConfigEffort = "low"
 	cfg.Providers["anthropic"] = provider
 
-	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic")
+	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic", "")
 	if err != nil {
 		t.Fatalf("provider options: %v", err)
 	}
 	if options.OutputConfigEffort != "max" {
 		t.Fatalf("expected the level to drive output_config_effort, got %#v", options)
 	}
-	if options.ThinkingBudget != 32000 {
+	if config.ThinkingBudgetValue(options.ThinkingBudget) != 32000 {
 		t.Fatalf("expected the Anthropic-native budget mapping to stay, got %#v", options)
 	}
 
 	// Profiles that never opted into the wire field must keep the budget-only
 	// mapping so endpoints that reject output_config are unaffected.
-	options, err = providerOptionsForThinkingLevel("max", config.Default(), "anthropic")
+	options, err = providerOptionsForThinkingLevel("max", config.Default(), "anthropic", "")
 	if err != nil {
 		t.Fatalf("provider options: %v", err)
 	}
@@ -705,12 +705,96 @@ func TestProviderOptionsForThinkingLevelSetsOutputConfigEffort(t *testing.T) {
 
 func TestProviderOptionsForThinkingLevelMapsMaxThinkingBudget(t *testing.T) {
 	cfg := config.Default()
-	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic")
+	options, err := providerOptionsForThinkingLevel("max", cfg, "anthropic", "")
 	if err != nil {
 		t.Fatalf("provider options: %v", err)
 	}
-	if options.IncludeThoughts == nil || !*options.IncludeThoughts || options.ThinkingBudget != 32000 {
+	if options.IncludeThoughts == nil || !*options.IncludeThoughts || config.ThinkingBudgetValue(options.ThinkingBudget) != 32000 {
 		t.Fatalf("expected max thinking budget, got %#v", options)
+	}
+}
+
+func TestProviderOptionsForThinkingLevelAnthropicAdaptiveAndGatewayPolicies(t *testing.T) {
+	t.Run("opus 4.7 and 5.5 map to adaptive without manual budget", func(t *testing.T) {
+		for _, model := range []string{"claude-opus-4-7", "claude-opus-5-5"} {
+			cfg := config.Default()
+			p := cfg.Providers["anthropic"]
+			p.Model = model
+			cfg.Providers["anthropic"] = p
+
+			options, err := providerOptionsForThinkingLevel("high", cfg, "anthropic", "")
+			if err != nil {
+				t.Fatalf("%s provider options: %v", model, err)
+			}
+			if options.ThinkingMode != config.ThinkingModeAdaptive || options.OutputConfigEffort != "high" || options.ThinkingBudget != nil {
+				t.Fatalf("%s expected adaptive+high without manual budget, got %#v", model, options)
+			}
+		}
+	})
+
+	t.Run("model flag override selects adaptive on opus 4.7", func(t *testing.T) {
+		cfg := config.Default()
+		options, err := providerOptionsForThinkingLevel("high", cfg, "anthropic", "claude-opus-4-7")
+		if err != nil {
+			t.Fatalf("provider options: %v", err)
+		}
+		if options.ThinkingMode != config.ThinkingModeAdaptive || options.OutputConfigEffort != "high" || options.ThinkingBudget != nil {
+			t.Fatalf("expected adaptive+high for --model claude-opus-4-7, got %#v", options)
+		}
+	})
+
+	t.Run("sonnet 4.6 honors explicit adaptive opt-in and defaults to manual", func(t *testing.T) {
+		cfg := config.Default()
+		p := cfg.Providers["anthropic"]
+		p.Model = "claude-sonnet-4-6"
+		p.ThinkingMode = config.ThinkingModeAdaptive
+		cfg.Providers["anthropic"] = p
+
+		options, err := providerOptionsForThinkingLevel("high", cfg, "anthropic", "")
+		if err != nil {
+			t.Fatalf("provider options: %v", err)
+		}
+		if options.ThinkingMode != config.ThinkingModeAdaptive || options.OutputConfigEffort != "high" || options.ThinkingBudget != nil {
+			t.Fatalf("expected adaptive for 4.6 opt-in, got %#v", options)
+		}
+	})
+
+	t.Run("compatible gateway with output_config_effort stays manual unless explicitly adaptive", func(t *testing.T) {
+		cfg := config.Default()
+		cfg.Providers["minimax"] = config.Provider{
+			APIProvider:        "anthropic-compatible",
+			APIKeyEnv:          "MINIMAX_API_KEY",
+			BaseURL:            "https://api.minimax.invalid",
+			Model:              "MiniMax-M3.1-Flash",
+			OutputConfigEffort: "low",
+		}
+		options, err := providerOptionsForThinkingLevel("max", cfg, "minimax", "")
+		if err != nil {
+			t.Fatalf("provider options: %v", err)
+		}
+		if options.ThinkingMode != config.ThinkingModeEnabled || config.ThinkingBudgetValue(options.ThinkingBudget) != 32000 || options.OutputConfigEffort != "max" {
+			t.Fatalf("expected compatible gateway to retain manual budget + opted-in effort, got %#v", options)
+		}
+	})
+}
+
+func TestProviderOptionsForThinkingLevelGoogleModelAwareMaxBudget(t *testing.T) {
+	cfg := config.Default()
+	// Default Google model is gemini-2.5-flash (max legal budget 24576).
+	flashOpts, err := providerOptionsForThinkingLevel("max", cfg, "google", "")
+	if err != nil {
+		t.Fatalf("google flash options: %v", err)
+	}
+	if config.ThinkingBudgetValue(flashOpts.ThinkingBudget) != 24576 {
+		t.Fatalf("expected gemini-2.5-flash max budget 24576, got %#v", flashOpts.ThinkingBudget)
+	}
+
+	proOpts, err := providerOptionsForThinkingLevel("max", cfg, "google", "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("google pro options: %v", err)
+	}
+	if config.ThinkingBudgetValue(proOpts.ThinkingBudget) != 32768 {
+		t.Fatalf("expected gemini-2.5-pro max budget 32768, got %#v", proOpts.ThinkingBudget)
 	}
 }
 

@@ -2930,7 +2930,7 @@ func TestEngineEmitsProviderRequestPreparedEvent(t *testing.T) {
 		MaxOutputTokens: 256,
 		ReasoningEffort: "high",
 		TextVerbosity:   "low",
-		ThinkingBudget:  1024,
+		ThinkingBudget:  config.IntPtr(1024),
 		IncludeThoughts: &includeThoughts,
 		Store:           &store,
 		RetryPolicy: &session.ProviderRetryPolicy{

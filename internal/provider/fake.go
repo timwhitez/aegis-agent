@@ -58,8 +58,14 @@ func buildFakeRequestBody(req TurnRequest) map[string]any {
 	if strings.TrimSpace(req.OutputConfigEffort) != "" {
 		body["output_config_effort"] = req.OutputConfigEffort
 	}
-	if req.ThinkingBudget > 0 {
-		body["thinking_budget"] = req.ThinkingBudget
+	if req.ThinkingBudget != nil {
+		body["thinking_budget"] = *req.ThinkingBudget
+	}
+	if strings.TrimSpace(req.ThinkingMode) != "" {
+		body["thinking_mode"] = req.ThinkingMode
+	}
+	if strings.TrimSpace(req.ThinkingDisplay) != "" {
+		body["thinking_display"] = req.ThinkingDisplay
 	}
 	if req.IncludeThoughts != nil {
 		body["include_thoughts"] = *req.IncludeThoughts

@@ -176,7 +176,9 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			ReasoningEffort:    meta.ProviderOptions.ReasoningEffort,
 			ReasoningSummary:   meta.ProviderOptions.ReasoningSummary,
 			TextVerbosity:      meta.ProviderOptions.TextVerbosity,
-			ThinkingBudget:     meta.ProviderOptions.ThinkingBudget,
+			ThinkingBudget:     config.CloneIntPtr(meta.ProviderOptions.ThinkingBudget),
+			ThinkingMode:       meta.ProviderOptions.ThinkingMode,
+			ThinkingDisplay:    meta.ProviderOptions.ThinkingDisplay,
 			IncludeThoughts:    meta.ProviderOptions.IncludeThoughts,
 			OutputConfigEffort: meta.ProviderOptions.OutputConfigEffort,
 			PromptCache:        meta.ProviderOptions.PromptCache,
@@ -555,7 +557,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			ReasoningEffort:    meta.ProviderOptions.ReasoningEffort,
 			ReasoningSummary:   meta.ProviderOptions.ReasoningSummary,
 			TextVerbosity:      meta.ProviderOptions.TextVerbosity,
-			ThinkingBudget:     meta.ProviderOptions.ThinkingBudget,
+			ThinkingBudget:     config.CloneIntPtr(meta.ProviderOptions.ThinkingBudget),
+			ThinkingMode:       meta.ProviderOptions.ThinkingMode,
+			ThinkingDisplay:    meta.ProviderOptions.ThinkingDisplay,
 			IncludeThoughts:    meta.ProviderOptions.IncludeThoughts,
 			OutputConfigEffort: meta.ProviderOptions.OutputConfigEffort,
 			PromptCache:        meta.ProviderOptions.PromptCache,
@@ -3269,8 +3273,14 @@ func providerRequestPreparedEventData(meta session.SessionMetadata, requestMetad
 	if strings.TrimSpace(meta.ProviderOptions.TextVerbosity) != "" {
 		data["text_verbosity"] = meta.ProviderOptions.TextVerbosity
 	}
-	if meta.ProviderOptions.ThinkingBudget > 0 {
-		data["thinking_budget"] = meta.ProviderOptions.ThinkingBudget
+	if meta.ProviderOptions.ThinkingBudget != nil {
+		data["thinking_budget"] = *meta.ProviderOptions.ThinkingBudget
+	}
+	if strings.TrimSpace(meta.ProviderOptions.ThinkingMode) != "" {
+		data["thinking_mode"] = meta.ProviderOptions.ThinkingMode
+	}
+	if strings.TrimSpace(meta.ProviderOptions.ThinkingDisplay) != "" {
+		data["thinking_display"] = meta.ProviderOptions.ThinkingDisplay
 	}
 	if meta.ProviderOptions.IncludeThoughts != nil {
 		data["include_thoughts"] = *meta.ProviderOptions.IncludeThoughts

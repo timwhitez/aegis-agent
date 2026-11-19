@@ -38,7 +38,9 @@ type TurnRequest struct {
 	ReasoningEffort  string
 	ReasoningSummary string
 	TextVerbosity    string
-	ThinkingBudget   int
+	ThinkingBudget   *int
+	ThinkingMode     string
+	ThinkingDisplay  string
 	IncludeThoughts  *bool
 	// OutputConfigEffort is the Anthropic Messages `output_config.effort`
 	// value. It is independent of ThinkingBudget: effort-capable Claude models

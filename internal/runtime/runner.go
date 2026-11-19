@@ -2580,7 +2580,9 @@ func (r *Runner) Probe(ctx context.Context, req ProbeRequest) (ProbeResult, erro
 		ReasoningEffort:    strings.TrimSpace(providerCfg.ReasoningEffort),
 		ReasoningSummary:   reasoningSummary,
 		TextVerbosity:      strings.TrimSpace(providerCfg.TextVerbosity),
-		ThinkingBudget:     providerCfg.ThinkingBudget,
+		ThinkingBudget:     config.CloneIntPtr(providerCfg.ThinkingBudget),
+		ThinkingMode:       config.NormalizeThinkingMode(providerCfg.ThinkingMode),
+		ThinkingDisplay:    config.NormalizeThinkingDisplay(providerCfg.ThinkingDisplay),
 		IncludeThoughts:    providerCfg.IncludeThoughts,
 		OutputConfigEffort: strings.TrimSpace(providerCfg.OutputConfigEffort),
 		PromptCache:        defaultPromptCacheForAPIProvider(apiProvider, providerCfg.PromptCache),
@@ -3139,9 +3141,9 @@ func applySessionProviderOptions(cfg config.Provider, opts session.ProviderOptio
 	cfg.ReasoningSummary = opts.ReasoningSummary
 	cfg.TextVerbosity = opts.TextVerbosity
 	cfg.OutputConfigEffort = opts.OutputConfigEffort
-	if opts.ThinkingBudget > 0 {
-		cfg.ThinkingBudget = opts.ThinkingBudget
-	}
+	cfg.ThinkingBudget = config.CloneIntPtr(opts.ThinkingBudget)
+	cfg.ThinkingMode = config.NormalizeThinkingMode(opts.ThinkingMode)
+	cfg.ThinkingDisplay = config.NormalizeThinkingDisplay(opts.ThinkingDisplay)
 	cfg.IncludeThoughts = opts.IncludeThoughts
 	cfg.PromptCache = opts.PromptCache
 	cfg.Store = opts.Store
@@ -3180,7 +3182,9 @@ func providerOptionsFromConfig(name string, cfg config.Provider) session.Provide
 		ReasoningEffort:     strings.TrimSpace(cfg.ReasoningEffort),
 		ReasoningSummary:    strings.TrimSpace(cfg.ReasoningSummary),
 		TextVerbosity:       strings.TrimSpace(cfg.TextVerbosity),
-		ThinkingBudget:      cfg.ThinkingBudget,
+		ThinkingBudget:      config.CloneIntPtr(cfg.ThinkingBudget),
+		ThinkingMode:        config.NormalizeThinkingMode(cfg.ThinkingMode),
+		ThinkingDisplay:     config.NormalizeThinkingDisplay(cfg.ThinkingDisplay),
 		IncludeThoughts:     cfg.IncludeThoughts,
 		OutputConfigEffort:  strings.TrimSpace(cfg.OutputConfigEffort),
 		PromptCache:         defaultPromptCacheForAPIProvider(apiProvider, cfg.PromptCache),
@@ -3257,8 +3261,20 @@ func mergeProviderOptions(defaults, override session.ProviderOptions) session.Pr
 	if strings.TrimSpace(override.TextVerbosity) != "" {
 		out.TextVerbosity = strings.TrimSpace(override.TextVerbosity)
 	}
-	if override.ThinkingBudget > 0 {
-		out.ThinkingBudget = override.ThinkingBudget
+	if overrideMode := config.NormalizeThinkingMode(override.ThinkingMode); overrideMode != "" {
+		out.ThinkingMode = overrideMode
+		if overrideMode == config.ThinkingModeAdaptive || overrideMode == config.ThinkingModeDisabled {
+			out.ThinkingBudget = nil
+		}
+		if (overrideMode == config.ThinkingModeAdaptive || overrideMode == config.ThinkingModeEnabled) && out.IncludeThoughts != nil && !*out.IncludeThoughts {
+			out.IncludeThoughts = nil
+		}
+	}
+	if override.ThinkingBudget != nil {
+		out.ThinkingBudget = config.CloneIntPtr(override.ThinkingBudget)
+	}
+	if overrideDisplay := config.NormalizeThinkingDisplay(override.ThinkingDisplay); overrideDisplay != "" {
+		out.ThinkingDisplay = overrideDisplay
 	}
 	if override.IncludeThoughts != nil {
 		out.IncludeThoughts = override.IncludeThoughts
@@ -3299,7 +3315,9 @@ func preserveDurableProviderOptionDefaults(merged, current session.ProviderOptio
 	merged.ReasoningEffort = strings.TrimSpace(current.ReasoningEffort)
 	merged.ReasoningSummary = strings.TrimSpace(current.ReasoningSummary)
 	merged.TextVerbosity = strings.TrimSpace(current.TextVerbosity)
-	merged.ThinkingBudget = current.ThinkingBudget
+	merged.ThinkingBudget = config.CloneIntPtr(current.ThinkingBudget)
+	merged.ThinkingMode = config.NormalizeThinkingMode(current.ThinkingMode)
+	merged.ThinkingDisplay = config.NormalizeThinkingDisplay(current.ThinkingDisplay)
 	merged.OutputConfigEffort = strings.TrimSpace(current.OutputConfigEffort)
 	if current.IncludeThoughts == nil {
 		merged.IncludeThoughts = nil

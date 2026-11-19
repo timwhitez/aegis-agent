@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"aegis-agent/internal/config"
 	"aegis-agent/internal/session"
 )
 
@@ -48,7 +49,11 @@ func buildGoogleRequestBody(req TurnRequest) (map[string]any, error) {
 			{"functionDeclarations": googleTools(req.Tools)},
 		},
 	}
-	if generationConfig := googleGenerationConfig(req); len(generationConfig) > 0 {
+	generationConfig, err := googleGenerationConfig(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(generationConfig) > 0 {
 		body["generationConfig"] = generationConfig
 	}
 	return body, nil
@@ -345,51 +350,134 @@ func dropGoogleFunctionCallBlocks(blocks []session.ProviderContentBlock) []sessi
 	return filtered
 }
 
-func googleGenerationConfig(req TurnRequest) map[string]any {
-	config := map[string]any{}
+func googleGenerationConfig(req TurnRequest) (map[string]any, error) {
+	genCfg := map[string]any{}
 	if req.Temperature != nil {
-		config["temperature"] = *req.Temperature
+		genCfg["temperature"] = *req.Temperature
 	}
 	if req.TopP != nil {
-		config["topP"] = *req.TopP
+		genCfg["topP"] = *req.TopP
 	}
 	if req.MaxOutputTokens > 0 {
-		config["maxOutputTokens"] = req.MaxOutputTokens
+		genCfg["maxOutputTokens"] = req.MaxOutputTokens
 	}
-	if thinking := googleThinkingConfig(req.ThinkingBudget, req.IncludeThoughts); len(thinking) > 0 {
-		config["thinkingConfig"] = thinking
+	thinking, _, err := googleThinkingConfig(req)
+	if err != nil {
+		return nil, err
 	}
-	return config
+	if len(thinking) > 0 {
+		genCfg["thinkingConfig"] = thinking
+	}
+	return genCfg, nil
 }
 
-func googleThinkingConfig(budget int, includeThoughts *bool) map[string]any {
-	if includeThoughts != nil && !*includeThoughts {
-		return nil
+func googleThinkingConfig(req TurnRequest) (map[string]any, string, error) {
+	mode := config.NormalizeThinkingMode(req.ThinkingMode)
+	switch mode {
+	case "", config.ThinkingModeEnabled, config.ThinkingModeDisabled:
+	case config.ThinkingModeAdaptive:
+		return nil, "", fmt.Errorf("google adapter does not support thinking_mode=adaptive")
+	default:
+		return nil, "", fmt.Errorf("unsupported google thinking_mode %q", req.ThinkingMode)
 	}
-	if budget <= 0 {
-		return nil
+	display := config.NormalizeThinkingDisplay(req.ThinkingDisplay)
+	switch display {
+	case "", config.ThinkingDisplaySummarized, config.ThinkingDisplayOmitted:
+	default:
+		return nil, "", fmt.Errorf("unsupported google thinking_display %q", req.ThinkingDisplay)
 	}
-	return map[string]any{
-		"includeThoughts": true,
-		"thinkingBudget":  budget,
+	if req.IncludeThoughts != nil && !*req.IncludeThoughts {
+		if mode == config.ThinkingModeEnabled {
+			return nil, "", fmt.Errorf("google thinking_mode=enabled conflicts with legacy include_thoughts=false; use thinking_display=omitted to hide summaries")
+		}
+		mode = config.ThinkingModeDisabled
 	}
+
+	// Native includeThoughts controls thought summary visibility independently
+	// from whether thinking executes. Legacy include_thoughts=false is handled
+	// above as close-priority execution control (thinking_mode=disabled).
+	var wireIncludeThoughts *bool
+	switch display {
+	case config.ThinkingDisplaySummarized:
+		v := true
+		wireIncludeThoughts = &v
+	case config.ThinkingDisplayOmitted:
+		v := false
+		wireIncludeThoughts = &v
+	default:
+		if req.IncludeThoughts != nil && *req.IncludeThoughts {
+			v := true
+			wireIncludeThoughts = &v
+		}
+	}
+
+	if mode == config.ThinkingModeDisabled {
+		if err := config.ValidateGoogleThinkingBudget(req.Model, 0); err != nil {
+			return nil, "", err
+		}
+		return map[string]any{"thinkingBudget": 0}, "off", nil
+	}
+
+	if req.ThinkingBudget != nil {
+		budget := *req.ThinkingBudget
+		if err := config.ValidateGoogleThinkingBudget(req.Model, budget); err != nil {
+			return nil, "", err
+		}
+		thinkingCfg := map[string]any{"thinkingBudget": budget}
+		if budget != 0 && wireIncludeThoughts != nil {
+			thinkingCfg["includeThoughts"] = *wireIncludeThoughts
+		}
+		switch {
+		case budget == 0:
+			return thinkingCfg, "off", nil
+		case budget == -1:
+			if wireIncludeThoughts != nil {
+				if *wireIncludeThoughts {
+					return thinkingCfg, "dynamic_include_thoughts", nil
+				}
+				return thinkingCfg, "dynamic_omitted_thoughts", nil
+			}
+			return thinkingCfg, "dynamic_budget", nil
+		default:
+			if wireIncludeThoughts != nil {
+				if *wireIncludeThoughts {
+					return thinkingCfg, "thinking_budget_include_thoughts", nil
+				}
+				return thinkingCfg, "thinking_budget_omitted_thoughts", nil
+			}
+			return thinkingCfg, "thinking_budget", nil
+		}
+	}
+
+	if mode == config.ThinkingModeEnabled {
+		thinkingCfg := map[string]any{"thinkingBudget": -1}
+		if wireIncludeThoughts != nil {
+			thinkingCfg["includeThoughts"] = *wireIncludeThoughts
+			if *wireIncludeThoughts {
+				return thinkingCfg, "dynamic_include_thoughts", nil
+			}
+			return thinkingCfg, "dynamic_omitted_thoughts", nil
+		}
+		return thinkingCfg, "dynamic_budget", nil
+	}
+
+	if wireIncludeThoughts != nil {
+		thinkingCfg := map[string]any{"includeThoughts": *wireIncludeThoughts}
+		if *wireIncludeThoughts {
+			return thinkingCfg, "include_thoughts", nil
+		}
+		return thinkingCfg, "provider_default_omitted_thoughts", nil
+	}
+
+	return nil, "provider_default", nil
 }
 
 func googleThinkingStrategy(req TurnRequest) string {
-	if req.IncludeThoughts != nil && !*req.IncludeThoughts {
-		return "off"
-	}
-	includeThoughts := req.IncludeThoughts != nil && *req.IncludeThoughts
-	switch {
-	case req.ThinkingBudget > 0 && includeThoughts:
-		return "thinking_budget_include_thoughts"
-	case req.ThinkingBudget > 0:
-		return "thinking_budget"
-	case includeThoughts:
-		return "include_thoughts"
-	default:
+	_, strategy, err := googleThinkingConfig(req)
+	if err != nil || strategy == "" {
 		return "provider_default"
 	}
+	return strategy
 }
 
 func googleTools(tools []ToolSchema) []map[string]any {

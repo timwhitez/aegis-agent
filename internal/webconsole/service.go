@@ -4937,6 +4937,8 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"reasoning_effort":                strings.TrimSpace(p.ReasoningEffort),
 			"output_config_effort":            strings.TrimSpace(p.OutputConfigEffort),
 			"thinking_budget":                 p.ThinkingBudget,
+			"thinking_mode":                   config.NormalizeThinkingMode(p.ThinkingMode),
+			"thinking_display":                config.NormalizeThinkingDisplay(p.ThinkingDisplay),
 			"include_thoughts":                p.IncludeThoughts,
 			"max_output_tokens":               p.MaxOutputTokens,
 		}
@@ -5715,7 +5717,9 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		ReasoningSummaryObserved:     result.ReasoningSummaryObserved,
 		ReasoningEncryptedObserved:   result.ReasoningEncryptedObserved,
 		ReasoningTokens:              result.ReasoningTokens,
-		ThinkingBudget:               p.ThinkingBudget,
+		ThinkingBudget:               config.CloneIntPtr(p.ThinkingBudget),
+		ThinkingMode:                 config.NormalizeThinkingMode(p.ThinkingMode),
+		ThinkingDisplay:              config.NormalizeThinkingDisplay(p.ThinkingDisplay),
 		ThinkingVisibleObserved:      result.ThinkingVisibleObserved,
 		ThinkingReplayObserved:       result.ThinkingReplayObserved,
 		ThinkingDetail:               result.ThinkingDetail,
@@ -5770,13 +5774,22 @@ func providerReasoningMode(providerName string, provider config.Provider) string
 			return "default"
 		}
 	case "thinking":
-		if provider.IncludeThoughts != nil && !*provider.IncludeThoughts {
+		mode := config.NormalizeThinkingMode(provider.ThinkingMode)
+		if mode == config.ThinkingModeDisabled || (provider.IncludeThoughts != nil && !*provider.IncludeThoughts) || (provider.ThinkingBudget != nil && *provider.ThinkingBudget == 0) {
 			return "off"
 		}
-		if provider.ThinkingBudget >= settingsThinkingMaxBudget {
+		if mode == config.ThinkingModeAdaptive {
+			if strings.EqualFold(strings.TrimSpace(provider.OutputConfigEffort), "max") {
+				return "max"
+			}
+			return "standard"
+		}
+		maxBudget := settingsThinkingMaxBudgetForProvider(providerName, provider)
+		budget := config.ThinkingBudgetValue(provider.ThinkingBudget)
+		if budget >= maxBudget {
 			return "max"
 		}
-		if provider.ThinkingBudget > 0 || (provider.IncludeThoughts != nil && *provider.IncludeThoughts) {
+		if budget > 0 || (provider.ThinkingBudget != nil && *provider.ThinkingBudget == -1) || (provider.IncludeThoughts != nil && *provider.IncludeThoughts) {
 			return "standard"
 		}
 		return "default"
@@ -5801,27 +5814,48 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 			return fmt.Errorf("unsupported reasoning mode for %s: %s", providerName, mode)
 		}
 	case "thinking":
+		apiProvider, _ := config.EffectiveAPIProvider(providerName, *provider)
+		isAdaptive := apiProvider == "anthropic-compatible" && config.AnthropicThinkingModeForLevel(*provider, provider.Model) == config.ThinkingModeAdaptive
 		switch normalized {
 		case "default":
-			provider.ThinkingBudget = 0
+			provider.ThinkingBudget = nil
+			provider.ThinkingMode = ""
+			provider.ThinkingDisplay = ""
 			provider.IncludeThoughts = nil
 		case "off":
-			value := false
-			provider.ThinkingBudget = 0
-			provider.IncludeThoughts = &value
+			provider.ThinkingMode = config.ThinkingModeDisabled
+			provider.ThinkingBudget = nil
+			provider.IncludeThoughts = nil
 		case "standard":
-			value := true
-			provider.ThinkingBudget = settingsThinkingStandardBudget
-			provider.IncludeThoughts = &value
-			if provider.MaxOutputTokens > 0 && provider.MaxOutputTokens <= settingsThinkingStandardBudget {
-				provider.MaxOutputTokens = settingsThinkingStandardBudget + 1024
+			if isAdaptive {
+				provider.ThinkingMode = config.ThinkingModeAdaptive
+				provider.ThinkingBudget = nil
+				provider.IncludeThoughts = nil
+				provider.OutputConfigEffort = "medium"
+			} else {
+				value := true
+				provider.ThinkingMode = config.ThinkingModeEnabled
+				provider.ThinkingBudget = config.IntPtr(settingsThinkingStandardBudget)
+				provider.IncludeThoughts = &value
+				if provider.MaxOutputTokens > 0 && provider.MaxOutputTokens <= settingsThinkingStandardBudget {
+					provider.MaxOutputTokens = settingsThinkingStandardBudget + 1024
+				}
 			}
 		case "max":
-			value := true
-			provider.ThinkingBudget = settingsThinkingMaxBudget
-			provider.IncludeThoughts = &value
-			if provider.MaxOutputTokens < settingsThinkingMaxOutputTokens {
-				provider.MaxOutputTokens = settingsThinkingMaxOutputTokens
+			if isAdaptive {
+				provider.ThinkingMode = config.ThinkingModeAdaptive
+				provider.ThinkingBudget = nil
+				provider.IncludeThoughts = nil
+				provider.OutputConfigEffort = "max"
+			} else {
+				value := true
+				maxBudget := settingsThinkingMaxBudgetForProvider(providerName, *provider)
+				provider.ThinkingMode = config.ThinkingModeEnabled
+				provider.ThinkingBudget = config.IntPtr(maxBudget)
+				provider.IncludeThoughts = &value
+				if provider.MaxOutputTokens < settingsThinkingMaxOutputTokens {
+					provider.MaxOutputTokens = settingsThinkingMaxOutputTokens
+				}
 			}
 		default:
 			return fmt.Errorf("unsupported thinking mode for %s: %s", providerName, mode)
@@ -5883,13 +5917,23 @@ func normalizeProviderReasoningFields(providerName string, provider *config.Prov
 	}
 	switch providerReasoningFamily(providerName, *provider) {
 	case "openai":
-		provider.ThinkingBudget = 0
+		provider.ThinkingBudget = nil
+		provider.ThinkingMode = ""
+		provider.ThinkingDisplay = ""
 		provider.IncludeThoughts = nil
 		provider.OutputConfigEffort = ""
 	case "thinking":
 		provider.ReasoningEffort = ""
 		provider.ReasoningSummary = ""
 	}
+}
+
+func settingsThinkingMaxBudgetForProvider(providerName string, provider config.Provider) int {
+	apiProvider, err := config.EffectiveAPIProvider(providerName, provider)
+	if err == nil && apiProvider == "google" {
+		return config.GoogleThinkingBudgetSpec(provider.Model).MaxBudget
+	}
+	return settingsThinkingMaxBudget
 }
 
 func providerReasoningFamily(providerName string, provider config.Provider) string {

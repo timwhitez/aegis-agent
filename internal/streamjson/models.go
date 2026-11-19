@@ -107,16 +107,20 @@ func defaultThinkingLevel(apiProvider string, providerCfg config.Provider) strin
 		if level := normalizeThinkingLevel(providerCfg.OutputConfigEffort); level != "" {
 			return level
 		}
-		return thinkingBudgetLevel(providerCfg.ThinkingBudget)
+		return thinkingBudgetLevel(config.ThinkingBudgetValue(providerCfg.ThinkingBudget), 32000)
 	case "google":
-		return thinkingBudgetLevel(providerCfg.ThinkingBudget)
+		spec := config.GoogleThinkingBudgetSpec(providerCfg.Model)
+		return thinkingBudgetLevel(config.ThinkingBudgetValue(providerCfg.ThinkingBudget), spec.MaxBudget)
 	}
 	return "medium"
 }
 
-func thinkingBudgetLevel(budget int) string {
+func thinkingBudgetLevel(budget, maxBudget int) string {
+	if maxBudget <= 0 {
+		maxBudget = 32000
+	}
 	switch {
-	case budget >= 32000:
+	case budget >= maxBudget:
 		return "max"
 	case budget > 8192:
 		return "xhigh"

@@ -8,7 +8,7 @@ import (
 	"aegis-agent/internal/session"
 )
 
-func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerName string) (session.ProviderOptions, error) {
+func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerName, modelOverride string) (session.ProviderOptions, error) {
 	level = strings.ToLower(strings.TrimSpace(level))
 	if level == "" {
 		return session.ProviderOptions{}, nil
@@ -33,14 +33,29 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 	if err != nil {
 		return session.ProviderOptions{}, err
 	}
+	effectiveModel := strings.TrimSpace(modelOverride)
+	if effectiveModel == "" {
+		effectiveModel = strings.TrimSpace(providerCfg.Model)
+	}
 	switch apiProvider {
 	case "openai-compatible":
 		return session.ProviderOptions{ReasoningEffort: level}, nil
 	case "anthropic-compatible":
+		mode := config.AnthropicThinkingModeForLevel(providerCfg, effectiveModel)
+		if mode == config.ThinkingModeAdaptive {
+			opts := session.ProviderOptions{
+				ThinkingMode:       config.ThinkingModeAdaptive,
+				ThinkingDisplay:    config.NormalizeThinkingDisplay(providerCfg.ThinkingDisplay),
+				OutputConfigEffort: level,
+			}
+			return opts, nil
+		}
 		includeThoughts := true
 		opts := session.ProviderOptions{
+			ThinkingMode:    config.ThinkingModeEnabled,
+			ThinkingBudget:  config.IntPtr(thinkingBudgetForLevel(level)),
+			ThinkingDisplay: config.NormalizeThinkingDisplay(providerCfg.ThinkingDisplay),
 			IncludeThoughts: &includeThoughts,
-			ThinkingBudget:  thinkingBudgetForLevel(level),
 		}
 		// Profiles that opted into the Messages output_config.effort wire field
 		// (effort-capable Claude models, MiniMax and compatible gateways) also
@@ -54,8 +69,10 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 	case "google":
 		includeThoughts := true
 		return session.ProviderOptions{
+			ThinkingMode:    config.ThinkingModeEnabled,
+			ThinkingBudget:  config.IntPtr(config.GoogleThinkingBudgetForLevel(effectiveModel, level)),
+			ThinkingDisplay: config.NormalizeThinkingDisplay(providerCfg.ThinkingDisplay),
 			IncludeThoughts: &includeThoughts,
-			ThinkingBudget:  thinkingBudgetForLevel(level),
 		}, nil
 	default:
 		return session.ProviderOptions{}, fmt.Errorf("unsupported api_provider for --thinking-level: %s", apiProvider)
