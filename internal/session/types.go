@@ -76,7 +76,9 @@ type ProviderOptions struct {
 	ReasoningEffort     string                 `json:"reasoning_effort,omitempty"`
 	ReasoningSummary    string                 `json:"reasoning_summary,omitempty"`
 	TextVerbosity       string                 `json:"text_verbosity,omitempty"`
-	ThinkingBudget      int                    `json:"thinking_budget,omitempty"`
+	ThinkingBudget      *int                   `json:"thinking_budget,omitempty"`
+	ThinkingMode        string                 `json:"thinking_mode,omitempty"`
+	ThinkingDisplay     string                 `json:"thinking_display,omitempty"`
 	IncludeThoughts     *bool                  `json:"include_thoughts,omitempty"`
 	OutputConfigEffort  string                 `json:"output_config_effort,omitempty"`
 	PromptCache         *bool                  `json:"prompt_cache,omitempty"`

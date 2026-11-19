@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"aegis-agent/internal/config"
 	"aegis-agent/internal/session"
 )
 
@@ -2942,7 +2943,7 @@ func TestAnthropicAdapterOutputConfigEffort(t *testing.T) {
 			Model:              "MiniMax-M3.1-Flash",
 			Messages:           []session.Message{session.NewMessage("user", "hello")},
 			MaxOutputTokens:    2048,
-			ThinkingBudget:     1024,
+			ThinkingBudget:     config.IntPtr(1024),
 			IncludeThoughts:    &includeThoughts,
 			OutputConfigEffort: "max",
 		}, func(string, map[string]any) {})
@@ -3039,7 +3040,7 @@ func TestAnthropicAdapterSendsGenerationFields(t *testing.T) {
 		Temperature:     &temperature,
 		TopP:            &topP,
 		MaxOutputTokens: 2048,
-		ThinkingBudget:  1024,
+		ThinkingBudget:  config.IntPtr(1024),
 		IncludeThoughts: &includeThoughts,
 	}, func(string, map[string]any) {})
 	if err != nil {
@@ -3109,7 +3110,7 @@ func TestGoogleAdapterSendsGenerationFields(t *testing.T) {
 		Temperature:     &temperature,
 		TopP:            &topP,
 		MaxOutputTokens: 1024,
-		ThinkingBudget:  2048,
+		ThinkingBudget:  config.IntPtr(2048),
 		IncludeThoughts: &includeThoughts,
 	}, func(string, map[string]any) {})
 	if err != nil {

@@ -210,7 +210,7 @@ func TestCustomAnthropicAPIProviderUsesAnthropicAdapter(t *testing.T) {
 		BaseURL:           server.URL,
 		Model:             "deepseek-chat",
 		TimeoutSec:        3,
-		ThinkingBudget:    1024,
+		ThinkingBudget:    config.IntPtr(1024),
 		IncludeThoughts:   &includeThoughts,
 		MaxOutputTokens:   2048,
 		AnthropicVersion:  "2023-06-01",
@@ -2150,7 +2150,7 @@ func TestRunnerContinuePreservesZeroProviderOptionDefaults(t *testing.T) {
 		RequestTimeoutSec: 3,
 		WireAPI:           "responses",
 		MaxOutputTokens:   2048,
-		ThinkingBudget:    4096,
+		ThinkingBudget:    config.IntPtr(4096),
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
 
@@ -2182,7 +2182,7 @@ func TestRunnerContinuePreservesZeroProviderOptionDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load metadata: %v", err)
 	}
-	if loadedMeta.ProviderOptions.MaxOutputTokens != 0 || loadedMeta.ProviderOptions.ThinkingBudget != 0 {
+	if loadedMeta.ProviderOptions.MaxOutputTokens != 0 || loadedMeta.ProviderOptions.ThinkingBudget != nil {
 		t.Fatalf("continue should preserve durable zero-valued provider defaults, got %#v", loadedMeta.ProviderOptions)
 	}
 	if _, ok := seenBody["max_output_tokens"]; ok {

@@ -293,7 +293,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
-	providerOptions, err := providerOptionsForThinkingLevel(*thinkingLevel, cfg, *providerName)
+	providerOptions, err := providerOptionsForThinkingLevel(*thinkingLevel, cfg, *providerName, *model)
 	if err != nil {
 		return err
 	}

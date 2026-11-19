@@ -3,9 +3,11 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"aegis-agent/internal/config"
 	"aegis-agent/internal/session"
 )
 
@@ -50,13 +52,19 @@ func buildAnthropicRequestBody(req TurnRequest) (map[string]any, error) {
 	if req.TopP != nil {
 		body["top_p"] = *req.TopP
 	}
-	if thinking := anthropicThinking(req.ThinkingBudget, req.IncludeThoughts); thinking != nil {
+	thinking, thinkingBudget, _, err := anthropicThinking(req)
+	if err != nil {
+		return nil, err
+	}
+	if thinking != nil {
 		body["thinking"] = thinking
 		// The Messages API rejects max_tokens <= thinking.budget_tokens as
 		// invalid_request, and that failure is not retryable. Keep the
 		// invariant here so a default max_tokens combined with a large
-		// thinking budget cannot produce an illegal body.
-		body["max_tokens"] = anthropicMaxTokensWithThinking(anthropicMaxTokens(req.MaxOutputTokens), req.ThinkingBudget)
+		// manual thinking budget cannot produce an illegal body.
+		if thinkingBudget > 0 {
+			body["max_tokens"] = anthropicMaxTokensWithThinking(anthropicMaxTokens(req.MaxOutputTokens), thinkingBudget)
+		}
 	}
 	// output_config.effort is a separate wire field from thinking. Anthropic
 	// accepts it on effort-capable Claude models, and MiniMax and compatible
@@ -81,7 +89,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 	if err != nil {
 		return TurnResult{}, err
 	}
-	thinkingStrategy := anthropicThinkingStrategy(req.ThinkingBudget, req.IncludeThoughts, req.OutputConfigEffort)
+	thinkingStrategy := anthropicThinkingStrategy(req)
 	var resp struct {
 		ID         string `json:"id"`
 		StopReason string `json:"stop_reason"`
@@ -292,28 +300,81 @@ func anthropicMaxTokensWithThinking(maxTokens, budget int) int {
 	return budget + anthropicThinkingOutputHeadroom
 }
 
-func anthropicThinking(budget int, includeThoughts *bool) map[string]any {
-	if includeThoughts != nil && !*includeThoughts {
-		return nil
+func anthropicThinking(req TurnRequest) (map[string]any, int, string, error) {
+	mode := config.NormalizeThinkingMode(req.ThinkingMode)
+	switch mode {
+	case "", config.ThinkingModeAdaptive, config.ThinkingModeEnabled, config.ThinkingModeDisabled:
+	default:
+		return nil, 0, "", fmt.Errorf("unsupported anthropic thinking_mode %q", req.ThinkingMode)
 	}
-	if budget <= 0 {
-		return nil
+	display := config.NormalizeThinkingDisplay(req.ThinkingDisplay)
+	switch display {
+	case "", config.ThinkingDisplaySummarized, config.ThinkingDisplayOmitted:
+	default:
+		return nil, 0, "", fmt.Errorf("unsupported anthropic thinking_display %q", req.ThinkingDisplay)
 	}
-	return map[string]any{
-		"type":          "enabled",
-		"budget_tokens": budget,
+	if req.IncludeThoughts != nil && !*req.IncludeThoughts {
+		if mode == config.ThinkingModeEnabled || mode == config.ThinkingModeAdaptive {
+			return nil, 0, "", fmt.Errorf("anthropic thinking_mode=%s conflicts with legacy include_thoughts=false; use thinking_display=omitted to hide summaries", mode)
+		}
+		mode = config.ThinkingModeDisabled
+	}
+	if req.ThinkingBudget != nil && *req.ThinkingBudget < 0 {
+		return nil, 0, "", fmt.Errorf("anthropic thinking_budget must be non-negative, got %d", *req.ThinkingBudget)
+	}
+
+	budget := config.ThinkingBudgetValue(req.ThinkingBudget)
+	switch mode {
+	case config.ThinkingModeDisabled:
+		return map[string]any{"type": "disabled"}, 0, "disabled", nil
+	case config.ThinkingModeAdaptive:
+		if budget > 0 {
+			return nil, 0, "", fmt.Errorf("anthropic thinking_mode=adaptive cannot be combined with manual thinking_budget=%d", budget)
+		}
+		payload := map[string]any{"type": "adaptive"}
+		if display != "" {
+			payload["display"] = display
+		}
+		return payload, 0, "adaptive", nil
+	case config.ThinkingModeEnabled:
+		if config.AnthropicModelRequiresAdaptiveThinking(req.Model) {
+			return nil, 0, "", fmt.Errorf("anthropic model %q requires adaptive thinking; manual thinking (type=\"enabled\") is not supported", req.Model)
+		}
+		if budget <= 0 {
+			return nil, 0, "", fmt.Errorf("anthropic thinking_mode=enabled requires a positive thinking_budget")
+		}
+		payload := map[string]any{
+			"type":          "enabled",
+			"budget_tokens": budget,
+		}
+		if display != "" {
+			payload["display"] = display
+		}
+		return payload, budget, "manual_budget", nil
+	default:
+		if budget <= 0 {
+			return nil, 0, "provider_default", nil
+		}
+		if config.AnthropicModelRequiresAdaptiveThinking(req.Model) {
+			return nil, 0, "", fmt.Errorf("anthropic model %q requires adaptive thinking; manual thinking_budget=%d is not supported", req.Model, budget)
+		}
+		payload := map[string]any{
+			"type":          "enabled",
+			"budget_tokens": budget,
+		}
+		if display != "" {
+			payload["display"] = display
+		}
+		return payload, budget, "manual_budget", nil
 	}
 }
 
-func anthropicThinkingStrategy(budget int, includeThoughts *bool, outputConfigEffort string) string {
-	base := "provider_default"
-	switch {
-	case includeThoughts != nil && !*includeThoughts:
-		base = "off"
-	case budget > 0:
-		base = "manual_budget"
+func anthropicThinkingStrategy(req TurnRequest) string {
+	_, _, base, err := anthropicThinking(req)
+	if err != nil || base == "" {
+		base = "provider_default"
 	}
-	if strings.TrimSpace(outputConfigEffort) == "" {
+	if strings.TrimSpace(req.OutputConfigEffort) == "" {
 		return base
 	}
 	if base == "provider_default" {

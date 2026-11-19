@@ -59,8 +59,10 @@ RequestEstimator
 - `reasoning_effort`
 - `reasoning_summary`
 - `text_verbosity`
-- `thinking_budget`
-- `include_thoughts`
+- `thinking_budget`（可选整数指针：区分未设置、显式 `0`、`-1` 动态与正数预算）
+- `thinking_mode`（可选：`adaptive`、`enabled`、`disabled`）
+- `thinking_display`（可选：`summarized`、`omitted`，独立于执行控制，仅控制思考摘要可见性）
+- `include_thoughts`（兼容字段：`true` 对应显示摘要；旧配置里的 `false` 在未显式启用 `thinking_mode` 时按关闭优先级迁移为 `thinking_mode=disabled`，若与 `thinking_mode=enabled|adaptive` 同时出现则拒绝冲突）
 - `output_config_effort`
 - `store`
 - `metadata`
@@ -306,18 +308,47 @@ role capability 约束在进入 adapter 之前完成：
 - `temperature` -> `temperature`
 - `top_p` -> `top_p`
 - `max_output_tokens` -> `max_tokens`
-- `thinking_budget` + `include_thoughts=true` -> `thinking`
+- `thinking_mode` / `thinking_budget` / `thinking_display` -> `thinking`
 - `output_config_effort` -> `output_config.effort`
 - `prompt_cache=true` -> provider request cache markers
 
-当前实现里，`thinking` 采用：
+当前实现里，`thinking` 按目标能力构造三种显式形态：
+
+1. Adaptive 模式（Claude Opus 4.7/4.8、Claude 5.x+ 默认，以及显式设置 `thinking_mode: adaptive` 的 profile；不得附带 `budget_tokens`）：
 
 ```json
 {
-  "type": "enabled",
-  "budget_tokens": 1024
+  "thinking": {
+    "type": "adaptive",
+    "display": "summarized"
+  },
+  "output_config": {
+    "effort": "high"
+  }
 }
 ```
+
+（未设置 `thinking_display` 时省略 `display` 键。）
+
+2. Manual budget 模式（Claude 4.5 及更早模型、兼容网关，以及未显式启用 `thinking_mode: adaptive` 的 Claude 4.6）：
+
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024
+  }
+}
+```
+
+3. 显式关闭模式（`thinking_mode: disabled` 或旧配置 `include_thoughts: false` 迁移后）：发送 `{"type": "disabled"}`，不通过省略字段声称 `off`。
+
+Anthropic 模型与 `--thinking-level` 策略：
+
+- Claude Opus 4.7/4.8 及 Claude 5.x+ 在 Anthropic API 上拒绝 manual `type: "enabled"`；`--thinking-level` 为这些模型构造 `thinking: {"type": "adaptive"}` + `output_config: {"effort": "<level>"}`（不带 `budget_tokens`），并在发送前拒绝手动 `thinking_mode: enabled` 或正数 `thinking_budget`。
+- Claude 4.6（如默认 `claude-sonnet-4-6`）仍接受 manual thinking：未显式配置 `thinking_mode` 时保持手动预算路径以兼容既有配置，显式设置 `thinking_mode: adaptive` 时切换为 adaptive + `output_config.effort`。
+- 兼容网关（MiniMax 及聚合端点）不会因配置了 `output_config_effort` 而被自动视为原生 Claude adaptive；未显式设置 `thinking_mode: adaptive` 时保留手动预算与 PR #175 的按 profile `output_config_effort` opt-in 行为。
+- `thinking_display`（`summarized` / `omitted`）仅表达摘要显示，独立于 thinking 模式与 `output_config.effort`。
 
 `output_config.effort` 是与 `thinking` 独立的 wire 字段：
 
@@ -333,8 +364,8 @@ role capability 约束在进入 adapter 之前完成：
 - 只有 `output_config_effort` 非空时才发送该键；未配置的 profile 必须完全省略它，因此不支持该字段的模型或网关不受影响。
 - 部分网关（MiniMax 及兼容聚合端点）在 Messages wire 上用该字段实现 OpenAI 的 effort 档位，而 `thinking.budget_tokens` 对思考深度没有效果。这些 profile 用 `output_config_effort` 表达档位，可以与 `thinking` 同时发送。
 - 配置加载时 provider 与角色覆盖的 `output_config_effort` 都会去除首尾空白并转为小写；adapter 不再校验取值，`low | medium | high | xhigh | max` 中哪些被当前模型接受由真实 probe/request 判定。
-- `--thinking-level` 只在 profile 已声明 `output_config_effort` 时才改写该字段；未声明的 profile 保持原有 budget-only 映射。
-- raw provider 诊断记录 `output_config_effort`，`thinking_strategy` 取值为 `output_config_effort`、`manual_budget+output_config_effort`、`off+output_config_effort` 或原有取值。
+- `--thinking-level` 对 adaptive 模型或显式 `thinking_mode: adaptive` 的 profile 直接写入 `output_config_effort`；对其余 manual profile 仅在已声明 `output_config_effort` 时才改写该字段。
+- raw provider 诊断记录 `output_config_effort`，`thinking_strategy` 取值为 `adaptive`、`manual_budget`、`disabled`、`provider_default` 及其与 `+output_config_effort` 的组合（或单独 `output_config_effort`）。
 
 当前 cache 实现决策：
 
@@ -397,9 +428,9 @@ role capability 约束在进入 adapter 之前完成：
 - `temperature` -> `generationConfig.temperature`
 - `top_p` -> `generationConfig.topP`
 - `max_output_tokens` -> `generationConfig.maxOutputTokens`
-- `thinking_budget` + `include_thoughts=true` -> `generationConfig.thinkingConfig`
+- `thinking_mode` / `thinking_budget` / `thinking_display` -> `generationConfig.thinkingConfig`
 
-当前实现里，`thinkingConfig` 采用：
+当前实现里，`thinkingConfig` 区分执行控制与摘要可见性，并保留 `thinking_budget` 的“未设置 / 显式 `0` / `-1` 动态 / 正数”四态：
 
 ```json
 {
@@ -407,6 +438,11 @@ role capability 约束在进入 adapter 之前完成：
   "thinkingBudget": 2048
 }
 ```
+
+- 显式 `thinking_budget: 0` 或 `thinking_mode: disabled`（含旧配置 `include_thoughts: false` 的关闭优先级迁移）在允许关闭的模型（Gemini 2.5 Flash / 2.5 Flash-Lite）上发送 `{"thinkingBudget": 0}`；对不支持关闭的 Gemini 2.5 Pro 在配置加载和请求构造阶段直接拒绝。
+- 显式 `thinking_budget: -1` 发送 `{"thinkingBudget": -1}`，用于在默认不思考的 Gemini 2.5 Flash-Lite 等模型上启用动态思考。
+- `thinking_display: omitted` 序列化为原生 `includeThoughts: false`，同时保留已配置的正数或 `-1` 预算；`thinking_strategy` 反映实际执行控制（如 `thinking_budget_omitted_thoughts`、`dynamic_omitted_thoughts`、`provider_default_omitted_thoughts`），不因隐藏摘要或省略字段而记为 `off`。
+- 模型预算范围校验与 `--thinking-level max` 映射：Gemini 2.5 Flash 上限 `24576`（1..24576 / 0 / -1）；Gemini 2.5 Flash-Lite 上限 `24576`（512..24576 / 0 / -1）；Gemini 2.5 Pro 上限 `32768`（128..32768 / -1，不支持 0）。超出范围的配置在发送前拒绝。
 
 ### 8.3 响应映射
 
