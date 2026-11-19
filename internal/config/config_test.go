@@ -579,7 +579,7 @@ providers:
     api_key_env: ANTHROPIC_API_KEY
     base_url: https://api.minimax.cn/anthropic
     model: MiniMax-M3.1-Flash
-    output_config_effort: MAX
+    output_config_effort: " MAX "
 role_providers:
   planner:
     output_config_effort: High
@@ -595,8 +595,8 @@ role_providers:
 	if !ok {
 		t.Fatalf("anthropic provider missing: %#v", cfg.Providers)
 	}
-	if provider.OutputConfigEffort != "MAX" {
-		t.Fatalf("expected the provider value to pass through unchanged, got %q", provider.OutputConfigEffort)
+	if provider.OutputConfigEffort != "max" {
+		t.Fatalf("expected the provider value to normalize to lower case, got %q", provider.OutputConfigEffort)
 	}
 	if got := cfg.RoleProviders.Planner.OutputConfigEffort; got != "high" {
 		t.Fatalf("expected the role override to normalize to lower case, got %q", got)

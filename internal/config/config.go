@@ -81,8 +81,9 @@ type Provider struct {
 	ThinkingBudget      int      `yaml:"thinking_budget,omitempty"`
 	IncludeThoughts     *bool    `yaml:"include_thoughts,omitempty"`
 	// OutputConfigEffort maps to the Anthropic Messages `output_config.effort`
-	// field used by MiniMax and compatible gateways. It is independent of
-	// ThinkingBudget and is only sent when non-empty.
+	// field (official Anthropic API on effort-capable Claude models, and the
+	// OpenAI effort scale on MiniMax and compatible gateways). It is
+	// independent of ThinkingBudget and is only sent when non-empty.
 	OutputConfigEffort string `yaml:"output_config_effort,omitempty"`
 	PromptCache        *bool  `yaml:"prompt_cache,omitempty"`
 	Store              *bool  `yaml:"store,omitempty"`
@@ -546,6 +547,9 @@ func normalizeConfig(cfg *Config, cwd string) {
 	for name, provider := range cfg.Providers {
 		provider.APIProvider = normalizeAPIProvider(provider.APIProvider)
 		provider.ReasoningSummary = normalizeReasoningSummary(provider.ReasoningSummary)
+		// The Messages API only accepts lower-case effort levels; normalize the
+		// same way role overrides and thinking levels already are.
+		provider.OutputConfigEffort = strings.ToLower(strings.TrimSpace(provider.OutputConfigEffort))
 		if provider.ContextWindowTokens < 0 {
 			provider.ContextWindowTokens = 0
 		}
