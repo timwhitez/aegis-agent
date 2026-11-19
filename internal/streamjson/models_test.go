@@ -69,6 +69,27 @@ func TestModelsFromConfigPreservesConfiguredMaxThinkingDefault(t *testing.T) {
 	t.Fatalf("openai model not found in %#v", models)
 }
 
+func TestModelsFromConfigUsesOutputConfigEffortDefault(t *testing.T) {
+	cfg := config.Default()
+	anthropic := cfg.Providers["anthropic"]
+	anthropic.OutputConfigEffort = "xhigh"
+	cfg.Providers["anthropic"] = anthropic
+
+	models, err := ModelsFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	for _, model := range models {
+		if model.ID == "anthropic/claude-sonnet-4-6" {
+			if model.Thinking == nil || model.Thinking.DefaultLevel != "xhigh" {
+				t.Fatalf("expected configured xhigh default, got %#v", model.Thinking)
+			}
+			return
+		}
+	}
+	t.Fatalf("anthropic model not found in %#v", models)
+}
+
 func TestModelsFromConfigUsesConfiguredThinkingDefault(t *testing.T) {
 	cfg := config.Default()
 	openai := cfg.Providers["openai"]

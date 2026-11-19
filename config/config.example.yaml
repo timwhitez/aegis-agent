@@ -32,6 +32,11 @@ providers:
       retry_transport: true
     anthropic_version: 2023-06-01
     prompt_cache: true
+    # Optional Messages API output_config.effort (low|medium|high|xhigh|max).
+    # Effort-capable Claude models accept it natively; MiniMax and compatible
+    # gateways use it instead of the thinking budget. Levels a model does not
+    # support are rejected by the endpoint. Unset sends no output_config.
+    # output_config_effort: max
 
   google:
     api_provider: google

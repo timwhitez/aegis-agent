@@ -42,7 +42,7 @@
 - `--timeout`：本次运行的超时；runtime command timeout 另由配置控制；
 - `--plan`、`--plan-only`：进入 Plan Mode；
 - `--goal`、`--goal-mode`、`--goal-token-budget`、`--goal-time-budget`、`--goal-success`、`--goal-validate`：创建 Goal draft；
-- `--thinking-level`：请求适合当前 adapter 的思考级别；
+- `--thinking-level`：请求适合当前 adapter 的思考级别；OpenAI 系映射为 `reasoning.effort`，Anthropic 系映射为 `thinking.budget_tokens`，并且只在 profile 声明了 `output_config_effort` 时额外改写 `output_config.effort`；
 - `--json`：输出 JSON；`--output-format stream-json`：输出事件协议；二者互斥；
 - `--input-format stream-json`：从 stdin 读取初始 prompt，不再接受位置 prompt；
 - `--resume`：仅适用于 `exec` 的已有 session；

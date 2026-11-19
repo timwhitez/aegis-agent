@@ -10695,6 +10695,51 @@ func TestServiceConfigRoutesPersistRoleProviderOverrides(t *testing.T) {
 	}
 }
 
+func TestRoleProviderOverrideRequestPreservesOmittedOutputConfigEffort(t *testing.T) {
+	cfg := config.Default()
+	cfg.RoleProviders.Planner = config.RoleProviderOverride{
+		Provider:           "anthropic",
+		OutputConfigEffort: "max",
+	}
+
+	// A client that does not know the field must not clear it: the override is
+	// rebuilt from the request, so an omitted key has to fall back to config.
+	out, err := roleProvidersFromRequest(cfg, map[string]RoleProviderOverrideRequest{
+		"planner": {Provider: "anthropic", Model: "planner-model"},
+	})
+	if err != nil {
+		t.Fatalf("role providers: %v", err)
+	}
+	if out.Planner.OutputConfigEffort != "max" {
+		t.Fatalf("expected the configured effort to survive an omitted key, got %#v", out.Planner)
+	}
+	if out.Planner.Model != "planner-model" {
+		t.Fatalf("expected the request fields to apply, got %#v", out.Planner)
+	}
+
+	cleared := ""
+	out, err = roleProvidersFromRequest(cfg, map[string]RoleProviderOverrideRequest{
+		"planner": {Provider: "anthropic", OutputConfigEffort: &cleared},
+	})
+	if err != nil {
+		t.Fatalf("role providers: %v", err)
+	}
+	if out.Planner.OutputConfigEffort != "" {
+		t.Fatalf("expected an explicit empty value to clear the effort, got %#v", out.Planner)
+	}
+
+	upper := "XHIGH"
+	out, err = roleProvidersFromRequest(cfg, map[string]RoleProviderOverrideRequest{
+		"planner": {Provider: "anthropic", OutputConfigEffort: &upper},
+	})
+	if err != nil {
+		t.Fatalf("role providers: %v", err)
+	}
+	if out.Planner.OutputConfigEffort != "xhigh" {
+		t.Fatalf("expected lower-case normalization, got %#v", out.Planner)
+	}
+}
+
 func TestServiceConfigRejectsNegativeRoleProviderMaxOutputTokensWithoutMutation(t *testing.T) {
 	cfg := testConfig(t, "")
 	configPath := filepath.Join(t.TempDir(), "config.yaml")

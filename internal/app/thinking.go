@@ -36,7 +36,22 @@ func providerOptionsForThinkingLevel(level string, cfg *config.Config, providerN
 	switch apiProvider {
 	case "openai-compatible":
 		return session.ProviderOptions{ReasoningEffort: level}, nil
-	case "anthropic-compatible", "google":
+	case "anthropic-compatible":
+		includeThoughts := true
+		opts := session.ProviderOptions{
+			IncludeThoughts: &includeThoughts,
+			ThinkingBudget:  thinkingBudgetForLevel(level),
+		}
+		// Profiles that opted into the Messages output_config.effort wire field
+		// (effort-capable Claude models, MiniMax and compatible gateways) also
+		// carry the level there. Profiles without the field keep the
+		// budget-only mapping, so endpoints or models that do not accept
+		// output_config never receive it.
+		if strings.TrimSpace(providerCfg.OutputConfigEffort) != "" {
+			opts.OutputConfigEffort = level
+		}
+		return opts, nil
+	case "google":
 		includeThoughts := true
 		return session.ProviderOptions{
 			IncludeThoughts: &includeThoughts,

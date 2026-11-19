@@ -100,19 +100,32 @@ func defaultThinkingLevel(apiProvider string, providerCfg config.Provider) strin
 		if level := normalizeThinkingLevel(providerCfg.ReasoningEffort); level != "" {
 			return level
 		}
-	case "anthropic-compatible", "google":
-		switch {
-		case providerCfg.ThinkingBudget >= 32000:
-			return "max"
-		case providerCfg.ThinkingBudget > 8192:
-			return "xhigh"
-		case providerCfg.ThinkingBudget > 4096:
-			return "high"
-		case providerCfg.ThinkingBudget > 0 && providerCfg.ThinkingBudget <= 1024:
-			return "low"
-		case providerCfg.ThinkingBudget > 0:
-			return "medium"
+	case "anthropic-compatible":
+		// Profiles that opted into the Messages output_config.effort wire
+		// field carry the level directly; the Anthropic-native budget mapping
+		// stays the fallback for profiles that only set thinking_budget.
+		if level := normalizeThinkingLevel(providerCfg.OutputConfigEffort); level != "" {
+			return level
 		}
+		return thinkingBudgetLevel(providerCfg.ThinkingBudget)
+	case "google":
+		return thinkingBudgetLevel(providerCfg.ThinkingBudget)
+	}
+	return "medium"
+}
+
+func thinkingBudgetLevel(budget int) string {
+	switch {
+	case budget >= 32000:
+		return "max"
+	case budget > 8192:
+		return "xhigh"
+	case budget > 4096:
+		return "high"
+	case budget > 0 && budget <= 1024:
+		return "low"
+	case budget > 0:
+		return "medium"
 	}
 	return "medium"
 }

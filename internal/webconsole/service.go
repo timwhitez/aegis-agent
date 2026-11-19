@@ -4837,6 +4837,7 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"reasoning_summary":               providerReasoningSummary(p),
 			"reasoning_summary_modes":         providerReasoningSummaryModes(name, p),
 			"reasoning_effort":                strings.TrimSpace(p.ReasoningEffort),
+			"output_config_effort":            strings.TrimSpace(p.OutputConfigEffort),
 			"thinking_budget":                 p.ThinkingBudget,
 			"include_thoughts":                p.IncludeThoughts,
 			"max_output_tokens":               p.MaxOutputTokens,
@@ -5364,12 +5365,13 @@ func roleProviderOverridesResponse(cfg *config.Config) map[string]any {
 	for _, role := range []string{"planner", "generator", "evaluator", "explorer"} {
 		override := cfg.RoleProviderOverride(role)
 		out[role] = map[string]any{
-			"provider":          strings.TrimSpace(override.Provider),
-			"api_provider":      strings.TrimSpace(override.APIProvider),
-			"base_url":          strings.TrimSpace(override.BaseURL),
-			"model":             strings.TrimSpace(override.Model),
-			"reasoning_effort":  strings.ToLower(strings.TrimSpace(override.ReasoningEffort)),
-			"max_output_tokens": override.MaxOutputTokens,
+			"provider":             strings.TrimSpace(override.Provider),
+			"api_provider":         strings.TrimSpace(override.APIProvider),
+			"base_url":             strings.TrimSpace(override.BaseURL),
+			"model":                strings.TrimSpace(override.Model),
+			"reasoning_effort":     strings.ToLower(strings.TrimSpace(override.ReasoningEffort)),
+			"output_config_effort": strings.ToLower(strings.TrimSpace(override.OutputConfigEffort)),
+			"max_output_tokens":    override.MaxOutputTokens,
 		}
 	}
 	return out
@@ -5404,6 +5406,13 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 	baseURL := strings.TrimSpace(req.BaseURL)
 	model := strings.TrimSpace(req.Model)
 	reasoningEffort := strings.ToLower(strings.TrimSpace(req.ReasoningEffort))
+	// The override is rebuilt from this request, so an omitted
+	// output_config_effort has to fall back to the configured value rather than
+	// silently clearing it for clients that do not know the field.
+	outputConfigEffort := cfg.RoleProviderOverride(role).OutputConfigEffort
+	if req.OutputConfigEffort != nil {
+		outputConfigEffort = strings.ToLower(strings.TrimSpace(*req.OutputConfigEffort))
+	}
 	if req.MaxOutputTokens < 0 {
 		return config.RoleProviderOverride{}, newWebSettingsValidationError("role_providers.%s.max_output_tokens must be non-negative", strings.TrimSpace(role))
 	}
@@ -5435,12 +5444,13 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 		}
 	}
 	return config.RoleProviderOverride{
-		Provider:        providerName,
-		APIProvider:     apiProvider,
-		BaseURL:         baseURL,
-		Model:           model,
-		ReasoningEffort: reasoningEffort,
-		MaxOutputTokens: req.MaxOutputTokens,
+		Provider:           providerName,
+		APIProvider:        apiProvider,
+		BaseURL:            baseURL,
+		Model:              model,
+		ReasoningEffort:    reasoningEffort,
+		OutputConfigEffort: outputConfigEffort,
+		MaxOutputTokens:    req.MaxOutputTokens,
 	}, nil
 }
 
@@ -5452,6 +5462,7 @@ func roleProviderOverrideCount(cfg config.RoleProvidersConfig) int {
 			strings.TrimSpace(override.BaseURL) != "" ||
 			strings.TrimSpace(override.Model) != "" ||
 			strings.TrimSpace(override.ReasoningEffort) != "" ||
+			strings.TrimSpace(override.OutputConfigEffort) != "" ||
 			override.MaxOutputTokens > 0 {
 			count++
 		}
@@ -5602,6 +5613,7 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		StopReason:                   result.StopReason,
 		FinishMessage:                result.FinishMessage,
 		ReasoningEffort:              strings.TrimSpace(p.ReasoningEffort),
+		OutputConfigEffort:           strings.TrimSpace(p.OutputConfigEffort),
 		ReasoningSummaryObserved:     result.ReasoningSummaryObserved,
 		ReasoningEncryptedObserved:   result.ReasoningEncryptedObserved,
 		ReasoningTokens:              result.ReasoningTokens,
@@ -5775,6 +5787,7 @@ func normalizeProviderReasoningFields(providerName string, provider *config.Prov
 	case "openai":
 		provider.ThinkingBudget = 0
 		provider.IncludeThoughts = nil
+		provider.OutputConfigEffort = ""
 	case "thinking":
 		provider.ReasoningEffort = ""
 		provider.ReasoningSummary = ""
