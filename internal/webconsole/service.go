@@ -118,12 +118,15 @@ type processOwner struct {
 	startedAt      string
 }
 
+// newProcessOwner reuses the runtime process identity so Web console handle
+// events and runtime run-owner events describe this process with one
+// process_start_id.
 func newProcessOwner() processOwner {
-	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	owner := runtime.CurrentProcessOwner()
 	return processOwner{
-		pid:            os.Getpid(),
-		processStartID: strconv.Itoa(os.Getpid()) + ":" + startedAt,
-		startedAt:      startedAt,
+		pid:            owner.PID,
+		processStartID: owner.ProcessStartID,
+		startedAt:      owner.StartedAt,
 	}
 }
 
@@ -3228,6 +3231,20 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, r *http.Request,
 	}
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
+		steerState, err := s.queueCrossProcessInterruptSteer(r.Context(), sessionID, runtime.InterruptWithoutFinishSteerMessage)
+		if err != nil {
+			writeError(w, steerActionStatus(err), err)
+			return
+		}
+		if steerState != "" {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"session_id":    sessionID,
+				"status":        "interrupt_requested",
+				"cross_process": true,
+				"steer":         steerState,
+			})
+			return
+		}
 		writeError(w, http.StatusConflict, newWebError(
 			errorCodeActiveHandleNotOwned,
 			"session is not actively owned by this web console; use steer with interrupt instead",
@@ -3272,6 +3289,21 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stopped", "reconciled": true, "cleared_pending_stop_steers": true, "descendant_stops": descendantStops})
 			return
 		}
+		steerState, err := s.queueCrossProcessInterruptSteer(r.Context(), sessionID, stopFallbackSteerMessage)
+		if err != nil {
+			writeError(w, steerActionStatus(err), err)
+			return
+		}
+		if steerState != "" {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"session_id":       sessionID,
+				"status":           "stop_requested",
+				"cross_process":    true,
+				"steer":            steerState,
+				"descendant_stops": descendantStops,
+			})
+			return
+		}
 		if descendantStops > 0 {
 			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested", "descendant_stops": descendantStops})
 			return
@@ -3294,6 +3326,72 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "stop_requested", "descendant_stops": descendantStops})
+}
+
+// crossProcessLiveRunOwner returns the durable owner clue for a session this
+// process does not hold in memory, and whether that clue proves a live owner
+// process other than this one. A dead owner stays on the reconcile path, and an
+// unknown or settled owner keeps the existing not-owned response.
+func (s *Service) crossProcessLiveRunOwner(sessionID string, state session.State) (ActiveHandleOwner, bool, error) {
+	if state.Status != session.StatusRunning {
+		return ActiveHandleOwner{}, false, nil
+	}
+	eventsList, err := s.store.LoadEvents(sessionID)
+	if err != nil {
+		return ActiveHandleOwner{}, false, err
+	}
+	owner := latestActiveOwnerFromEvents(eventsList)
+	if !ownerEventTypeIsAcquire(owner.EventType) {
+		return owner, false, nil
+	}
+	if ownerIsCurrentProcess(owner) || ownerProcessKnownDead(owner) {
+		return owner, false, nil
+	}
+	return owner, true, nil
+}
+
+// queueCrossProcessInterruptSteer appends a durable interrupt steer request for
+// a run whose recorded owner process is alive but is not this process. The
+// owning process consumes the request through its own steer watcher, so nothing
+// is pre-empted and no session state is written here. It returns "" when the
+// session has no live external owner, "queued" for a new request, and
+// "already_queued" when an equivalent request is still open.
+func (s *Service) queueCrossProcessInterruptSteer(ctx context.Context, sessionID, message string) (string, error) {
+	state, err := s.store.LoadState(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if _, live, err := s.crossProcessLiveRunOwner(sessionID, state); err != nil {
+		return "", err
+	} else if !live {
+		return "", nil
+	}
+	requests, err := s.store.LoadSteerRequests(sessionID)
+	if err != nil {
+		return "", err
+	}
+	for i := range requests {
+		if requests[i].Status != session.SteerStatusPending && requests[i].Status != session.SteerStatusDeferred {
+			continue
+		}
+		if requests[i].Interrupt && strings.TrimSpace(requests[i].Text) == message {
+			return "already_queued", nil
+		}
+	}
+	cfg, err := s.configSnapshot()
+	if err != nil {
+		return "", err
+	}
+	runner := runtime.NewRunner(cfg)
+	if _, err := runner.Steer(ctx, runtime.SteerRequest{
+		SessionID: sessionID,
+		Message:   message,
+		Interrupt: true,
+		Source:    "web",
+	}); err != nil {
+		return "", err
+	}
+	return "queued", nil
 }
 
 func (s *Service) handleListJobs(w http.ResponseWriter, r *http.Request) {
@@ -7177,7 +7275,7 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 
 	owner := latestActiveOwnerFromEvents(eventsList)
 	if sessionStatus == session.StatusRunning {
-		if owner.EventType == "webconsole.handle.released" {
+		if ownerEventTypeIsRelease(owner.EventType) {
 			owner.State = "settled"
 			owner.OwnedByCurrentProcess = false
 			owner.Action = "refresh the session or continue it if the current state is resumable"
@@ -7185,9 +7283,12 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 		}
 		owner.State = "running_not_owned"
 		owner.OwnedByCurrentProcess = false
-		if ownerProcessKnownDead(owner) {
-			owner.Action = "the recorded web console owner process is no longer running; stop or delete can reconcile this orphaned run"
-		} else {
+		switch {
+		case ownerProcessKnownDead(owner):
+			owner.Action = "the recorded owner process is no longer running; stop or delete can reconcile this orphaned run"
+		case ownerEventTypeIsAcquire(owner.EventType):
+			owner.Action = "stop and interrupt queue a durable interrupt steer for the owning process; continue after the active run settles"
+		default:
 			owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
 		}
 		return owner
@@ -7201,7 +7302,7 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 func latestActiveOwnerFromEvents(eventsList []events.Event) ActiveHandleOwner {
 	for i := len(eventsList) - 1; i >= 0; i-- {
 		evt := eventsList[i]
-		if evt.Type != "webconsole.handle.acquired" && evt.Type != "webconsole.handle.released" {
+		if !ownerEventTypeIsAcquire(evt.Type) && !ownerEventTypeIsRelease(evt.Type) {
 			continue
 		}
 		owner := ActiveHandleOwner{
@@ -7607,17 +7708,45 @@ func (s *goalMutationService) restoreStaleRunningSessionReconcile(sessionID stri
 	return cause
 }
 
+// ownerEventTypeIsAcquire reports whether eventType records that a process took
+// ownership of a run. Web console handle events and runtime run-owner events are
+// both durable owner facts.
+func ownerEventTypeIsAcquire(eventType string) bool {
+	return eventType == "webconsole.handle.acquired" || runtime.IsRunOwnerAcquireEventType(eventType)
+}
+
+// ownerEventTypeIsRelease reports whether eventType records that the owner
+// process released the run.
+func ownerEventTypeIsRelease(eventType string) bool {
+	return eventType == "webconsole.handle.released" || runtime.IsRunOwnerReleaseEventType(eventType)
+}
+
 func staleRunningOwnerCanBeReconciled(owner ActiveHandleOwner) bool {
-	if owner.EventType == "webconsole.handle.released" {
+	if ownerEventTypeIsRelease(owner.EventType) {
 		return true
 	}
-	if owner.EventType != "webconsole.handle.acquired" {
+	if !ownerEventTypeIsAcquire(owner.EventType) {
 		return false
 	}
-	if owner.ProcessStartID == webconsoleProcessOwner.processStartID {
+	if ownerIsCurrentProcess(owner) {
 		return true
 	}
 	return ownerProcessKnownDead(owner)
+}
+
+// ownerIsCurrentProcess reports whether the durable owner clue names this
+// process. The PID is checked next to the process start id so a runtime-written
+// owner event from this process is recognized even when its start timestamp
+// differs from the Web console handle events.
+func ownerIsCurrentProcess(owner ActiveHandleOwner) bool {
+	if owner.ProcessStartID != "" && owner.ProcessStartID == webconsoleProcessOwner.processStartID {
+		return true
+	}
+	pid := owner.PID
+	if pid <= 0 {
+		pid = pidFromProcessStartID(owner.ProcessStartID)
+	}
+	return pid > 0 && pid == os.Getpid()
 }
 
 func ownerProcessKnownDead(owner ActiveHandleOwner) bool {

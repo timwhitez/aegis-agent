@@ -526,12 +526,14 @@ func latestCompactionArtifact(store *session.Store, sessionID string) (string, e
 func latestProcessOwnerClue(eventsList []events.Event) (session.ProcessOwnerClue, bool, error) {
 	for i := len(eventsList) - 1; i >= 0; i-- {
 		evt := eventsList[i]
-		if evt.Type != "webconsole.handle.acquired" && evt.Type != "webconsole.handle.released" {
-			continue
-		}
-		handleState := "acquired"
-		if evt.Type == "webconsole.handle.released" {
+		var handleState string
+		switch evt.Type {
+		case "webconsole.handle.acquired", RunOwnerAcquiredEventType:
+			handleState = "acquired"
+		case "webconsole.handle.released", RunOwnerReleasedEventType:
 			handleState = "released"
+		default:
+			continue
 		}
 		owner := session.ProcessOwnerClue{
 			Source:         eventString(evt.Data, "source"),

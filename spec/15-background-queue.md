@@ -245,7 +245,7 @@ job claim 通过 `process_start_id` + `worker_pid` + `heartbeat_at` 记录持有
   - 关联 child session 已 `completed` / `failed` → 结算为对应 queue 终态，释放 parent coordination gate。
   - 尚未创建 child session（claim 后崩溃）→ 清除 lease 重新入队 `queued/`，由后续 worker 重跑。
   - 关联 child session 仍可恢复（`paused` / `awaiting_input` / 进行中但持有者已死）→ 标记带稳定 lease-reclaimed 诊断的 `blocked` 并确保 parent 存在 pending background notification，交模型决策；若 child 仍为 `running`，按所观察的 `state.updated_at` 做 CAS 收敛到 `paused/stale_owner_reconciled`，不能覆盖已在扫描窗口内推进的 state。
-- 回收由 `web` 进程的后台循环驱动（`runtime.queue.reaper_interval_ms`，默认 `60s`，`<= 0` 关闭）。回收 job 后，`web` 还要对僵尸 `running` session（`status=running` 但无存活 owner）执行 stale-owner reconcile，转为 `paused` 可续。
+- 回收由 `web` 进程的后台循环驱动（`runtime.queue.reaper_interval_ms`，默认 `60s`，`<= 0` 关闭）。回收 job 后，`web` 还要对僵尸 `running` session（`status=running` 但无存活 owner）执行 stale-owner reconcile，转为 `paused` 可续。僵尸判定读取 `webconsole.handle.*` 与 runtime 的 `run.owner.*` 属主线索，因此 CLI/SDK 启动的运行在属主进程退出后同样会被自动协调；属主进程仍存活时绝不收敛。
 - 持有者存活判定必须保守：无法判定（无 `/proc`、stat 异常）时视为存活，避免误回收健康 job。
 - 扫描 snapshot、child 状态判定与最终写回之间可能有健康 worker 推进 job；reaper 的最终状态迁移必须在 durable `claim.lock` 内重新读取 canonical job，并以 status、lease identity、heartbeat/updated version 做 compare-and-set。比较失败时本轮不写 job、parent coordination 或 notification，绝不能用旧 snapshot 覆盖终态结果与 `final_text`。
 
