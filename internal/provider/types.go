@@ -59,16 +59,26 @@ type ToolCall struct {
 	ProviderCallID string
 }
 
+// ReportedTokenCounts retains which counters the provider actually supplied.
+// The existing numeric usage fields remain available for accounting.
+type ReportedTokenCounts struct {
+	InputTokens              *int `json:"input_tokens,omitempty"`
+	OutputTokens             *int `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
+}
+
 type Usage struct {
-	TotalTokens              *int64 `json:"total_tokens,omitempty"`
-	TotalTokensSource        string `json:"total_tokens_source,omitempty"`
-	ProviderTotalTokens      *int64 `json:"provider_total_tokens,omitempty"`
-	ReasoningTokens          *int64 `json:"reasoning_tokens,omitempty"`
-	Reported                 bool   `json:"reported"`
-	InputTokens              int    `json:"input_tokens,omitempty"`
-	OutputTokens             int    `json:"output_tokens,omitempty"`
-	CacheCreationInputTokens int    `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int    `json:"cache_read_input_tokens,omitempty"`
+	ReportedCounts           *ReportedTokenCounts `json:"-"`
+	TotalTokens              *int64               `json:"total_tokens,omitempty"`
+	TotalTokensSource        string               `json:"total_tokens_source,omitempty"`
+	ProviderTotalTokens      *int64               `json:"provider_total_tokens,omitempty"`
+	ReasoningTokens          *int64               `json:"reasoning_tokens,omitempty"`
+	Reported                 bool                 `json:"reported"`
+	InputTokens              int                  `json:"input_tokens,omitempty"`
+	OutputTokens             int                  `json:"output_tokens,omitempty"`
+	CacheCreationInputTokens int                  `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                  `json:"cache_read_input_tokens,omitempty"`
 }
 
 // TokenTotal is provider-independent; adapters supply the canonical count.

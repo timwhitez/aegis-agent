@@ -305,6 +305,49 @@ class SchedulerTest(unittest.TestCase):
         self.cli("run", rc=2)
         self.assertFalse(list(self.run.glob("attempts/*")))
 
+    def test_runner_tree_checked_before_frozen_python_starts(self):
+        self.init({"a": "pass"})
+        # A partial restore left a truncated Python module alongside the runner.
+        (self.run / "assets/runner/json.py").write_text("def decode(")
+        p = subprocess.run([*self.head, "run", "--run", self.run], cwd=self.base,
+                           timeout=5, text=True, capture_output=True)
+        self.assertEqual(p.returncode, 2, p.stderr)
+        self.assertIn("frozen runner asset digest mismatch", p.stderr)
+        self.assertNotIn("SyntaxError", p.stderr)
+        self.assertFalse(list(self.run.glob("attempts/*")))
+
+    def test_conflicting_backup_identity_cannot_contribute_native_reward(self):
+        self.init({"a": "pass", "b": "zero"})
+        self.cli("run")
+        a, b = sorted(self.run.glob("attempts/*/*"))
+        shutil.copytree(a, b.parent / a.name)
+        self.cli("run")
+        recovered = json.loads((b.parent / a.name / "state.json").read_text())
+        self.assertEqual(recovered["status"], "interrupted")
+        self.assertIsNone(recovered.get("observed_reward"))
+        self.assertEqual(self.summary()["tasks"]["b"]["reward"], 0)
+
+    def test_restored_completions_respect_explicit_native_evidence(self):
+        names = ("bad-rc", "legacy", "mismatched", "timeout", "unaccepted")
+        self.init({name: "pass" for name in names})
+        self.cli("run", "--jobs", "3")
+        outcomes = {"legacy": {"reward": 1}, "mismatched": {"reward": 0},
+                    "timeout": {"status": "verifier_timeout", "reward": 1},
+                    "unaccepted": {"reward_valid": False, "reward": 1}}
+        for name, outcome in outcomes.items():
+            next(self.run.glob(f"attempts/{name}/*/outcome.json")).write_text(json.dumps(outcome))
+        state_path = next(self.run.glob("attempts/bad-rc/*/state.json"))
+        state = json.loads(state_path.read_text())
+        state["adapter_rc"] = False
+        state_path.write_text(json.dumps(state))
+        summary = self.summary()
+        self.assertEqual(summary["scored"], 1)
+        self.assertEqual(summary["tasks"]["legacy"]["reward"], 1)
+        self.assertEqual(summary["tasks"]["mismatched"]["observed_reward"], 0)
+        self.cli("run", "--jobs", "3")
+        self.assertEqual(self.summary()["scored"], len(names))
+        self.assertEqual(len(list(self.run.glob("attempts/*/*/state.json"))), 2 * len(names) - 1)
+
 
 if __name__ == "__main__":
     unittest.main()

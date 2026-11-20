@@ -33,6 +33,10 @@ def read_plan(task_dir, capture_paths=()):
             value = result[key]
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise UnsupportedTask(f"task must declare a positive finite {key}")
+        if isinstance(result["memory_mb"], float):
+            if not result["memory_mb"].is_integer():
+                raise UnsupportedTask("memory_mb must be a whole number of MiB")
+            result["memory_mb"] = int(result["memory_mb"])
         if env.get("os", "linux") != "linux" or env.get("mcp_servers"):
             raise UnsupportedTask("this adapter supports Linux tasks without MCP servers")
         return result

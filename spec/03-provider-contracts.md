@@ -104,6 +104,7 @@ usage presence 是 provider contract 的一部分：
 - 兼容旧 adapter 或旧 event 时，任一 token counter 非零可标记为 `legacy_inferred` known usage；没有 presence 标记且全部为零仍为 unknown
 - OpenAI、Anthropic 与 Google 的响应 usage 字段必须按可空对象解析，不能用内嵌零值 struct 丢失 presence
 - lifecycle/report 中的 usage source 只接受稳定 `provider` / `legacy_inferred`；旧 event 缺 source 时按 presence/counter 规则推导，任意其他字符串不得进入 ContextReport
+- Anthropic 的 usage 事件附带 `reported_counts`，只包含端点实际给出的输入、输出、缓存创建和缓存读取计数。显式的 0 会保留。评测收据使用这些字段；旧事件继续沿用当时记录的计数。
 
 #### Canonical token accounting
 

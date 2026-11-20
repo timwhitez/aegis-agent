@@ -22,6 +22,7 @@ import uuid
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 FINAL = {"completed", "interrupted", "infra_invalid", "agent_timeout", "verifier_timeout", "verifier_error", "hard_timeout"}
+INVALID_RECORD = "invalid_attempt_record"
 
 
 def save(path, record):
@@ -182,9 +183,21 @@ def stored_attempts(run, run_id, name):
         state = read(attempt / "state.json")
         identity = {"run_id": run_id, "task": name, "attempt_id": attempt.name}
         if not isinstance(state.get("status"), str) or any(state.get(k) != v for k, v in identity.items()):
-            state = dict(identity, status="incomplete", reason="invalid_attempt_record", reward=None)
-        if state.get("status") == "completed" and not scored(state):
-            state = dict(identity, status="incomplete", reason="invalid_completion", reward=None)
+            state = dict(identity, status="incomplete", reason=INVALID_RECORD, reward=None)
+        if state.get("reason") == INVALID_RECORD:
+            # Earlier recovery versions could copy an unbound directory's reward.
+            state["observed_reward"] = None
+        if state.get("status") == "completed":
+            native = read(attempt / "outcome.json")
+            # Early archives omit some native fields. Preserve the accepted score
+            # only if the facts that do survive agree with its watchdog record.
+            reward = native.get("reward", state.get("reward"))
+            if (not scored(state) or native.get("status", "completed") != "completed"
+                    or native.get("reward_valid", True) is not True
+                    or not valid_reward(reward) or reward != state.get("reward")):
+                observed = native.get("observed_reward", native.get("reward", state.get("observed_reward")))
+                state = dict(identity, status="incomplete", reason="invalid_completion", reward=None,
+                             started_at=state.get("started_at"), observed_reward=observed if valid_reward(observed) else None)
         started = state.get("started_at")
         if not valid_reward(started):
             started = state.get("ended_at")
@@ -196,7 +209,7 @@ def stored_attempts(run, run_id, name):
 
 
 def scored(record):
-    return (record.get("status") == "completed" and record.get("adapter_rc") == 0
+    return (record.get("status") == "completed" and type(record.get("adapter_rc")) is int and record["adapter_rc"] == 0
             and valid_reward(record.get("reward")) and valid_reward(record.get("ended_at")))
 
 
@@ -303,7 +316,7 @@ def compensate(run, attempt, state):
         return False
     # Cleanup can finish an adapter whose watchdog died after the verifier
     # wrote a native reward. Preserve it without promoting it to a scored run.
-    if state.get("observed_reward") is None:
+    if state.get("observed_reward") is None and state.get("reason") != INVALID_RECORD:
         state["observed_reward"] = read_outcome(attempt / "outcome.json", state.get("adapter_rc"))["observed_reward"]
     state["status"] = state.pop("pending_status", "interrupted")
     state["ended_at"] = time.time()
@@ -522,10 +535,14 @@ def main():
     if args.jobs <= 0 or not args.cpu_budget > 0 or args.memory_mb <= 0 or (args.hard_timeout is not None and
                           (not math.isfinite(args.hard_timeout) or args.hard_timeout <= 0)):
         ap.error("jobs, budgets and hard-timeout must be positive")
-    frozen = (args.run / "assets/runner/scheduler.py").resolve()
+    runner = args.run / "assets/runner"
+    frozen = (runner / "scheduler.py").resolve()
     if Path(__file__).resolve() != frozen:
-        if digest(frozen) != m["sha256"].get("runner/scheduler.py"):
-            raise ValueError("frozen scheduler digest mismatch")
+        # Python searches the script's directory even for standard-library imports.
+        # Verify that small tree before exec. The frozen scheduler checks all assets.
+        expected = {p.removeprefix("runner/"): h for p, h in m["sha256"].items() if p.startswith("runner/")}
+        if runner.is_symlink() or "scheduler.py" not in expected or asset_hashes(runner) != expected:
+            raise ValueError("frozen runner asset digest mismatch")
         os.execv(sys.executable, [sys.executable, "-B", str(frozen), *sys.argv[1:]])
     return schedule(args, m)
 

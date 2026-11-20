@@ -8,7 +8,7 @@ import re
 import yaml
 
 from result_evidence import CASE_STATUS, LOG_SIGNALS, MAX_DELIVERY, MAX_ENTRIES
-from scheduler import manifest_for, read, scored, stored_attempts, summarize, valid_reward, validate_assets
+from scheduler import INVALID_RECORD, manifest_for, read, scored, stored_attempts, summarize, valid_reward, validate_assets
 
 
 def inputs(run):
@@ -77,8 +77,9 @@ def delivery_receipts(artifacts):
     return receipts
 
 
-def attempt_row(attempt, state):
-    outcome = read(attempt / "outcome.json")
+def attempt_row(attempt, state, plan=None):
+    linked = state.get("reason") != INVALID_RECORD
+    outcome = read(attempt / "outcome.json") if linked else {}
     observed_reward = outcome.get("observed_reward", outcome.get("reward", state.get("observed_reward")))
     http = outcome.get("provider_http")
     attempts = http.get("upstream_attempts") if isinstance(http, dict) else None
@@ -88,7 +89,10 @@ def attempt_row(attempt, state):
     selection = outcome.get("artifact_selection")
     if selection not in ("task_declared", "operator_selected", "not_configured"):
         selection = None
-    evidence = read(attempt / "diagnostics.json")
+    if "artifact_selection" not in outcome and isinstance(outcome.get("artifacts"), list) and plan and "artifacts" in plan:
+        selection = ("task_declared" if plan["artifacts"] else "operator_selected" if plan.get("capture_paths")
+                     else "not_configured")
+    evidence = read(attempt / "diagnostics.json") if linked else {}
     present = (evidence.get("schema_version") == 1 and isinstance(evidence.get("started"), bool)
                and "sessions" in evidence and (evidence["sessions"] is None or isinstance(evidence["sessions"], list)))
     requests = []
@@ -97,8 +101,10 @@ def attempt_row(attempt, state):
         observations = session.get("requests") or []
         for q in observations:
             usage = q.get("usage") or {}
+            status = q.get("status")
             requests.append({
                 "session_id": session["id"], "request_id": q["request_id"],
+                "status": status if status in ("prepared", "completed", "failed", "rejected", "cancelled") else None,
                 "max_output_tokens": q.get("max_output_tokens"), "source": q.get("source"),
                 "effort": q.get("effort"), "stop_reason": q.get("stop_reason"),
                 "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens", "reasoning_tokens",
@@ -132,11 +138,11 @@ def attempt_row(attempt, state):
         signals = None
     controls = ("hard_timeout_s", "jobs", "cpu_budget", "memory_budget_mb")
     return {
-        "resources": {p: resources(attempt, p) for p in ("agent", "verifier")},
+        "resources": {p: resources(attempt, p) if linked else None for p in ("agent", "verifier")},
         "scheduler": {k: state[k] for k in controls} if all(k in state for k in controls) else None,
         "attempt_id": attempt.name, "status": state.get("status"),
         "reward": state["reward"] if scored(state) else None,
-        "observed_reward": observed_reward if valid_reward(observed_reward) else None,
+        "observed_reward": observed_reward if linked and valid_reward(observed_reward) else None,
         "artifact_selection": selection,
         "artifacts": delivery_receipts(outcome.get("artifacts")),
         "verifier": {"observed_cases": len(cases) if isinstance(cases, list) else None,
@@ -144,7 +150,9 @@ def attempt_row(attempt, state):
                      "log_files_scanned": scanned, "log_signals": signals},
         "elapsed_s": state.get("elapsed_s"), "agent_s": outcome.get("agent_s"),
         "verify_s": outcome.get("verify_s"), "agent_rc": outcome.get("agent_rc"),
-        "evidence": ("partial" if evidence.get("partial") else "available") if present else "missing",
+        "verify_rc": outcome.get("verify_rc") if type(outcome.get("verify_rc")) is int else None,
+        "evidence": (("partial" if evidence.get("partial") else "available") if present else
+                     "missing" if linked else "unverified_identity"),
         "started": evidence.get("started") if present else None,
         "category": evidence.get("category") if present else None,
         "agent_exit_code": evidence.get("exit_code") if present else None,
@@ -161,7 +169,8 @@ def run_results(run, manifest, limit):
     for name, selected in summary["tasks"].items():
         if name != Path(name).name or name in {"", ".", ".."}:
             raise ValueError("invalid task name in manifest")
-        attempts = [attempt_row(path, state) for path, state in stored_attempts(run, manifest["run_id"], name)]
+        attempts = [attempt_row(path, state, manifest["tasks"][name])
+                    for path, state in stored_attempts(run, manifest["run_id"], name)]
         tasks[name] = {"selected_attempt": selected["attempt_id"], "status": selected["status"], "attempts": attempts}
     return {"run_id": manifest["run_id"], "configured_max_output_tokens": limit,
             "planned": summary["planned"], "scored": summary["scored"], "passed": summary["passed"],

@@ -1,4 +1,5 @@
 """Harbor's installed-agent interface for a frozen Linux Aegis binary."""
+import asyncio
 import json
 from contextlib import suppress
 from pathlib import Path
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 
 from harbor.agents.base import BaseAgent
+from harbor.utils.scripts import build_execution_command
 from harbor.verifier.verifier import Verifier
 from result_evidence import VERIFIER_OUTPUT_FILES
 
@@ -19,19 +21,37 @@ HELPER = PRIVATE + "/evidence"
 MAX_SUMMARY = 4 * 1024 * 1024
 
 
-def observe_resources(environment, location):
-    ids = subprocess.check_output(
-        ["docker", "ps", "-aq", "--filter",
-         "label=com.docker.compose.project=" + environment.session_id], text=True, timeout=10
-    ).split()
+async def host_output(argv, *, timeout, data=None):
+    child = await asyncio.create_subprocess_exec(
+        *argv, stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        try:
+            stdout, _ = await asyncio.wait_for(child.communicate(data), timeout)
+        except TimeoutError:
+            raise subprocess.TimeoutExpired(argv, timeout) from None
+    finally:
+        if child.returncode is None:
+            with suppress(ProcessLookupError):
+                child.kill()
+            await child.communicate()
+    if child.returncode:
+        raise subprocess.CalledProcessError(child.returncode, argv)
+    return stdout
+
+
+async def observe_resources(environment, location):
+    found = await host_output(["docker", "ps", "-aq", "--filter",
+                               "label=com.docker.compose.project=" + environment.session_id], timeout=10)
+    ids = found.decode().split()
     if not ids:
         raise RuntimeError("no running containers for the expected project")
     # Request only these fields; full docker inspect includes process env.
     fmt = ('{{.Image}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} '
            '{{index .Config.Labels "com.docker.compose.service"}} '
            '{{.State.OOMKilled}} {{.State.Status}} {{.State.ExitCode}}')
-    lines = subprocess.check_output(["docker", "inspect", "--format", fmt, *ids],
-                                    text=True, timeout=10).splitlines()
+    inspected = await host_output(["docker", "inspect", "--format", fmt, *ids], timeout=10)
+    lines = inspected.decode().splitlines()
     observations = []
     for line in lines:
         image, cpu, ram, service, oom, state, rc = line.split()
@@ -43,9 +63,27 @@ def observe_resources(environment, location):
     Path(location).write_text(json.dumps(sorted(observations, key=lambda x: x["service"])))
 
 
+class GraderEnvironment:
+    """Capture only the exit returned by Harbor's single-step Linux test command."""
+    def __init__(self, environment, exit_path):
+        self.native = environment
+        self.exit_path = Path(exit_path)
+        self.grade_command = build_execution_command(
+            "/tests/test.sh", "/logs/verifier/test-stdout.txt", task_os=environment.os)
+
+    def __getattr__(self, name):
+        return getattr(self.native, name)
+
+    async def exec(self, command, **kwargs):
+        result = await self.native.exec(command=command, **kwargs)
+        if command == self.grade_command:
+            self.exit_path.write_text(str(result.return_code))
+        return result
+
+
 class ObservedVerifier(Verifier):
-    def __init__(self, *, observation_path, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, *, observation_path, exit_path, environment, **kwargs):
+        super().__init__(environment=GraderEnvironment(environment, exit_path), **kwargs)
         self.observation_path = observation_path
 
     async def verify(self):
@@ -58,12 +96,12 @@ class ObservedVerifier(Verifier):
             raise RuntimeError("unable to reset verifier outputs")
         for name in VERIFIER_OUTPUT_FILES:
             (self.trial_paths.verifier_dir / name).unlink(missing_ok=True)
-        observe_resources(self.environment, self.observation_path)
+        await observe_resources(self.environment, self.observation_path)
         try:
             return await super().verify()
         finally:
             with suppress(OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-                observe_resources(self.environment, Path(self.observation_path).with_name("resources-verifier-end.json"))
+                await observe_resources(self.environment, Path(self.observation_path).with_name("resources-verifier-end.json"))
 
 
 class AegisAgent(BaseAgent):
@@ -76,7 +114,7 @@ class AegisAgent(BaseAgent):
 
     async def setup(self, environment):
         # The host trial sets these fields before Harbor starts any containers.
-        observe_resources(environment, self.observation_path)
+        await observe_resources(environment, self.observation_path)
         prepared = await environment.exec(
             "umask 077 && mkdir -- /tmp/aegis-benchmark && mkdir -- " + SESSIONS
         )
@@ -107,7 +145,7 @@ class AegisAgent(BaseAgent):
         # Never mount an attempt directory in the task. Only a validated projection
         # can cross into the persistent result, even if the task rewrites the file.
         with suppress(OSError, ValueError, RuntimeError, subprocess.SubprocessError):
-            observe_resources(environment, Path(attempt) / "resources-agent-end.json")
+            await observe_resources(environment, Path(attempt) / "resources-agent-end.json")
         if getattr(self, "agent_rc", None) is None:
             await environment.exec(
                 shlex.join([HELPER, "--collect", "--sessions", SESSIONS, "--output", SUMMARY])
@@ -118,9 +156,8 @@ class AegisAgent(BaseAgent):
         raw = (result.stdout or "").encode()
         if result.return_code or len(raw) > MAX_SUMMARY:
             return False
-        check = subprocess.run([host_helper, "--check"], input=raw, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, timeout=8)
-        if check.returncode or not 0 < len(check.stdout) <= MAX_SUMMARY:
+        checked = await host_output([host_helper, "--check"], data=raw, timeout=8)
+        if not 0 < len(checked) <= MAX_SUMMARY:
             return False
-        (Path(attempt) / "diagnostics.json").write_bytes(check.stdout)
+        (Path(attempt) / "diagnostics.json").write_bytes(checked)
         return True

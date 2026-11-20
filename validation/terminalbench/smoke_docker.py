@@ -133,6 +133,7 @@ services:
                        "--label", uuid4().hex]
                 subprocess.run(cmd, env=env, check=True)
                 result = json.loads((attempt/"outcome.json").read_text())
+                assert result["verify_rc"] == 0, result
                 assert result["status"] == "completed" and result["reward"] == 1, result
                 assert result["provider_http"] == {"upstream_attempts": 0, "responses": 0}, result
                 assert result["verifier_evidence"]["cases"] == [], "pre-grade self-check appeared as a grader case"
@@ -184,6 +185,7 @@ fi
                     cmd[-1] = uuid4().hex
                     subprocess.run(cmd, env=env, check=True)
                     ungraded = json.loads((negative/"outcome.json").read_text())
+                    assert ungraded["verify_rc"] == 24, ungraded
                     assert ungraded["status"] == "infra_invalid" and ungraded["reward"] is None, ungraded
                     print("stale reward rejected", flush=True)
                     mismatched = root / "attempt-mismatched-exit"
@@ -241,6 +243,7 @@ fi
                             proc.wait()
                         subprocess.run([sys.executable, HERE/"trial.py", "cleanup", "--label", label], check=True)
                     stopped = json.loads((interrupted/"outcome.json").read_text())
+                    assert stopped["verify_rc"] is None, stopped
                     assert stopped["status"] == "interrupted" and stopped["reward"] is None, stopped
                     assert stopped["agent_s"] is not None and stopped["diagnostics"] == "collected", stopped
                     assert stopped["verifier_evidence"]["status"] == "not_started", stopped

@@ -128,12 +128,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			Name      string          `json:"name"`
 			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
-		Usage *struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
+		Usage *ReportedTokenCounts `json:"usage"`
 	}
 	err = a.client.DoJSON(ctx, http.MethodPost, "/v1/messages", map[string]string{
 		"x-api-key":         a.apiKey,
@@ -143,13 +138,20 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 		return TurnResult{}, err
 	}
 	usage := Usage{}
-	if resp.Usage != nil {
-		usage = Usage{
-			Reported:                 true,
-			InputTokens:              resp.Usage.InputTokens,
-			OutputTokens:             resp.Usage.OutputTokens,
-			CacheCreationInputTokens: resp.Usage.CacheCreationInputTokens,
-			CacheReadInputTokens:     resp.Usage.CacheReadInputTokens,
+	if counts := resp.Usage; counts != nil {
+		usage.Reported = true
+		usage.ReportedCounts = counts
+		if counts.InputTokens != nil {
+			usage.InputTokens = *counts.InputTokens
+		}
+		if counts.OutputTokens != nil {
+			usage.OutputTokens = *counts.OutputTokens
+		}
+		if counts.CacheCreationInputTokens != nil {
+			usage.CacheCreationInputTokens = *counts.CacheCreationInputTokens
+		}
+		if counts.CacheReadInputTokens != nil {
+			usage.CacheReadInputTokens = *counts.CacheReadInputTokens
 		}
 		usage.setTotal("anthropic_sum", int64(usage.InputTokens), int64(usage.OutputTokens), int64(usage.CacheCreationInputTokens), int64(usage.CacheReadInputTokens))
 	}

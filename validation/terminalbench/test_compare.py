@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -88,6 +89,48 @@ class CompareTest(unittest.TestCase):
         self.assertEqual(attempt_row(self.root, {"observed_reward": 0})["observed_reward"], 0)
         self.assertIsNone(attempt_row(self.root, {})["observed_reward"])
 
+    def test_verifier_exit_code_is_independent_of_the_reward(self):
+        for rc, expected in ((7, 7), (0, 0), (None, None), (False, None), ("private-marker", None)):
+            native = {"reward": 1}
+            if rc is not None:
+                native["verify_rc"] = rc
+            (self.root / "outcome.json").write_text(json.dumps(native))
+            row = attempt_row(self.root, {})
+            self.assertEqual((row["verify_rc"], row["observed_reward"]), (expected, 1))
+
+    def test_attempt_copied_from_another_batch_has_no_attributed_observations(self):
+        attempt = self.a / "attempts/sample" / uuid.uuid4().hex
+        attempt.mkdir(parents=True)
+        run_id = json.loads((self.a / "manifest.json").read_text())["run_id"]
+        (attempt / "state.json").write_text(json.dumps({"run_id": run_id, "task": "sample",
+            "attempt_id": attempt.name, "status": "completed", "adapter_rc": 0, "ended_at": 3, "reward": 1}))
+        (attempt / "outcome.json").write_text('{"reward":1,"artifacts":[],"agent_s":2}')
+        (attempt / "diagnostics.json").write_text('{"schema_version":1,"started":true,"sessions":[]}')
+        (attempt / "resources-agent.json").write_text(json.dumps([{"service": "main",
+            "image_id": "sha256:" + "a" * 64, "nanocpus": 1, "memory_bytes": 1}]))
+        shutil.copytree(attempt, self.b / "attempts/sample" / attempt.name)
+        report = compare(self.a, self.b)
+        row = report["candidate"]["tasks"]["sample"]["attempts"][0]
+        self.assertEqual(row["status"], "incomplete")
+        self.assertEqual(row["evidence"], "unverified_identity")
+        for key in ("reward", "observed_reward", "started", "artifacts", "agent_s", "observed_request_count"):
+            self.assertIsNone(row[key], key)
+        self.assertEqual(report["runtime_checks"]["sample"]["agent"], "unverified")
+
+    def test_request_lifecycle_is_separate_from_provider_stop(self):
+        for status in ("prepared", "completed", "failed", "rejected", "cancelled", "private-marker", None):
+            q = {"request_id": "fixture:1:main:1"}
+            if status is not None:
+                q["status"] = status
+            if status == "completed":
+                q["stop_reason"] = "end_turn"
+            (self.root / "diagnostics.json").write_text(json.dumps({"schema_version": 1, "started": True,
+                "sessions": [{"id": "fixture", "requests": [q]}]}))
+            row = attempt_row(self.root, {})
+            self.assertEqual(row["requests"][0]["status"], None if status == "private-marker" else status)
+            self.assertEqual(row["with_stop_reason"], int(status == "completed"))
+            self.assertNotIn("private-marker", json.dumps(row))
+
     def test_execution_layout_is_compared_for_older_manifests(self):
         # Legacy manifests lack a layout snapshot, but the files in the two
         # archives can still demonstrate a current mismatch.
@@ -137,6 +180,11 @@ class CompareTest(unittest.TestCase):
             expected = value if value in ("task_declared", "operator_selected", "not_configured") else None
             self.assertEqual(row["artifact_selection"], expected)
             self.assertNotIn("private-marker", json.dumps(row))
+
+        (self.root / "outcome.json").write_text('{"artifacts":[]}')
+        for plan, expected in (({"artifacts": []}, "not_configured"), ({"artifacts": ["/app/out"]}, "task_declared"),
+                               ({"artifacts": [], "capture_paths": ["/app/out"]}, "operator_selected"), ({}, None)):
+            self.assertEqual(attempt_row(self.root, {}, plan)["artifact_selection"], expected)
 
     def test_rejects_different_scheduler_controls(self):
         for run, jobs in [(self.a, 1), (self.b, 2)]:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 
 	"aegis-agent/internal/events"
@@ -58,7 +59,7 @@ func collect(dir string, exitCode *int) report {
 		}
 		se := sessionEvidence{ID: row.ID, Status: row.Status, Parent: row.ParentSessionID != ""}
 		positions := map[string]int{}
-		lastStop := ""
+		var lastMain requestFact
 		validTrace := true
 		err = store.VisitEvents(row.ID, func(e events.Event) error {
 			if e.Type == "tool.before" {
@@ -94,21 +95,38 @@ func collect(dir string, exitCode *int) report {
 			q := &se.Requests[i]
 			switch e.Type {
 			case "provider.request.prepared":
+				q.Status = "prepared"
 				budget, _ := e.Data["request_budget"].(map[string]any)
 				q.MaxOutputTokens = integer(budget["effective_max_output_tokens"])
 				q.Source = enum(budget["max_output_tokens_source"], sources)
 				q.Effort = enum(budget["output_config_effort"], efforts)
 			case "provider.request.failed":
-				q.Stop = "failed"
+				status, _ := e.Data["status"].(string)
+				if allowed(status, "failed rejected cancelled") {
+					q.Status = status
+				} else {
+					validTrace = false
+					r.Partial = true
+				}
 			case "provider.request.completed", "turn.stopped":
+				// Prefer the canonical terminal event. Older traces may only
+				// have the main turn's stop event.
+				if e.Type == "turn.stopped" && q.Status != "" && q.Status != "prepared" {
+					return nil
+				}
+				q.Status = "completed"
 				q.Stop = enum(e.Data["stop_reason"], reasons)
 				u, _ := e.Data["usage"].(map[string]any)
 				if u["reported"] == true {
-					q.Usage = &usageFact{integer(u["input_tokens"]), integer(u["output_tokens"]), integer(u["reasoning_tokens"]), integer(u["cache_read_input_tokens"]), integer(u["cache_creation_input_tokens"])}
+					counts := u
+					if fields, exists := u["reported_counts"]; exists {
+						counts, _ = fields.(map[string]any)
+					}
+					q.Usage = &usageFact{integer(counts["input_tokens"]), integer(counts["output_tokens"]), integer(u["reasoning_tokens"]), integer(counts["cache_read_input_tokens"]), integer(counts["cache_creation_input_tokens"])}
 				}
 			}
 			if e.Phase != "compact" {
-				lastStop = q.Stop
+				lastMain = *q
 			}
 			return nil
 		})
@@ -135,12 +153,18 @@ func collect(dir string, exitCode *int) report {
 				r.Category = row.Status
 			case "failed":
 				switch {
-				case !validTrace || lastStop == "":
+				case !validTrace:
 					r.Category = "incomplete"
-				case lastStop == "failed":
+				case lastMain.Status == "failed":
 					r.Category = "provider_error"
-				default:
+				case lastMain.Status == "rejected":
+					r.Category = "request_rejected"
+				case lastMain.Status == "cancelled":
+					r.Category = "request_cancelled"
+				case lastMain.Status == "completed" && lastMain.Stop != "":
 					r.Category = "agent_failed"
+				default:
+					r.Category = "incomplete"
 				}
 			default:
 				r.Category = "incomplete"
@@ -156,8 +180,34 @@ func collect(dir string, exitCode *int) report {
 
 func encode(r report) ([]byte, error) {
 	data, err := json.Marshal(r)
-	if err == nil && len(data) > maxReportBytes {
-		return nil, errors.New("evidence size limit")
+	// The host --check encoder appends a newline to this canonical JSON.
+	if err != nil || len(data) < maxReportBytes {
+		return data, err
 	}
-	return data, err
+	// Individual sessions are bounded, but all of their histories may exceed
+	// the host limit together. Keep every session header and the child exit
+	// code. Trim older child history before touching an unambiguous root.
+	r.Partial = true
+	r.Sessions = slices.Clone(r.Sessions)
+	for _, children := range []bool{true, false} {
+		for {
+			trimmed := false
+			for i := range r.Sessions {
+				s := &r.Sessions[i]
+				if s.Parent == children && (len(s.Requests) != 0 || len(s.Attempts) != 0) {
+					s.Requests = s.Requests[(len(s.Requests)+1)/2:]
+					s.Attempts = s.Attempts[(len(s.Attempts)+1)/2:]
+					trimmed = true
+				}
+			}
+			if !trimmed {
+				break
+			}
+			data, err = json.Marshal(r)
+			if err != nil || len(data) < maxReportBytes {
+				return data, err
+			}
+		}
+	}
+	return nil, errors.New("evidence headers exceed size limit")
 }

@@ -110,7 +110,8 @@ async def execute(args, scratch, status):
             "artifacts": plan.get("capture_paths", []),
             "agent": {"import_path": "aegis_harbor:AegisAgent"},
             "verifier": {"import_path": "aegis_harbor:ObservedVerifier", "kwargs": {
-                "observation_path": str(args.attempt / "resources-verifier.json")}},
+                "observation_path": str(args.attempt / "resources-verifier.json"),
+                "exit_path": str(scratch / "verifier-exit")}},
             "environment": {"type": "docker", "cpu_enforcement_policy": "limit",
                             "memory_enforcement_policy": "limit", "mounts": [{
                                 "type": "bind", "source": str(relay.socket_dir),
@@ -147,6 +148,9 @@ async def execute(args, scratch, status):
 
         def phase_facts(result):
             status["agent_rc"] = agent.agent_rc
+            exit_path = scratch / "verifier-exit"
+            if exit_path.is_file():
+                status["verify_rc"] = int(exit_path.read_text())
             status["diagnostics"] = "collected" if evidence else "missing"
             for key, timing in (("agent_s", result.agent_execution), ("verify_s", result.verifier)):
                 if timing and timing.started_at and timing.finished_at:
@@ -205,7 +209,7 @@ def classify_result(status, result, evidence):
           and evidence.get("category") in {"completed", "agent_failed"}):
         status.update(status="completed", stage="complete")
     else:
-        if not evidence.get("started") or evidence.get("category") == "provider_error":
+        if not evidence.get("started") or evidence.get("category") in {"provider_error", "request_rejected", "request_cancelled"}:
             status["stage"] = "agent" if result.agent_execution else "setup"
         if failures:
             known = {"EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "SandboxBuildFailedError",
@@ -255,7 +259,7 @@ def main():
     args = parser.parse_args()
     scratch = MEMORY_DIR / trial_name(args.label)
     status = {"status": "infra_invalid", "stage": "preflight", "reward": None,
-              "agent_rc": None, "agent_s": None, "verify_s": None, "diagnostics": "missing",
+              "agent_rc": None, "verify_rc": None, "agent_s": None, "verify_s": None, "diagnostics": "missing",
               "verifier_evidence": {"status": "not_started"}}
     try:
         scratch.mkdir(mode=0o700)

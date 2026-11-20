@@ -3456,6 +3456,9 @@ func providerUsageEventData(usage provider.Usage) map[string]any {
 	} else {
 		data["source"] = "legacy_inferred"
 	}
+	if usage.ReportedCounts != nil {
+		data["reported_counts"] = usage.ReportedCounts
+	}
 	data["input_tokens"] = usage.InputTokens
 	data["output_tokens"] = usage.OutputTokens
 	data["cache_creation_input_tokens"] = usage.CacheCreationInputTokens

@@ -76,6 +76,19 @@ runtime:
                 if body.get("redirect"):
                     self.send_response(307)
                     self.send_header("Location", "http://127.0.0.1:1/private")
+                elif body.get("framing"):
+                    self.send_response(200)
+                    if body["framing"] == "length":
+                        self.send_header("Content-Length", "30")
+                        payload = b'{"ok":true}'
+                    else:
+                        self.send_header("Transfer-Encoding", "chunked")
+                        payload = b'B\r\n{"ok":true}\r\n'
+                        if body["framing"] == "complete_chunked":
+                            payload += b"0\r\n\r\n"
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 elif body.get("retry_after"):
                     self.send_response(429)
                     self.send_header("Retry-After", body["retry_after"])
@@ -113,12 +126,16 @@ runtime:
                     for after in ("17", "Wed, 21 Oct 2037 07:28:00 GMT", "12345678"):
                         self.assertEqual(post(retry_after=after), (429, b"", after, None))
                     self.assertEqual(post(retry_after="invalid")[2], None)
+                    self.assertEqual(post(framing="complete_chunked")[:2], (200, b'{"ok":true}'))
+                    for framing in ("length", "chunked"):
+                        with self.subTest(framing=framing), self.assertRaises(http.client.IncompleteRead):
+                            post(framing=framing)
                     self.assertEqual(post(path="/elsewhere")[0],403)
                     self.assertEqual(post(model="another")[0],400)
                     relay.revoke()
                     self.assertEqual(post()[0],403)
-                    self.assertEqual(relay.http_counts(), {"upstream_attempts": 6, "responses": 6})
-                self.assertEqual(calls,[("/anthropic/v1/messages",marker,"fixture")]*6)
+                    self.assertEqual(relay.http_counts(), {"upstream_attempts": 9, "responses": 9})
+                self.assertEqual(calls,[("/anthropic/v1/messages",marker,"fixture")]*9)
                 profile["api_key"]=marker
                 path.write_text(yaml.safe_dump(dict(default_provider="test",providers={"test":profile})))
                 with self.assertRaisesRegex(ValueError,"unsupported benchmark"):

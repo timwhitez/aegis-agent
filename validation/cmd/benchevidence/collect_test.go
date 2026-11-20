@@ -56,13 +56,13 @@ func TestProjectAndValidateAtBothBoundaries(t *testing.T) {
 	summaryID := id + ":2:semantic_summary:0"
 	if err = store.AppendEvents(id, []events.Event{
 		events.New(id, "provider.request.prepared", "compact", map[string]any{"request_id": summaryID, "turn": 2, "request_budget": map[string]any{"effective_max_output_tokens": 2048, "max_output_tokens_source": "semantic_summary"}}),
-		events.New(id, "provider.request.completed", "compact", map[string]any{"request_id": summaryID, "stop_reason": "end_turn", "usage": map[string]any{"reported": true, "output_tokens": 13}}),
+		events.New(id, "provider.request.completed", "compact", map[string]any{"request_id": summaryID, "stop_reason": "end_turn", "usage": map[string]any{"reported": true, "input_tokens": 0, "output_tokens": 13, "cache_read_input_tokens": 0, "reported_counts": map[string]any{"output_tokens": 13, "cache_read_input_tokens": 0}}}),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	withSummary := collect(root, nil)
 	summary := withSummary.Sessions[0].Requests[1]
-	if summary.Stop != "end_turn" || summary.Usage == nil || summary.Usage.Output == nil || *summary.Usage.Output != 13 || summary.Source != "semantic_summary" {
+	if summary.Stop != "end_turn" || summary.Usage == nil || summary.Usage.Output == nil || *summary.Usage.Output != 13 || summary.Source != "semantic_summary" || summary.Usage.Input != nil || summary.Usage.Read == nil || *summary.Usage.Read != 0 {
 		t.Fatalf("lost completed summary response: %+v", summary)
 	}
 	if data, err := encode(withSummary); err != nil {
@@ -100,6 +100,83 @@ func TestMissingSessionDoesNotClaimStart(t *testing.T) {
 	result := collect(root, nil)
 	if result.Started || result.Category != "not_started" {
 		t.Fatalf("bad empty report: %+v", result)
+	}
+}
+
+func TestRequestFailureLifecycleHasNoProviderStop(t *testing.T) {
+	for _, test := range []struct{ status, category string }{
+		{"rejected", "request_rejected"}, {"cancelled", "request_cancelled"}, {"failed", "provider_error"},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := session.NewSessionID()
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			store := session.NewStore(root)
+			meta := session.SessionMetadata{SchemaVersion: 1, ID: id, CreatedAt: now, Workdir: root,
+				Mode: session.ModeExec, Provider: "fixture", Model: "fixture", CompletionPolicy: session.CompletionPolicyInteractive}
+			if err := store.Create(meta, session.State{Status: session.StatusFailed, Phase: "provider_call", UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			requestID := id + ":1:main:0"
+			if err := store.AppendEvents(id, []events.Event{
+				events.New(id, "provider.request.prepared", "provider_call", map[string]any{"request_id": requestID}),
+				events.New(id, "provider.request.failed", "provider_call", map[string]any{"request_id": requestID, "status": test.status}),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			result := collect(root, nil)
+			if result.Category != test.category || len(result.Sessions) != 1 || len(result.Sessions[0].Requests) != 1 {
+				t.Fatalf("unexpected projection: %+v", result)
+			}
+			req := result.Sessions[0].Requests[0]
+			if req.Status != test.status || req.Stop != "" || req.Usage != nil {
+				t.Fatalf("unexpected request outcome: %+v", req)
+			}
+			data, err := encode(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := checked(bytes.NewReader(data)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestBoundCombinedHistoriesWithoutLosingRootOrExitCode(t *testing.T) {
+	exitCode, used := 0, 123
+	r := report{Schema: 1, Started: true, ExitCode: &exitCode, Category: "completed"}
+	for i := 0; i < 16; i++ {
+		s := sessionEvidence{ID: fmt.Sprintf("19700101-000000-%06x", i), Status: "completed", Parent: i != 15}
+		for j := 0; j < 1200; j++ {
+			s.Requests = append(s.Requests, requestFact{ID: fmt.Sprintf("%s:%d:main:0", s.ID, j), Turn: j,
+				Status: "completed", Stop: "tool_use", Usage: &usageFact{Input: &used, Output: &used}})
+			s.Attempts = append(s.Attempts, attemptFact{Turn: j, Attempt: 1, Outcome: "success"})
+		}
+		r.Sessions = append(r.Sessions, s)
+	}
+	full, err := json.Marshal(r)
+	if err != nil || len(full) <= maxReportBytes {
+		t.Fatalf("fixture did not reach the aggregate size limit: %d", len(full))
+	}
+	data, err := encode(r)
+	if err != nil || len(data) > maxReportBytes {
+		t.Fatalf("encode: %v, bytes: %d", err, len(data))
+	}
+	got, err := checked(bytes.NewReader(data))
+	if err != nil || !got.Partial || got.Category != "completed" || got.ExitCode == nil || *got.ExitCode != 0 || len(got.Sessions) != 16 {
+		t.Fatalf("missing bounded trial facts: %v", err)
+	}
+	for _, s := range got.Sessions {
+		if len(s.Requests) == 0 || s.Requests[len(s.Requests)-1].Turn != 1199 || s.Attempts[len(s.Attempts)-1].Turn != 1199 {
+			t.Fatal("lost recent observations")
+		}
+		if s.Parent == (len(s.Requests) == 1200) {
+			t.Fatal("trimmed incorrect session history")
+		}
 	}
 }
 

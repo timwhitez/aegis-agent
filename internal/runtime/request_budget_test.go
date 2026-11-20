@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1195,5 +1196,31 @@ func TestSemanticSummaryBudgetRejectionFallsBackToDeterministicCompaction(t *tes
 	finished, ok := findEventByType(events, "compact.finished")
 	if !ok || finished.Data["semantic_summary_status"] != "failed" {
 		t.Fatalf("expected deterministic compaction to record semantic fallback, got %#v", finished)
+	}
+}
+
+func TestAnthropicRequestEvidenceKeepsMissingUsageDistinctFromZero(t *testing.T) {
+	for _, fields := range []map[string]int{
+		{},
+		{"input_tokens": 5},
+		{"output_tokens": 0, "cache_read_input_tokens": 0},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"stop_reason": "end_turn", "content": []any{}, "usage": fields})
+		}))
+		adapter := provider.NewAnthropic(server.URL, "test", "2023-06-01", server.Client())
+		result, err := adapter.RunTurn(context.Background(), provider.TurnRequest{Model: "test"}, nil)
+		server.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := providerRequestCompletedEventData(RequestBudgetSnapshot{}, result)
+		data, err := json.Marshal(event["usage"])
+		var stored struct {
+			Counts map[string]int `json:"reported_counts"`
+		}
+		if err != nil || json.Unmarshal(data, &stored) != nil || stored.Counts == nil || !maps.Equal(stored.Counts, fields) {
+			t.Fatalf("wire usage %v, recorded %s", fields, data)
+		}
 	}
 }

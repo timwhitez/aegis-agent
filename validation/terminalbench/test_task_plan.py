@@ -32,6 +32,18 @@ class TaskPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'prebuilt'):
                 read_plan(task)
 
+    def test_memory_uses_whole_mib_but_cpu_can_be_fractional(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            spec = '[agent]\ntimeout_sec=1\n[environment]\ndocker_image="fixture"\ncpus=0.5\nmemory_mb='
+            (task / "task.toml").write_text(spec + "128.5")
+            with self.assertRaisesRegex(UnsupportedTask, "memory_mb"):
+                read_plan(task)
+            (task / "task.toml").write_text(spec + "128.0")
+            phase = read_plan(task)["agent"]
+            self.assertIs(type(phase["memory_mb"]), int)
+            self.assertEqual((phase["memory_mb"], phase["cpus"]), (128, 0.5))
+
     def test_compose_literals_and_host_interpolation(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = Path(tmp)

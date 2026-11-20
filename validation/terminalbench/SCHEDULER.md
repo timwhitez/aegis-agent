@@ -14,6 +14,8 @@ python3 validation/terminalbench/scheduler.py summary --run "$RUN"
 
 `run` 默认串行执行。`--jobs` 控制并发上限。`--cpu-budget` 和 `--memory-mb` 可限制并发任务申请的 CPU 核数和内存 MiB，按每题 agent 和 verifier 两阶段中较高的声明值预留。额外 Compose 服务的实际开销需要单独预留。若单题申请超出指定预算，调度器在启动 trial 前报告该题。
 
+仓库入口先核对冻结运行脚本目录的文件，再启动其中的 Python 程序。冻结调度器随后校验完整资产。每阶段的 `memory_mb` 使用整数 MiB，CPU 核数可以是小数。
+
 每题每次尝试使用 `attempts/<任务名>/<UUID>/`。目录内的 `state.json` 记录批次、尝试标识、退出状态、原因、耗时和评分，`outcome.json` 保存适配器的结果。适配器必须正常返回、状态为 `completed` 并提供有效有限数值，调度器才接纳评分。0 和小数评分都会按原值保留。超时或恢复清理等未采纳尝试若已写下原始数值，另存为 `observed_reward`。显式的 `reward_valid` 必须为布尔真才可计分，早期未写此标记的结果继续按原格式读取。缺失结果、无效基础设施、超时和中断均在下一次 `run` 时重试。成功完成的 0 分和 1 分均可跳过。第二个针对同一批次的执行进程会收到 `run already active`。
 
 共享环境的判分脚本若明确因 pytest 启动器缺失而写下 0，尝试记为 `verifier_error`，下次运行会重试。此判断同时核对冻结脚本的报错行、测试命令及末尾的 0/1 写分逻辑，并要求没有 CTRF、用例或 pytest 已启动的记录。原始 0 保存在 `outcome.json` 和 `observed_reward`，不计入有效评分。普通断言失败、被测程序缺失，以及缺少上述证据的历史尝试沿用原判。
@@ -22,6 +24,8 @@ python3 validation/terminalbench/scheduler.py summary --run "$RUN"
 
 `summary` 从全量清单和尝试记录重建结果。`planned` 是预定题数，`scored` 是取得有效评分的题数，`passed` 是评分等于 1 的题数。`reward_coverage`、`conditional_pass_rate`、`manifest_pass_rate` 分别表示 scored/planned、passed/scored 和 passed/planned。尚无评分时，条件通过率为 null。同一题有多次记录时按尝试启动时间排序，较早格式缺该时间时依次使用结束时间和目录时间。每批执行结束时还会写出 `summary.json`。所有预定题均取得有效评分时，命令退出 0，有未完成题或中断时返回非零。
 
+本版 `summary` 和比较程序读取历史记录时，若原生 `outcome.json` 明确给出不同的得分、无效评分或未完成状态，就将该次尝试转为未计分。缺少可选字段的旧记录沿用已接纳的评分。使用本版冻结调度器的批次会在下次运行时重试未计分题；更早冻结的批次仍按当时运行器的恢复规则执行。若尝试记录不能与目录中的批次、任务和尝试编号对应，报告标记 `unverified_identity`，原始文件保留在原处，评分、诊断及环境观测不归入当前批次。
+
 比较只改变输出上限的两个批次时，可生成逐题报告。
 
 ```sh
@@ -29,6 +33,8 @@ python3 -B validation/terminalbench/compare.py "$BASELINE_RUN" "$CANDIDATE_RUN" 
 ```
 
 比较程序核对两边的任务、资产、配置及记录的调度条件，列出各次尝试的评分、耗时、停止原因、用量和缺失项。`observed_request_count` 按预检或后续事件中出现的逻辑请求 ID 去重。宿主代理单独记录 `provider_http.upstream_attempts`（发起上游网络操作的次数）及 `provider_http.responses`（收到 HTTP 响应的次数）。本地拒绝的请求不计入这两项，旧记录没有此观测时显示 null。若某题任一批次缺少调度参数，`scheduler_checks` 标为 unverified。对老格式批次，比较程序可以核对归档目前的可执行位和目录，但无法还原冻结当时的权限。
+
+每个请求的 `status` 记录已准备、已完成、失败、预检拒绝或取消，`stop_reason` 记录 provider 响应给出的停止原因。旧记录保留原有停止原因，缺少的请求状态显示为 null。每次尝试的 `verify_rc` 单独记录评分脚本退出码，旧版缺失时显示为 null。
 
 ### 选择共享任务的交付物
 

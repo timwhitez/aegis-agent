@@ -3,6 +3,7 @@
 import contextlib
 import datetime
 import email.utils
+import http.client
 import http.server
 import json
 import os
@@ -118,6 +119,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
 
 class _Messages(http.server.BaseHTTPRequestHandler):
     timeout = 30
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):
         pass
@@ -149,17 +151,34 @@ class _Messages(http.server.BaseHTTPRequestHandler):
         headers = {"Content-Type": "application/json", "x-api-key": key,
                    "anthropic-version": self.server.version}
         req = urllib.request.Request(self.server.url, data=data, headers=headers)
+        self.close_connection = True
         try:
             with self.server.opener.open(req, timeout=self.server.upstream_timeout) as reply:
                 self.server.record_response()
+                if self.server.revoked.is_set():
+                    return
                 self.send_response(reply.status)
                 kind = reply.headers.get_content_type()
                 self.send_header("Content-Type", kind if kind in {"application/json","text/event-stream"} else "application/octet-stream")
+                self.send_header("Connection", "close")
+                chunked = reply.length is None
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                elif reply.status != 204:
+                    self.send_header("Content-Length", str(reply.length))
                 self.end_headers()
                 while not self.server.revoked.is_set():
                     block = reply.read1(65536)
+                    if self.server.revoked.is_set():
+                        return
                     if not block:
-                        break
+                        # End the downstream message only on clean upstream EOF.
+                        # The declared length already detects a short fixed body.
+                        if chunked:
+                            self.wfile.write(b"0\r\n\r\n")
+                        return
+                    if chunked:
+                        block = b"%x\r\n" % len(block) + block + b"\r\n"
                     self.wfile.write(block)
                     self.wfile.flush()
         except urllib.error.HTTPError as exc:
@@ -170,10 +189,12 @@ class _Messages(http.server.BaseHTTPRequestHandler):
                 after = retry_after(exc.headers.get("Retry-After", ""))
                 if after is not None:
                     self.send_header("Retry-After", after)
+                self.send_header("Connection", "close")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
-        except (OSError, ValueError):
-            if not self.server.revoked.is_set():
-                self.close_connection = True
+        except (OSError, ValueError, http.client.HTTPException):
+            # A broken upstream must stay a transport failure at the client.
+            return
 
 
 class Relay:

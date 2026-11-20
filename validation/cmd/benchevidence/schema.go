@@ -34,6 +34,7 @@ type sessionEvidence struct {
 
 type requestFact struct {
 	ID              string     `json:"request_id"`
+	Status          string     `json:"status,omitempty"`
 	Turn            int        `json:"turn"`
 	Sequence        int        `json:"sequence"`
 	MaxOutputTokens *int       `json:"max_output_tokens"`
@@ -63,7 +64,8 @@ var sessionID = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}-([a-f0-9]{6}|fallback)$`)
 var requestSuffix = regexp.MustCompile(`^[0-9]{1,9}:(main|semantic_summary|probe):[0-9]{1,9}$`)
 
 const statuses = "running completed cancelled paused failed awaiting_input"
-const categories = "completed cancelled provider_error agent_failed not_started unavailable incomplete"
+const categories = "completed cancelled provider_error request_rejected request_cancelled agent_failed not_started unavailable incomplete"
+const requestStatuses = "prepared completed failed rejected cancelled"
 const reasons = "done_candidate tool_call tool_use end_turn max_tokens stop_sequence refusal pause_turn length tool_calls stop content_filter blocked cancelled error failed other"
 const sources = "adapter_default configured thinking_budget semantic_summary"
 const efforts = "none minimal low medium high xhigh max other"
@@ -100,6 +102,9 @@ func checked(r io.Reader) (report, error) {
 			suffix, ok := strings.CutPrefix(q.ID, s.ID+":")
 			if !ok || !requestSuffix.MatchString(suffix) || q.Turn < 0 || q.Sequence < 0 || (q.MaxOutputTokens != nil && *q.MaxOutputTokens <= 0) || (q.Source != "" && !allowed(q.Source, sources)) || (q.Effort != "" && !allowed(q.Effort, efforts)) || (q.Stop != "" && !allowed(q.Stop, reasons)) {
 				return result, errors.New("invalid request evidence")
+			}
+			if q.Status != "" && (!allowed(q.Status, requestStatuses) || (q.Status != "completed" && (q.Stop != "" || q.Usage != nil))) {
+				return result, errors.New("inconsistent request lifecycle")
 			}
 			if q.Usage != nil {
 				for _, n := range []*int{q.Usage.Input, q.Usage.Output, q.Usage.Reasoning, q.Usage.Read, q.Usage.Write} {

@@ -159,6 +159,15 @@ class ResultEvidenceTest(unittest.TestCase):
         info = retain_results(self.paths, self.attempt, self.plan, verifier_started=False)["verifier_evidence"]
         self.assertEqual((info["status"], info["cases"], info["files"]), ("not_started", [], {}))
 
+    def test_rejected_or_cancelled_request_keeps_reward_unscored(self):
+        result = SimpleNamespace(reward_valid=True, agent_execution=True, recorded_exceptions=lambda: [])
+        for category in ("request_rejected", "request_cancelled"):
+            with self.subTest(category=category):
+                state = {"stage": "verifier", "status": "infra_invalid", "reward": 0, "verifier_evidence": {}}
+                classify_result(state, result, {"started": True, "category": category})
+                save_outcome(self.attempt, state)
+                self.assertEqual((state["stage"], state["reason"], state["reward_valid"]), ("agent", [category], False))
+
     def test_log_signals_without_case_records_or_private_text(self):
         private = "synthetic-credential-marker"
         (self.verify / "test-stdout.txt").write_text(
