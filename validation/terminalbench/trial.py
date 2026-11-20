@@ -79,12 +79,6 @@ def check_runtime_profile(task, plan):
 
 
 async def execute(args, scratch, status):
-    from harbor.models.trial.config import TrialConfig
-    from harbor.trial.hooks import TrialEvent
-    from harbor.trial.trial import Trial
-    from relay import provider_relay
-    from result_evidence import retain_results
-
     task = args.task.resolve()
     captures = json.loads(args.capture_plan.read_bytes()) if args.capture_plan else []
     if not isinstance(captures, list):
@@ -92,7 +86,17 @@ async def execute(args, scratch, status):
     plan = read_plan(task, captures)
     status["artifact_selection"] = ("task_declared" if plan["artifacts"] else
                                     "operator_selected" if captures else "not_configured")
+    # Until the native collection completes, distinguish an unavailable receipt
+    # (e.g. setup aborted) from a selected output observed to be missing.
+    status["artifacts"] = [{"declaration_index": i, "status": "unavailable"}
+                           for i in range(len(plan["artifacts"] or captures))]
     check_runtime_profile(task, plan)
+    from harbor.models.trial.config import TrialConfig
+    from harbor.trial.hooks import TrialEvent
+    from harbor.trial.trial import Trial
+    from relay import provider_relay
+    from result_evidence import retain_results
+
     status["stage"] = "setup"
     with provider_relay(args.config, scratch) as relay:
         cfg = TrialConfig.model_validate({

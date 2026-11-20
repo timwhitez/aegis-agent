@@ -1,8 +1,12 @@
+import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from task_plan import read_plan
+from task_plan import UnsupportedTask, read_plan
+from trial import execute
 
 
 class TaskPlanTest(unittest.TestCase):
@@ -42,6 +46,25 @@ class TaskPlanTest(unittest.TestCase):
                 (base/'task.toml').write_text(extra)
                 with self.assertRaisesRegex(ValueError, 'without declared artifacts'):
                     read_plan(base, ['/app/out'])
+
+    def test_preflight_failure_keeps_selected_receipts_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            (task / "task.toml").write_text(
+                '[agent]\ntimeout_sec=5\n[environment]\ndocker_image="synthetic"\ncpus=1\nmemory_mb=512\n')
+            (task / "environment").mkdir()
+            (task / "environment/docker-compose.yaml").write_text(
+                "services:\n  main:\n    privileged: true\n")
+            selected = task / "selected.json"
+            selected.write_text(json.dumps(["/app/result", "/app/output"]))
+            for selection, origin, entries in ((selected, "operator_selected", 2), (None, "not_configured", 0)):
+                with self.subTest(origin=origin):
+                    state = {}
+                    with self.assertRaisesRegex(UnsupportedTask, "unsupported Compose service settings"):
+                        asyncio.run(execute(SimpleNamespace(task=task, capture_plan=selection), task, state))
+                    self.assertEqual(state["artifact_selection"], origin)
+                    self.assertEqual(state["artifacts"], [
+                        {"declaration_index": i, "status": "unavailable"} for i in range(entries)])
 
 
 if __name__ == '__main__':
