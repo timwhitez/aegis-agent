@@ -67,6 +67,7 @@ func (a *messageOnlyEstimateAdapter) RunTurn(_ context.Context, req provider.Tur
 
 func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	adapter := &fixedEstimateAdapter{estimate: provider.WireRequestEstimate{
+		RequestOutputOptions: session.RequestOutputOptions{EffectiveMaxOutputTokens: 10, MaxOutputTokensSource: "configured", OutputConfigEffort: "high"},
 		SchemaVersion:        1,
 		WireBodyBytes:        400,
 		EstimatedInputTokens: 100,
@@ -77,6 +78,9 @@ func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	fit, err := preflightProviderRequest(adapter, req, requestBudgetPolicy{EffectiveWindowTokens: 110, UtilizationFactor: 1}, context)
 	if err != nil {
 		t.Fatalf("expected exact boundary to fit: %v", err)
+	}
+	if fit.RequestOutputOptions != adapter.estimate.RequestOutputOptions {
+		t.Fatalf("snapshot lost adapter output settings: %+v", fit.RequestOutputOptions)
 	}
 	if !fit.Fit || fit.HeadroomTokens != 0 || fit.RequiredTokens != 110 {
 		t.Fatalf("unexpected exact-boundary snapshot: %#v", fit)

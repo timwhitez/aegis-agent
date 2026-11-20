@@ -243,6 +243,7 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 		snapshot.RejectionCode = requestEstimateFailedCode
 		return snapshot, &RequestBudgetPreflightError{Code: requestEstimateFailedCode, Snapshot: snapshot, Err: err}
 	}
+	snapshot.RequestOutputOptions = estimate.RequestOutputOptions
 	snapshot.WireEstimateSchemaVersion = estimate.SchemaVersion
 	snapshot.SystemChars = estimate.SystemChars
 	snapshot.MessageCount = estimate.MessageCount

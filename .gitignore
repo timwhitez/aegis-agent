@@ -28,6 +28,7 @@
 /validation/sessions/
 /validation/tmp/
 /validation/workspaces/
+/validation/terminalbench/__pycache__/
 /*.tar.gz
 /*.zip
 /*.png

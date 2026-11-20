@@ -1,5 +1,7 @@
 # 验证工具
 
+Terminal-Bench 的固定批次、尝试恢复和独立评分从[本地评测入口](terminalbench/README.md)运行。
+
 `validation/` 保存仓库维护的 fixture、Node 单测和 Playwright 验收脚本。默认验证不需要 provider 凭据，浏览器套件使用仓库内的确定性 fixture 驱动真实本地 Web 服务。
 
 ## 目录职责

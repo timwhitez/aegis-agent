@@ -139,6 +139,8 @@ usage presence 是 provider contract 的一部分：
 - tool schemas、system prompt、metadata/provider envelope 或不可丢单条消息本身不可满足时，runtime 返回 `request_budget_unfit`。错误至少包含 request_kind、blocking_component、estimated_input_tokens、available_input_tokens、reserved_output_tokens、effective_window_tokens 与最终 snapshot，不包含请求正文
 - 最终 `provider.request.prepared` 与随后 `provider.call` 使用同一个 fitted TurnRequest/snapshot；`fit=false` 只写 local rejection/attempt facts，不进入 adapter retry/auto-resume。每个 `provider.request.budget_action` 通过 request id/kind 记录 pass、action、before/after wire bytes/tokens 与受影响 id/count
 
+Anthropic 请求的 `provider.request.prepared.data.request_budget` 记录适配器写入请求体的 `effective_max_output_tokens`。`max_output_tokens_source` 取值为 `configured`（显式上限）、`adapter_default`（默认值）或 `thinking_budget`（手动思考预算抬高了上限）。这些字段独立于预检的 `reserved_output_tokens`。设置了输出档位时，`output_config_effort` 记录该档位，自定义字符串记为 `other`。用 `request_id` 将请求参数关联到同次调用的 `turn.stopped` 或 `provider.request.failed`。prepared 事件本身只证明预检完成。
+
 #### 2.2.4 Request lifecycle correlation
 
 - 每个 `main` / `semantic_summary` preflight 生成稳定 request id：`<session>:<turn>:<request_kind>:<request_sequence>`；prepared event 同时保存 turn、request sequence、parent/root/queue id 和 canonical budget snapshot

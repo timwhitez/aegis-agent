@@ -81,7 +81,32 @@ func (a *AnthropicAdapter) EstimateRequest(req TurnRequest) (WireRequestEstimate
 	if err != nil {
 		return WireRequestEstimate{}, err
 	}
-	return EstimateWireRequest(body, req)
+	estimate, err := EstimateWireRequest(body, req)
+	if err != nil {
+		return WireRequestEstimate{}, err
+	}
+	estimate.EffectiveMaxOutputTokens = body["max_tokens"].(int)
+	switch {
+	case estimate.EffectiveMaxOutputTokens != anthropicMaxTokens(req.MaxOutputTokens):
+		estimate.MaxOutputTokensSource = "thinking_budget"
+	case req.MaxOutputTokens > 0:
+		estimate.MaxOutputTokensSource = "configured"
+	default:
+		estimate.MaxOutputTokensSource = "adapter_default"
+	}
+	estimate.OutputConfigEffort = diagnosticOutputEffort(req.OutputConfigEffort)
+	return estimate, nil
+}
+
+// Custom effort labels are valid on compatible gateways. Keep arbitrary
+// configuration strings out of diagnostics without changing the wire request.
+func diagnosticOutputEffort(effort string) string {
+	switch value := strings.TrimSpace(effort); value {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return value
+	default:
+		return "other"
+	}
 }
 
 func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit EmitFunc) (TurnResult, error) {
@@ -254,7 +279,7 @@ func (a *AnthropicAdapter) RunTurn(ctx context.Context, req TurnRequest, emit Em
 			"thinking_visible_observed":   len(thinkingParts) > 0,
 			"thinking_replay_observed":    thinkingReplayObserved,
 			"thinking_strategy":           thinkingStrategy,
-			"output_config_effort":        strings.TrimSpace(req.OutputConfigEffort),
+			"output_config_effort":        diagnosticOutputEffort(req.OutputConfigEffort),
 			"prompt_cache_enabled":        promptCacheEnabled(req.PromptCache),
 			"cache_creation_input_tokens": usage.CacheCreationInputTokens,
 			"cache_read_input_tokens":     usage.CacheReadInputTokens,

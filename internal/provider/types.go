@@ -158,6 +158,7 @@ type Adapter interface {
 const wireRequestEstimateSchemaVersion = 1
 
 type WireRequestEstimate struct {
+	session.RequestOutputOptions
 	SchemaVersion        int `json:"schema_version"`
 	WireBodyBytes        int `json:"wire_body_bytes"`
 	EstimatedInputTokens int `json:"estimated_input_tokens"`

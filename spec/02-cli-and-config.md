@@ -51,6 +51,8 @@
 
 审批/恢复命令还可能需要 `--plan-mode-id`、`--plan-version`、`--expected-revision`、`--approval-request-id`、`--approve-latest` 或 `--approval-receipt`。审批目标必须明确，不能用普通 continue 伪装审批。
 
+普通文本模式下，`run`、`exec` 和 `continue` 将最终回答写到 stdout。会话失败且有错误详情时，stderr 同时显示 runtime 定义的停止原因。对于自由文本错误详情，最终会话摘要提示查看本机会话状态，避免在终端回显凭据或控制字符。
+
 ## 配置选择
 
 配置 loader 先从内建默认构造一份 Config，再按选择结果读取 YAML 并规范化路径、超时、重试和输出边界。

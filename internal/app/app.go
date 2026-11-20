@@ -435,7 +435,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		}
 		return nil
 	}
-	return printResult(stdout, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
+	return printResult(stdout, stderr, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
 }
 
 type stringSliceFlag []string
@@ -686,7 +686,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if err != nil {
 		return err
 	}
-	return printResult(stdout, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
+	return printResult(stdout, stderr, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
 }
 
 func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -2625,7 +2625,7 @@ func readPromptStdin(stdin io.Reader) (string, error) {
 	return string(data), nil
 }
 
-func printResult(w io.Writer, jsonMode bool, result runtime.RunResult, exitCode int) error {
+func printResult(w, stderr io.Writer, jsonMode bool, result runtime.RunResult, exitCode int) error {
 	if result.Approval != nil {
 		return printCLIApprovalResult(w, jsonMode, result, nil, nil)
 	}
@@ -2647,6 +2647,11 @@ func printResult(w io.Writer, jsonMode bool, result runtime.RunResult, exitCode 
 	}
 	if result.FinalText != "" {
 		_, _ = fmt.Fprintln(w, result.FinalText)
+	}
+	if reason := result.FailureDiagnostic(); reason != "" {
+		if _, err := fmt.Fprintln(stderr, "session failed:", reason); err != nil {
+			return err
+		}
 	}
 	if exitCode != 0 {
 		return ExitError{Code: exitCode}
