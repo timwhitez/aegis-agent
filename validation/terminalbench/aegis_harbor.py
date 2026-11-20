@@ -4,10 +4,13 @@ from contextlib import suppress
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 
 from harbor.agents.base import BaseAgent
 from harbor.verifier.verifier import Verifier
+from result_evidence import VERIFIER_OUTPUT_FILES
 
 PRIVATE = "/tmp/aegis-benchmark"
 SESSIONS = PRIVATE + "/sessions"
@@ -46,6 +49,15 @@ class ObservedVerifier(Verifier):
         self.observation_path = observation_path
 
     async def verify(self):
+        # Harbor can mount or download the verifier directory. Clear both
+        # locations before accepting any file as evidence from the new grader.
+        cleared = await self.environment.exec(
+            shlex.join(["rm", "-f", "--", *["/logs/verifier/" + name for name in VERIFIER_OUTPUT_FILES]]),
+            user="root")
+        if cleared.return_code:
+            raise RuntimeError("unable to reset verifier outputs")
+        for name in VERIFIER_OUTPUT_FILES:
+            (self.trial_paths.verifier_dir / name).unlink(missing_ok=True)
         observe_resources(self.environment, self.observation_path)
         try:
             return await super().verify()
@@ -70,12 +82,18 @@ class AegisAgent(BaseAgent):
         )
         if prepared.return_code:
             raise RuntimeError("private agent setup directory unavailable")
-        for source, name in ((self.binary, "aegis-agent"), (self.config_file, "config.yaml"),
-                             (self.helper, "evidence")):
-            await environment.upload_file(source, PRIVATE + "/" + name)
-        prepared = await environment.exec("chmod 700 " + PRIVATE + "/aegis-agent " + HELPER)
-        if prepared.return_code:
-            raise RuntimeError("private agent executables unavailable")
+        # Compose cp preserves the source mode but may assign a different UID.
+        # Give the declared task user access inside its own 0700 directory,
+        # without asking for a privileged exec or mutating frozen host inputs.
+        with tempfile.TemporaryDirectory(dir=self.config_file.parent) as stage:
+            for source, name, mode in ((self.binary, "aegis-agent", 0o555),
+                                       (self.config_file, "config.yaml", 0o444),
+                                       (self.helper, "evidence", 0o555)):
+                upload = Path(stage) / name
+                shutil.copyfile(source, upload)
+                upload.chmod(mode)
+                await environment.upload_file(upload, PRIVATE + "/" + name)
+                upload.unlink()
 
     async def run(self, instruction, environment, context):
         args = [HELPER, "--provider-socket", "/run/aegis-provider/provider.sock",

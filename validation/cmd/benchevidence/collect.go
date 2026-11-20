@@ -22,17 +22,36 @@ func integer(value any) *int {
 func collect(dir string, exitCode *int) report {
 	r := report{Schema: 1, Category: "not_started", ExitCode: exitCode, Sessions: []sessionEvidence{}}
 	store := session.NewStore(dir)
-	sessions, err := store.ListAvailable(33)
+	sessions, err := store.ListAvailable(maxSessions + 1)
 	if err != nil {
 		r.Category = "unavailable"
 		r.Partial = true
 		return r
 	}
-	if len(sessions) > 32 {
+	if len(sessions) > maxSessions {
 		r.Partial = true
-		sessions = sessions[:32]
+		// An older root can fall outside the recent window. Reserve room for roots
+		// before filling the remaining slots with the most recent children.
+		roots, err := store.ListChildren("", maxSessions)
+		if err != nil {
+			r.Category = "unavailable"
+			return r
+		}
+		for _, row := range sessions {
+			if len(roots) == maxSessions {
+				break
+			}
+			if row.ParentSessionID != "" {
+				roots = append(roots, row)
+			}
+		}
+		sessions = roots
 	}
+	rootCount := 0
 	for _, row := range sessions {
+		if row.ParentSessionID == "" {
+			rootCount++
+		}
 		if !sessionID.MatchString(row.ID) || !allowed(row.Status, statuses) {
 			r.Partial = true
 			continue
@@ -46,7 +65,7 @@ func collect(dir string, exitCode *int) report {
 				se.ToolCalls++
 				return nil
 			}
-			if e.Type != "provider.request.prepared" && e.Type != "turn.stopped" && e.Type != "provider.request.failed" {
+			if e.Type != "provider.request.prepared" && e.Type != "provider.request.completed" && e.Type != "turn.stopped" && e.Type != "provider.request.failed" {
 				return nil
 			}
 			id, _ := e.Data["request_id"].(string)
@@ -75,21 +94,21 @@ func collect(dir string, exitCode *int) report {
 			q := &se.Requests[i]
 			switch e.Type {
 			case "provider.request.prepared":
-				lastStop = ""
 				budget, _ := e.Data["request_budget"].(map[string]any)
 				q.MaxOutputTokens = integer(budget["effective_max_output_tokens"])
 				q.Source = enum(budget["max_output_tokens_source"], sources)
 				q.Effort = enum(budget["output_config_effort"], efforts)
 			case "provider.request.failed":
 				q.Stop = "failed"
-				lastStop = "failed"
-			case "turn.stopped":
+			case "provider.request.completed", "turn.stopped":
 				q.Stop = enum(e.Data["stop_reason"], reasons)
-				lastStop = q.Stop
 				u, _ := e.Data["usage"].(map[string]any)
 				if u["reported"] == true {
 					q.Usage = &usageFact{integer(u["input_tokens"]), integer(u["output_tokens"]), integer(u["reasoning_tokens"]), integer(u["cache_read_input_tokens"]), integer(u["cache_creation_input_tokens"])}
 				}
+			}
+			if e.Phase != "compact" {
+				lastStop = q.Stop
 			}
 			return nil
 		})
@@ -127,6 +146,10 @@ func collect(dir string, exitCode *int) report {
 				r.Category = "incomplete"
 			}
 		}
+	}
+	if len(sessions) > 0 && (rootCount != 1 || !r.Started) {
+		r.Category = "incomplete"
+		r.Partial = true
 	}
 	return r
 }

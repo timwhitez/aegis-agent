@@ -1,6 +1,8 @@
 """Per-attempt Anthropic Messages relay. Only the host opens the credential."""
 
 import contextlib
+import datetime
+import email.utils
 import http.server
 import json
 import os
@@ -48,8 +50,11 @@ def validate_config(path):
     if (not url.hostname or url.username is not None or url.password is not None or
             url.query or url.fragment or not (url.scheme == "https" or (local and url.scheme == "http"))):
         raise ValueError("expected a credential-free HTTPS URL or a loopback test endpoint")
-    if "anthropic_version" in profile and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(profile["anthropic_version"])):
-        raise ValueError("invalid Anthropic version")
+    if "anthropic_version" in profile:
+        version = str(profile["anthropic_version"])  # PyYAML resolves an unquoted ISO date.
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", version):
+            raise ValueError("invalid Anthropic version")
+        profile["anthropic_version"] = version
     for key, choices in (("output_config_effort", {"minimal","low","medium","high","xhigh","max"}),
                          ("thinking_mode", {"adaptive","enabled","disabled"})):
         if key in profile and profile[key] not in choices:
@@ -60,21 +65,37 @@ def validate_config(path):
     fields(data.get("output", {}), "format show_raw_events")
     fields(data.get("skills", {}), "dirs")
     fields(data.get("hooks", {}), "default_timeout_sec")
+    bool_options = {"prompt_cache", "include_thoughts", "exec_finish_required", "retry_429", "retry_5xx", "retry_transport"}
     for obj, omit in ((profile, {"api_provider","api_key_env","base_url","model","anthropic_version","output_config_effort","thinking_mode","retry"}),
                       (profile.get("retry", {}), set()), (data.get("runtime", {}), {"guardrails_mode"}),
                       (data.get("hooks", {}), set())):
-        if any(type(v) not in {int,bool} for k,v in obj.items() if k not in omit):
+        if any(type(v) is not (bool if k in bool_options else int) for k, v in obj.items() if k not in omit):
             raise ValueError("expected numeric or boolean benchmark option")
-    if data.get("runtime", {}).get("guardrails_mode", "balanced") not in {"balanced","strict","yolo"}:
+    if data.get("runtime", {}).get("guardrails_mode", "standard") not in ("standard", "yolo"):
         raise ValueError("unsupported guardrails mode")
     if data.get("skills", {}).get("dirs", []) not in ([], ["./skills"]):
         raise ValueError("external skill directories are unsupported in benchmark profiles")
-    if data.get("schema_version", 1) != 1:
+    if type(data.get("schema_version", 1)) is not int or data.get("schema_version", 1) != 1:
         raise ValueError("unsupported benchmark configuration version")
     # Only the controlled in-container store is ever exported. Do not propagate arbitrary paths.
     data["session"] = {"dir": "/tmp/aegis-benchmark/sessions", "dir_mode": "0700"}
     data["output"] = {"format": "text", "show_raw_events": False}
     return data
+
+
+def retry_after(value):
+    # Forward only a canonical delay or HTTP date. Very large waits saturate
+    # beyond the longest Go duration and retain the adapter's no-retry result.
+    if re.fullmatch(r"[0-9]+", value):
+        digits = value.lstrip("0") or "0"
+        return digits if len(digits) <= 19 else "9999999999999999999"
+    try:
+        deadline = email.utils.parsedate_to_datetime(value)
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=datetime.timezone.utc)
+        return email.utils.format_datetime(deadline.astimezone(datetime.timezone.utc), usegmt=True)
+    except (ValueError, TypeError, OverflowError):
+        return None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -84,6 +105,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
+
+    def record_response(self):
+        with self.admission:
+            if not self.revoked.is_set():
+                self.responses += 1
 
     def handle_error(self, request, client_address):
         # An untrusted partial request must not reach the host log.
@@ -115,6 +141,8 @@ class _Messages(http.server.BaseHTTPRequestHandler):
         # may already be in flight at the provider.
         with self.server.admission:
             key = self.server.key
+            if key is not None:
+                self.server.upstream_attempts += 1
         if key is None:
             self.send_error(403)
             return
@@ -123,6 +151,7 @@ class _Messages(http.server.BaseHTTPRequestHandler):
         req = urllib.request.Request(self.server.url, data=data, headers=headers)
         try:
             with self.server.opener.open(req, timeout=self.server.upstream_timeout) as reply:
+                self.server.record_response()
                 self.send_response(reply.status)
                 kind = reply.headers.get_content_type()
                 self.send_header("Content-Type", kind if kind in {"application/json","text/event-stream"} else "application/octet-stream")
@@ -136,9 +165,10 @@ class _Messages(http.server.BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             # Neither upstream response bodies nor redirect locations are safe diagnostics.
             with exc:
-                self.send_response(exc.code if 400 <= exc.code < 600 else 502)
-                after = exc.headers.get("Retry-After", "")
-                if re.fullmatch(r"\d{1,6}", after):
+                self.server.record_response()
+                self.send_response(exc.code if 300 <= exc.code < 600 else 502)
+                after = retry_after(exc.headers.get("Retry-After", ""))
+                if after is not None:
                     self.send_header("Retry-After", after)
                 self.end_headers()
         except (OSError, ValueError):
@@ -152,6 +182,10 @@ class Relay:
         self.socket_dir = socket_dir
         self.env = {"AEGIS_BENCHMARK_RELAY": "local-transport"}
         self._server = server
+
+    def http_counts(self):
+        with self._server.admission:
+            return {"upstream_attempts": self._server.upstream_attempts, "responses": self._server.responses}
 
     def revoke(self):
         with self._server.admission:
@@ -176,11 +210,13 @@ def provider_relay(config_path, private_tmp_dir):
             sock.chmod(0o666)  # mounted into this trial only; its host parent is 0700
             server.revoked = threading.Event()
             server.admission = threading.Lock()
+            server.upstream_attempts = server.responses = 0
             server.url = profile["base_url"].rstrip("/") + "/v1/messages"
             server.version = profile.get("anthropic_version", "2023-06-01")
             server.model = profile["model"]
             server.key = key
-            server.upstream_timeout = max(1, min(profile.get("request_timeout_sec", 600), 1800))
+            server.upstream_timeout = next((n for n in (profile.get("request_timeout_sec", 0),
+                                                       profile.get("timeout_sec", 0)) if n > 0), 300)
             server.opener = urllib.request.build_opener(_NoRedirect())
             profile.update(base_url="http://127.0.0.1:19487", api_key_env="AEGIS_BENCHMARK_RELAY")
             config = private / "agent.yaml"

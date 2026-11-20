@@ -132,6 +132,33 @@ class ResultEvidenceTest(unittest.TestCase):
             [(hashlib.sha256(b"t.py::test_red").hexdigest(),"failed"),
              (hashlib.sha256(b"t.py::test_green").hexdigest(),"passed")])
 
+    def test_pytest_summary_keeps_parameter_names_with_spaces(self):
+        for parameter in ("one item", "one - item"):
+            with self.subTest(parameter=parameter):
+                node = f"t.py::test_match[{parameter}]"
+                self.verify.joinpath("test-stdout.txt").write_text(
+                    f"{node} FAILED [100%]\nFAILED {node} - AssertionError: expected something else\n")
+                cases = self.collect()["verifier_evidence"]["cases"]
+                self.assertEqual(cases, [{"case_sha256": hashlib.sha256(node.encode()).hexdigest(), "status": "failed"}])
+
+    def test_artifact_receipt_distinguishes_missing_bundle_and_manifest(self):
+        manifest = self.artifacts / "manifest.json"
+        for raw, expected in ((None, "unavailable"), ("[]", "unavailable"), ("{", "invalid"),
+                              ("x" * (1024**2 + 1), "limit")):
+            if raw is not None:
+                manifest.write_text(raw)
+            with self.subTest(expected=expected):
+                self.assertEqual(retain_results(self.paths, self.attempt, self.plan)["artifacts"][0]["status"], expected)
+        for native, status in (("failed", "missing"), ("skipped", "unavailable"), ("empty", "missing")):
+            self.item["status"] = native
+            row = self.collect()["artifacts"][0]
+            self.assertEqual((row["harbor_status"], row["status"]), (native, status))
+
+    def test_verifier_not_started_ignores_agent_self_check(self):
+        self.verify.joinpath("test-stdout.txt").write_text("t.py::self_check PASSED [100%]\n")
+        info = retain_results(self.paths, self.attempt, self.plan, verifier_started=False)["verifier_evidence"]
+        self.assertEqual((info["status"], info["cases"], info["files"]), ("not_started", [], {}))
+
     def test_log_signals_without_case_records_or_private_text(self):
         private = "synthetic-credential-marker"
         (self.verify / "test-stdout.txt").write_text(

@@ -576,6 +576,7 @@ func TestTextRunResultReportsFailureOnStderr(t *testing.T) {
 		{"free text", session.StatusFailed, private, "", "see the local session state for failure details", 1},
 		{"missing detail", session.StatusFailed, "", "", "", 1},
 		{"missing finish", session.StatusFailed, "incomplete_no_finish", "", "incomplete_no_finish", 6},
+		{"legacy missing finish", session.StatusFailed, "incomplete_no_finish: task ended without explicit finish", "", "incomplete_no_finish: task ended without explicit finish", 6},
 		{"cancelled", session.StatusCancelled, tokenLimit, "", "", 130},
 		{"paused", session.StatusPaused, tokenLimit, "", "", 130},
 		{"completed", session.StatusCompleted, tokenLimit, "answer", "", 0},
@@ -599,6 +600,16 @@ func TestTextRunResultReportsFailureOnStderr(t *testing.T) {
 				t.Errorf("stderr = %q, want %q", stderr.String(), wantStderr)
 			}
 		})
+	}
+}
+
+func TestTextFailureDiagnosticPreservesExitWhenStderrUnavailable(t *testing.T) {
+	result := runtime.RunResult{Status: session.StatusFailed, LastError: "incomplete_no_finish"}
+	var stdout bytes.Buffer
+	err := printResult(&stdout, runDiagnosticFailingWriter{}, false, result, mapStatusToExitCode(result.Status, result.LastError))
+	var exit ExitError
+	if !errors.As(err, &exit) || exit.Code != 6 {
+		t.Fatalf("returned %v, want session exit 6", err)
 	}
 }
 

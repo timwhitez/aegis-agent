@@ -51,7 +51,7 @@
 
 审批/恢复命令还可能需要 `--plan-mode-id`、`--plan-version`、`--expected-revision`、`--approval-request-id`、`--approve-latest` 或 `--approval-receipt`。审批目标必须明确，不能用普通 continue 伪装审批。
 
-普通文本模式下，`run`、`exec` 和 `continue` 将最终回答写到 stdout。会话失败且有错误详情时，stderr 同时显示 runtime 定义的停止原因。对于自由文本错误详情，最终会话摘要提示查看本机会话状态，避免在终端回显凭据或控制字符。
+普通文本模式下，`run`、`exec` 和 `continue` 将最终回答写到 stdout。runtime 返回失败结果且附有错误详情时，stderr 显示已知停止原因。对于自由文本，最终摘要提示查看本机会话状态。stderr 不可写时仍返回会话退出码。若命令直接返回 provider 或传输错误，CLI 沿用该错误的诊断和退出码。
 
 ## 配置选择
 

@@ -19,8 +19,12 @@ MAX_ENTRIES = 4096
 MAX_DELIVERY = 32 * 1024**2
 CASE_STATUS = {"passed", "failed", "error", "skipped", "pending", "other", "xfail", "xpass"}
 READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-PYTEST_CASE = re.compile(r"^(?:(?P<prefix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS) (?P<summary>[^ ]+::[^ ]+)|"
-                         r"(?P<node>\S+::.+?)\s+(?P<suffix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\b)")
+VERIFIER_OUTPUT_FILES = ("ctrf.json", "test-stdout.txt", "test-stderr.txt", "reward.txt", "reward.json")
+PYTEST_CASE = re.compile(
+    r"^(?:(?P<prefix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS) "
+    r"(?P<summary>.+?::[^\s\[]+(?:\[.*?\])?)(?: - |$)|"
+    r"(?P<node>.+?::.+?)\s+(?P<suffix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\b)"
+)
 
 # Count matching lines only. These phrases describe log evidence, not a causal
 # classification of the trial. Never carry command names, URLs or error text.
@@ -152,7 +156,7 @@ def verifier(root, directory, test_script=None):
     signals = {}
     logs_scanned = 0
     status = "missing"
-    for name in ("ctrf.json", "test-stdout.txt", "test-stderr.txt", "reward.txt", "reward.json"):
+    for name in VERIFIER_OUTPUT_FILES:
         receipts[name], data = receipt(root, directory / name, MAX_LOG)
         if data is None:
             continue
@@ -274,32 +278,46 @@ def delivery(fd, recipient, attempt, index):
     return record
 
 
-def retain_results(paths, attempt, plan, test_script=None):
+def retain_results(paths, attempt, plan, test_script=None, *, verifier_started=True):
     trial = Path(paths.trial_dir)
     directory = Path(paths.artifacts_dir).relative_to(trial)
     declarations = plan.get("artifacts") or plan.get("capture_paths", [])
     records = []
     with opened(None, trial, READ_FLAGS | os.O_DIRECTORY) as root:
-        observations = verifier(root, Path(paths.verifier_dir).relative_to(trial), test_script)
-        _, raw = receipt(root, directory / "manifest.json", 1024**2)
+        observations = (verifier(root, Path(paths.verifier_dir).relative_to(trial), test_script)
+                        if verifier_started else {"status": "not_started", "case_source": None, "cases": [],
+                                                  "files": {}, "log_files_scanned": 0, "log_signals": None})
+        manifest_receipt, raw = receipt(root, directory / "manifest.json", 1024**2)
+        fallback = {"limit": "limit", "invalid": "invalid"}.get(manifest_receipt["status"], "unavailable")
         try:
-            manifest = json.loads(raw) if raw else []
+            manifest = json.loads(raw) if raw is not None else []
             if not isinstance(manifest, list) or len(manifest) > MAX_ENTRIES:
                 raise ValueError
             if any(not isinstance(row, dict) for row in manifest):
                 raise ValueError
         except (UnicodeError, ValueError, RecursionError):
             manifest = []
+            fallback = "invalid"
         for index, definition in enumerate(declarations):
             item = {"source": definition} if isinstance(definition, str) else definition
             service = item.get("service") or "main"
-            row = {"declaration_index": index, "service": service, "status": "missing"}
+            row = {"declaration_index": index, "service": service, "status": fallback}
             records.append(row)
             matches = [m for m in manifest if m.get("source") == item["source"]
-                       and (m.get("service") or "main") == service and m.get("status") == "ok"]
+                       and (m.get("service") or "main") == service]
             if len(matches) != 1:
                 if matches:
                     row["status"] = "ambiguous"
+                continue
+            native_status = matches[0].get("status")
+            if native_status not in ("ok", "failed", "skipped", "empty"):
+                row["status"] = "invalid"
+                continue
+            row["harbor_status"] = native_status
+            if native_status != "ok":
+                # Harbor's failed collection has no receipt for that output.
+                # It does not distinguish an absent path from a failed transfer.
+                row["status"] = "unavailable" if native_status == "skipped" else "missing"
                 continue
             try:
                 dest = Path(matches[0]["destination"])
@@ -311,7 +329,7 @@ def retain_results(paths, attempt, plan, test_script=None):
             except Limit:
                 row["status"] = "limit"
             except FileNotFoundError:
-                pass
+                row["status"] = "missing"
             except (KeyError, TypeError, ValueError, OSError, RecursionError):
                 row["status"] = "invalid"
     return {"artifacts": records, "verifier_evidence": observations}

@@ -54,17 +54,36 @@ def digest(path):
         return hashlib.file_digest(src, "sha256").hexdigest()
 
 
-def asset_hashes(assets):
-    hashes = {}
+def asset_snapshot(assets):
+    hashes, execute_bits, directories = {}, {}, []
     for p in sorted(assets.rglob("*")):
-        if p.is_symlink():
-            value = "link:" + hashlib.sha256(os.fsencode(os.readlink(p))).hexdigest()
-        elif p.is_file():
-            value = digest(p)
+        name = p.relative_to(assets).as_posix()
+        mode = p.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            hashes[name] = "link:" + hashlib.sha256(os.fsencode(os.readlink(p))).hexdigest()
+        elif stat.S_ISREG(mode):
+            hashes[name] = digest(p)
+            if mode & 0o111:
+                execute_bits[name] = mode & 0o111
+        elif stat.S_ISDIR(mode):
+            directories.append(name)
         else:
-            continue
-        hashes[p.relative_to(assets).as_posix()] = value
-    return hashes
+            raise ValueError(f"unsupported frozen asset: {name}")
+    return hashes, {"execute_bits": execute_bits, "directories": directories}
+
+
+def asset_hashes(assets):
+    """Content-only SHA manifest used by earlier batches."""
+    return asset_snapshot(assets)[0]
+
+
+def validate_assets(assets, manifest):
+    hashes, layout = asset_snapshot(assets)
+    if hashes != manifest["sha256"]:
+        raise ValueError("frozen asset digest mismatch")
+    if "asset_layout" in manifest and manifest["asset_layout"] != layout:
+        raise ValueError("frozen asset directories or executable permissions changed")
+    return hashes, layout
 
 
 def freeze(args):
@@ -118,8 +137,9 @@ def freeze(args):
         for p in assets.rglob("*"):
             if not p.is_symlink() and p.is_file():
                 p.chmod(stat.S_IMODE(p.stat().st_mode) & ~0o222)
+        hashes, layout = asset_snapshot(assets)
         manifest = {"version": 1, "run_id": uuid.uuid4().hex, "created_at": time.time(),
-                    "tasks": tasks, "sha256": asset_hashes(assets)}
+                    "tasks": tasks, "sha256": hashes, "asset_layout": layout}
         (args.run / "attempts").mkdir()
         save(args.run / "manifest.json", manifest)
         (args.run / "manifest.json").chmod(0o400)
@@ -155,9 +175,8 @@ def stored_attempts(run, run_id, name):
     task = run / "attempts" / name
     if task.is_symlink() or task.parent.is_symlink():
         raise ValueError(f"symlink in attempt path for {name}")
-    paths = sorted(task.glob("*"),
-                   key=lambda p: (p.stat().st_mtime_ns, p.name))
-    for attempt in paths:
+    rows = []
+    for attempt in task.glob("*"):
         if attempt.is_symlink() or not attempt.is_dir() or uuid.UUID(hex=attempt.name).hex != attempt.name:
             raise ValueError(f"invalid attempt directory for {name}")
         state = read(attempt / "state.json")
@@ -166,6 +185,13 @@ def stored_attempts(run, run_id, name):
             state = dict(identity, status="incomplete", reason="invalid_attempt_record", reward=None)
         if state.get("status") == "completed" and not scored(state):
             state = dict(identity, status="incomplete", reason="invalid_completion", reward=None)
+        started = state.get("started_at")
+        if not valid_reward(started):
+            started = state.get("ended_at")
+        if not valid_reward(started):
+            started = attempt.stat().st_mtime
+        rows.append((started, attempt.name, attempt, state))
+    for _, _, attempt, state in sorted(rows):
         yield attempt, state
 
 
@@ -225,13 +251,20 @@ def orphan_clients(assets, attempt, label):
     # A watchdog itself may be killed. Match the exact frozen executable,
     # private attempt path and UUID before touching a surviving group leader.
     output = subprocess.check_output(["ps", "-axww", "-o", "pid=,pgid=,command="], text=True)
-    expected = " ".join(adapter_argv(assets, attempt, label))
+    args = adapter_argv(assets, attempt, label)
+    expected = " ".join(args)
+    frozen_args = " " + " ".join(args[1:])
+    recorded_pid = read(attempt / "state.json").get("adapter_pid")
     for row in output.splitlines():
         columns = row.split(None, 2)
         if len(columns) != 3:
             continue
         pid, group, argv = columns
-        if pid == group and argv == expected:
+        if pid != group:
+            continue
+        # Resume may run from another Python installation. The saved PID must
+        # still own this group and carry the entire frozen trial invocation.
+        if argv == expected or (int(pid) == recorded_pid and argv.endswith(frozen_args)):
             yield int(pid)
 
 
@@ -268,6 +301,10 @@ def compensate(run, attempt, state):
     save(attempt / "state.json", state)
     if not recover_resources(run / "assets", attempt):
         return False
+    # Cleanup can finish an adapter whose watchdog died after the verifier
+    # wrote a native reward. Preserve it without promoting it to a scored run.
+    if state.get("observed_reward") is None:
+        state["observed_reward"] = read_outcome(attempt / "outcome.json", state.get("adapter_rc"))["observed_reward"]
     state["status"] = state.pop("pending_status", "interrupted")
     state["ended_at"] = time.time()
     save(attempt / "state.json", state)
@@ -280,7 +317,7 @@ def read_outcome(path, rc):
     raw_reward = result.get("observed_reward", result.get("reward"))
     observed = raw_reward if valid_reward(raw_reward) else None
     if (not isinstance(status, str) or status not in FINAL or
-            (status == "completed" and (rc != 0 or result.get("reward_valid") is False
+            (status == "completed" and (rc != 0 or result.get("reward_valid", True) is not True
                                         or not valid_reward(result.get("reward"))))):
         return {"status": "infra_invalid", "reward": None, "observed_reward": observed,
                 "reason": "invalid_or_missing_outcome"}
@@ -334,11 +371,27 @@ def run_worker(args):
     return 0
 
 
+def reconcile_attempts(run, run_id, name, reason):
+    """Finish abandoned cleanups. Return None if resources may still be active."""
+    completed = False
+    for attempt, state in stored_attempts(run, run_id, name):
+        if state.get("status") not in FINAL:
+            raw = attempt / "state.json"
+            if state.get("status") == "incomplete" and raw.is_file():
+                raw.rename(attempt / ("state.partial-" + uuid.uuid4().hex + ".json"))
+            state.setdefault("reason", reason)
+            state.setdefault("attempt_id", attempt.name)
+            state.setdefault("pending_status", "interrupted")
+            if not compensate(run, attempt, state):
+                return None
+        completed |= scored(state)
+    return completed
+
+
 def schedule(args, manifest):
     run = args.run.resolve()
     assets = run / "assets"
-    if asset_hashes(assets) != manifest["sha256"]:
-        raise ValueError("frozen asset digest mismatch")
+    validate_assets(assets, manifest)
     # Keep the same flock in each watchdog, never in the adapter. If the
     # scheduler dies the pipe closes; watchers clean up before unlocking.
     with (run / ".lock").open("a+") as lock:
@@ -348,18 +401,9 @@ def schedule(args, manifest):
             raise ValueError("run already active")
         queue = []
         for name in manifest["tasks"]:
-            completed = False
-            for attempt, state in stored_attempts(run, manifest["run_id"], name):
-                if state.get("status") not in FINAL:
-                    raw = attempt / "state.json"
-                    if state.get("status") == "incomplete" and raw.is_file():
-                        raw.rename(attempt / ("state.partial-" + uuid.uuid4().hex + ".json"))
-                    state.setdefault("reason", "scheduler_lost")
-                    state.setdefault("attempt_id", attempt.name)
-                    state.setdefault("pending_status", "interrupted")
-                    if not compensate(run, attempt, state):
-                        raise ValueError(f"cleanup pending for {name}/{attempt.name}")
-                completed |= scored(state)
+            completed = reconcile_attempts(run, manifest["run_id"], name, "scheduler_lost")
+            if completed is None:
+                raise ValueError(f"cleanup pending for {name}")
             if not completed:
                 queue.append(name)
         reservations = {}
@@ -388,6 +432,7 @@ def schedule(args, manifest):
                                     if child.poll() is None and time.monotonic() >= expires[n]), None)
                     if expired:
                         stop = "batch_hard_timeout"
+                stopped_workers = []
                 for name, child in list(active.items()):
                     rc = child.poll()
                     if rc is not None:
@@ -396,11 +441,17 @@ def schedule(args, manifest):
                         expires.pop(name)
                         if rc:
                             stop = stop or ("batch_hard_timeout" if rc == 3 else "worker_stopped")
-                    elif stop and not child.stdin.closed:
+                            stopped_workers.append(name)
+                for name, child in active.items():
+                    if stop and not child.stdin.closed:
                         with contextlib.suppress(BrokenPipeError):
                             why = "hard_timeout" if name == expired else stop
                             child.stdin.write((why + "\n").encode())
                             child.stdin.close()
+                # A killed watchdog cannot clean its adapter. Stop the other
+                # workers first, then compensate before reporting this run.
+                for name in stopped_workers:
+                    reconcile_attempts(run, manifest["run_id"], name, "watchdog_lost")
                 while queue and not stop and len(active) < args.jobs:
                     used_cpu = sum(reservations[n][0] for n in active)
                     used_mem = sum(reservations[n][1] for n in active)

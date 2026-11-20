@@ -1,12 +1,13 @@
 """Run one frozen, single-step task on the pinned Harbor Docker backend."""
 import argparse
 import asyncio
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import importlib.metadata
 import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -51,9 +52,9 @@ def check_runtime_profile(task, plan):
         for f in directory.glob("*compose.y*ml"):
             if f.name != "docker-compose.yaml":
                 raise UnsupportedTask("unsupported Compose filename")
-            raw = f.read_text()
-            compose = yaml.safe_load(raw)
-            if "$" in raw or set(compose) != {"services"}:
+            compose = yaml.safe_load(f.read_text())
+            if (not isinstance(compose, dict) or set(compose) != {"services"}
+                    or re.search(r"\$(?:[A-Za-z_]|\{)", yaml.safe_dump(compose).replace("$$", ""))):
                 raise UnsupportedTask("unsupported Compose interpolation or top-level settings")
             services = compose["services"]
             for name, service in services.items():
@@ -98,7 +99,12 @@ async def execute(args, scratch, status):
     from result_evidence import retain_results
 
     status["stage"] = "setup"
-    with provider_relay(args.config, scratch) as relay:
+    with provider_relay(args.config, scratch) as relay, ExitStack() as finalizers:
+        def close_provider():
+            relay.revoke()
+            status["provider_http"] = relay.http_counts()
+
+        finalizers.callback(close_provider)
         cfg = TrialConfig.model_validate({
             "task": {"path": task}, "trials_dir": scratch, "trial_name": trial_name(args.label),
             "artifacts": plan.get("capture_paths", []),
@@ -154,6 +160,7 @@ async def execute(args, scratch, status):
             # Artifact recovery or container teardown can outlive the scheduler's
             # TERM grace period. Leave the known phase facts first.
             status.update(status="interrupted", reason=["cancelled"])
+            close_provider()
             phase_facts(event.result)
             save_outcome(args.attempt, status)
 
@@ -174,7 +181,8 @@ async def execute(args, scratch, status):
                 # Shared-mode Harbor uploads this frozen grader. A separate image
                 # can contain a different script at the same container path.
                 grader = task / "tests/test.sh" if plan["mode"] == "shared" else None
-                status.update(retain_results(trial.paths, args.attempt, plan, grader))
+                started = (args.attempt / "resources-verifier.json").is_file()
+                status.update(retain_results(trial.paths, args.attempt, plan, grader, verifier_started=started))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 status["verifier_evidence"] = {"status": "unavailable"}
                 status["artifacts"] = [{"declaration_index": i, "status": "unavailable"}

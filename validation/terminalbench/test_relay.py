@@ -34,6 +34,37 @@ class RelayTest(unittest.TestCase):
         handler.send_error.assert_called_once_with(403)
         handler.server.opener.open.assert_not_called()
 
+    def test_native_profile_date_and_guardrails(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, BENCH_TEST_KEY="fixture"):
+            config = Path(tmp) / "profile.yaml"
+            config.write_text("""default_provider: test
+providers:
+  test:
+    api_provider: anthropic
+    api_key_env: BENCH_TEST_KEY
+    model: test
+    base_url: http://127.0.0.1:1
+    anthropic_version: 2023-06-01
+    timeout_sec: 17
+    request_timeout_sec: 0
+runtime:
+  guardrails_mode: standard
+""")
+            with provider_relay(config, tmp) as relay:
+                self.assertEqual(relay._server.version, "2023-06-01")
+                self.assertEqual(relay._server.upstream_timeout, 17)
+            original = config.read_text()
+            for old, new in (("timeout_sec: 17", "timeout_sec: true"), ("model: test", "model: test\n    prompt_cache: 1")):
+                config.write_text(original.replace(old, new))
+                with self.assertRaisesRegex(ValueError, "benchmark option"):
+                    validate_config(config)
+            config.write_text(original)
+            for invalid in ("strict", "balanced"):
+                config.write_text(config.read_text().replace("guardrails_mode: standard", f"guardrails_mode: {invalid}"))
+                with self.assertRaisesRegex(ValueError, "guardrails"):
+                    validate_config(config)
+                config.write_text(config.read_text().replace(f"guardrails_mode: {invalid}", "guardrails_mode: standard"))
+
     def test_credential_lifetime(self):
         marker = "synthetic-credential-do-not-export"
         calls = []
@@ -45,6 +76,9 @@ class RelayTest(unittest.TestCase):
                 if body.get("redirect"):
                     self.send_response(307)
                     self.send_header("Location", "http://127.0.0.1:1/private")
+                elif body.get("retry_after"):
+                    self.send_response(429)
+                    self.send_header("Retry-After", body["retry_after"])
                 else:
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -72,15 +106,19 @@ class RelayTest(unittest.TestCase):
                             conn.sock=sock
                             conn.request("POST",path,json.dumps(dict(model=model,**extra)))
                             response=conn.getresponse()
-                            return response.status,response.read()
+                            return response.status, response.read(), response.getheader("Retry-After"), response.getheader("Location")
                     self.assertNotIn(marker,relay.config.read_text()+str(relay.env))
-                    self.assertEqual(post(), (200,b'{"ok":true}'))
-                    self.assertEqual(post(redirect=True)[0],502)
+                    self.assertEqual(post(), (200, b'{"ok":true}', None, None))
+                    self.assertEqual(post(redirect=True), (307, b"", None, None))
+                    for after in ("17", "Wed, 21 Oct 2037 07:28:00 GMT", "12345678"):
+                        self.assertEqual(post(retry_after=after), (429, b"", after, None))
+                    self.assertEqual(post(retry_after="invalid")[2], None)
                     self.assertEqual(post(path="/elsewhere")[0],403)
                     self.assertEqual(post(model="another")[0],400)
                     relay.revoke()
                     self.assertEqual(post()[0],403)
-                self.assertEqual(calls,[("/anthropic/v1/messages",marker,"fixture")]*2)
+                    self.assertEqual(relay.http_counts(), {"upstream_attempts": 6, "responses": 6})
+                self.assertEqual(calls,[("/anthropic/v1/messages",marker,"fixture")]*6)
                 profile["api_key"]=marker
                 path.write_text(yaml.safe_dump(dict(default_provider="test",providers={"test":profile})))
                 with self.assertRaisesRegex(ValueError,"unsupported benchmark"):

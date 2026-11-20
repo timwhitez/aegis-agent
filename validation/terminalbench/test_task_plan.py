@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from task_plan import UnsupportedTask, read_plan
-from trial import execute
+from trial import check_runtime_profile, execute
 
 
 class TaskPlanTest(unittest.TestCase):
@@ -30,6 +31,25 @@ class TaskPlanTest(unittest.TestCase):
             (task / 'task.toml').write_text('[agent]\ntimeout_sec=15\n[environment]\ncpus=1\nmemory_mb=512')
             with self.assertRaisesRegex(ValueError, 'prebuilt'):
                 read_plan(task)
+
+    def test_compose_literals_and_host_interpolation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = Path(tmp)
+            (task / "environment").mkdir()
+            (task / "task.toml").write_text(
+                '[agent]\ntimeout_sec=5\n[environment]\ndocker_image="synthetic"\ncpus=1\nmemory_mb=512\n')
+            compose = task / "environment/docker-compose.yaml"
+            plan = read_plan(task)
+            for literal, allowed in (("$$HOME", True), ("$5", True), ("$HOME", False), ("${HOME}", False)):
+                compose.write_text("# $IGNORED\nservices:\n  main:\n    command: ['echo', '" + literal + "']\n")
+                with self.subTest(literal=literal), patch("trial.MEMORY_DIR", task), \
+                        patch("trial.importlib.metadata.version", return_value="0.26.0"), \
+                        patch("trial.subprocess.check_output", return_value="tmpfs"):
+                    if allowed:
+                        check_runtime_profile(task, plan)
+                    else:
+                        with self.assertRaisesRegex(UnsupportedTask, "interpolation"):
+                            check_runtime_profile(task, plan)
 
     def test_operator_paths_require_a_shared_task_without_native_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:

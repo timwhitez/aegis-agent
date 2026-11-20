@@ -8,14 +8,12 @@ import re
 import yaml
 
 from result_evidence import CASE_STATUS, LOG_SIGNALS, MAX_DELIVERY, MAX_ENTRIES
-from scheduler import asset_hashes, manifest_for, read, scored, stored_attempts, summarize, valid_reward
+from scheduler import manifest_for, read, scored, stored_attempts, summarize, valid_reward, validate_assets
 
 
 def inputs(run):
     manifest = manifest_for(run)
-    hashes = asset_hashes(run / "assets")
-    if hashes != manifest["sha256"]:
-        raise ValueError("a frozen asset differs from its manifest")
+    hashes, layout = validate_assets(run / "assets", manifest)
     if not {"aegis-agent", "config.yaml", "evidence-helper"} <= hashes.keys():
         raise ValueError("missing frozen binary, configuration or evidence helper")
     del hashes["config.yaml"]
@@ -24,7 +22,7 @@ def inputs(run):
     limit = profile.pop("max_output_tokens", None)
     if limit is not None and (type(limit) is not int or limit <= 0):
         raise ValueError("an explicit output limit must be a positive integer")
-    return manifest, hashes, config, limit
+    return manifest, hashes, layout, config, limit
 
 
 def resources(attempt, phase):
@@ -81,7 +79,12 @@ def delivery_receipts(artifacts):
 
 def attempt_row(attempt, state):
     outcome = read(attempt / "outcome.json")
-    observed_reward = outcome.get("observed_reward", outcome.get("reward"))
+    observed_reward = outcome.get("observed_reward", outcome.get("reward", state.get("observed_reward")))
+    http = outcome.get("provider_http")
+    attempts = http.get("upstream_attempts") if isinstance(http, dict) else None
+    responses = http.get("responses") if isinstance(http, dict) else None
+    provider_http = ({"upstream_attempts": attempts, "responses": responses}
+                     if type(attempts) is int and type(responses) is int and 0 <= responses <= attempts else None)
     selection = outcome.get("artifact_selection")
     if selection not in ("task_declared", "operator_selected", "not_configured"):
         selection = None
@@ -145,7 +148,7 @@ def attempt_row(attempt, state):
         "started": evidence.get("started") if present else None,
         "category": evidence.get("category") if present else None,
         "agent_exit_code": evidence.get("exit_code") if present else None,
-        "observed_request_count": len(requests) if present else None,
+        "observed_request_count": len(requests) if present else None, "provider_http": provider_http,
         "with_stop_reason": sum(q["stop_reason"] is not None for q in requests) if present else None,
         "with_output_usage": sum(q["usage"]["output_tokens"] is not None for q in requests) if present else None,
         "sessions": sessions if present else None, "requests": requests if present else None,
@@ -166,10 +169,10 @@ def run_results(run, manifest, limit):
 
 
 def compare(baseline, candidate):
-    a, hashes, config, limit_a = inputs(baseline)
-    b, other_hashes, other_config, limit_b = inputs(candidate)
-    if a["tasks"] != b["tasks"] or hashes != other_hashes:
-        raise ValueError("task plans or frozen asset digests differ")
+    a, hashes, layout, config, limit_a = inputs(baseline)
+    b, other_hashes, other_layout, other_config, limit_b = inputs(candidate)
+    if a["tasks"] != b["tasks"] or hashes != other_hashes or layout != other_layout:
+        raise ValueError("task plans or frozen asset digests or layout differ")
     if yaml.safe_dump(config, sort_keys=True) != yaml.safe_dump(other_config, sort_keys=True):
         raise ValueError("configuration differs outside max_output_tokens")
     if a["run_id"] == b["run_id"] or limit_a == limit_b:
@@ -177,12 +180,15 @@ def compare(baseline, candidate):
     results_a = run_results(baseline, a, limit_a)
     results_b = run_results(candidate, b, limit_b)
     runtime_checks = {}
+    scheduler_checks = {}
     for name in a["tasks"]:
         left = results_a["tasks"][name]["attempts"]
         right = results_b["tasks"][name]["attempts"]
         controls = {json.dumps(row["scheduler"], sort_keys=True) for row in left + right if row["scheduler"] is not None}
         if len(controls) > 1:
             raise ValueError(f"scheduler limits differ for task {name}")
+        scheduler_checks[name] = ("observations_match" if left and right
+                                  and all(row["scheduler"] is not None for row in left + right) else "unverified")
         runtime_checks[name] = {}
         for phase in ("agent", "verifier"):
             snapshots = [row["resources"][phase] or {} for row in left + right]
@@ -196,7 +202,7 @@ def compare(baseline, candidate):
     profile = config["providers"][config["default_provider"]]
     return {"schema_version": 1, "agent_sha256": hashes["aegis-agent"],
             "model": profile["model"], "effort": profile.get("output_config_effort"),
-            "runtime_checks": runtime_checks, "baseline": results_a, "candidate": results_b}
+            "runtime_checks": runtime_checks, "scheduler_checks": scheduler_checks, "baseline": results_a, "candidate": results_b}
 
 
 def main():

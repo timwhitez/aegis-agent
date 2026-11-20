@@ -21,9 +21,9 @@ CGO_ENABLED=0 go build -trimpath -o bin/aegis-evidence ./validation/cmd/benchevi
 
 ## 诊断与交付物
 
-每个尝试单独保存状态、评分和诊断。宿主上的临时 Unix socket 只向该次尝试提供配置指定的模型与 Messages 接口。真实 provider key 留在宿主。agent 进程通过容器内的回环地址访问该 socket。agent 阶段结束时撤销转发。
+每个尝试单独保存状态、评分和诊断。宿主上的临时 Unix socket 只向该次尝试提供配置指定的模型与 Messages 接口。真实 provider key 留在宿主。agent 进程通过容器内的回环地址访问该 socket。agent 阶段结束时撤销转发。宿主按上游实际返回的 HTTP 状态和 `Retry-After`（秒数或 HTTP 日期）执行转发，重试由 Aegis 决定。发生重定向时只返回状态码。
 
-证据程序从 Aegis session 中选取请求关联 ID、生效的输出预算、停止原因、已报告的用量和重试结果。宿主再次校验这些字段，再写入尝试目录。原始请求、模型回答、终端输出和密钥不进入诊断文件。缺失的用量显示为 `null`。取消、启动失败或宿主中断时，尝试记录会标出已知阶段及缺失项。
+证据程序从 Aegis session 中选取请求关联 ID、生效的输出预算、停止原因、已报告的用量和重试结果。宿主再次校验这些字段，再写入尝试目录。原始请求、模型回答、终端输出和密钥不进入诊断文件。每个逻辑请求 ID 可包含多次 HTTP 尝试；通过本地预检后才可能发起上游调用。`outcome.json` 的 `provider_http` 记录该次代理在撤销前发起的上游尝试数和收到响应头的次数。缺失的用量显示为 `null`。取消、启动失败或宿主中断时，尝试记录会标出已知阶段及缺失项。
 
 Harbor 的原始评分工作目录位于宿主的临时内存文件系统。独立 verifier 只接收声明的产物。原生 shared 任务则需要保留 agent 阶段留下的文件和服务，评分材料在 agent 阶段结束后注入。需要审查评分可信度时，应同时查看环境模式、verifier 证据及尝试状态。
 

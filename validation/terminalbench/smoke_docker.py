@@ -18,7 +18,7 @@ def write(path, content):
     path.write_text(content)
 
 
-def fixture_agent(path):
+def fixture_agent(path, *, output="/submission", self_check=True):
     write(path, f"""#!/usr/local/bin/python3
 import json, os, subprocess, sys
 from pathlib import Path
@@ -27,16 +27,19 @@ assert not Path('/tests/test.sh').exists()
 assert 'SMOKE_PROVIDER_KEY' not in os.environ
 assert 'SMOKE_HOST_SECRET' not in Path('/tmp/aegis-benchmark/config.yaml').read_text()
 print({MARKER!r})
-p=Path('/submission')
+p=Path({output!r})
 p.mkdir()
 (p/'answer').write_text('correct')
 (p/'skip.tmp').write_text('excluded')
 Path('/tmp/agent-only-marker').touch()
 subprocess.Popen([sys.executable,'-m','http.server','17990','--bind','127.0.0.1','--directory',str(p)],
     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,stdin=subprocess.DEVNULL,start_new_session=True)
-reward=Path('/logs/verifier/reward.txt')
-reward.parent.mkdir(parents=True, exist_ok=True)
-reward.write_text('1')
+if {self_check!r}:
+    reward=Path('/logs/verifier/reward.txt')
+    reward.parent.mkdir(parents=True, exist_ok=True)
+    reward.write_text('1')
+    (reward.parent/'ctrf.json').write_text(json.dumps({{'results':{{'tests':[{{'name':'agent-check','status':'passed'}}]}}}}))
+    (reward.parent/'test-stderr.txt').write_text('self_check.py::test_old PASSED')
 sid='20260101-000000-abcdef'
 s=Path('/tmp/aegis-benchmark/sessions')/sid
 s.mkdir()
@@ -101,14 +104,15 @@ fi
                 if mode != "shared":
                     checks += 'if test -e /submission/with-sidecar; then test "$(cat /tmp/from-sidecar)" = witness; fi\n'
                 if mode == "compose":
-                    write(task/"environment/docker-compose.yaml", """services:
+                    write(task/"environment/docker-compose.yaml", """# An ordinary monetary value: $5
+services:
   main:
     depends_on:
       witness:
         condition: service_healthy
   witness:
     image: python:3.12-slim
-    command: ["sh","-c","echo witness >/tmp/from-sidecar && sleep infinity"]
+    command: ["sh", "-c", 'test -n "$$HOME" && echo witness >/tmp/from-sidecar && sleep infinity']
     healthcheck:
       test: ["CMD","test","-s","/tmp/from-sidecar"]
       interval: 1s
@@ -130,6 +134,9 @@ fi
                 subprocess.run(cmd, env=env, check=True)
                 result = json.loads((attempt/"outcome.json").read_text())
                 assert result["status"] == "completed" and result["reward"] == 1, result
+                assert result["provider_http"] == {"upstream_attempts": 0, "responses": 0}, result
+                assert result["verifier_evidence"]["cases"] == [], "pre-grade self-check appeared as a grader case"
+                assert result["verifier_evidence"]["files"]["ctrf.json"]["status"] == "missing"
                 assert all(a["status"] == "collected" for a in result["artifacts"]), result
                 if mode == "compose":
                     assert any(a['service']=='witness' and a['bytes']==8 for a in result['artifacts']),result
@@ -236,10 +243,40 @@ fi
                     stopped = json.loads((interrupted/"outcome.json").read_text())
                     assert stopped["status"] == "interrupted" and stopped["reward"] is None, stopped
                     assert stopped["agent_s"] is not None and stopped["diagnostics"] == "collected", stopped
-                    assert stopped["verifier_evidence"]["status"] != "collected", stopped
+                    assert stopped["verifier_evidence"]["status"] == "not_started", stopped
+                    assert stopped["verifier_evidence"]["cases"] == [], stopped
+                    assert stopped["provider_http"] == {"upstream_attempts": 0, "responses": 0}, stopped
                     assert any(a["status"] == "collected" for a in stopped["artifacts"]), stopped
                     print("cancelled trial retained evidence", flush=True)
-                    cmd[cmd.index("--binary") + 1] = agent
+                    nonroot = root / "attempt-task-user"
+                    nonroot.mkdir()
+                    nonroot_agent = root / "task-user-agent"
+                    fixture_agent(nonroot_agent, output="/tmp/submission", self_check=False)
+                    write(task / "task.toml", "\n".join(parts).replace("/submission/answer", "/tmp/submission/answer")
+                          .replace("[agent]", '[agent]\nuser="nobody"') + "\n")
+                    write(task / "tests/test.sh", """#!/bin/sh
+set -eu
+test "$(stat -c %u /tmp/submission/answer)" = "$(id -u nobody)"
+test "$(cat /tmp/submission/answer)" = correct
+echo 1 >/logs/verifier/reward.txt
+""")
+                    cmd[cmd.index("--attempt") + 1] = nonroot
+                    cmd[cmd.index("--binary") + 1] = nonroot_agent
+                    cmd[-1] = uuid4().hex
+                    subprocess.run(cmd, env=env, check=True)
+                    result = json.loads((nonroot / "outcome.json").read_text())
+                    assert result["status"] == "completed" and result["reward"] == 1, result
+                    print("declared unprivileged task user completed", flush=True)
+                    setup_error = root / "attempt-setup-error"
+                    setup_error.mkdir()
+                    cmd[cmd.index("--attempt") + 1] = setup_error
+                    cmd[cmd.index("--binary") + 1] = root / "missing-frozen-agent"
+                    cmd[-1] = uuid4().hex
+                    subprocess.run(cmd, env=env, check=True)
+                    result = json.loads((setup_error / "outcome.json").read_text())
+                    assert result["stage"] == "setup" and result["status"] == "infra_invalid", result
+                    assert result["provider_http"] == {"upstream_attempts": 0, "responses": 0}, result
+                    print("setup failure recorded actual HTTP counts", flush=True)
                     write(task/"environment/docker-compose.yaml",
                           "services:\n  main:\n    privileged: true\n")
                     unsupported = root/"attempt-unsupported"
@@ -250,6 +287,7 @@ fi
                     rejected = json.loads((unsupported/"outcome.json").read_text())
                     assert rejected["stage"] == "preflight" and rejected["status"] == "infra_invalid", rejected
                     assert not (unsupported/"resources-agent.json").exists()
+                    assert rejected.get("provider_http") is None
                     print("unsupported topology rejected before launch", flush=True)
         finally:
             subprocess.run(["docker","image","rm",verifier_image],stdout=subprocess.DEVNULL,

@@ -188,11 +188,12 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			EffectiveWindowTokens: profile.ContextWindowTokens,
 			UtilizationFactor:     profile.UtilizationFactor,
 		}, requestBudgetContext{
-			RequestKind:      requestKindSemanticSummary,
-			SessionID:        meta.ID,
-			Turn:             requestContext.Turn,
-			RequestSequence:  requestContext.RequestSequence,
-			CompactionAction: "semantic_summary",
+			RequestKind:       requestKindSemanticSummary,
+			SummaryCapApplied: maxOutputTokens != meta.ProviderOptions.MaxOutputTokens,
+			SessionID:         meta.ID,
+			Turn:              requestContext.Turn,
+			RequestSequence:   requestContext.RequestSequence,
+			CompactionAction:  "semantic_summary",
 		}, e.cfg)
 		req = fitted.Request
 		snapshot := fitted.Snapshot
@@ -271,7 +272,8 @@ func (r RunResult) FailureDiagnostic() string {
 	switch r.LastError {
 	case hardTurnLimitError, unresolvedBackgroundError, noProgressError,
 		maxOutputTokensError, blockedResponseError, providerStopError,
-		cancelledResponseError, emptyToolCallsError, toolStopMismatchError, "incomplete_no_finish":
+		cancelledResponseError, emptyToolCallsError, toolStopMismatchError,
+		"incomplete_no_finish", "incomplete_no_finish: task ended without explicit finish":
 		return r.LastError
 	default:
 		return "see the local session state for failure details"

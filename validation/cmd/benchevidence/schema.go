@@ -11,6 +11,7 @@ import (
 )
 
 const maxReportBytes = 4 << 20
+const maxSessions = 32
 const maxRequests = 2048
 
 type report struct {
@@ -64,7 +65,7 @@ var requestSuffix = regexp.MustCompile(`^[0-9]{1,9}:(main|semantic_summary|probe
 const statuses = "running completed cancelled paused failed awaiting_input"
 const categories = "completed cancelled provider_error agent_failed not_started unavailable incomplete"
 const reasons = "done_candidate tool_call tool_use end_turn max_tokens stop_sequence refusal pause_turn length tool_calls stop content_filter blocked cancelled error failed other"
-const sources = "adapter_default configured thinking_budget"
+const sources = "adapter_default configured thinking_budget semantic_summary"
 const efforts = "none minimal low medium high xhigh max other"
 const outcomes = "success failure auto_resume max_tokens_resume retry other"
 
@@ -84,15 +85,17 @@ func checked(r io.Reader) (report, error) {
 	if err != nil || len(raw) > maxReportBytes || json.Unmarshal(raw, &result) != nil {
 		return result, errors.New("invalid evidence")
 	}
-	if result.Schema != 1 || !allowed(result.Category, categories) || len(result.Sessions) > 32 || (result.ExitCode != nil && (*result.ExitCode < 0 || *result.ExitCode > 255)) {
+	if result.Schema != 1 || !allowed(result.Category, categories) || len(result.Sessions) > maxSessions || (result.ExitCode != nil && (*result.ExitCode < 0 || *result.ExitCode > 255)) {
 		return result, errors.New("invalid evidence header")
 	}
-	root := false
+	roots := 0
 	for _, s := range result.Sessions {
 		if !sessionID.MatchString(s.ID) || !allowed(s.Status, statuses) || len(s.Requests) > maxRequests || len(s.Attempts) > maxRequests || s.ToolCalls < 0 {
 			return result, errors.New("invalid session evidence")
 		}
-		root = root || !s.Parent
+		if !s.Parent {
+			roots++
+		}
 		for _, q := range s.Requests {
 			suffix, ok := strings.CutPrefix(q.ID, s.ID+":")
 			if !ok || !requestSuffix.MatchString(suffix) || q.Turn < 0 || q.Sequence < 0 || (q.MaxOutputTokens != nil && *q.MaxOutputTokens <= 0) || (q.Source != "" && !allowed(q.Source, sources)) || (q.Effort != "" && !allowed(q.Effort, efforts)) || (q.Stop != "" && !allowed(q.Stop, reasons)) {
@@ -112,7 +115,8 @@ func checked(r io.Reader) (report, error) {
 			}
 		}
 	}
-	if root != result.Started {
+	ambiguous := len(result.Sessions) > 0 && roots != 1
+	if (roots > 0) != result.Started || (ambiguous && (result.Category != "incomplete" || !result.Partial)) {
 		return result, errors.New("inconsistent session evidence")
 	}
 	return result, nil

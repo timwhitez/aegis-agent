@@ -63,6 +63,7 @@ type requestBudgetPolicy struct {
 }
 
 type requestBudgetContext struct {
+	SummaryCapApplied bool
 	RequestKind       string
 	SessionID         string
 	Turn              int
@@ -244,6 +245,9 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 		return snapshot, &RequestBudgetPreflightError{Code: requestEstimateFailedCode, Snapshot: snapshot, Err: err}
 	}
 	snapshot.RequestOutputOptions = estimate.RequestOutputOptions
+	if requestContext.SummaryCapApplied && snapshot.MaxOutputTokensSource == "configured" {
+		snapshot.MaxOutputTokensSource = "semantic_summary"
+	}
 	snapshot.WireEstimateSchemaVersion = estimate.SchemaVersion
 	snapshot.SystemChars = estimate.SystemChars
 	snapshot.MessageCount = estimate.MessageCount

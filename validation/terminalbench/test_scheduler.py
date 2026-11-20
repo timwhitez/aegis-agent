@@ -1,5 +1,6 @@
 """Exercise the public scheduler CLI using an adapter with no external services."""
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -129,6 +130,18 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(len(list(self.run.glob("attempts/*/*/outcome.json"))), 4)
         self.assertTrue(all(p.read_bytes() == raw for p, raw in originals.items()))
 
+    def test_explicit_reward_validity_must_be_boolean(self):
+        from scheduler import read_outcome
+        path = self.base / "outcome.json"
+        for value in (0, None, "false", False):
+            path.write_text(json.dumps({"status": "completed", "reward": 0, "reward_valid": value}))
+            result = read_outcome(path, 0)
+            self.assertEqual((result["status"], result["reward"], result["observed_reward"]), ("infra_invalid", None, 0))
+        path.write_text(json.dumps({"status": "completed", "reward": 0, "reward_valid": True}))
+        self.assertEqual(read_outcome(path, 0)["status"], "completed")
+        path.write_text(json.dumps({"status": "completed", "reward": 0}))
+        self.assertEqual(read_outcome(path, 0)["status"], "completed")
+
     def test_verifier_launch_failure_retries_and_keeps_original_zero(self):
         self.init({"one": "verifier_retry", "two": "zero"})
         self.cli("run", rc=1)
@@ -182,16 +195,64 @@ class SchedulerTest(unittest.TestCase):
         time.sleep(1.5)
         self.assertFalse((attempt / "leaked").exists())
 
-    def test_killed_watchdog_compensates_before_retry(self):
+    def test_killed_watchdog_compensates_before_scheduler_returns(self):
         proc, attempt = self.start_sleep()
         state = json.loads((attempt / "state.json").read_text())
+        # The adapter may have already published its native reward while still
+        # completing teardown. It has not yet returned to the watchdog.
+        (attempt / "outcome.json").write_text(json.dumps({"status": "completed", "reward": 0, "reward_valid": True}))
         os.kill(state["watchdog_pid"], signal.SIGKILL)
         self.assertNotEqual(proc.wait(timeout=5), 0)
-        self.cli("run", "--hard-timeout", ".25", rc=1)
         old = json.loads((attempt / "state.json").read_text())
-        self.assertEqual((old["status"], old["reason"]), ("interrupted", "scheduler_lost"))
+        self.assertEqual((old["status"], old["reason"]), ("interrupted", "watchdog_lost"))
+        self.assertEqual(self.summary()["status_counts"], {"interrupted": 1})
+        self.assertEqual((old["reward"], old["observed_reward"], self.summary()["scored"]), (None, 0, 0))
         time.sleep(1.5)
         self.assertFalse(list(self.run.glob("attempts/sleep/*/leaked")))
+
+    def test_resume_via_another_interpreter_reaps_abandoned_adapter(self):
+        proc, attempt = self.start_sleep()
+        state = json.loads((attempt / "state.json").read_text())
+        # Stop the scheduler first so neither supervisor can perform cleanup.
+        os.kill(proc.pid, signal.SIGSTOP)
+        os.kill(state["watchdog_pid"], signal.SIGKILL)
+        os.kill(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        other = self.base / "other-python"
+        other.symlink_to(sys.executable)
+        self.head[0] = str(other)
+        try:
+            self.cli("run", "--hard-timeout", ".35", rc=1)
+            time.sleep(1.5)
+            self.assertFalse((attempt / "leaked").exists())
+            self.assertEqual(json.loads((attempt / "state.json").read_text())["status"], "interrupted")
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(state["adapter_pid"], signal.SIGKILL)
+
+    def test_touching_old_attempt_does_not_change_latest_selection(self):
+        self.init({"a": "partial"})
+        self.cli("run", rc=1)
+        old = self.summary()["tasks"]["a"]["attempt_id"]
+        self.cli("run", rc=1)
+        new = self.summary()["tasks"]["a"]["attempt_id"]
+        self.assertNotEqual(old, new)
+        (self.run / "attempts/a" / old / "operator-note").touch()
+        self.assertEqual(self.summary()["tasks"]["a"]["attempt_id"], new)
+
+    def test_frozen_permissions_and_directories_are_checked_before_launch(self):
+        self.init({"a": "pass"})
+        helper = self.run / "assets/evidence-helper"
+        original_mode = helper.stat().st_mode
+        helper.chmod(original_mode ^ 0o100)
+        self.cli("run", rc=2)
+        helper.chmod(original_mode)
+        extra = self.run / "assets/tasks/a/new-empty-directory"
+        extra.mkdir()
+        self.cli("run", rc=2)
+        self.assertFalse(list(self.run.glob("attempts/*")))
+        extra.rmdir()
+        self.cli("run")
 
     def test_cross_run_and_partial_state_cannot_skip_a_task(self):
         self.init({"a": "pass", "b": "zero"})

@@ -70,6 +70,36 @@ class CompareTest(unittest.TestCase):
         self.assertEqual((row["category"], row["observed_request_count"]), ("not_started", 0))
 
 
+    def test_http_attempts_are_independent_of_logical_requests(self):
+        diagnostics = {"schema_version": 1, "started": True, "sessions": [
+            {"id": "fixture", "requests": [{"request_id": "fixture:1:main:1"}]}]}
+        (self.root / "diagnostics.json").write_text(json.dumps(diagnostics))
+        outcome = self.root / "outcome.json"
+        for value in ({"upstream_attempts": 3, "responses": 2}, {"upstream_attempts": 0, "responses": 0}):
+            outcome.write_text(json.dumps({"provider_http": {**value, "unrelated": "ignored"}}))
+            row = attempt_row(self.root, {})
+            self.assertEqual((row["observed_request_count"], row["provider_http"]), (1, value))
+        for invalid in ({}, {"provider_http": {"upstream_attempts": 0, "responses": 1}},
+                        {"provider_http": {"upstream_attempts": True, "responses": 1}}):
+            outcome.write_text(json.dumps(invalid))
+            self.assertIsNone(attempt_row(self.root, {})["provider_http"])
+
+    def test_missing_outcome_uses_durable_observed_reward(self):
+        self.assertEqual(attempt_row(self.root, {"observed_reward": 0})["observed_reward"], 0)
+        self.assertIsNone(attempt_row(self.root, {})["observed_reward"])
+
+    def test_execution_layout_is_compared_for_older_manifests(self):
+        # Legacy manifests lack a layout snapshot, but the files in the two
+        # archives can still demonstrate a current mismatch.
+        helper = self.b / "assets/evidence-helper"
+        helper.chmod(helper.stat().st_mode ^ 0o100)
+        with self.assertRaisesRegex(ValueError, "layout"):
+            compare(self.a, self.b)
+        helper.chmod(helper.stat().st_mode ^ 0o100)
+        (self.b / "assets/tasks/sample/emptydir").mkdir()
+        with self.assertRaisesRegex(ValueError, "layout"):
+            compare(self.a, self.b)
+
     def test_native_reward_and_safe_deliveries_survive_unscored_verifier(self):
         state = {"status": "verifier_error", "reward": None}
         outcome = self.root / "outcome.json"
@@ -118,6 +148,14 @@ class CompareTest(unittest.TestCase):
                 "cpu_budget": None, "memory_budget_mb": None}))
         with self.assertRaisesRegex(ValueError, "scheduler limits differ"):
             compare(self.a, self.b)
+        path = next(self.b.glob("attempts/sample/*/state.json"))
+        state = json.loads(path.read_text())
+        state["jobs"] = 1
+        path.write_text(json.dumps(state))
+        self.assertEqual(compare(self.a, self.b)["scheduler_checks"]["sample"], "observations_match")
+        del state["jobs"]
+        path.write_text(json.dumps(state))
+        self.assertEqual(compare(self.a, self.b)["scheduler_checks"]["sample"], "unverified")
 
     def test_different_images_with_same_frozen_tag_are_not_comparable(self):
         files = []

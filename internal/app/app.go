@@ -2649,9 +2649,7 @@ func printResult(w, stderr io.Writer, jsonMode bool, result runtime.RunResult, e
 		_, _ = fmt.Fprintln(w, result.FinalText)
 	}
 	if reason := result.FailureDiagnostic(); reason != "" {
-		if _, err := fmt.Fprintln(stderr, "session failed:", reason); err != nil {
-			return err
-		}
+		_, _ = fmt.Fprintln(stderr, "session failed:", reason)
 	}
 	if exitCode != 0 {
 		return ExitError{Code: exitCode}
