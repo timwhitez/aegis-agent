@@ -40,7 +40,9 @@ class CompareTest(unittest.TestCase):
         attempt.mkdir(parents=True)
         (attempt / "state.json").write_text(json.dumps({"run_id": run_id, "task": "sample",
                     "attempt_id": attempt.name, "status": "completed", "reward": 0, "elapsed_s": 3, "adapter_rc": 0, "ended_at": 4}))
-        (attempt / "outcome.json").write_text('{"agent_s": 2, "verify_s": 1, "agent_rc": 1}')
+        (attempt / "outcome.json").write_text(json.dumps({"agent_s": 2, "verify_s": 1, "agent_rc": 1,
+            "verifier_evidence": {"case_source": None, "cases": [], "log_files_scanned": 1,
+                                  "log_signals": {"command_not_found": 2, "untrusted-marker": 1}}}))
         data = {"schema_version": 1, "partial": True, "started": True, "sessions": [{
             "id": "s1", "status": "failed", "tool_calls": 0, "requests": [{
                 "request_id": "s1:1:main:0", "max_output_tokens": 4096, "source": "adapter_default",
@@ -51,6 +53,10 @@ class CompareTest(unittest.TestCase):
         row = report["baseline"]["tasks"]["sample"]["attempts"][0]
         self.assertEqual((row["evidence"], row["reward"], row["observed_request_count"]), ("partial", 0, 1))
         self.assertEqual((row["elapsed_s"], row["agent_s"], row["verify_s"]), (3, 2, 1))
+        self.assertEqual(row["verifier"], {"observed_cases": 0, "case_status_counts": {}, "case_source": None,
+                                          "log_files_scanned": 1, "log_signals": {"command_not_found": 2}})
+        self.assertNotIn("untrusted-marker", json.dumps(row))
+
         self.assertEqual(row["requests"][0]["usage"]["output_tokens"], 0)
         self.assertIsNone(row["requests"][0]["usage"]["reasoning_tokens"])
         self.assertEqual(report["candidate"]["tasks"]["sample"]["status"], "missing")

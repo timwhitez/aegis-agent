@@ -7,6 +7,7 @@ import re
 
 import yaml
 
+from result_evidence import CASE_STATUS, LOG_SIGNALS
 from scheduler import asset_hashes, manifest_for, read, scored, stored_attempts, summarize
 
 
@@ -80,12 +81,33 @@ def attempt_row(attempt, state):
     ids = [q["request_id"] for q in requests]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate observed request ID")
+    verifier = outcome.get("verifier_evidence") or {}
+    cases = verifier.get("cases")
+    case_counts = None
+    if isinstance(cases, list):
+        case_counts = {}
+        for case in cases:
+            label = case.get("status")
+            label = label if isinstance(label, str) and label in CASE_STATUS else "other"
+            case_counts[label] = case_counts.get(label, 0) + 1
+    scanned = verifier.get("log_files_scanned")
+    scanned = scanned if type(scanned) is int and 0 <= scanned <= 2 else None
+    source = verifier.get("case_source")
+    source = source if source in ("ctrf", "pytest") else None
+    signals = verifier.get("log_signals")
+    if isinstance(signals, dict) and scanned:
+        signals = {k: signals[k] for k in LOG_SIGNALS if type(signals.get(k)) is int and signals[k] > 0}
+    else:
+        signals = None
     controls = ("hard_timeout_s", "jobs", "cpu_budget", "memory_budget_mb")
     return {
         "resources": {p: resources(attempt, p) for p in ("agent", "verifier")},
         "scheduler": {k: state[k] for k in controls} if all(k in state for k in controls) else None,
         "attempt_id": attempt.name, "status": state.get("status"),
         "reward": state["reward"] if scored(state) else None,
+        "verifier": {"observed_cases": len(cases) if isinstance(cases, list) else None,
+                     "case_status_counts": case_counts, "case_source": source,
+                     "log_files_scanned": scanned, "log_signals": signals},
         "elapsed_s": state.get("elapsed_s"), "agent_s": outcome.get("agent_s"),
         "verify_s": outcome.get("verify_s"), "agent_rc": outcome.get("agent_rc"),
         "evidence": ("partial" if evidence.get("partial") else "available") if present else "missing",

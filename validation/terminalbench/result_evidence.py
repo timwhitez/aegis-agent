@@ -22,6 +22,17 @@ READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 PYTEST_CASE = re.compile(r"^(?:(?P<prefix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS) (?P<summary>[^ ]+::[^ ]+)|"
                          r"(?P<node>\S+::.+?)\s+(?P<suffix>FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\b)")
 
+# Count matching lines only. These phrases describe log evidence, not a causal
+# classification of the trial. Never carry command names, URLs or error text.
+LOG_SIGNALS = {
+    "command_not_found": rb": (?:line \d+: )?[^:\s]{1,256}: command not found\s*$|(?:^|/)sh: \d+: [^:\s]{1,256}: not found\s*$",
+    "dns_failure": rb"\bcould not resolve (?:host|proxy)\b|\btemporary failure in name resolution\b|\bgetaddrinfo (?:ENOTFOUND|EAI_AGAIN)\b",
+    "download_failure": rb"\b(?:failed to (?:download|fetch)|unable to fetch some archives)\b|\bcurl: \((?:7|18|22|28|56)\)",
+    "tls_failure": rb"\b(?:CERTIFICATE_VERIFY_FAILED|SSL certificate problem|TLS handshake (?:failed|timeout)|x509: certificate signed by unknown authority)\b|\bcurl: \((?:35|60)\)",
+    "pytest_collection_error": rb"^_+ ERROR collecting\b|\b\d+ errors? during collection\b",
+}
+LOG_SIGNALS = {name: re.compile(pattern, re.I) for name, pattern in LOG_SIGNALS.items()}
+
 
 class Limit(Exception):
     pass
@@ -86,6 +97,8 @@ def verifier(root, directory):
     receipts = {}
     cases = {}
     case_source = None
+    signals = {}
+    logs_scanned = 0
     status = "missing"
     for name in ("ctrf.json", "test-stdout.txt", "test-stderr.txt", "reward.txt", "reward.json"):
         receipts[name], data = receipt(root, directory / name, MAX_LOG)
@@ -107,9 +120,14 @@ def verifier(root, directory):
             except (UnicodeError, ValueError, TypeError, KeyError, RecursionError):
                 cases.clear()
                 status = "invalid_ctrf"
-        elif name in {"test-stdout.txt", "test-stderr.txt"} and case_source != "ctrf":
+        elif name in {"test-stdout.txt", "test-stderr.txt"}:
+            logs_scanned += 1
             for line in io.BytesIO(data):
-                if len(line) > 8192:
+                sample = line[:8192]
+                for label, pattern in LOG_SIGNALS.items():
+                    if pattern.search(sample):
+                        signals[label] = signals.get(label, 0) + 1
+                if case_source == "ctrf" or len(line) > 8192:
                     continue
                 match = PYTEST_CASE.match(line.decode("utf-8", "replace").strip())
                 if match:
@@ -117,12 +135,13 @@ def verifier(root, directory):
                     key = hashlib.sha256(node.encode()).hexdigest()
                     if len(cases) >= MAX_CASES and key not in cases:
                         status = "partial"
-                        break
+                        continue
                     cases[key] = {"case_sha256": key, "status": (match["prefix"] or match["suffix"]).lower()}
                     case_source = "pytest"
                     if status != "partial":
                         status = "observed"
-    return {"status": status, "case_source": case_source, "cases": list(cases.values()), "files": receipts}
+    return {"status": status, "case_source": case_source, "cases": list(cases.values()), "files": receipts,
+            "log_files_scanned": logs_scanned, "log_signals": signals if logs_scanned else None}
 
 
 def delivery(fd, recipient, attempt, index):

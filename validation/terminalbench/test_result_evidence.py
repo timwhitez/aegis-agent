@@ -59,6 +59,29 @@ class ResultEvidenceTest(unittest.TestCase):
             [(hashlib.sha256(b"t.py::test_red").hexdigest(),"failed"),
              (hashlib.sha256(b"t.py::test_green").hexdigest(),"passed")])
 
+    def test_log_signals_without_case_records_or_private_text(self):
+        private = "synthetic-credential-marker"
+        (self.verify / "test-stdout.txt").write_text(
+            f"/tests/test.sh: line 24: {private}: command not found\n"
+            f"sh: 3: {private}: not found\n"
+            f"curl: (6) Could not resolve host: {private}\n"
+            f"error: Failed to download https://{private}\n"
+            f"curl: (60) SSL certificate problem: {private}\n"
+            f"____________ ERROR collecting {private} ____________\n"
+            f"ordinary pytest assertion about command not found, unrelated to execution\n")
+        (self.verify / "reward.txt").write_text("0")
+        got = self.collect()["verifier_evidence"]
+        self.assertEqual((got["case_source"], got["cases"], got["log_files_scanned"]), (None, [], 1))
+        self.assertEqual(got["log_signals"], {"command_not_found": 2, "dns_failure": 1,
+                         "download_failure": 1, "tls_failure": 1, "pytest_collection_error": 1})
+        self.assertNotIn(private, json.dumps(got))
+        (self.verify / "ctrf.json").write_text('{"results":{"tests":[{"name":"sample","status":"passed"}]}}')
+        self.assertEqual(self.collect()["verifier_evidence"]["log_signals"], got["log_signals"])
+        (self.verify / "test-stdout.txt").unlink()
+        got = self.collect()["verifier_evidence"]
+        self.assertEqual(got["log_files_scanned"], 0)
+        self.assertIsNone(got["log_signals"])
+
     def test_rejects_symlinks_hardlinks_special_files_and_oversize(self):
         target = self.artifacts / "value"
         private = self.attempt / "host-only"; private.write_text("private")
