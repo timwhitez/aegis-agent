@@ -23,10 +23,18 @@ const (
 	ContextRequestStatusUnknown   = "unknown"
 )
 
+// RequestOutputOptions describes controls encoded by the provider adapter.
+type RequestOutputOptions struct {
+	EffectiveMaxOutputTokens int    `json:"effective_max_output_tokens,omitempty"`
+	MaxOutputTokensSource    string `json:"max_output_tokens_source,omitempty"`
+	OutputConfigEffort       string `json:"output_config_effort,omitempty"`
+}
+
 // RequestBudgetSnapshot is the canonical, content-free provider request
 // budget record. Runtime hard-fit and read-only telemetry use this exact type
 // and JSON representation.
 type RequestBudgetSnapshot struct {
+	RequestOutputOptions
 	SchemaVersion              int     `json:"schema_version"`
 	RequestID                  string  `json:"request_id"`
 	RequestKind                string  `json:"request_kind"`

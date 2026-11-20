@@ -3068,6 +3068,55 @@ func TestAnthropicAdapterSendsGenerationFields(t *testing.T) {
 	}
 }
 
+func TestAnthropicOutputDiagnosticsMatchWireBody(t *testing.T) {
+	for _, tc := range []struct {
+		name, effort, source, diagnosticEffort string
+		configured, budget, effective          int
+	}{
+		{"implicit", "max", "adapter_default", "max", 0, 0, 4096},
+		{"explicit", "max", "configured", "max", 8192, 0, 8192},
+		{"manual thinking", "", "thinking_budget", "", 4096, 8192, 9216},
+		{"custom effort", "synthetic-private-value", "adapter_default", "other", 0, 0, 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := TurnRequest{Model: "mock", MaxOutputTokens: tc.configured, OutputConfigEffort: tc.effort}
+			if tc.budget > 0 {
+				req.ThinkingBudget = config.IntPtr(tc.budget)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					MaxTokens    int                     `json:"max_tokens"`
+					OutputConfig struct{ Effort string } `json:"output_config"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if body.MaxTokens != tc.effective || body.OutputConfig.Effort != tc.effort {
+					t.Errorf("wire limit %d, effort %q", body.MaxTokens, body.OutputConfig.Effort)
+				}
+				_, _ = w.Write([]byte(`{"id":"fixture","stop_reason":"max_tokens","content":[]}`))
+			}))
+			defer server.Close()
+			adapter := NewAnthropic(server.URL, "synthetic", "2023-06-01", server.Client())
+			estimate, err := adapter.EstimateRequest(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if estimate.EffectiveMaxOutputTokens != tc.effective || estimate.MaxOutputTokensSource != tc.source || estimate.OutputConfigEffort != tc.diagnosticEffort {
+				t.Errorf("output diagnostics: %+v", estimate.RequestOutputOptions)
+			}
+			result, err := adapter.RunTurn(context.Background(), req, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			effort, present := result.RawProvider["output_config_effort"].(string)
+			if result.StopReason != "max_tokens" || effort != tc.diagnosticEffort || present != (tc.diagnosticEffort != "") {
+				t.Errorf("stop %q, reported effort %q, present %t", result.StopReason, effort, present)
+			}
+		})
+	}
+}
+
 func TestAnthropicMaxTokensStaysStrictlyAboveThinkingBudget(t *testing.T) {
 	for _, tc := range []struct {
 		maxTokens int

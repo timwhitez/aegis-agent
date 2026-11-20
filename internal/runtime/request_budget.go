@@ -63,6 +63,7 @@ type requestBudgetPolicy struct {
 }
 
 type requestBudgetContext struct {
+	SummaryCapApplied bool
 	RequestKind       string
 	SessionID         string
 	Turn              int
@@ -242,6 +243,10 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 		err := fmt.Errorf("invalid wire request estimate: schema=%d body_bytes=%d input_tokens=%d expected_input_tokens=%d", estimate.SchemaVersion, estimate.WireBodyBytes, estimate.EstimatedInputTokens, expectedInputTokens)
 		snapshot.RejectionCode = requestEstimateFailedCode
 		return snapshot, &RequestBudgetPreflightError{Code: requestEstimateFailedCode, Snapshot: snapshot, Err: err}
+	}
+	snapshot.RequestOutputOptions = estimate.RequestOutputOptions
+	if requestContext.SummaryCapApplied && snapshot.MaxOutputTokensSource == "configured" {
+		snapshot.MaxOutputTokensSource = "semantic_summary"
 	}
 	snapshot.WireEstimateSchemaVersion = estimate.SchemaVersion
 	snapshot.SystemChars = estimate.SystemChars

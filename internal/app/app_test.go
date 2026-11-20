@@ -564,6 +564,55 @@ func decodeStreamJSONLines(t *testing.T, raw string) []streamjson.StreamOutputMe
 	return lines
 }
 
+func TestTextRunResultReportsFailureOnStderr(t *testing.T) {
+	const tokenLimit = "provider stopped because max output tokens were reached"
+	const private = "Authorization: Bearer synthetic-secret\n\x1b[31m"
+	for _, tc := range []struct {
+		name, status, lastError, finalText, diagnostic string
+		wantCode                                       int
+	}{
+		{"without final text", session.StatusFailed, tokenLimit, "", tokenLimit, 1},
+		{"with final text", session.StatusFailed, tokenLimit, "partial answer", tokenLimit, 1},
+		{"free text", session.StatusFailed, private, "", "see the local session state for failure details", 1},
+		{"missing detail", session.StatusFailed, "", "", "", 1},
+		{"missing finish", session.StatusFailed, "incomplete_no_finish", "", "incomplete_no_finish", 6},
+		{"legacy missing finish", session.StatusFailed, "incomplete_no_finish: task ended without explicit finish", "", "incomplete_no_finish: task ended without explicit finish", 6},
+		{"cancelled", session.StatusCancelled, tokenLimit, "", "", 130},
+		{"paused", session.StatusPaused, tokenLimit, "", "", 130},
+		{"completed", session.StatusCompleted, tokenLimit, "answer", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runtime.RunResult{Status: tc.status, LastError: tc.lastError, FinalText: tc.finalText}
+			var stdout, stderr bytes.Buffer
+			err := printResult(&stdout, &stderr, false, result, mapStatusToExitCode(result.Status, result.LastError))
+			var exit ExitError
+			if tc.wantCode == 0 && err != nil || tc.wantCode != 0 && (!errors.As(err, &exit) || exit.Code != tc.wantCode) {
+				t.Fatalf("returned %v, want exit %d", err, tc.wantCode)
+			}
+			if strings.TrimSuffix(stdout.String(), "\n") != tc.finalText {
+				t.Errorf("stdout = %q, want only final text", stdout.String())
+			}
+			wantStderr := ""
+			if tc.diagnostic != "" {
+				wantStderr = "session failed: " + tc.diagnostic + "\n"
+			}
+			if stderr.String() != wantStderr {
+				t.Errorf("stderr = %q, want %q", stderr.String(), wantStderr)
+			}
+		})
+	}
+}
+
+func TestTextFailureDiagnosticPreservesExitWhenStderrUnavailable(t *testing.T) {
+	result := runtime.RunResult{Status: session.StatusFailed, LastError: "incomplete_no_finish"}
+	var stdout bytes.Buffer
+	err := printResult(&stdout, runDiagnosticFailingWriter{}, false, result, mapStatusToExitCode(result.Status, result.LastError))
+	var exit ExitError
+	if !errors.As(err, &exit) || exit.Code != 6 {
+		t.Fatalf("returned %v, want session exit 6", err)
+	}
+}
+
 func TestRunCommandStreamJSONFailureWritesResultBeforeExit(t *testing.T) {
 	fake := newFakeRunner()
 	fake.startResult = runtime.RunResult{

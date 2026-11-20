@@ -104,6 +104,7 @@ usage presence 是 provider contract 的一部分：
 - 兼容旧 adapter 或旧 event 时，任一 token counter 非零可标记为 `legacy_inferred` known usage；没有 presence 标记且全部为零仍为 unknown
 - OpenAI、Anthropic 与 Google 的响应 usage 字段必须按可空对象解析，不能用内嵌零值 struct 丢失 presence
 - lifecycle/report 中的 usage source 只接受稳定 `provider` / `legacy_inferred`；旧 event 缺 source 时按 presence/counter 规则推导，任意其他字符串不得进入 ContextReport
+- Anthropic 的 usage 事件附带 `reported_counts`，只包含端点实际给出的输入、输出、缓存创建和缓存读取计数。显式的 0 会保留。评测收据使用这些字段；旧事件继续沿用当时记录的计数。
 
 #### Canonical token accounting
 
@@ -138,6 +139,8 @@ usage presence 是 provider contract 的一部分：
 - tail 收缩必须按 call/result alias 闭包删除，不能留下 dangling OpenAI function call/output、Anthropic tool_use/tool_result 或 Google functionCall/functionResponse；最新 external instruction、最新 steer 与最新 tool result replay closure 不得删除
 - tool schemas、system prompt、metadata/provider envelope 或不可丢单条消息本身不可满足时，runtime 返回 `request_budget_unfit`。错误至少包含 request_kind、blocking_component、estimated_input_tokens、available_input_tokens、reserved_output_tokens、effective_window_tokens 与最终 snapshot，不包含请求正文
 - 最终 `provider.request.prepared` 与随后 `provider.call` 使用同一个 fitted TurnRequest/snapshot；`fit=false` 只写 local rejection/attempt facts，不进入 adapter retry/auto-resume。每个 `provider.request.budget_action` 通过 request id/kind 记录 pass、action、before/after wire bytes/tokens 与受影响 id/count
+
+Anthropic 适配器成功构造请求时，`provider.request.prepared.data.request_budget` 的 `effective_max_output_tokens` 记录请求体中的输出上限。`max_output_tokens_source` 取值为 `configured`（显式上限）、`adapter_default`（默认值）、`semantic_summary`（摘要器将上限设为 2048）或 `thinking_budget`（手动思考预算进一步抬高了上限）。这些字段独立于预检的 `reserved_output_tokens`。设置了输出档位时，`output_config_effort` 记录该档位，自定义字符串记为 `other`。用 `request_id` 将预检参数关联到同一逻辑请求的 `provider.request.completed` 或 `provider.request.failed`。主请求另有 `turn.stopped`。一次逻辑请求可能在发送前被拒绝，也可能包含多次 HTTP 尝试。
 
 #### 2.2.4 Request lifecycle correlation
 

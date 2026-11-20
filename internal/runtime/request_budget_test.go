@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -67,6 +70,7 @@ func (a *messageOnlyEstimateAdapter) RunTurn(_ context.Context, req provider.Tur
 
 func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	adapter := &fixedEstimateAdapter{estimate: provider.WireRequestEstimate{
+		RequestOutputOptions: session.RequestOutputOptions{EffectiveMaxOutputTokens: 10, MaxOutputTokensSource: "configured", OutputConfigEffort: "high"},
 		SchemaVersion:        1,
 		WireBodyBytes:        400,
 		EstimatedInputTokens: 100,
@@ -77,6 +81,9 @@ func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	fit, err := preflightProviderRequest(adapter, req, requestBudgetPolicy{EffectiveWindowTokens: 110, UtilizationFactor: 1}, context)
 	if err != nil {
 		t.Fatalf("expected exact boundary to fit: %v", err)
+	}
+	if fit.RequestOutputOptions != adapter.estimate.RequestOutputOptions {
+		t.Fatalf("snapshot lost adapter output settings: %+v", fit.RequestOutputOptions)
 	}
 	if !fit.Fit || fit.HeadroomTokens != 0 || fit.RequiredTokens != 110 {
 		t.Fatalf("unexpected exact-boundary snapshot: %#v", fit)
@@ -1066,6 +1073,64 @@ func TestEngineRejectsOversizedMainRequestBeforeProviderCall(t *testing.T) {
 	}
 }
 
+func TestSemanticSummaryRecordsActualOutputLimitSource(t *testing.T) {
+	for _, tc := range []struct {
+		name, source                string
+		configured, thinking, limit int
+	}{
+		{"unset profile", "semantic_summary", 0, 0, 2048},
+		{"larger profile", "semantic_summary", 8192, 0, 2048},
+		{"smaller profile", "configured", 512, 0, 512},
+		{"equal profile", "configured", 2048, 0, 2048},
+		{"thinking headroom", "thinking_budget", 8192, 4096, 5120},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, meta, _, _, _, _ := newTestEngine(t, session.ModeExec)
+			engine.cfg.Runtime.Compact.SemanticSummary.Enabled = true
+			meta.Model = "fixture"
+			meta.ProviderOptions.MaxOutputTokens = tc.configured
+			if tc.thinking > 0 {
+				meta.ProviderOptions.ThinkingBudget = config.IntPtr(tc.thinking)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					MaxTokens int `json:"max_tokens"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.MaxTokens != tc.limit {
+					t.Errorf("wire max_tokens=%d, err=%v, want %d", body.MaxTokens, err, tc.limit)
+				}
+				_, _ = w.Write([]byte(`{"id":"test","stop_reason":"end_turn","content":[{"type":"text","text":"summary"}]}`))
+			}))
+			defer server.Close()
+			adapter := provider.NewAnthropic(server.URL, "fixture", "2023-06-01", server.Client())
+			summarize := engine.semanticSummaryFunc(adapter, meta, requestBudgetContext{Turn: 2}, compactionContextProfile{})
+			if got, err := summarize(context.Background(), []session.Message{session.NewMessage("user", "fixture")}, 1024); err != nil || got != "summary" {
+				t.Fatalf("summary=%q, err=%v", got, err)
+			}
+			events, err := loadEvents(engine.store, meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var prepared, completed string
+			for _, event := range events {
+				switch event.Type {
+				case "provider.request.prepared":
+					prepared = stringFromAny(event.Data["request_id"])
+					budget := event.Data["request_budget"].(map[string]any)
+					if budget["max_output_tokens_source"] != tc.source || intFromAny(budget["effective_max_output_tokens"]) != tc.limit {
+						t.Errorf("recorded source=%v limit=%v, want %s %d", budget["max_output_tokens_source"], budget["effective_max_output_tokens"], tc.source, tc.limit)
+					}
+				case "provider.request.completed":
+					completed = stringFromAny(event.Data["request_id"])
+				}
+			}
+			if prepared == "" || prepared != completed {
+				t.Errorf("prepared=%q completed=%q", prepared, completed)
+			}
+		})
+	}
+}
+
 func TestSemanticSummaryBudgetRejectionFallsBackToDeterministicCompaction(t *testing.T) {
 	engine, meta, state, _, _, _ := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.Compact.SemanticSummary.Enabled = true
@@ -1131,5 +1196,31 @@ func TestSemanticSummaryBudgetRejectionFallsBackToDeterministicCompaction(t *tes
 	finished, ok := findEventByType(events, "compact.finished")
 	if !ok || finished.Data["semantic_summary_status"] != "failed" {
 		t.Fatalf("expected deterministic compaction to record semantic fallback, got %#v", finished)
+	}
+}
+
+func TestAnthropicRequestEvidenceKeepsMissingUsageDistinctFromZero(t *testing.T) {
+	for _, fields := range []map[string]int{
+		{},
+		{"input_tokens": 5},
+		{"output_tokens": 0, "cache_read_input_tokens": 0},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"stop_reason": "end_turn", "content": []any{}, "usage": fields})
+		}))
+		adapter := provider.NewAnthropic(server.URL, "test", "2023-06-01", server.Client())
+		result, err := adapter.RunTurn(context.Background(), provider.TurnRequest{Model: "test"}, nil)
+		server.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := providerRequestCompletedEventData(RequestBudgetSnapshot{}, result)
+		data, err := json.Marshal(event["usage"])
+		var stored struct {
+			Counts map[string]int `json:"reported_counts"`
+		}
+		if err != nil || json.Unmarshal(data, &stored) != nil || stored.Counts == nil || !maps.Equal(stored.Counts, fields) {
+			t.Fatalf("wire usage %v, recorded %s", fields, data)
+		}
 	}
 }

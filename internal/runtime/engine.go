@@ -188,11 +188,12 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 			EffectiveWindowTokens: profile.ContextWindowTokens,
 			UtilizationFactor:     profile.UtilizationFactor,
 		}, requestBudgetContext{
-			RequestKind:      requestKindSemanticSummary,
-			SessionID:        meta.ID,
-			Turn:             requestContext.Turn,
-			RequestSequence:  requestContext.RequestSequence,
-			CompactionAction: "semantic_summary",
+			RequestKind:       requestKindSemanticSummary,
+			SummaryCapApplied: maxOutputTokens != meta.ProviderOptions.MaxOutputTokens,
+			SessionID:         meta.ID,
+			Turn:              requestContext.Turn,
+			RequestSequence:   requestContext.RequestSequence,
+			CompactionAction:  "semantic_summary",
 		}, e.cfg)
 		req = fitted.Request
 		snapshot := fitted.Snapshot
@@ -248,6 +249,35 @@ type RunResult struct {
 	FinalText string
 	LastError string
 	Approval  *ApprovalResult `json:"approval,omitempty"`
+}
+
+const (
+	hardTurnLimitError        = "max_turns_hard_exceeded"
+	unresolvedBackgroundError = "unresolved_background_work: child or background work is still unresolved"
+	maxOutputTokensError      = "provider stopped because max output tokens were reached"
+	blockedResponseError      = "provider stopped because the response was blocked"
+	providerStopError         = "provider stopped with an adapter/provider error stop reason"
+	cancelledResponseError    = "provider response was cancelled before completion"
+	emptyToolCallsError       = "provider reported tool use without any parsed tool calls"
+	toolStopMismatchError     = "provider returned parsed tool calls without a tool_use stop reason"
+	noProgressError           = modelDegenerationNoProgressReason + ": consecutive done_candidate turns produced text but no valid tool call"
+)
+
+// FailureDiagnostic returns only fixed runtime messages. LastError can also
+// contain a provider response, credentials, or terminal control characters.
+func (r RunResult) FailureDiagnostic() string {
+	if r.Status != session.StatusFailed || r.LastError == "" {
+		return ""
+	}
+	switch r.LastError {
+	case hardTurnLimitError, unresolvedBackgroundError, noProgressError,
+		maxOutputTokensError, blockedResponseError, providerStopError,
+		cancelledResponseError, emptyToolCallsError, toolStopMismatchError,
+		"incomplete_no_finish", "incomplete_no_finish: task ended without explicit finish":
+		return r.LastError
+	default:
+		return "see the local session state for failure details"
+	}
 }
 
 const modelDegenerationNoProgressReason = "model_degeneration_no_progress"
@@ -336,7 +366,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_limit"
-				state.LastError = "max_turns_hard_exceeded"
+				state.LastError = hardTurnLimitError
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
@@ -1417,7 +1447,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					state.Status = session.StatusFailed
 					state.Phase = "turn_decide"
 					state.IncompleteReason = "unresolved_background_work"
-					state.LastError = "unresolved_background_work: child or background work is still unresolved"
+					state.LastError = unresolvedBackgroundError
 					if err := e.store.SaveState(meta.ID, state); err != nil {
 						return RunResult{}, err
 					}
@@ -1436,7 +1466,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				state.Status = session.StatusFailed
 				state.Phase = "turn_decide"
 				state.IncompleteReason = modelDegenerationNoProgressReason
-				state.LastError = modelDegenerationNoProgressReason + ": consecutive done_candidate turns produced text but no valid tool call"
+				state.LastError = noProgressError
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
@@ -2622,7 +2652,7 @@ func (e *Engine) appendProviderMaxTokensResume(sessionID string, result provider
 		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
 		"backoff_ms":   backoff.Milliseconds(),
 		"stop_reason":  result.StopReason,
-		"error":        "provider stopped because max output tokens were reached",
+		"error":        maxOutputTokensError,
 	}
 	if strings.TrimSpace(result.ProviderResponseID) != "" {
 		data["provider_response_id"] = result.ProviderResponseID
@@ -3426,6 +3456,9 @@ func providerUsageEventData(usage provider.Usage) map[string]any {
 	} else {
 		data["source"] = "legacy_inferred"
 	}
+	if usage.ReportedCounts != nil {
+		data["reported_counts"] = usage.ReportedCounts
+	}
 	data["input_tokens"] = usage.InputTokens
 	data["output_tokens"] = usage.OutputTokens
 	data["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
@@ -3518,15 +3551,15 @@ func (e *Engine) appendProviderRequestFailed(sessionID, phase string, snapshot R
 func providerStopFailure(stopReason string) (string, string) {
 	switch strings.TrimSpace(stopReason) {
 	case "max_tokens":
-		return "provider_max_tokens", "provider stopped because max output tokens were reached"
+		return "provider_max_tokens", maxOutputTokensError
 	case "blocked":
-		return "provider_blocked", "provider stopped because the response was blocked"
+		return "provider_blocked", blockedResponseError
 	case "error":
-		return "provider_stop_error", "provider stopped with an adapter/provider error stop reason"
+		return "provider_stop_error", providerStopError
 	case "cancelled":
-		return "provider_cancelled", "provider response was cancelled before completion"
+		return "provider_cancelled", cancelledResponseError
 	case "tool_use":
-		return "provider_tool_use_empty", "provider reported tool use without any parsed tool calls"
+		return "provider_tool_use_empty", emptyToolCallsError
 	default:
 		return "", ""
 	}
@@ -3547,7 +3580,7 @@ func providerToolCallStopFailure(result provider.TurnResult) (string, string) {
 	if len(result.ToolCalls) == 0 || strings.TrimSpace(result.StopReason) == "tool_use" {
 		return "", ""
 	}
-	return "provider_tool_call_stop_mismatch", "provider returned parsed tool calls without a tool_use stop reason"
+	return "provider_tool_call_stop_mismatch", toolStopMismatchError
 }
 
 func syntheticToolResults(calls []provider.ToolCall, output string) []session.ToolResult {
