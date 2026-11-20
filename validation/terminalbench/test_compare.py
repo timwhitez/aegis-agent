@@ -6,7 +6,7 @@ import uuid
 
 import yaml
 
-from compare import compare
+from compare import attempt_row, compare
 from scheduler import asset_hashes
 
 
@@ -42,7 +42,7 @@ class CompareTest(unittest.TestCase):
                     "attempt_id": attempt.name, "status": "completed", "reward": 0, "elapsed_s": 3, "adapter_rc": 0, "ended_at": 4}))
         (attempt / "outcome.json").write_text(json.dumps({"agent_s": 2, "verify_s": 1, "agent_rc": 1,
             "verifier_evidence": {"case_source": None, "cases": [], "log_files_scanned": 1,
-                                  "log_signals": {"command_not_found": 2, "untrusted-marker": 1}}}))
+                                  "log_signals": {"command_not_found": 2, "pytest_launcher_missing": 1, "untrusted-marker": 1}}}))
         data = {"schema_version": 1, "partial": True, "started": True, "sessions": [{
             "id": "s1", "status": "failed", "tool_calls": 0, "requests": [{
                 "request_id": "s1:1:main:0", "max_output_tokens": 4096, "source": "adapter_default",
@@ -54,7 +54,7 @@ class CompareTest(unittest.TestCase):
         self.assertEqual((row["evidence"], row["reward"], row["observed_request_count"]), ("partial", 0, 1))
         self.assertEqual((row["elapsed_s"], row["agent_s"], row["verify_s"]), (3, 2, 1))
         self.assertEqual(row["verifier"], {"observed_cases": 0, "case_status_counts": {}, "case_source": None,
-                                          "log_files_scanned": 1, "log_signals": {"command_not_found": 2}})
+                                          "log_files_scanned": 1, "log_signals": {"command_not_found": 2, "pytest_launcher_missing": 1}})
         self.assertNotIn("untrusted-marker", json.dumps(row))
 
         self.assertEqual(row["requests"][0]["usage"]["output_tokens"], 0)
@@ -69,6 +69,44 @@ class CompareTest(unittest.TestCase):
         self.assertIs(row["started"], False)
         self.assertEqual((row["category"], row["observed_request_count"]), ("not_started", 0))
 
+
+    def test_native_reward_and_safe_deliveries_survive_unscored_verifier(self):
+        state = {"status": "verifier_error", "reward": None}
+        outcome = self.root / "outcome.json"
+        marker = "private-payload-marker"
+        digest = "a" * 64
+        safe = {"declaration_index": 0, "status": "collected", "files": 1, "bytes": 24, "sha256": digest}
+        outcome.write_text(json.dumps({"observed_reward": 0, "reward": None, "artifacts": [
+            {**safe, "source": marker, "service": marker, "raw": marker,
+             "private_copy": {"status": "encrypted", "file": marker}},
+            {"declaration_index": 1, "status": "missing"},
+            {"declaration_index": True, "status": marker, "files": -1, "bytes": marker,
+             "sha256": marker, "private_copy": {"status": marker}},
+        ]}))
+        row = attempt_row(self.root, state)
+        self.assertEqual(row["observed_reward"], 0)
+        self.assertIsNone(row["reward"])
+        self.assertEqual(row["artifacts"][0], {**safe, "private_copy_status": "encrypted"})
+        self.assertEqual(row["artifacts"][1], {"declaration_index": 1, "status": "missing", "files": None,
+                         "bytes": None, "sha256": None, "private_copy_status": None})
+        self.assertEqual(row["artifacts"][2], {"declaration_index": None, "status": "invalid", "files": None,
+                         "bytes": None, "sha256": None, "private_copy_status": None})
+        self.assertNotIn(marker, json.dumps(row))
+        outcome.write_text('{"reward":0.5,"artifacts":[]}')
+        row = attempt_row(self.root, state)
+        self.assertEqual((row["observed_reward"], row["artifacts"]), (0.5, []))
+        outcome.write_text('{"observed_reward":false,"reward":1}')
+        row = attempt_row(self.root, state)
+        self.assertIsNone(row["observed_reward"])
+        self.assertIsNone(row["artifacts"])
+
+    def test_artifact_selection_is_a_closed_enum(self):
+        for value in ("task_declared", "operator_selected", "not_configured", "private-marker", None):
+            (self.root / "outcome.json").write_text(json.dumps({"artifact_selection": value}))
+            row = attempt_row(self.root, {})
+            expected = value if value in ("task_declared", "operator_selected", "not_configured") else None
+            self.assertEqual(row["artifact_selection"], expected)
+            self.assertNotIn("private-marker", json.dumps(row))
 
     def test_rejects_different_scheduler_controls(self):
         for run, jobs in [(self.a, 1), (self.b, 2)]:

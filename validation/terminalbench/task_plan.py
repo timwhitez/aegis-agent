@@ -1,6 +1,6 @@
 """Read the resource and verifier plan used by both batch and trial entry points."""
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import tomllib
 
 
@@ -8,7 +8,7 @@ class UnsupportedTask(ValueError):
     """A bounded message that is safe to retain with the attempt."""
 
 
-def read_plan(task_dir):
+def read_plan(task_dir, capture_paths=()):
     root = Path(task_dir)
     with (root / "task.toml").open("rb") as source:
         task = tomllib.load(source)
@@ -37,10 +37,31 @@ def read_plan(task_dir):
             raise UnsupportedTask("this adapter supports Linux tasks without MCP servers")
         return result
 
-    return {"agent": phase(agent_env, task.get("agent", {}), None),
+    plan = {"agent": phase(agent_env, task.get("agent", {}), None),
             "verifier": phase(verify_env, verifier, 600), "mode": mode,
             "compose": (root / "environment/docker-compose.yaml").is_file(),
             "artifacts": task.get("artifacts", [])}
+    if capture_paths:
+        if mode != "shared" or plan["artifacts"]:
+            raise UnsupportedTask("extra capture requires a shared task without declared artifacts")
+        if not isinstance(capture_paths, (list, tuple)) or len(capture_paths) > 16:
+            raise UnsupportedTask("select up to 16 fixed output paths per task")
+        selected = []
+        for raw in capture_paths:
+            if not isinstance(raw, str) or len(raw) > 512 or not raw.isprintable():
+                raise UnsupportedTask("invalid capture path")
+            path = PurePosixPath(raw)
+            if (not raw.startswith("/") or raw.startswith("//") or str(path) != raw
+                    or len(path.parts) < 3 or any(p.startswith(".") for p in path.parts[1:])
+                    or any(c in raw for c in "*?[]")
+                    or path.parts[1] in {"proc", "sys", "dev", "run", "logs", "etc"}
+                    or path.is_relative_to("/tmp/aegis-benchmark")):
+                raise UnsupportedTask("select a fixed absolute task output below a directory; system, hidden and wildcard paths are unsupported")
+            if any(p.is_relative_to(path) or path.is_relative_to(p) for p in selected):
+                raise UnsupportedTask("capture paths must be distinct and must not overlap")
+            selected.append(path)
+        plan["capture_paths"] = sorted(str(p) for p in selected)
+    return plan
 
 
 if __name__ == "__main__":

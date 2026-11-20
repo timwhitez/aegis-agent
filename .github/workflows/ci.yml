@@ -27,6 +27,7 @@ jobs:
       - run: CGO_ENABLED=0 go build -trimpath -o "${RUNNER_TEMP}/aegis-evidence" ./validation/cmd/benchevidence
       - run: docker pull python:3.12-slim
       - run: python validation/terminalbench/smoke_docker.py --evidence-helper "${RUNNER_TEMP}/aegis-evidence"
+      - run: python validation/terminalbench/smoke_capture.py --evidence-helper "${RUNNER_TEMP}/aegis-evidence"
 
   verify:
     runs-on: ubuntu-24.04

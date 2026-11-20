@@ -145,6 +145,31 @@ fi
                     assert MARKER.encode() not in data and b"SMOKE_HOST_SECRET" not in data
                 print(mode, "passed", flush=True)
                 if mode == "shared":
+                    # Same terminal scoring wrapper as the polyglot reference.
+                    # Restrict PATH only in this verifier so no package/network
+                    # setup is needed to exercise the failed launcher.
+                    write(task / "tests/test.sh", """#!/bin/bash
+export PATH=/empty-verifier-path
+uvx \\
+  -p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 \\
+  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA
+
+if [ $? -eq 0 ]; then
+  echo 1 > /logs/verifier/reward.txt
+else
+  echo 0 > /logs/verifier/reward.txt
+fi
+""")
+                    failed_grader = root / "attempt-missing-scorer"
+                    failed_grader.mkdir()
+                    cmd[cmd.index("--attempt") + 1] = failed_grader
+                    cmd[-1] = uuid4().hex
+                    subprocess.run(cmd, env=env, check=True)
+                    result = json.loads((failed_grader / "outcome.json").read_text())
+                    assert result["status"] == "verifier_error" and result["reward_valid"] is False, result
+                    assert result["reward"] == result["observed_reward"] == 0, result
+                    assert result["verifier_evidence"]["log_signals"]["pytest_launcher_missing"] == 1, result
+                    print("failed test launcher retained native zero as unscored", flush=True)
                     write(task/"tests/test.sh", "#!/bin/sh\nexit 24\n")
                     negative = root/"attempt-no-fresh-reward"
                     negative.mkdir()

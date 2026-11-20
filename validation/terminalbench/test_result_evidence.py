@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import tarfile
 import tempfile
@@ -11,6 +12,8 @@ import unittest
 from unittest.mock import patch
 
 from result_evidence import MAX_DELIVERY, retain_results
+from scheduler import read_outcome
+from trial import classify_result, save_outcome
 
 
 class ResultEvidenceTest(unittest.TestCase):
@@ -34,6 +37,76 @@ class ResultEvidenceTest(unittest.TestCase):
     def collect(self):
         (self.artifacts / "manifest.json").write_text(json.dumps([self.item]))
         return retain_results(self.paths, self.attempt, self.plan)
+
+    def test_missing_verifier_launcher_preserves_zero_and_excludes_it_from_scored(self):
+        grader = self.trial / "test.sh"
+        script = (
+            "#!/bin/bash\n"
+            "uvx \\\n"
+            "  -p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5 \\\n"
+            "  pytest --ctrf /logs/verifier/ctrf.json /tests/test_outputs.py -rA\n"
+            "if [ $? -eq 0 ]; then\n"
+            "  echo 1 > /logs/verifier/reward.txt\n"
+            "else\n"
+            "  echo 0 > /logs/verifier/reward.txt\n"
+            "fi\n"
+        )
+        grader.write_text(script)
+        rewardfile = self.verify / "reward.txt"
+        # Move only the reward redirection into the temporary tree. Bash sees the
+        # original grader name, physical lines and launch argv, with no uvx in PATH.
+        completed = subprocess.run(
+            ["/bin/bash", "-c", script.replace("/logs/verifier/reward.txt", shlex.quote(str(rewardfile))), "/tests/test.sh"],
+            env={"PATH": str(self.attempt)}, capture_output=True, check=True)
+        self.assertEqual(rewardfile.read_text().strip(), "0")
+        log = self.verify / "test-stdout.txt"
+        log.write_bytes(completed.stdout + completed.stderr)
+        self.assertIn(b"uvx: command not found", log.read_bytes())
+        receipt = retain_results(self.paths, self.attempt, self.plan, grader)["verifier_evidence"]
+        self.assertEqual(receipt["log_signals"]["pytest_launcher_missing"], 1)
+        result = SimpleNamespace(reward_valid=True, recorded_exceptions=lambda: [])
+        evidence = {"started": True, "category": "completed"}
+        status = {"stage": "verifier", "reward": 0, "verifier_evidence": receipt}
+        classify_result(status, result, evidence)
+        save_outcome(self.attempt, status)
+        raw = json.loads((self.attempt / "outcome.json").read_text())
+        self.assertEqual((raw["status"], raw["reward"], raw["reward_valid"]), ("verifier_error", 0, False))
+        state = read_outcome(self.attempt / "outcome.json", completed.returncode)
+        self.assertEqual((state["status"], state["reward"], state["observed_reward"]), ("verifier_error", None, 0))
+
+        original = log.read_bytes()
+        for title, entry, output, ctrf in [
+            ("submission CLI missing", script, original.replace(b"uvx:", b"student-cli:"), False),
+            ("compiler missing", script, original.replace(b"uvx:", b"gcc:"), False),
+            ("unrelated script", script, original.replace(b"/tests/test.sh:", b"/app/setup.sh:"), False),
+            ("unrelated line", script, b"/tests/test.sh: line 99: uvx: command not found\n", False),
+            ("different uvx job", script.replace("pytest --ctrf", "student-cli --ctrf"), original, False),
+            ("different scoring policy", script + "echo 0 > /logs/verifier/reward.txt\n", original, False),
+            ("pytest ran", script, original + b"=== test session starts ===\n", False),
+            ("assertion ran", script, original + b"FAILED tests.py::test_case - AssertionError\n", False),
+            ("CTRF present", script, original, True),
+            ("no matching logs", script, b"could not resolve host\n", False),
+            ("baked script unknown", None, original, False),
+        ]:
+            with self.subTest(title=title):
+                if entry:
+                    grader.write_text(entry)
+                log.write_bytes(output)
+                ctrf_file = self.verify / "ctrf.json"
+                if ctrf:
+                    ctrf_file.write_text('{"results":{"tests":[]}}')
+                else:
+                    ctrf_file.unlink(missing_ok=True)
+                notes = retain_results(self.paths, self.attempt, self.plan, grader if entry else None)["verifier_evidence"]
+                self.assertNotIn("pytest_launcher_missing", notes["log_signals"])
+                status = {"stage": "verifier", "reward": 0, "verifier_evidence": notes}
+                classify_result(status, result, evidence)
+                self.assertEqual(status["status"], "completed")
+
+        for reward, notes in [(1, receipt), (0, {"cases": [], "log_signals": {"command_not_found": 1}})]:
+            state = {"reward": reward, "verifier_evidence": notes}
+            classify_result(state, result, evidence)
+            self.assertEqual(state["status"], "completed")
 
     def test_known_case_outcomes_without_verbatim_names_or_messages(self):
         private = "opaque-test-control-canary"

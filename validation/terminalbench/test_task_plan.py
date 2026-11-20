@@ -27,6 +27,22 @@ class TaskPlanTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'prebuilt'):
                 read_plan(task)
 
+    def test_operator_paths_require_a_shared_task_without_native_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            spec = '[agent]\ntimeout_sec=7\n[environment]\ndocker_image="a"\ncpus=1\nmemory_mb=512\n'
+            (base/'task.toml').write_text(spec)
+            self.assertEqual(read_plan(base, ['/app/out'])['capture_paths'], ['/app/out'])
+            for paths in (['/app'], ['/etc/shadow'], ['/sys/fs/x'], ['/app/../secrets'],
+                          ['/app/.env'], ['/app/*'], ['/app/out', '/app/out/file']):
+                with self.subTest(paths=paths), self.assertRaises(ValueError):
+                    read_plan(base, paths)
+            for extra in ('artifacts=["/app/result"]\n'+spec,
+                          spec+'[verifier.environment]\ndocker_image="v"\ncpus=1\nmemory_mb=512\n'):
+                (base/'task.toml').write_text(extra)
+                with self.assertRaisesRegex(ValueError, 'without declared artifacts'):
+                    read_plan(base, ['/app/out'])
+
 
 if __name__ == '__main__':
     unittest.main()

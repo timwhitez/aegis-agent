@@ -34,6 +34,55 @@ LOG_SIGNALS = {
 LOG_SIGNALS = {name: re.compile(pattern, re.I) for name, pattern in LOG_SIGNALS.items()}
 
 
+# This is the terminal-bench wrapper shape in which the pytest launch status
+# directly determines the binary reward. Other shell programs stay unclassified.
+BINARY_PYTEST_REWARD = re.compile(
+    rb"(?m)^[ \t]*if[ \t]+\[[ \t]+\$\?[ \t]+-eq[ \t]+0[ \t]+\];[ \t]*then\s+"
+    rb"echo\s+1\s*>\s*/logs/verifier/reward\.txt\s+else\s+"
+    rb"echo\s+0\s*>\s*/logs/verifier/reward\.txt\s+fi\s*\Z"
+)
+MISSING_LAUNCH = re.compile(
+    rb"^/tests/test\.sh: (?:line )?(\d{1,7}): (uvx|pytest): (?:command )?not found\s*\Z"
+)
+PYTEST_RAN = re.compile(rb"^=+ test session starts|^collected \d+ items?\b|^=+ .*?\d+ (?:passed|failed|skipped|errors?)\b", re.I)
+
+
+def pytest_grade_site(script):
+    """Return the tool and physical line range of the frozen binary scorer."""
+    if script is None:
+        return None
+    try:
+        with Path(script).open("rb") as stream:
+            data = stream.read(256 * 1024 + 1)
+    except OSError:
+        return None
+    suffix = BINARY_PYTEST_REWARD.search(data) if len(data) <= 256 * 1024 else None
+    if not suffix:
+        return None
+    lines = data[:suffix.start()].rstrip().splitlines()
+    if not lines:
+        return None
+    first = len(lines) - 1
+    while first and lines[first - 1].endswith(b"\\"):
+        first -= 1
+    command = b" ".join(line.removesuffix(b"\\") for line in lines[first:])
+    if not re.fullmatch(rb"[\w./:=+@ \t-]+", command):
+        return None
+    args = command.split()
+    if not args or args[0] not in {b"uvx", b"pytest"}:
+        return None
+    tool = args[0]
+    if tool == b"uvx":
+        args = args[1:]
+        while len(args) >= 2 and args[0] in {b"-p", b"--python", b"-w", b"--with", b"--index", b"--index-strategy"}:
+            args = args[2:]
+    if (not args or args[0] != b"pytest"
+            or (b"--ctrf", b"/logs/verifier/ctrf.json") not in zip(args, args[1:])
+            or not any(re.fullmatch(rb"/tests/[\w./-]+\.py", arg) for arg in args[1:])):
+        return None
+    return tool, range(first + 1, len(lines) + 1)
+
+
 class Limit(Exception):
     pass
 
@@ -93,7 +142,10 @@ def receipt(root, path, limit):
     return {"status": status}, None
 
 
-def verifier(root, directory):
+def verifier(root, directory, test_script=None):
+    grade_site = pytest_grade_site(test_script)
+    missing_scorer = False
+    pytest_ran = False
     receipts = {}
     cases = {}
     case_source = None
@@ -124,6 +176,12 @@ def verifier(root, directory):
             logs_scanned += 1
             for line in io.BytesIO(data):
                 sample = line[:8192]
+                if grade_site:
+                    missing = MISSING_LAUNCH.fullmatch(sample)
+                    if missing and missing[2] == grade_site[0] and int(missing[1]) in grade_site[1]:
+                        missing_scorer = True
+                    if PYTEST_RAN.search(sample.strip()):
+                        pytest_ran = True
                 for label, pattern in LOG_SIGNALS.items():
                     if pattern.search(sample):
                         signals[label] = signals.get(label, 0) + 1
@@ -140,6 +198,9 @@ def verifier(root, directory):
                     case_source = "pytest"
                     if status != "partial":
                         status = "observed"
+    if (missing_scorer and not pytest_ran and not cases and receipts["ctrf.json"]["status"] == "missing"
+            and all(receipts[n]["status"] in {"collected", "missing"} for n in ("test-stdout.txt", "test-stderr.txt"))):
+        signals["pytest_launcher_missing"] = 1
     return {"status": status, "case_source": case_source, "cases": list(cases.values()), "files": receipts,
             "log_files_scanned": logs_scanned, "log_signals": signals if logs_scanned else None}
 
@@ -213,13 +274,13 @@ def delivery(fd, recipient, attempt, index):
     return record
 
 
-def retain_results(paths, attempt, plan):
+def retain_results(paths, attempt, plan, test_script=None):
     trial = Path(paths.trial_dir)
     directory = Path(paths.artifacts_dir).relative_to(trial)
-    declarations = plan.get("artifacts", [])
+    declarations = plan.get("artifacts") or plan.get("capture_paths", [])
     records = []
     with opened(None, trial, READ_FLAGS | os.O_DIRECTORY) as root:
-        observations = verifier(root, Path(paths.verifier_dir).relative_to(trial))
+        observations = verifier(root, Path(paths.verifier_dir).relative_to(trial), test_script)
         _, raw = receipt(root, directory / "manifest.json", 1024**2)
         try:
             manifest = json.loads(raw) if raw else []

@@ -21,7 +21,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-FINAL = {"completed", "interrupted", "infra_invalid", "agent_timeout", "verifier_timeout", "hard_timeout"}
+FINAL = {"completed", "interrupted", "infra_invalid", "agent_timeout", "verifier_timeout", "verifier_error", "hard_timeout"}
 
 
 def save(path, record):
@@ -79,6 +79,12 @@ def freeze(args):
     names = sorted(set(args.only or available))
     if not names or set(names) - available.keys():
         raise ValueError("select at least one existing task directory")
+    captures = collections.defaultdict(list)
+    for item in args.capture:
+        name, sep, path = item.partition("=")
+        if not sep or name not in names:
+            raise ValueError("--capture must name a selected task using TASK=/absolute/path")
+        captures[name].append(path)
     config = validate_config(args.config)
     args.run.mkdir(mode=0o700, parents=True, exist_ok=False)
     try:
@@ -104,7 +110,11 @@ def freeze(args):
                 if p.is_symlink() and (Path(os.readlink(p)).is_absolute()
                                        or not p.resolve(strict=True).is_relative_to(target.resolve())):
                     raise ValueError(f"external link in task {name}: {p.relative_to(target)}")
-            tasks[name] = read_plan(target)
+            tasks[name] = read_plan(target, captures[name])
+            if captures[name]:
+                selections = assets / "captures"
+                selections.mkdir(exist_ok=True)
+                save(selections / (name + ".json"), tasks[name]["capture_paths"])
         for p in assets.rglob("*"):
             if not p.is_symlink() and p.is_file():
                 p.chmod(stat.S_IMODE(p.stat().st_mode) & ~0o222)
@@ -201,10 +211,14 @@ def group_stop(child):
 
 
 def adapter_argv(assets, attempt, label):
-    return [sys.executable, "-B", str(assets / "runner" / "trial.py"),
+    argv = [sys.executable, "-B", str(assets / "runner" / "trial.py"),
             "--task", str(assets / "tasks" / attempt.parent.name), "--attempt", str(attempt),
             "--binary", str(assets / "aegis-agent"), "--config", str(assets / "config.yaml"),
             "--evidence-helper", str(assets / "evidence-helper"), "--label", label]
+    selections = assets / "captures" / (attempt.parent.name + ".json")
+    if selections.is_file():
+        argv.extend(["--capture-plan", str(selections)])
+    return argv
 
 
 def orphan_clients(assets, attempt, label):
@@ -431,6 +445,8 @@ def main():
     for flag in ("run", "tasks", "binary", "config", "evidence-helper"):
         init.add_argument("--" + flag, type=Path, required=True)
     init.add_argument("--only", nargs="+", metavar="TASK")
+    init.add_argument("--capture", action="append", default=[], metavar="TASK=/absolute/path",
+                      help="collect this shared-task output before grading (repeatable)")
     run = commands.add_parser("run")
     run.add_argument("--run", type=Path, required=True)
     run.add_argument("--jobs", type=int, default=1)

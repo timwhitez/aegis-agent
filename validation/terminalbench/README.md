@@ -27,10 +27,11 @@ CGO_ENABLED=0 go build -trimpath -o bin/aegis-evidence ./validation/cmd/benchevi
 
 Harbor 的原始评分工作目录位于宿主的临时内存文件系统。独立 verifier 只接收声明的产物。原生 shared 任务则需要保留 agent 阶段留下的文件和服务，评分材料在 agent 阶段结束后注入。需要审查评分可信度时，应同时查看环境模式、verifier 证据及尝试状态。
 
+每个批次目录只允许所有者访问（`0700`），新建的诊断和交付副本默认权限为 `0600`。临时原始输出随本次容器清理；中断时，调度器会重试清理。冻结输入、脱敏记录和可选加密副本会保留到操作者删除该批次。复制报告到其他位置时，应单独设置副本权限和保留期限。
+
 `verifier_evidence` 记录 CTRF 用例的状态及标识摘要。有 pytest 文本时，也可用显式输出的 node ID 对账。产物收据按声明顺序对应冻结的 `task.toml`，记录字节数和内容摘要。需要保存可供单独检查的文件时，在宿主上设置 `AEGIS_BENCH_ARTIFACT_RECIPIENT_CERT` 为收件人的 PEM 公钥证书路径。适配器在内存中打包声明的交付物，仅把加密后的 CMS 文件写入尝试目录。每项交付上限为 32 MiB、4096 个条目，超限会留下记录。
 
 采集器对 4 MiB 以内的测试日志逐行检查前 8192 字节，将命令缺失、DNS、下载、TLS 和 pytest 收集错误的命中行数写入 `verifier_evidence.log_signals`。比较报告列出实际扫描的文件数、观察到的用例数和用例状态，得分沿用 verifier 的原始 reward。
-
 
 收件人可解密一项交付，将 tar 文件的 SHA-256 与收据中的 `private_copy.archive_sha256` 核对后，再检查归档内容。
 

@@ -16,6 +16,8 @@ python3 validation/terminalbench/scheduler.py summary --run "$RUN"
 
 每题每次尝试使用 `attempts/<任务名>/<UUID>/`。目录内的 `state.json` 记录批次、尝试标识、退出状态、原因、耗时和评分，`outcome.json` 保存适配器的结果。适配器必须正常返回、状态为 `completed` 并提供有效有限数值，调度器才接纳评分。0 和小数评分都会按原值保留。超时等未采纳尝试若观察到数值，另存为 `observed_reward`。缺失结果、无效基础设施、超时和中断均在下一次 `run` 时重试。成功完成的 0 分和 1 分均可跳过。第二个针对同一批次的执行进程会收到 `run already active`。
 
+共享环境的判分脚本若明确因 pytest 启动器缺失而写下 0，尝试记为 `verifier_error`，下次运行会重试。此判断同时核对冻结脚本的报错行、测试命令及末尾的 0/1 写分逻辑，并要求没有 CTRF、用例或 pytest 已启动的记录。原始 0 保存在 `outcome.json` 和 `observed_reward`，不计入有效评分。普通断言失败、被测程序缺失，以及缺少上述证据的历史尝试沿用原判。
+
 收到 SIGINT 或 SIGTERM 后，调度器停止接单，记录取消来源并通知已启动的适配器退出。默认每题硬时限为 agent 声明时限加 verifier 声明时限再加 1800 秒，可用 `--hard-timeout` 覆盖。到达硬时限后停止接单并取消本批其他活跃尝试，尚未开始的题保留为缺失。调度器异常退出时，独立监控进程从关闭的管道识别中断，按批次 UUID、任务名和尝试 UUID 派生的标识清理资源。清理目标从批次清单和目录计算，尝试结果中的字段不能指定另一个批次的容器。清理未完成时，下次运行先重试清理。旧尝试保留在原目录。
 
 `summary` 从全量清单和尝试记录重建结果。`planned` 是预定题数，`scored` 是取得有效评分的题数，`passed` 是评分等于 1 的题数。`reward_coverage`、`conditional_pass_rate`、`manifest_pass_rate` 分别表示 scored/planned、passed/scored 和 passed/planned。尚无评分时，条件通过率为 null。每批执行结束时还会写出 `summary.json`。所有预定题均取得有效评分时，命令退出 0，有未完成题或中断时返回非零。
@@ -27,3 +29,11 @@ python3 -B validation/terminalbench/compare.py "$BASELINE_RUN" "$CANDIDATE_RUN" 
 ```
 
 比较程序核对两边的任务、资产、配置及记录的调度条件，列出各次尝试的评分、耗时、停止原因、用量和缺失项。预检事件计的是进入请求准备阶段的次数，实际发出的 HTTP 请求另行记录。
+
+### 选择共享任务的交付物
+
+共享任务没有原生 `artifacts` 时，可在 `init` 命令中重复传入 `--capture`。例如 `--capture polyglot-rust-c=/app/polyglot/main.rs` 选择一个文件，`--capture example=/workspace/generated` 选择一个目录。每次运行只接受已选任务名，路径必须是明确的绝对路径。每题最多 16 个，不能互相覆盖，也不能选择通配符、隐藏文件或运行器和系统控制目录。已有原生交付声明和单独 verifier 的任务沿用题目定义。
+
+列表进入冻结计划的 `capture_paths` 和 `assets/captures/<task>.json` 的 SHA-256 清单。Harbor 在 agent 结束后、共享 verifier 启动前按清单采集，所以 verifier 修改或删除交付文件不会改变收据。每项的 `declaration_index` 对应规范化列表的下标。默认保留文件数量、字节数、哈希及采集状态，设置 `AEGIS_BENCH_ARTIFACT_RECIPIENT_CERT` 可按相同的容量和文件类型限制保存加密副本。
+
+`outcome.json` 的 `artifact_selection` 表明来源。未配置时为 `not_configured`，原生声明为 `task_declared`，操作者选择为 `operator_selected`。已选文件缺失会在相应条目显示 `status=missing`。以前版本只存空数组的记录可以从冻结任务计划核对当时是否选择了输出。用 `python validation/terminalbench/smoke_capture.py --evidence-helper /path/to/aegis-evidence` 可运行不调用模型的 Docker 对照。

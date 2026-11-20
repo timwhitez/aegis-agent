@@ -86,12 +86,18 @@ async def execute(args, scratch, status):
     from result_evidence import retain_results
 
     task = args.task.resolve()
-    plan = read_plan(task)
+    captures = json.loads(args.capture_plan.read_bytes()) if args.capture_plan else []
+    if not isinstance(captures, list):
+        raise UnsupportedTask("invalid frozen capture plan")
+    plan = read_plan(task, captures)
+    status["artifact_selection"] = ("task_declared" if plan["artifacts"] else
+                                    "operator_selected" if captures else "not_configured")
     check_runtime_profile(task, plan)
     status["stage"] = "setup"
     with provider_relay(args.config, scratch) as relay:
         cfg = TrialConfig.model_validate({
             "task": {"path": task}, "trials_dir": scratch, "trial_name": trial_name(args.label),
+            "artifacts": plan.get("capture_paths", []),
             "agent": {"import_path": "aegis_harbor:AegisAgent"},
             "verifier": {"import_path": "aegis_harbor:ObservedVerifier", "kwargs": {
                 "observation_path": str(args.attempt / "resources-verifier.json")}},
@@ -161,34 +167,45 @@ async def execute(args, scratch, status):
             except RuntimeError:
                 status["diagnostics"] = "missing"
             try:
-                status.update(retain_results(trial.paths, args.attempt, plan))
+                # Shared-mode Harbor uploads this frozen grader. A separate image
+                # can contain a different script at the same container path.
+                grader = task / "tests/test.sh" if plan["mode"] == "shared" else None
+                status.update(retain_results(trial.paths, args.attempt, plan, grader))
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
                 status["verifier_evidence"] = {"status": "unavailable"}
                 status["artifacts"] = [{"declaration_index": i, "status": "unavailable"}
-                                       for i in range(len(plan["artifacts"]))]
-        failures = {e.exception_type for e in result.recorded_exceptions()}
-        if "AgentTimeoutError" in failures:
-            status.update(status="agent_timeout", stage="agent")
-        elif "VerifierTimeoutError" in failures:
-            status.update(status="verifier_timeout", stage="verifier")
-        elif (not failures and result.reward_valid and status["reward"] is not None
-              and evidence.get("started") is True
-              and evidence.get("category") in {"completed", "agent_failed"}):
-            status.update(status="completed", stage="complete")
+                                       for i in range(len(plan["artifacts"] or captures))]
+        classify_result(status, result, evidence)
+
+
+def classify_result(status, result, evidence):
+    failures = {e.exception_type for e in result.recorded_exceptions()}
+    if "AgentTimeoutError" in failures:
+        status.update(status="agent_timeout", stage="agent")
+    elif "VerifierTimeoutError" in failures:
+        status.update(status="verifier_timeout", stage="verifier")
+    elif (not failures and result.reward_valid and status["reward"] == 0 and
+          (status["verifier_evidence"].get("log_signals") or {}).get("pytest_launcher_missing")):
+        status.update(status="verifier_error", stage="verifier", reason=["pytest_launcher_missing"],
+                      observed_reward=status["reward"])
+    elif (not failures and result.reward_valid and status["reward"] is not None
+          and evidence.get("started") is True
+          and evidence.get("category") in {"completed", "agent_failed"}):
+        status.update(status="completed", stage="complete")
+    else:
+        if not evidence.get("started") or evidence.get("category") == "provider_error":
+            status["stage"] = "agent" if result.agent_execution else "setup"
+        if failures:
+            known = {"EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "SandboxBuildFailedError",
+                     "HealthcheckError", "AddTestsDirError", "DownloadVerifierDirError",
+                     "RewardFileNotFoundError", "RewardFileEmptyError", "VerifierOutputParseError"}
+            status["reason"] = sorted(known.intersection(failures)) or ["execution_failed"]
+        elif not evidence:
+            status["reason"] = ["diagnostics_unavailable"]
+        elif evidence.get("category") not in {"completed", "agent_failed"}:
+            status["reason"] = [evidence["category"]]
         else:
-            if not evidence.get("started") or evidence.get("category") == "provider_error":
-                status["stage"] = "agent" if result.agent_execution else "setup"
-            if failures:
-                known = {"EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "SandboxBuildFailedError",
-                         "HealthcheckError", "AddTestsDirError", "DownloadVerifierDirError",
-                         "RewardFileNotFoundError", "RewardFileEmptyError", "VerifierOutputParseError"}
-                status["reason"] = sorted(known.intersection(failures)) or ["execution_failed"]
-            elif not evidence:
-                status["reason"] = ["diagnostics_unavailable"]
-            elif evidence.get("category") not in {"completed", "agent_failed"}:
-                status["reason"] = [evidence["category"]]
-            else:
-                status["reason"] = ["invalid_reward"]
+            status["reason"] = ["invalid_reward"]
 
 
 async def run(args, scratch, status):
@@ -222,6 +239,7 @@ def main():
     for key in ("task", "attempt", "binary", "config", "evidence-helper"):
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--label", required=True)
+    parser.add_argument("--capture-plan", type=Path)
     args = parser.parse_args()
     scratch = MEMORY_DIR / trial_name(args.label)
     status = {"status": "infra_invalid", "stage": "preflight", "reward": None,

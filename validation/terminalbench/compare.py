@@ -7,8 +7,8 @@ import re
 
 import yaml
 
-from result_evidence import CASE_STATUS, LOG_SIGNALS
-from scheduler import asset_hashes, manifest_for, read, scored, stored_attempts, summarize
+from result_evidence import CASE_STATUS, LOG_SIGNALS, MAX_DELIVERY, MAX_ENTRIES
+from scheduler import asset_hashes, manifest_for, read, scored, stored_attempts, summarize, valid_reward
 
 
 def inputs(run):
@@ -55,8 +55,36 @@ def resources(attempt, phase):
     return services or None
 
 
+def delivery_receipts(artifacts):
+    if not isinstance(artifacts, list):
+        return None
+    receipts = []
+    for item in artifacts:
+        row = item if isinstance(item, dict) else {}
+        index, files, size = (row.get(k) for k in ("declaration_index", "files", "bytes"))
+        status = row.get("status")
+        if status not in ("collected", "missing", "invalid", "unavailable", "ambiguous", "limit"):
+            status = "invalid"
+        digest = row.get("sha256")
+        copy = row.get("private_copy")
+        copy_status = copy.get("status") if isinstance(copy, dict) else None
+        receipts.append({
+            "declaration_index": index if type(index) is int and index >= 0 else None,
+            "status": status,
+            "files": files if type(files) is int and 0 <= files <= MAX_ENTRIES else None,
+            "bytes": size if type(size) is int and 0 <= size <= MAX_DELIVERY else None,
+            "sha256": digest if isinstance(digest, str) and re.fullmatch("[a-f0-9]{64}", digest) else None,
+            "private_copy_status": copy_status if copy_status in ("disabled", "encrypted", "encryption_failed") else None,
+        })
+    return receipts
+
+
 def attempt_row(attempt, state):
     outcome = read(attempt / "outcome.json")
+    observed_reward = outcome.get("observed_reward", outcome.get("reward"))
+    selection = outcome.get("artifact_selection")
+    if selection not in ("task_declared", "operator_selected", "not_configured"):
+        selection = None
     evidence = read(attempt / "diagnostics.json")
     present = (evidence.get("schema_version") == 1 and isinstance(evidence.get("started"), bool)
                and "sessions" in evidence and (evidence["sessions"] is None or isinstance(evidence["sessions"], list)))
@@ -96,7 +124,7 @@ def attempt_row(attempt, state):
     source = source if source in ("ctrf", "pytest") else None
     signals = verifier.get("log_signals")
     if isinstance(signals, dict) and scanned:
-        signals = {k: signals[k] for k in LOG_SIGNALS if type(signals.get(k)) is int and signals[k] > 0}
+        signals = {k: signals[k] for k in (*LOG_SIGNALS, "pytest_launcher_missing") if type(signals.get(k)) is int and signals[k] > 0}
     else:
         signals = None
     controls = ("hard_timeout_s", "jobs", "cpu_budget", "memory_budget_mb")
@@ -105,6 +133,9 @@ def attempt_row(attempt, state):
         "scheduler": {k: state[k] for k in controls} if all(k in state for k in controls) else None,
         "attempt_id": attempt.name, "status": state.get("status"),
         "reward": state["reward"] if scored(state) else None,
+        "observed_reward": observed_reward if valid_reward(observed_reward) else None,
+        "artifact_selection": selection,
+        "artifacts": delivery_receipts(outcome.get("artifacts")),
         "verifier": {"observed_cases": len(cases) if isinstance(cases, list) else None,
                      "case_status_counts": case_counts, "case_source": source,
                      "log_files_scanned": scanned, "log_signals": signals},

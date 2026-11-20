@@ -33,6 +33,9 @@ if mode == "sleep":
         "import time,pathlib,sys;time.sleep(1.4);pathlib.Path(sys.argv[1]).touch()", str(dest/"leaked")])
     (dest / "started").touch()
     time.sleep(20)
+elif mode == "verifier_retry" and len(list(dest.parent.iterdir())) == 1:
+    (dest / "outcome.json").write_text(json.dumps({"status":"verifier_error","stage":"verifier",
+                                                   "reward":0,"observed_reward":0,"reward_valid":False}))
 elif mode == "timeout_reward":
     (dest / "outcome.json").write_text(json.dumps({"status":"agent_timeout","reward":1,"reward_valid":False}))
 elif mode == "partial":
@@ -125,6 +128,19 @@ class SchedulerTest(unittest.TestCase):
         self.cli("run", rc=1)
         self.assertEqual(len(list(self.run.glob("attempts/*/*/outcome.json"))), 4)
         self.assertTrue(all(p.read_bytes() == raw for p, raw in originals.items()))
+
+    def test_verifier_launch_failure_retries_and_keeps_original_zero(self):
+        self.init({"one": "verifier_retry", "two": "zero"})
+        self.cli("run", rc=1)
+        self.assertEqual(self.summary()["scored"], 1)
+        row = self.summary()["tasks"]["one"]
+        self.assertEqual((row["status"], row["reward"], row["observed_reward"]), ("verifier_error", None, 0))
+        original = next(self.run.glob("attempts/one/*/outcome.json"))
+        before = original.read_bytes()
+        self.cli("run")
+        self.assertEqual(self.summary()["scored"], 2)
+        self.assertEqual(original.read_bytes(), before)
+        self.assertEqual(len(list(self.run.glob("attempts/two/*"))), 1)
 
     def test_timeout_keeps_observed_score_outside_accepted_rewards(self):
         self.init({"a": "timeout_reward"})
