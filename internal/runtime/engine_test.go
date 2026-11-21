@@ -2042,9 +2042,8 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 			}
 			for _, want := range []string{
 				"max_output_tokens was reached",
-				"partial assistant message",
 				"auto-resuming (1/2)",
-				"finish the missing handoff/report/status action",
+				"next unfinished step",
 			} {
 				if !strings.Contains(last.Text, want) {
 					t.Fatalf("expected resume reminder to contain %q, got %q", want, last.Text)
@@ -2095,6 +2094,73 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 	}
 	if !sawResume {
 		t.Fatalf("expected max_tokens_resume provider attempt, got %#v", attempts)
+	}
+}
+
+// Exercise the persisted session through the actual Messages API request builder.
+func TestEngineAnthropicTruncatedContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		content      string
+		wantRequests int32
+		wantAnchor   bool
+	}{
+		{"redacted only", `[{"type":"redacted_thinking","data":"opaque-fixture"}]`, 1, false},
+		{"empty response", `[]`, 1, false},
+		{"empty text block", `[{"type":"text","text":""}]`, 1, false},
+		{"thinking only", `[{"type":"thinking","thinking":"unanchored-fixture","signature":"signed-fixture"}]`, 2, false},
+		{"anchored partial text", `[{"type":"redacted_thinking","data":"opaque-fixture"},{"type":"text","text":"partial-fixture"}]`, 2, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+			engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+			engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 1
+			meta.ProviderOptions.APIProvider = "anthropic-compatible"
+			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write a short note.")); err != nil {
+				t.Fatal(err)
+			}
+			var count atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if count.Add(1) == 2 {
+					var body struct {
+						Messages json.RawMessage `json:"messages"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					history := string(body.Messages)
+					for _, token := range []string{"opaque-fixture", "partial-fixture"} {
+						if strings.Contains(history, token) != tc.wantAnchor {
+							t.Errorf("unexpected replay of %q; expect presence %t", token, tc.wantAnchor)
+						}
+					}
+					if strings.Contains(history, "unanchored-fixture") || strings.Contains(history, "signed-fixture") {
+						t.Error("exposed unanchored reasoning")
+					}
+					if !strings.Contains(history, "auto-resuming (1/1)") {
+						t.Error("missing bounded resume reminder")
+					}
+					if !tc.wantAnchor && strings.Contains(history, "Continue from that existing durable output") {
+						t.Error("reminder assumes unanchored output is available")
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"id":"fixture","stop_reason":"max_tokens","content":%s}`, tc.content)
+			}))
+			defer server.Close()
+			adapter := provider.NewAnthropic(server.URL, "fixture", "2023-06-01", server.Client())
+			result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final, err := engine.store.LoadState(meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != session.StatusFailed || final.IncompleteReason != "provider_max_tokens" || count.Load() != tc.wantRequests {
+				t.Fatalf("status=%s reason=%q requests=%d, want failed/provider_max_tokens/%d", result.Status, final.IncompleteReason, count.Load(), tc.wantRequests)
+			}
+		})
 	}
 }
 

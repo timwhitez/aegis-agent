@@ -2631,7 +2631,7 @@ func (e *Engine) shouldAutoResumeProviderMaxTokens(result provider.TurnResult, s
 	if !e.cfg.Runtime.ProviderAutoResume.Enabled {
 		return false
 	}
-	if strings.TrimSpace(result.Text) == "" && strings.TrimSpace(result.Thinking) == "" && len(result.ProviderContentBlocks) == 0 {
+	if !shouldPersistAssistantResult(result) {
 		return false
 	}
 	maxAttempts := e.cfg.Runtime.ProviderAutoResume.MaxAttempts
@@ -2693,7 +2693,7 @@ func providerAutoResumePrompt(err error, attempt, maxAttempts int, backoff time.
 }
 
 func providerMaxTokensResumePrompt(attempt, maxAttempts int, backoff time.Duration) string {
-	return fmt.Sprintf("Harness reminder: the provider stopped because max_output_tokens was reached after producing a partial assistant message. The partial message is already recorded in the session; the runtime is auto-resuming (%d/%d) after a %s backoff. Continue from that existing durable output, finish the missing handoff/report/status action, and avoid restarting broad exploration.", attempt, maxAttempts, formatProviderBackoff(backoff))
+	return fmt.Sprintf("Harness reminder: max_output_tokens was reached. The runtime is auto-resuming (%d/%d) after a %s backoff. Use the conversation and existing workspace state to take the next unfinished step. Keep this step small enough to complete within the output limit.", attempt, maxAttempts, formatProviderBackoff(backoff))
 }
 
 func providerAutoResumeBackoff(meta session.SessionMetadata, attempt int) time.Duration {
