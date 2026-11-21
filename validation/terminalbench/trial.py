@@ -192,17 +192,17 @@ async def execute(args, scratch, status):
                 status["verifier_evidence"] = {"status": "unavailable"}
                 status["artifacts"] = [{"declaration_index": i, "status": "unavailable"}
                                        for i in range(len(plan["artifacts"] or captures))]
-        classify_result(status, result, evidence)
+        classify_result(status, result, evidence, plan)
 
 
-def classify_result(status, result, evidence):
+def classify_result(status, result, evidence, plan):
     failures = {e.exception_type for e in result.recorded_exceptions()}
     if "DockerArtifactOwnershipError" in failures:
         status.update(status="infra_invalid", stage="setup", reason=["DockerArtifactOwnershipError"])
     elif "AgentTimeoutError" in failures:
-        status.update(status="agent_timeout", stage="agent")
+        status.update(status="agent_timeout", stage="agent", phase_timeout_sec=plan["agent"]["timeout_sec"])
     elif "VerifierTimeoutError" in failures:
-        status.update(status="verifier_timeout", stage="verifier")
+        status.update(status="verifier_timeout", stage="verifier", phase_timeout_sec=plan["verifier"]["timeout_sec"])
     elif (not failures and result.reward_valid and status["reward"] == 0 and
           (status["verifier_evidence"].get("log_signals") or {}).get("pytest_launcher_missing")):
         status.update(status="verifier_error", stage="verifier", reason=["pytest_launcher_missing"],
@@ -211,20 +211,17 @@ def classify_result(status, result, evidence):
           and evidence.get("started") is True
           and evidence.get("category") in {"completed", "agent_failed"}):
         status.update(status="completed", stage="complete")
+    elif failures:
+        # Keep the phase of the native failure, even when agent evidence is missing.
+        known = {"EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "SandboxBuildFailedError",
+                 "HealthcheckError", "AddTestsDirError", "DownloadVerifierDirError", "PermissionError",
+                 "RewardFileNotFoundError", "RewardFileEmptyError", "VerifierOutputParseError"}
+        status["reason"] = sorted(known.intersection(failures)) or ["execution_failed"]
+    elif evidence.get("started") is not True or evidence.get("category") not in {"completed", "agent_failed"}:
+        status["stage"] = "agent" if result.agent_execution else "setup"
+        status["reason"] = [evidence.get("category") or "diagnostics_unavailable"]
     else:
-        if not evidence.get("started") or evidence.get("category") in {"provider_error", "request_rejected", "request_cancelled"}:
-            status["stage"] = "agent" if result.agent_execution else "setup"
-        if failures:
-            known = {"EnvironmentStartTimeoutError", "AgentSetupTimeoutError", "SandboxBuildFailedError",
-                     "HealthcheckError", "AddTestsDirError", "DownloadVerifierDirError",
-                     "RewardFileNotFoundError", "RewardFileEmptyError", "VerifierOutputParseError"}
-            status["reason"] = sorted(known.intersection(failures)) or ["execution_failed"]
-        elif not evidence:
-            status["reason"] = ["diagnostics_unavailable"]
-        elif evidence.get("category") not in {"completed", "agent_failed"}:
-            status["reason"] = [evidence["category"]]
-        else:
-            status["reason"] = ["invalid_reward"]
+        status["reason"] = ["invalid_reward"]
 
 
 async def run(args, scratch, status):
@@ -272,6 +269,8 @@ def main():
         status.update(status="interrupted", reason=["cancelled"])
     except UnsupportedTask as exc:
         status["reason"] = [str(exc)]
+    except PermissionError:
+        status["reason"] = ["PermissionError"]
     except Exception:
         # Upstream errors can embed executable arguments, verifier output or env.
         # The durable stage and status provide the failure without raw text.

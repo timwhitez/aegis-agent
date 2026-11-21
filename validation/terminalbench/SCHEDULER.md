@@ -58,7 +58,13 @@ Docker 客户端和 Harbor 应使用同一个宿主 UID。独立验证容器及�
 
 本版 `summary` 和比较程序读取历史记录时，若原生 `outcome.json` 明确给出不同的得分、无效评分或未完成状态，就将该次尝试转为未计分。缺少可选字段的旧记录沿用已接纳的评分。使用本版冻结调度器的批次会在下次运行时重试未计分题；更早冻结的批次仍按当时运行器的恢复规则执行。若尝试记录不能与目录中的批次、任务和尝试编号对应，报告标记 `unverified_identity`，原始文件保留在原处，评分、诊断及环境观测不归入当前批次。
 
-比较只改变输出上限的两个批次时，可生成逐题报告。
+### 校准每次请求的输出上限
+
+一次任务可能发出多个请求。若多题在自动续跑后仍以 `max_tokens` 停止，先选取几个能稳定评分的代表题，包含至少一道会反复截断的题。在两个新目录分别用相同的 `init --only` 任务列表冻结批次，保留相同的二进制、证据采集程序、模型、effort、镜像和调度参数。
+
+从基线配置创建一个仅批次所有者可读写的候选配置。在默认 provider 的配置中显式设置 `max_output_tokens`，取该模型端点已接受的正整数；保留原有的 `output_config_effort`。配置沿用 `api_key_env` 环境变量名。分别通过 `--config` 传入基线与候选配置。两组使用独立的 `--run` 目录，便于保留原始清单并复查冻结值。
+
+运行两个批次后，用以下命令生成逐题报告。
 
 ```sh
 python3 -B validation/terminalbench/compare.py "$BASELINE_RUN" "$CANDIDATE_RUN" > comparison.json
@@ -66,7 +72,13 @@ python3 -B validation/terminalbench/compare.py "$BASELINE_RUN" "$CANDIDATE_RUN" 
 
 比较程序核对两边的任务、资产、配置及记录的调度条件，列出各次尝试的评分、耗时、停止原因、用量和缺失项。`observed_request_count` 按预检或后续事件中出现的逻辑请求 ID 去重。宿主代理单独记录 `provider_http.upstream_attempts`（发起上游网络操作的次数）及 `provider_http.responses`（收到 HTTP 响应的次数）。本地拒绝的请求不计入这两项，旧记录没有此观测时显示 null。若某题任一批次缺少调度参数，`scheduler_checks` 标为 unverified。对老格式批次，比较程序可以核对归档目前的可执行位和目录，但无法还原冻结当时的权限。
 
+先核对 `runtime_checks`、`scheduler_checks` 和每次请求的 `max_output_tokens`、`source`、`effort`，再比较选中尝试的正式 `reward`、续跑记录和最后几次请求的 `stop_reason`。同时逐题汇总已报告的 `usage.output_tokens`，记录缺测请求和额外尝试的消耗。上限按单次请求生效，整题用量可能是上限的多倍。
+
+同一配置可重复运行，核实哪些题能稳定改善，哪些仍然截断或超时。需要测试 effort 时，固定已选的输出上限并另建批次，分别记录 effort 与结果；上面的比较命令只接受输出上限这一项配置差异。
+
 每个请求的 `status` 记录已准备、已完成、失败、预检拒绝或取消，`stop_reason` 记录 provider 响应给出的停止原因。旧记录保留原有停止原因，缺少的请求状态显示为 null。每次尝试的 `verify_rc` 单独记录评分脚本退出码，旧版缺失时显示为 null。
+
+每次尝试的 `outcome.json` 记录未计分的阶段。验证器已经返回分数、但 Agent 缺少可计分的终态时，`stage` 指向 `agent`，汇总将分数保留在 `observed_reward`。Harbor 报告异常时保留实际运行阶段；权限异常记录为 `PermissionError`，未知异常统一记录为 `execution_failed`。Agent 或验证器超时的记录另附 `phase_timeout_sec`，取自该题冻结计划的原生阶段时限。
 
 ### 选择共享任务的交付物
 

@@ -29,7 +29,7 @@ class ResultEvidenceTest(unittest.TestCase):
             p.mkdir(parents=True)
         self.paths = SimpleNamespace(trial_dir=self.trial, verifier_dir=self.verify, artifacts_dir=self.artifacts)
         self.item = {"source": "/submission", "service": "main", "status": "ok", "destination": "artifacts/value"}
-        self.plan = {"artifacts": ["/submission"]}
+        self.plan = {"artifacts": ["/submission"], "agent": {"timeout_sec": 300}, "verifier": {"timeout_sec": 900}}
         self.tmp_env = patch.dict(os.environ, {"AEGIS_BENCH_ARTIFACT_RECIPIENT_CERT": ""})
         self.tmp_env.start()
         self.addCleanup(self.tmp_env.stop)
@@ -67,7 +67,7 @@ class ResultEvidenceTest(unittest.TestCase):
         result = SimpleNamespace(reward_valid=True, recorded_exceptions=lambda: [])
         evidence = {"started": True, "category": "completed"}
         status = {"stage": "verifier", "reward": 0, "verifier_evidence": receipt}
-        classify_result(status, result, evidence)
+        classify_result(status, result, evidence, self.plan)
         save_outcome(self.attempt, status)
         raw = json.loads((self.attempt / "outcome.json").read_text())
         self.assertEqual((raw["status"], raw["reward"], raw["reward_valid"]), ("verifier_error", 0, False))
@@ -100,13 +100,48 @@ class ResultEvidenceTest(unittest.TestCase):
                 notes = retain_results(self.paths, self.attempt, self.plan, grader if entry else None)["verifier_evidence"]
                 self.assertNotIn("pytest_launcher_missing", notes["log_signals"])
                 status = {"stage": "verifier", "reward": 0, "verifier_evidence": notes}
-                classify_result(status, result, evidence)
+                classify_result(status, result, evidence, self.plan)
                 self.assertEqual(status["status"], "completed")
 
         for reward, notes in [(1, receipt), (0, {"cases": [], "log_signals": {"command_not_found": 1}})]:
             state = {"reward": reward, "verifier_evidence": notes}
-            classify_result(state, result, evidence)
+            classify_result(state, result, evidence, self.plan)
             self.assertEqual(state["status"], "completed")
+
+    def test_unscored_cause_and_native_phase_timeout_survive_scheduler(self):
+        # Each case starts after the verifier hook, just as the live attempt did.
+        cases = [
+            ("terminated session", "incomplete", [], 143, 0, 0, "infra_invalid", "agent", ["incomplete"], None),
+            ("missing evidence", None, [], 0, 0, 0, "infra_invalid", "agent", ["diagnostics_unavailable"], None),
+            ("artifact owner", None, ["DockerArtifactOwnershipError"], None, None, None,
+             "infra_invalid", "setup", ["DockerArtifactOwnershipError"], None),
+            ("verifier permission", "incomplete", ["PermissionError"], 1, None, None,
+             "infra_invalid", "verifier", ["PermissionError"], None),
+            ("unknown exception", None, ["private details"], 1, None, None,
+             "infra_invalid", "verifier", ["execution_failed"], None),
+            ("agent timeout", "incomplete", ["AgentTimeoutError"], None, None, None,
+             "agent_timeout", "agent", None, 300),
+            ("verifier timeout", "completed", ["VerifierTimeoutError"], 0, None, None,
+             "verifier_timeout", "verifier", None, 900),
+            ("valid zero", "agent_failed", [], 1, 0, 0, "completed", "complete", None, None),
+        ]
+        for name, category, errors, agent_rc, verify_rc, reward, expected, stage, reasons, limit in cases:
+            with self.subTest(name=name):
+                result = SimpleNamespace(agent_execution=True, reward_valid=reward is not None,
+                                         recorded_exceptions=lambda: [SimpleNamespace(exception_type=e) for e in errors])
+                status = {"stage": "verifier", "status": "infra_invalid", "reward": reward, "verifier_evidence": {},
+                          "agent_rc": agent_rc, "verify_rc": verify_rc}
+                evidence = {"started": True, "category": category} if category else {}
+                classify_result(status, result, evidence, self.plan)
+                save_outcome(self.attempt, status)
+                path = self.attempt / "outcome.json"
+                stored = json.loads(path.read_text())
+                self.assertEqual((stored["stage"], stored.get("reason"), stored.get("phase_timeout_sec")),
+                                 (stage, reasons, limit))
+                self.assertEqual((stored["agent_rc"], stored["verify_rc"]), (agent_rc, verify_rc))
+                state = read_outcome(path, 0)
+                self.assertEqual((state["status"], state["reason"], state["reward"], state["observed_reward"]),
+                                 (expected, stage, reward if expected == "completed" else None, reward))
 
     def test_known_case_outcomes_without_verbatim_names_or_messages(self):
         private = "opaque-test-control-canary"
@@ -164,7 +199,7 @@ class ResultEvidenceTest(unittest.TestCase):
         for category in ("request_rejected", "request_cancelled"):
             with self.subTest(category=category):
                 state = {"stage": "verifier", "status": "infra_invalid", "reward": 0, "verifier_evidence": {}}
-                classify_result(state, result, {"started": True, "category": category})
+                classify_result(state, result, {"started": True, "category": category}, self.plan)
                 save_outcome(self.attempt, state)
                 self.assertEqual((state["stage"], state["reason"], state["reward_valid"]), ("agent", [category], False))
 
