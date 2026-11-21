@@ -1,6 +1,8 @@
 """Harbor's installed-agent interface for a frozen Linux Aegis binary."""
 import asyncio
 import json
+import os
+import stat
 from contextlib import suppress
 from pathlib import Path
 import re
@@ -104,6 +106,10 @@ class ObservedVerifier(Verifier):
                 await observe_resources(self.environment, Path(self.observation_path).with_name("resources-verifier-end.json"))
 
 
+class DockerArtifactOwnershipError(RuntimeError):
+    """The Docker client created a private host artifact owned by another user."""
+
+
 class AegisAgent(BaseAgent):
     @staticmethod
     def name():
@@ -124,6 +130,16 @@ class AegisAgent(BaseAgent):
         # Give the declared task user access inside its own 0700 directory,
         # without asking for a privileged exec or mutating frozen host inputs.
         with tempfile.TemporaryDirectory(dir=self.config_file.parent) as stage:
+            if self.check_artifact_copy:
+                probe = PRIVATE + "/copy-owner-probe"
+                made = await environment.exec("umask 077 && : > " + probe)
+                if made.return_code:
+                    raise RuntimeError("unable to prepare the private artifact copy check")
+                copy = Path(stage) / "copy-owner-probe"
+                await environment.download_file(probe, copy)
+                info = copy.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+                    raise DockerArtifactOwnershipError("run the Docker client as the Harbor user")
             for source, name, mode in ((self.binary, "aegis-agent", 0o555),
                                        (self.config_file, "config.yaml", 0o444),
                                        (self.helper, "evidence", 0o555)):
