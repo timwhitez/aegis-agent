@@ -3573,8 +3573,11 @@ func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) 
 	}
 	callCount := 0
 	fake := provider.NewFake(
-		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
 			callCount++
+			if n := strings.Count(req.SystemPrompt, "last model response available in this run"); n != 0 {
+				t.Fatalf("call %d has %d final-turn notices, want 0", callCount, n)
+			}
 			return provider.TurnResult{
 				ToolCalls: []provider.ToolCall{{
 					ID:        "call_1",
@@ -3584,8 +3587,11 @@ func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) 
 				StopReason: "tool_use",
 			}, nil
 		},
-		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
 			callCount++
+			if n := strings.Count(req.SystemPrompt, "last model response available in this run"); n != 1 {
+				t.Fatalf("call %d has %d final-turn notices, want 1", callCount, n)
+			}
 			return provider.TurnResult{
 				ToolCalls: []provider.ToolCall{
 					{
@@ -3620,6 +3626,32 @@ func TestEngineAllowsSingleResolutionTurnAfterHardLimitToolResult(t *testing.T) 
 	if string(data) != "final proof" {
 		t.Fatalf("expected final proof content, got %q", string(data))
 	}
+	history, err := engine.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range history {
+		if strings.Contains(m.Text, "last model response available in this run") {
+			t.Fatal("final-turn notice persisted as reusable conversation history")
+		}
+	}
+	evts, err := loadEvents(engine.store, meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, ev := range evts {
+		if ev.Type == "session.context.loaded" && ev.Data["final_resolution_turn"] == true {
+			notes++
+			if ev.Data["turn"] != float64(2) || ev.Data["max_turns_hard"] != float64(1) {
+				t.Fatalf("incorrect resolution turn receipt: %#v", ev.Data)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("got %d resolution turn receipts, want 1", notes)
+	}
+
 }
 
 func TestEngineFailsAfterResolutionTurnNeedsAnotherProviderPass(t *testing.T) {
@@ -3986,10 +4018,16 @@ func TestEngineAllowsDisablingHardTurnLimit(t *testing.T) {
 		t.Fatalf("append: %v", err)
 	}
 	fake := provider.NewFake(
-		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			if strings.Contains(req.SystemPrompt, "last model response available in this run") {
+				t.Fatal("disabled hard limit reported a final turn")
+			}
 			return provider.TurnResult{Text: "still running", StopReason: "done_candidate"}, nil
 		},
-		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
+			if strings.Contains(req.SystemPrompt, "last model response available in this run") {
+				t.Fatal("disabled hard limit reported a final turn")
+			}
 			return provider.TurnResult{
 				ToolCalls:  []provider.ToolCall{{ID: "call_finish", Name: "finish", Arguments: json.RawMessage(`{"message":"done"}`)}},
 				StopReason: "tool_use",

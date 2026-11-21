@@ -515,9 +515,6 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			contextData["plan_mode_id"] = planMode.PlanModeID
 			contextData["plan_version"] = planMode.PlanVersion
 		}
-		if err := e.appendEvent(meta.ID, "session.context.loaded", "prepare", contextData); err != nil {
-			return RunResult{}, fmt.Errorf("record session.context.loaded event: %w", err)
-		}
 
 		systemPrompt := buildSystemPrompt(meta.Workdir, meta.Mode, systemOverride, catalog.Summaries(), catalog.TrustedCommandTools(meta.Workdir), state, messages, meta.AgentName, meta.AgentRole)
 		if goal != nil {
@@ -534,6 +531,14 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if e.guardrailsYolo() {
 			systemPrompt += "\n\n## Guardrails Mode\nYOLO mode is enabled. Non-essential runtime reminders and checks are disabled for this run. You still operate within tool-enforced workspace boundaries, shell timeouts, and explicit user instructions."
+		}
+		if usingResolutionTurn {
+			systemPrompt += "\n\nThis is the last model response available in this run. Use the latest tool results and follow the current mode's completion or handoff rules. Report any unfinished work accurately."
+			contextData["final_resolution_turn"] = true
+			contextData["max_turns_hard"] = hardTurnLimit
+		}
+		if err := e.appendEvent(meta.ID, "session.context.loaded", "prepare", contextData); err != nil {
+			return RunResult{}, fmt.Errorf("record session.context.loaded event: %w", err)
 		}
 		compactionProfile := compactionProfileFromConfig(meta, e.cfg.Runtime.Compact)
 		mainRequestContext := requestBudgetContext{

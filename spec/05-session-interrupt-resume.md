@@ -210,7 +210,7 @@ completed child / queue session 不允许走通用 `continue`。child 完成时 
 2. 读取 `state.json`
 3. 重建消息历史
 4. 追加新的 user message（如果提供）
-5. 重置全局 `max_turns_hard` / `max_turns_soft` 的 per-run 计数；child budget attempt 不因普通 continue 自动重置，只有显式 budget extension 才开始新 attempt
+5. 重置全局 `max_turns_hard` / `max_turns_soft` 的 per-run 计数；child budget attempt 不因普通 continue 自动重置，只有显式 budget extension 才开始新 attempt。当运行时在硬上限后允许额外一轮处理工具结果时，仅这次主模型请求的系统提示会说明这是本次运行的最后一次响应机会。`session.context.loaded` 事件记录 `final_resolution_turn=true` 和生效的 `max_turns_hard`。后续 continue 会重新计算可用轮数。
 6. 将状态切回 `running`
 7. 追加 durable `session.resumed` 事件，`data.resumed_from` 记录原状态
 8. 继续 loop
