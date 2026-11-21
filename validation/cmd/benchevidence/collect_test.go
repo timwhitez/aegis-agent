@@ -24,7 +24,7 @@ func TestProjectAndValidateAtBothBoundaries(t *testing.T) {
 	const marker = "synthetic-private-marker"
 	store := session.NewStore(root)
 	meta := session.SessionMetadata{SchemaVersion: 1, ID: id, CreatedAt: now, Workdir: root, Mode: session.ModeExec, Provider: "fixture", Model: marker, CompletionPolicy: session.CompletionPolicyInteractive}
-	if err = store.Create(meta, session.State{Status: session.StatusFailed, Phase: "provider_call", LastError: "provider stopped because max output tokens were reached", UpdatedAt: now}); err != nil {
+	if err = store.Create(meta, session.State{Status: session.StatusFailed, Phase: "turn_decide", IncompleteReason: "provider_max_tokens", LastError: "provider stopped because max output tokens were reached", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	requestID := id + ":1:main:1"
@@ -48,9 +48,70 @@ func TestProjectAndValidateAtBothBoundaries(t *testing.T) {
 	if !checkedReport.Started || checkedReport.Category != "agent_failed" || len(checkedReport.Sessions) != 1 || len(checkedReport.Sessions[0].Requests) != 1 {
 		t.Fatalf("missing evidence: %s", buf)
 	}
-	q := checkedReport.Sessions[0].Requests[0]
+	observedSession := checkedReport.Sessions[0]
+	if observedSession.Phase != "turn_decide" || observedSession.FailureReason != "provider_max_tokens" {
+		t.Fatalf("lost final state: %+v", observedSession)
+	}
+	q := observedSession.Requests[0]
+	if q.TruncatedOutput != "" {
+		t.Fatal("legacy stop without shape was treated as observed")
+	}
+
 	if q.ID != requestID || q.Source != "adapter_default" || q.MaxOutputTokens == nil || *q.MaxOutputTokens != 4096 || q.Stop != "max_tokens" || q.Usage == nil || q.Usage.Output == nil || *q.Usage.Output != 2 || q.Usage.Reasoning != nil || checkedReport.Sessions[0].Attempts[0].Outcome != "max_tokens_resume" {
 		t.Fatalf("incorrect evidence: %s", buf)
+	}
+	// The same request history may lead to a different final runtime decision.
+	st, err := store.LoadState(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ phase, last, incomplete, wantPhase, wantReason string }{
+		{"turn_limit", "max_turns_hard_exceeded", "provider_max_tokens", "turn_limit", "max_turns_hard_exceeded"},
+		{"error", marker, "provider_max_tokens", "error", "other"},
+		{marker, marker, marker, "other", "other"},
+	} {
+		st.Phase, st.LastError, st.IncompleteReason = tc.phase, tc.last, tc.incomplete
+		if err := store.SaveState(id, st); err != nil {
+			t.Fatal(err)
+		}
+		report := collect(root, nil)
+		data, err := encode(report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := checked(bytes.NewReader(data))
+		if err != nil || bytes.Contains(data, []byte(marker)) {
+			t.Fatalf("unsafe report: %s, %v", data, err)
+		}
+		if got.Sessions[0].Phase != tc.wantPhase || got.Sessions[0].FailureReason != tc.wantReason {
+			t.Fatalf("incorrect final state: %s", data)
+		}
+	}
+	for _, key := range []string{"phase", "failure_reason"} {
+		var modified report
+		if err := json.Unmarshal(buf, &modified); err != nil {
+			t.Fatal(err)
+		}
+		if key == "phase" {
+			modified.Sessions[0].Phase = marker
+		} else {
+			modified.Sessions[0].FailureReason = marker
+		}
+		data, _ := json.Marshal(modified)
+		if _, err := checked(bytes.NewReader(data)); err == nil {
+			t.Fatalf("accepted untrusted %s", key)
+		}
+	}
+	completed := events.New(id, "provider.request.completed", "provider_call", map[string]any{"request_id": requestID, "stop_reason": "max_tokens", "truncated_output": "provider_blocks"})
+	if err := store.AppendEvents(id, []events.Event{completed}); err != nil {
+		t.Fatal(err)
+	}
+	shape := collect(root, nil).Sessions[0].Requests[0].TruncatedOutput
+	if shape != "provider_blocks" {
+		t.Fatalf("lost response shape %q", shape)
+	}
+	if _, err := checked(strings.NewReader(strings.Replace(string(buf), `"stop_reason":"max_tokens"`, `"stop_reason":"max_tokens","truncated_output":"`+marker+`"`, 1))); err == nil {
+		t.Fatal("accepted an untrusted response shape")
 	}
 	// Compaction completes its provider request without generating a main-turn stop.
 	summaryID := id + ":2:semantic_summary:0"
