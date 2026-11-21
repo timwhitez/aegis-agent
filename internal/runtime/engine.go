@@ -3482,6 +3482,22 @@ func providerRequestCompletedEventData(snapshot RequestBudgetSnapshot, result pr
 		"stop_reason": strings.TrimSpace(result.StopReason),
 		"usage":       providerUsageEventData(result.Usage),
 	}
+	// A truncated response can contain no visible text. Record its shape before
+	// hooks or persistence without including any content in this receipt.
+	if result.StopReason == "max_tokens" {
+		switch {
+		case len(result.ToolCalls) > 0:
+			data["truncated_output"] = "tool_calls"
+		case strings.TrimSpace(result.Text) != "":
+			data["truncated_output"] = "text"
+		case strings.TrimSpace(result.Thinking) != "":
+			data["truncated_output"] = "thinking"
+		case len(result.ProviderContentBlocks) > 0:
+			data["truncated_output"] = "provider_blocks"
+		default:
+			data["truncated_output"] = "empty"
+		}
+	}
 	addRequestSnapshotCorrelation(data, snapshot)
 	if strings.TrimSpace(result.ProviderResponseID) != "" {
 		data["provider_response_id"] = strings.TrimSpace(result.ProviderResponseID)

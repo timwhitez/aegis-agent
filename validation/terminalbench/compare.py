@@ -77,6 +77,20 @@ def delivery_receipts(artifacts):
     return receipts
 
 
+SESSION_PHASES = ("prepare provider_call turn_decide turn_limit tool_execute background_wait model_wait "
+                  "goal_budget_limited plan_approval plan_input plan_cancelled interrupt cancelled error failed "
+                  "approval_preparation_recovered other").split()
+FAILURE_REASONS = ("max_turns_hard_exceeded provider_max_tokens provider_blocked provider_stop_error provider_cancelled "
+                   "provider_tool_use_empty provider_tool_call_stop_mismatch unresolved_background_work "
+                   "model_degeneration_no_progress incomplete_no_finish other").split()
+
+
+def known_code(record, key, choices):
+    # A saved file may predate these fields or have been edited after collection.
+    value = record.get(key)
+    return value if value in choices else None
+
+
 def attempt_row(attempt, state, plan=None):
     linked = state.get("reason") != INVALID_RECORD
     outcome = read(attempt / "outcome.json") if linked else {}
@@ -107,10 +121,16 @@ def attempt_row(attempt, state, plan=None):
                 "status": status if status in ("prepared", "completed", "failed", "rejected", "cancelled") else None,
                 "max_output_tokens": q.get("max_output_tokens"), "source": q.get("source"),
                 "effort": q.get("effort"), "stop_reason": q.get("stop_reason"),
+                "truncated_output": known_code(q, "truncated_output", ("tool_calls", "text", "thinking",
+                                                                      "provider_blocks", "empty", "other"))
+                                    if q.get("stop_reason") == "max_tokens" and status == "completed" else None,
                 "usage": {k: usage.get(k) for k in ("input_tokens", "output_tokens", "reasoning_tokens",
                                                     "cache_creation_input_tokens", "cache_read_input_tokens")},
             })
         sessions.append({"id": session["id"], "status": session.get("status"), "child": session.get("child"),
+                         "phase": known_code(session, "phase", SESSION_PHASES),
+                         "failure_reason": known_code(session, "failure_reason", FAILURE_REASONS)
+                                           if session.get("status") == "failed" else None,
                          "tool_calls": session.get("tool_calls"),
                          "provider_attempts": [{k: a.get(k) for k in ("turn", "attempt", "http_status",
                                                                       "retryable", "outcome")}

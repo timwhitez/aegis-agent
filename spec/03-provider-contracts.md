@@ -147,7 +147,7 @@ Anthropic 适配器成功构造请求时，`provider.request.prepared.data.reque
 - 每个 `main` / `semantic_summary` preflight 生成稳定 request id：`<session>:<turn>:<request_kind>:<request_sequence>`；prepared event 同时保存 turn、request sequence、parent/root/queue id 和 canonical budget snapshot
 - `compact.started` / `finished` / `reused` / `deferred` 关联触发该 provider view 的 main request id；semantic-summary 自身使用 `request_kind=semantic_summary`，不能与 main usage 合并
 - adapter callback 事件（包括 `provider.retry` / `provider.error`）由 runtime 补入同一 request id/kind/turn/sequence；transport retry 是 request 内 attempt，不生成新的 budget snapshot
-- 成功请求写 `provider.request.completed`，字段至少包含 request correlation、stop reason、provider response id 和 `{reported,input/output/cache counters}` usage
+- 成功请求写 `provider.request.completed`，字段至少包含 request correlation、stop reason、provider response id 和 `{reported,input/output/cache counters}` usage。若停止原因为 `max_tokens`，`truncated_output` 按优先级标记这次响应包含的工具调用（`tool_calls`）、可见文本（`text`）、思考文本（`thinking`）、其他 provider 内容块（`provider_blocks`）或空输出（`empty`）。该字段只记录响应形态。
 - transport/local 失败写 `provider.request.failed`，字段至少包含 correlation、`status=failed|cancelled|rejected`、`usage.reported=false` 与安全的 typed error/rejection class；不保存错误正文
 - 每个 prepared request 最多写一个 completed/failed terminal lifecycle；budget rejection、semantic-summary timeout、provider cancellation、provider call 前 pause 与 retry-attempt 事实写入失败都必须落入这一规则。provider call 前 pause 使用稳定 `paused_before_provider_call`，retry-attempt 持久化失败使用 `provider_attempt_record_failed`
 - main success 继续写兼容 `turn.stopped`。新报告优先使用 completed/failed，旧 session 才回退到 `turn.stopped`；同一 lifecycle 事件不得重复计费

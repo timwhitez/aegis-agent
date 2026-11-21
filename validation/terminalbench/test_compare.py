@@ -71,6 +71,25 @@ class CompareTest(unittest.TestCase):
         self.assertEqual((row["category"], row["observed_request_count"]), ("not_started", 0))
 
 
+    def test_exit_reason_and_truncated_output(self):
+        for phase, reason, shape, expected in [
+            ("turn_decide", "provider_max_tokens", "text", ("turn_decide", "provider_max_tokens", "text")),
+            ("turn_limit", "max_turns_hard_exceeded", None, ("turn_limit", "max_turns_hard_exceeded", None)),
+            (None, None, None, (None, None, None)),
+            ("private", {"private": "data"}, ["not-a-code"], (None, None, None)),
+        ]:
+            q = {"request_id": "fixture:1:main:0", "status": "completed", "stop_reason": "max_tokens"}
+            session = {"id": "fixture", "status": "failed", "requests": [q]}
+            if phase is not None:
+                session.update(phase=phase, failure_reason=reason)
+                q["truncated_output"] = shape
+            (self.root / "diagnostics.json").write_text(json.dumps({"schema_version": 1, "started": True,
+                                                                   "sessions": [session]}))
+            row = attempt_row(self.root, {})
+            observed = row["sessions"][0]
+            self.assertEqual((observed["phase"], observed["failure_reason"], row["requests"][0]["truncated_output"]),
+                             expected)
+
     def test_http_attempts_are_independent_of_logical_requests(self):
         diagnostics = {"schema_version": 1, "started": True, "sessions": [
             {"id": "fixture", "requests": [{"request_id": "fixture:1:main:1"}]}]}
