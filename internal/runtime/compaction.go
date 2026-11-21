@@ -30,7 +30,20 @@ type compactor struct {
 	lastArtifactTime time.Time
 }
 
-type semanticSummaryFunc func(context.Context, []session.Message, int) (string, error)
+// Semantic summary input contains only canonical conversation and tool facts.
+// Provider replay blocks and operator-only fields stay in the transcript.
+type semanticSummaryItem struct {
+	Role       string          `json:"role"`
+	Text       string          `json:"text,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Name       string          `json:"name,omitempty"`
+	Arguments  json.RawMessage `json:"arguments,omitempty"`
+	LLMOutput  string          `json:"llm_output,omitempty"`
+	IsError    bool            `json:"is_error,omitempty"`
+	Final      bool            `json:"final,omitempty"`
+}
+
+type semanticSummaryFunc func(context.Context, []semanticSummaryItem, int) (string, error)
 
 type toolResultContextStats struct {
 	InlineCount      int
@@ -591,19 +604,36 @@ func recentMessagesWithinBudget(messages []session.Message, minCount, budgetChar
 	return out
 }
 
-func droppedMessagesForSemanticSummary(messages, retained []session.Message) []session.Message {
+func droppedMessagesForSemanticSummary(messages, retained []session.Message) []semanticSummaryItem {
 	retainedKeys := map[string]int{}
 	for _, msg := range retained {
 		retainedKeys[messageSemanticKey(msg)]++
 	}
-	out := make([]session.Message, 0, len(messages))
+	var out []semanticSummaryItem
 	for _, msg := range messages {
 		key := messageSemanticKey(msg)
 		if retainedKeys[key] > 0 {
 			retainedKeys[key]--
 			continue
 		}
-		out = append(out, msg)
+		switch msg.Role {
+		case "user", "assistant", "system":
+			if strings.TrimSpace(msg.Text) != "" {
+				out = append(out, semanticSummaryItem{Role: msg.Role, Text: msg.Text})
+			}
+			if msg.Role == "assistant" {
+				for _, call := range msg.ToolCalls {
+					out = append(out, semanticSummaryItem{Role: msg.Role, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
+				}
+			}
+		case "tool":
+			for _, result := range msg.ToolResults {
+				out = append(out, semanticSummaryItem{
+					Role: msg.Role, ToolCallID: result.ToolCallID, Name: result.Name,
+					LLMOutput: result.LLMOutput, IsError: result.IsError, Final: result.Final,
+				})
+			}
+		}
 	}
 	return out
 }
@@ -616,7 +646,7 @@ func messageSemanticKey(msg session.Message) string {
 	return "json:" + string(data)
 }
 
-func semanticSummaryInputText(messages []session.Message, maxChars int) string {
+func semanticSummaryInputText(messages []semanticSummaryItem, maxChars int) string {
 	data, _ := json.Marshal(messages)
 	text := string(data)
 	if maxChars <= 0 || len(text) <= maxChars {

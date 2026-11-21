@@ -1104,7 +1104,7 @@ func TestSemanticSummaryRecordsActualOutputLimitSource(t *testing.T) {
 			defer server.Close()
 			adapter := provider.NewAnthropic(server.URL, "fixture", "2023-06-01", server.Client())
 			summarize := engine.semanticSummaryFunc(adapter, meta, requestBudgetContext{Turn: 2}, compactionContextProfile{})
-			if got, err := summarize(context.Background(), []session.Message{session.NewMessage("user", "fixture")}, 1024); err != nil || got != "summary" {
+			if got, err := summarize(context.Background(), []semanticSummaryItem{{Role: "user", Text: "fixture"}}, 1024); err != nil || got != "summary" {
 				t.Fatalf("summary=%q, err=%v", got, err)
 			}
 			events, err := loadEvents(engine.store, meta.ID)

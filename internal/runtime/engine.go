@@ -146,7 +146,7 @@ func (e *Engine) semanticSummaryFunc(adapter provider.Adapter, meta session.Sess
 	if !cfg.Enabled {
 		return nil
 	}
-	return func(ctx context.Context, dropped []session.Message, budgetChars int) (string, error) {
+	return func(ctx context.Context, dropped []semanticSummaryItem, budgetChars int) (string, error) {
 		maxInputChars := cfg.MaxInputChars
 		if budgetChars > 0 && (maxInputChars <= 0 || budgetChars < maxInputChars) {
 			maxInputChars = budgetChars
