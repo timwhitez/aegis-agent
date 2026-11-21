@@ -20,9 +20,14 @@ def write(path, content):
 
 def fixture_agent(path, *, output="/submission", self_check=True):
     write(path, f"""#!/usr/local/bin/python3
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
+from datetime import datetime, timedelta
 from pathlib import Path
-assert sys.argv[1:] == ['exec', '--config', '/tmp/aegis-benchmark/config.yaml', '--input-format', 'raw']
+assert sys.argv[1:5] == ['exec', '--config', '/tmp/aegis-benchmark/config.yaml', '--system']
+assert sys.argv[6:] == ['--input-format', 'raw']
+times = re.findall(r'[0-9-]+T[0-9:.]+[+]00:00', sys.argv[5])
+start, cutoff = map(datetime.fromisoformat, times)
+assert cutoff - start == timedelta(seconds=45)
 assert sys.stdin.buffer.read() == {PROMPT.encode()!r}
 assert not Path('/tmp/aegis-benchmark/instruction').exists()
 for cmdline in Path('/proc').glob('[0-9]*/cmdline'):
@@ -263,6 +268,17 @@ fi
                     assert stopped["provider_http"] == {"upstream_attempts": 0, "responses": 0}, stopped
                     assert any(a["status"] == "collected" for a in stopped["artifacts"]), stopped
                     print("cancelled trial retained evidence", flush=True)
+                    timed_out = root / "attempt-agent-timeout"
+                    timed_out.mkdir()
+                    slow_agent.write_text("#!/bin/sh\nexec sleep 30\n")
+                    write(task / "task.toml", "\n".join(parts).replace("timeout_sec=45", "timeout_sec=1") + "\n")
+                    cmd[cmd.index("--attempt") + 1] = timed_out
+                    cmd[-1] = uuid4().hex
+                    subprocess.run(cmd, env=env, check=True)
+                    expired = json.loads((timed_out / "outcome.json").read_text())
+                    assert (expired["status"], expired["stage"], expired["phase_timeout_sec"]) == ("agent_timeout", "agent", 1), expired
+                    assert expired["verify_s"] is None and expired["reward"] is None, expired
+                    print("Harbor recorded native agent timeout", flush=True)
                     nonroot = root / "attempt-task-user"
                     nonroot.mkdir()
                     nonroot_agent = root / "task-user-agent"

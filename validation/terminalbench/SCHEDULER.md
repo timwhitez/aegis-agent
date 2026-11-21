@@ -10,6 +10,8 @@ python3 validation/terminalbench/scheduler.py run --run "$RUN" --jobs 4
 python3 validation/terminalbench/scheduler.py summary --run "$RUN"
 ```
 
+进入 Agent 阶段时，如果 Harbor 的有效时限可以换算成 UTC 截止时间，适配器会通过补充系统指令提供阶段开始时间和预计截止时间。模型可以用 `date -u` 查看当前时间。这两个时间在本次运行中保持固定，Harbor 执行原生阶段超时。已冻结的批次沿用原有适配器。
+
 ### 私有产物的 Docker 复制权限
 
 Docker 客户端和 Harbor 应使用同一个宿主 UID。独立验证容器及配置了产物采集的任务会在 Agent 初始化时复制一个私有文件。如果 Docker 客户端写出的文件属于其他用户，本次尝试会在模型调用前结束，并在 `outcome.json` 记录 `stage=setup` 和 `DockerArtifactOwnershipError`。检查 PATH 或站点 Docker 包装脚本最终运行的客户端身份。优先使用普通用户已经获准访问的本机 Docker 上下文，并保留原有网络及资源配置。

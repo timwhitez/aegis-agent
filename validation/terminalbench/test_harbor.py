@@ -1,5 +1,8 @@
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
+import shlex
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -16,7 +19,7 @@ class TaskInputTest(unittest.IsolatedAsyncioTestCase):
     async def test_uploads_prompt_data_without_shell_arguments(self):
         instruction = " --json '$(echo input)' service-613.py\n\n"
         with tempfile.TemporaryDirectory() as tmp:
-            agent = SimpleNamespace(config_file=Path(tmp) / "config.yaml", relay_env={})
+            agent = SimpleNamespace(config_file=Path(tmp) / "config.yaml", relay_env={}, agent_timeout_sec=None)
             uploads = []
 
             async def upload(source, target):
@@ -32,6 +35,35 @@ class TaskInputTest(unittest.IsolatedAsyncioTestCase):
             command, = env.exec.await_args.args
             self.assertNotIn("service-613.py", command)
             self.assertNotIn("$(echo input)", command)
+            self.assertNotIn("--system", command)
+            agent.agent_timeout_sec = 1e20
+            await AegisAgent.run(agent, instruction, env, None)
+            self.assertNotIn("--system", env.exec.await_args.args[0])
+
+    async def test_native_stage_clock_starts_before_prompt_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = SimpleNamespace(config_file=Path(tmp) / "config.yaml", relay_env={})
+            for seconds in (0.5, 900):
+                with self.subTest(seconds=seconds):
+                    agent.agent_timeout_sec = seconds
+                    before = datetime.now(timezone.utc)
+                    uploaded = None
+
+                    async def upload(source, target):
+                        nonlocal uploaded
+                        uploaded = datetime.now(timezone.utc)
+                        self.assertEqual(source.read_bytes(), b"original task\n")
+                    env = SimpleNamespace(upload_file=upload, exec=AsyncMock(return_value=SimpleNamespace(return_code=0)))
+                    await AegisAgent.run(agent, "original task\n", env, None)
+                    command, = env.exec.await_args.args
+                    args = shlex.split(command)
+                    self.assertNotIn("--timeout", args)
+                    notice = args[args.index("--system") + 1]
+                    times = re.findall(r"\d{4}-\d\d-\d\dT[\d:.]+\+00:00", notice)
+                    start, cutoff = map(datetime.fromisoformat, times)
+                    self.assertLessEqual(before, start)
+                    self.assertLessEqual(start, uploaded)
+                    self.assertEqual(cutoff - start, timedelta(seconds=seconds))
 
 
 class VerifierLifecycleTest(unittest.IsolatedAsyncioTestCase):

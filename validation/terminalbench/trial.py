@@ -119,6 +119,7 @@ async def execute(args, scratch, status):
         })
         trial = await Trial.create(cfg)
         agent = trial.agent
+        agent.agent_timeout_sec = trial.agent_timeout_sec
         agent.binary, agent.helper = args.binary, args.evidence_helper
         agent.config_file, agent.relay_env = relay.config, relay.env
         agent.check_artifact_copy = bool(plan["mode"] == "separate" or plan["artifacts"] or captures)
