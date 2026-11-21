@@ -121,6 +121,7 @@ async def execute(args, scratch, status):
         agent = trial.agent
         agent.binary, agent.helper = args.binary, args.evidence_helper
         agent.config_file, agent.relay_env = relay.config, relay.env
+        agent.check_artifact_copy = bool(plan["mode"] == "separate" or plan["artifacts"] or captures)
         agent.agent_rc = None
         agent.observation_path = args.attempt / "resources-agent.json"
         evidence = {}
@@ -196,7 +197,9 @@ async def execute(args, scratch, status):
 
 def classify_result(status, result, evidence):
     failures = {e.exception_type for e in result.recorded_exceptions()}
-    if "AgentTimeoutError" in failures:
+    if "DockerArtifactOwnershipError" in failures:
+        status.update(status="infra_invalid", stage="setup", reason=["DockerArtifactOwnershipError"])
+    elif "AgentTimeoutError" in failures:
         status.update(status="agent_timeout", stage="agent")
     elif "VerifierTimeoutError" in failures:
         status.update(status="verifier_timeout", stage="verifier")
