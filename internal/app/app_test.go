@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -345,6 +346,37 @@ func TestRunCommandRejectsConflictingStreamJSONAndJSON(t *testing.T) {
 	err := Run(context.Background(), []string{"exec", "--output-format", "stream-json", "--json", "do work"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutually exclusive error, got %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestExecRawInputPreservesPrompt(t *testing.T) {
+	fake := newFakeRunner()
+	fake.startResult = runtime.RunResult{SessionID: "s1", Status: session.StatusCompleted, FinalText: "done"}
+	restore := runnerLoader
+	runnerLoader = func(string, string) (coreRunner, *config.Config, error) { return fake, config.Default(), nil }
+	defer func() { runnerLoader = restore }()
+	const input = "  --json 'write $HOME'\n任务\n\n"
+	withStdin(t, input, func() {
+		if err := Run(context.Background(), []string{"exec", "--input-format", "raw"}, io.Discard, io.Discard); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if len(fake.startCalls) != 1 || fake.startCalls[0].Prompt != input {
+		t.Fatal("raw stdin prompt was changed")
+	}
+	for _, bad := range []struct {
+		args  []string
+		input string
+	}{
+		{[]string{"exec", "--input-format", "raw", "extra"}, "otherwise valid"},
+		{[]string{"exec", "--input-format", "raw"}, "  \n"},
+		{[]string{"exec", "--input-format", "raw"}, "invalid-\xff"},
+	} {
+		withStdin(t, bad.input, func() {
+			if err := Run(context.Background(), bad.args, io.Discard, io.Discard); err == nil {
+				t.Fatal("invalid raw input was accepted")
+			}
+		})
 	}
 }
 
