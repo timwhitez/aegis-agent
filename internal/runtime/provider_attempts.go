@@ -98,12 +98,11 @@ func recordProviderAutoResumeAttempt(store *session.Store, meta session.SessionM
 	return store.AppendProviderAttempt(meta.ID, attempt)
 }
 
-func recordProviderMaxTokensResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult, attemptNo int, backoff time.Duration) error {
+func recordProviderMaxTokensResumeAttempt(store *session.Store, meta session.SessionMetadata, turn int, result provider.TurnResult, attemptNo int) error {
 	attempt := baseProviderAttempt(meta, turn)
 	attempt.Outcome = "max_tokens_resume"
 	attempt.Retryable = true
 	attempt.Attempt = attemptNo
-	attempt.BackoffMS = backoff.Milliseconds()
 	attempt.ResponseCommitted = true
 	attempt.ProviderResponseID = result.ProviderResponseID
 	attempt.CacheCreationInputTokens = result.Usage.CacheCreationInputTokens
