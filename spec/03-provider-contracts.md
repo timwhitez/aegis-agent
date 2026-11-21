@@ -140,7 +140,9 @@ usage presence 是 provider contract 的一部分：
 - tool schemas、system prompt、metadata/provider envelope 或不可丢单条消息本身不可满足时，runtime 返回 `request_budget_unfit`。错误至少包含 request_kind、blocking_component、estimated_input_tokens、available_input_tokens、reserved_output_tokens、effective_window_tokens 与最终 snapshot，不包含请求正文
 - 最终 `provider.request.prepared` 与随后 `provider.call` 使用同一个 fitted TurnRequest/snapshot；`fit=false` 只写 local rejection/attempt facts，不进入 adapter retry/auto-resume。每个 `provider.request.budget_action` 通过 request id/kind 记录 pass、action、before/after wire bytes/tokens 与受影响 id/count
 
-Anthropic 适配器成功构造请求时，`provider.request.prepared.data.request_budget` 的 `effective_max_output_tokens` 记录请求体中的输出上限。`max_output_tokens_source` 取值为 `configured`（显式上限）、`adapter_default`（默认值）、`semantic_summary`（摘要器将上限设为 2048）或 `thinking_budget`（手动思考预算进一步抬高了上限）。这些字段独立于预检的 `reserved_output_tokens`。设置了输出档位时，`output_config_effort` 记录该档位，自定义字符串记为 `other`。用 `request_id` 将预检参数关联到同一逻辑请求的 `provider.request.completed` 或 `provider.request.failed`。主请求另有 `turn.stopped`。一次逻辑请求可能在发送前被拒绝，也可能包含多次 HTTP 尝试。
+Anthropic 适配器成功构造请求时，`provider.request.prepared.data.request_budget` 的 `effective_max_output_tokens` 记录请求体中的输出上限。`max_output_tokens_source` 取值为 `configured`（显式上限）、`adapter_default`（默认值）、`semantic_summary`（摘要器将上限设为 2048）或 `thinking_budget`（手动思考预算进一步抬高了上限）。设置了输出档位时，`output_config_effort` 记录该档位，自定义字符串记为 `other`。用 `request_id` 将预检参数关联到同一逻辑请求的 `provider.request.completed` 或 `provider.request.failed`。主请求另有 `turn.stopped`。一次逻辑请求可能在发送前被拒绝，也可能包含多次 HTTP 尝试。
+
+预检在 `reserved_output_tokens` 中记录计算总量时使用的输出预留。请求指定了输出上限时，预检采用该值，`output_reserve_source` 为 `max_output_tokens`。请求未指定上限时，预检预留 8192 个 token，来源为 `default`。适配器报告的 `effective_max_output_tokens` 大于上述预留时，预检使用适配器报告的值，并将来源记为 `effective_max_output_tokens`。适配器未报告或报告的值较小时，原有预留仍然生效。
 
 #### 2.2.4 Request lifecycle correlation
 

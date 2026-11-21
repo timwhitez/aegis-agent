@@ -245,6 +245,10 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 		return snapshot, &RequestBudgetPreflightError{Code: requestEstimateFailedCode, Snapshot: snapshot, Err: err}
 	}
 	snapshot.RequestOutputOptions = estimate.RequestOutputOptions
+	if estimate.EffectiveMaxOutputTokens > snapshot.ReservedOutputTokens {
+		snapshot.ReservedOutputTokens = estimate.EffectiveMaxOutputTokens
+		snapshot.OutputReserveSource = "effective_max_output_tokens"
+	}
 	if requestContext.SummaryCapApplied && snapshot.MaxOutputTokensSource == "configured" {
 		snapshot.MaxOutputTokensSource = "semantic_summary"
 	}
@@ -258,7 +262,7 @@ func preflightProviderRequest(adapter provider.Adapter, req provider.TurnRequest
 	snapshot.MetadataBytes = estimate.MetadataBytes
 	snapshot.WireBodyBytes = estimate.WireBodyBytes
 	snapshot.EstimatedInputTokens = estimate.EstimatedInputTokens
-	snapshot.RequiredTokens = saturatingAdd(estimate.EstimatedInputTokens, reserve, safetyHeadroom)
+	snapshot.RequiredTokens = saturatingAdd(estimate.EstimatedInputTokens, snapshot.ReservedOutputTokens, safetyHeadroom)
 	snapshot.HeadroomTokens = saturatingSubtract(policy.EffectiveWindowTokens, snapshot.RequiredTokens)
 	snapshot.Fit = snapshot.RequiredTokens <= policy.EffectiveWindowTokens
 	if !snapshot.Fit {
