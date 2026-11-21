@@ -1224,3 +1224,27 @@ func TestAnthropicRequestEvidenceKeepsMissingUsageDistinctFromZero(t *testing.T)
 		}
 	}
 }
+
+func TestTruncatedResponseShape(t *testing.T) {
+	tests := []struct {
+		want   string
+		result provider.TurnResult
+	}{
+		{"empty", provider.TurnResult{}},
+		{"provider_blocks", provider.TurnResult{ProviderContentBlocks: []session.ProviderContentBlock{{Type: "redacted_thinking", Data: "private"}}}},
+		{"thinking", provider.TurnResult{Thinking: "private"}},
+		{"text", provider.TurnResult{Text: "partial", Thinking: "private"}},
+		{"tool_calls", provider.TurnResult{ToolCalls: []provider.ToolCall{{Name: "example"}}}},
+	}
+	for _, tc := range tests {
+		tc.result.StopReason = "max_tokens"
+		event := providerRequestCompletedEventData(RequestBudgetSnapshot{}, tc.result)
+		if got := event["truncated_output"]; got != tc.want {
+			t.Errorf("truncated_output = %v, want %q", got, tc.want)
+		}
+		tc.result.StopReason = "end_turn"
+		if _, ok := providerRequestCompletedEventData(RequestBudgetSnapshot{}, tc.result)["truncated_output"]; ok {
+			t.Error("reported a truncation for a normal turn")
+		}
+	}
+}

@@ -2113,6 +2113,8 @@ func (s *Store) listAllSessions(skipInitializing bool) ([]SessionSummary, error)
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
+
+			IncompleteReason: state.IncompleteReason,
 		}
 		result = append(result, summary)
 	}
@@ -2217,6 +2219,8 @@ func (s *Store) ListChildren(parentSessionID string, limit int) ([]SessionSummar
 			Depth:           meta.Depth,
 			QueueJobID:      meta.QueueJobID,
 			EffectiveBudget: CloneEffectiveBudget(meta.EffectiveBudget),
+
+			IncompleteReason: state.IncompleteReason,
 		}
 		result = append(result, summary)
 	}

@@ -24,12 +24,14 @@ type report struct {
 }
 
 type sessionEvidence struct {
-	ID        string        `json:"id"`
-	Status    string        `json:"status"`
-	Parent    bool          `json:"child"`
-	Requests  []requestFact `json:"requests"`
-	Attempts  []attemptFact `json:"attempts"`
-	ToolCalls int           `json:"tool_calls"`
+	ID            string        `json:"id"`
+	Status        string        `json:"status"`
+	Phase         string        `json:"phase,omitempty"`
+	FailureReason string        `json:"failure_reason,omitempty"`
+	Parent        bool          `json:"child"`
+	Requests      []requestFact `json:"requests"`
+	Attempts      []attemptFact `json:"attempts"`
+	ToolCalls     int           `json:"tool_calls"`
 }
 
 type requestFact struct {
@@ -41,6 +43,7 @@ type requestFact struct {
 	Source          string     `json:"source,omitempty"`
 	Effort          string     `json:"effort,omitempty"`
 	Stop            string     `json:"stop_reason,omitempty"`
+	TruncatedOutput string     `json:"truncated_output,omitempty"`
 	Usage           *usageFact `json:"usage"`
 }
 
@@ -64,6 +67,9 @@ var sessionID = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}-([a-f0-9]{6}|fallback)$`)
 var requestSuffix = regexp.MustCompile(`^[0-9]{1,9}:(main|semantic_summary|probe):[0-9]{1,9}$`)
 
 const statuses = "running completed cancelled paused failed awaiting_input"
+const phases = "prepare provider_call turn_decide turn_limit tool_execute background_wait model_wait goal_budget_limited plan_approval plan_input plan_cancelled interrupt cancelled error failed approval_preparation_recovered other"
+const failureReasons = "max_turns_hard_exceeded provider_max_tokens provider_blocked provider_stop_error provider_cancelled provider_tool_use_empty provider_tool_call_stop_mismatch unresolved_background_work model_degeneration_no_progress incomplete_no_finish other"
+const truncatedOutputs = "tool_calls text thinking provider_blocks empty other"
 const categories = "completed cancelled provider_error request_rejected request_cancelled agent_failed not_started unavailable incomplete"
 const requestStatuses = "prepared completed failed rejected cancelled"
 const reasons = "done_candidate tool_call tool_use end_turn max_tokens stop_sequence refusal pause_turn length tool_calls stop content_filter blocked cancelled error failed other"
@@ -95,6 +101,9 @@ func checked(r io.Reader) (report, error) {
 		if !sessionID.MatchString(s.ID) || !allowed(s.Status, statuses) || len(s.Requests) > maxRequests || len(s.Attempts) > maxRequests || s.ToolCalls < 0 {
 			return result, errors.New("invalid session evidence")
 		}
+		if (s.Phase != "" && !allowed(s.Phase, phases)) || (s.FailureReason != "" && (s.Status != "failed" || !allowed(s.FailureReason, failureReasons))) {
+			return result, errors.New("invalid session outcome")
+		}
 		if !s.Parent {
 			roots++
 		}
@@ -105,6 +114,9 @@ func checked(r io.Reader) (report, error) {
 			}
 			if q.Status != "" && (!allowed(q.Status, requestStatuses) || (q.Status != "completed" && (q.Stop != "" || q.Usage != nil))) {
 				return result, errors.New("inconsistent request lifecycle")
+			}
+			if q.TruncatedOutput != "" && (q.Status != "completed" || q.Stop != "max_tokens" || !allowed(q.TruncatedOutput, truncatedOutputs)) {
+				return result, errors.New("invalid truncated output")
 			}
 			if q.Usage != nil {
 				for _, n := range []*int{q.Usage.Input, q.Usage.Output, q.Usage.Reasoning, q.Usage.Read, q.Usage.Write} {

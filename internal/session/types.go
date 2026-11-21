@@ -506,6 +506,9 @@ type SessionSummary struct {
 	PlanModeStatus  string           `json:"plan_mode_status,omitempty"`
 	PlanModeVersion int              `json:"plan_mode_version,omitempty"`
 	PlanModeSummary string           `json:"plan_mode_summary,omitempty"`
+
+	// Used for local failure attribution. Keep private state off listing APIs.
+	IncompleteReason string `json:"-"`
 }
 
 type TaskBoard struct {

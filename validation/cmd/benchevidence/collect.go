@@ -57,7 +57,19 @@ func collect(dir string, exitCode *int) report {
 			r.Partial = true
 			continue
 		}
-		se := sessionEvidence{ID: row.ID, Status: row.Status, Parent: row.ParentSessionID != ""}
+		se := sessionEvidence{ID: row.ID, Status: row.Status, Phase: enum(row.Phase, phases), Parent: row.ParentSessionID != ""}
+		if row.Status == session.StatusFailed {
+			// Only turn_decide failures set IncompleteReason. Other phases may
+			// retain a previous turn's reason, including the hard limit path.
+			switch {
+			case row.Phase == "turn_limit" && row.LastError == "max_turns_hard_exceeded":
+				se.FailureReason = "max_turns_hard_exceeded"
+			case row.Phase == "turn_decide" && row.IncompleteReason != "":
+				se.FailureReason = enum(row.IncompleteReason, failureReasons)
+			default:
+				se.FailureReason = "other"
+			}
+		}
 		positions := map[string]int{}
 		var lastMain requestFact
 		validTrace := true
@@ -116,6 +128,9 @@ func collect(dir string, exitCode *int) report {
 				}
 				q.Status = "completed"
 				q.Stop = enum(e.Data["stop_reason"], reasons)
+				if q.Stop == "max_tokens" {
+					q.TruncatedOutput = enum(e.Data["truncated_output"], truncatedOutputs)
+				}
 				u, _ := e.Data["usage"].(map[string]any)
 				if u["reported"] == true {
 					counts := u
