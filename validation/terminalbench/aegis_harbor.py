@@ -4,6 +4,7 @@ import json
 import os
 import stat
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import shlex
@@ -150,6 +151,16 @@ class AegisAgent(BaseAgent):
                 upload.unlink()
 
     async def run(self, instruction, environment, context):
+        timing = []
+        if self.agent_timeout_sec is not None:
+            # Harbor's timeout already covers the upload. A duration beyond
+            # datetime's range still belongs to Harbor.
+            started = datetime.now(timezone.utc)
+            with suppress(OverflowError):
+                cutoff = started + timedelta(seconds=self.agent_timeout_sec)
+                timing = ["--system", f"The Harbor agent stage started at {started.isoformat()}. "
+                          f"Its estimated cutoff is {cutoff.isoformat()}. "
+                          "You can check the current UTC time with date -u."]
         prompt = PRIVATE + "/instruction"
         with tempfile.TemporaryDirectory(dir=self.config_file.parent) as stage:
             source = Path(stage) / "instruction"
@@ -159,7 +170,7 @@ class AegisAgent(BaseAgent):
             await environment.upload_file(source, prompt)
         args = [HELPER, "--provider-socket", "/run/aegis-provider/provider.sock",
                 "--sessions", SESSIONS, "--output", SUMMARY, "--forward-stdin", "--",
-                PRIVATE + "/aegis-agent", "exec", "--config", PRIVATE + "/config.yaml", "--input-format", "raw"]
+                PRIVATE + "/aegis-agent", "exec", "--config", PRIVATE + "/config.yaml", *timing, "--input-format", "raw"]
         # Open the file before unlinking it. Only stable paths reach the shell
         # and the Docker client. The agent reads the open descriptor on stdin.
         command = f"(rm -f -- {prompt} && exec {shlex.join(args)}) <{prompt} >/dev/null 2>&1"

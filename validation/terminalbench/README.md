@@ -26,7 +26,7 @@ CGO_ENABLED=0 go build -trimpath -o bin/aegis-evidence ./validation/cmd/benchevi
 证据程序从 Aegis session 中选取请求关联 ID、生效的输出预算、停止原因、已报告的用量和重试结果。宿主再次校验这些字段，再写入尝试目录。原始请求、模型回答、终端输出和密钥不进入诊断文件。每个逻辑请求 ID 可包含多次 HTTP 尝试；通过本地预检后才可能发起上游调用。`outcome.json` 的 `provider_http` 记录该次代理在撤销前发起的上游尝试数和收到响应头的次数。缺失的用量显示为 `null`。取消、启动失败或宿主中断时，尝试记录会标出已知阶段及缺失项。
 
 每个会话的 `phase` 记录采集时的运行阶段。失败会话的 `failure_reason` 只导出已知的运行时原因码，例如 `max_turns_hard_exceeded` 和 `provider_max_tokens`，未识别的失败记为 `other`。截断请求的 `truncated_output` 区分工具调用、可见文本、思考文本、其他内容块及空响应。比较报告用 `null` 表示未采集或不适用的字段。判断续跑是否取得进展，还需结合后续工具调用、产物和评分结果。
-新批次使用配套编译的 Agent 与 evidence helper。适配器将 UTF-8 题面上传至容器私有目录，用已打开的文件作为标准输入，并在启动 helper 之前移除文件。Agent 使用 `--input-format raw` 保留首尾空白和换行。Shell、Docker 客户端、helper 和 Agent 的参数只包含固定命令及路径，题面中提到的服务名不会参与命令行匹配。
+新批次使用配套编译的 Agent 与 evidence helper。适配器将 UTF-8 题面上传至容器私有目录，用已打开的文件作为标准输入，并在启动 helper 之前移除文件。Agent 使用 `--input-format raw` 保留首尾空白和换行。阶段时间通过补充系统指令传入。Shell、Docker 客户端、helper 和 Agent 的命令行均不包含题面，题面中提到的服务名不会参与命令行匹配。
 
 
 Harbor 的原始评分工作目录位于宿主的临时内存文件系统。独立 verifier 只接收声明的产物。原生 shared 任务则需要保留 agent 阶段留下的文件和服务，评分材料在 agent 阶段结束后注入。需要审查评分可信度时，应同时查看环境模式、verifier 证据及尝试状态。
