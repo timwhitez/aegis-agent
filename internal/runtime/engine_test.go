@@ -2011,6 +2011,7 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
 	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
 	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	meta.ProviderOptions.RetryPolicy = &session.ProviderRetryPolicy{BaseDelayMS: 60000}
 	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Return a finish tool call.")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -2042,7 +2043,7 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 			}
 			for _, want := range []string{
 				"max_output_tokens was reached",
-				"auto-resuming (1/2)",
+				"auto-resuming (1/2) immediately",
 				"next unfinished step",
 			} {
 				if !strings.Contains(last.Text, want) {
@@ -2055,7 +2056,10 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 			}, nil
 		},
 	)
-	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	// A network retry would outlast this context; a successful continuation can finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -2076,8 +2080,8 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 	if err != nil {
 		t.Fatalf("events: %v", err)
 	}
-	if _, ok := findEventByType(events, "provider.max_tokens_resume"); !ok {
-		t.Fatalf("expected provider.max_tokens_resume event, got %#v", events)
+	if event, ok := findEventByType(events, "provider.max_tokens_resume"); !ok || fmt.Sprint(event.Data["backoff_ms"]) != "0" {
+		t.Fatalf("expected provider.max_tokens_resume event with zero backoff, got %#v", events)
 	}
 	attempts, err := engine.store.LoadProviderAttempts(meta.ID)
 	if err != nil {
@@ -2087,13 +2091,38 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 	for _, attempt := range attempts {
 		if attempt.Outcome == "max_tokens_resume" {
 			sawResume = true
-			if attempt.ProviderResponseID != "resp_partial" || !attempt.ResponseCommitted {
+			if attempt.ProviderResponseID != "resp_partial" || !attempt.ResponseCommitted || attempt.BackoffMS != 0 {
 				t.Fatalf("unexpected max_tokens_resume attempt: %#v", attempt)
 			}
 		}
 	}
 	if !sawResume {
 		t.Fatalf("expected max_tokens_resume provider attempt, got %#v", attempts)
+	}
+}
+
+func TestEngineCancelledAfterMaxTokensDoesNotCallProviderAgain(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	engine.cfg.Runtime.ProviderAutoResume.Enabled = true
+	engine.cfg.Runtime.ProviderAutoResume.MaxAttempts = 2
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	adapter := provider.NewFake(
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			cancel()
+			return provider.TurnResult{Text: "partial report", StopReason: "max_tokens"}, nil
+		},
+		func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+			t.Fatal("provider called after cancellation")
+			return provider.TurnResult{}, nil
+		},
+	)
+	if _, err := engine.Run(ctx, meta, state, "", adapter, catalog, registry, hookManager); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected cancellation, got %v", err)
+	}
+	state, err := engine.store.LoadState(meta.ID)
+	if err != nil || state.Turn != 1 || state.ProviderMaxTokensResumeCount != 1 {
+		t.Fatalf("expected first continuation to be persisted before cancellation, got %#v, %v", state, err)
 	}
 }
 

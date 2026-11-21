@@ -858,31 +858,27 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			if failureReason, failureText := providerStopFailure(result.StopReason); failureReason != "" {
 				if failureReason == "provider_max_tokens" && !budgetStopRequested && e.shouldAutoResumeProviderMaxTokens(result, state) {
 					state.ProviderMaxTokensResumeCount++
-					backoff := providerAutoResumeBackoff(meta, state.ProviderMaxTokensResumeCount)
 					state.LastError = failureText
 					state.Phase = "turn_decide"
 					if err := e.store.SaveState(meta.ID, state); err != nil {
 						return RunResult{}, err
 					}
-					if appendErr := recordProviderMaxTokensResumeAttempt(e.store, meta, state.Turn, result, state.ProviderMaxTokensResumeCount, backoff); appendErr != nil {
+					if appendErr := recordProviderMaxTokensResumeAttempt(e.store, meta, state.Turn, result, state.ProviderMaxTokensResumeCount); appendErr != nil {
 						return e.fail(ctx, meta, state, appendErr, hookManager)
 					}
 					_ = writeSessionSummary(e.store, meta.ID)
 					_ = writeLongRunCheckpoint(e.store, meta.ID)
-					if appendErr := e.appendProviderMaxTokensResume(meta.ID, result, state.ProviderMaxTokensResumeCount, backoff); appendErr != nil {
+					if appendErr := e.appendProviderMaxTokensResume(meta.ID, result, state.ProviderMaxTokensResumeCount); appendErr != nil {
 						return RunResult{}, appendErr
 					}
-					if _, appendErr := e.appendHarnessReminder(meta, "turn_decide", providerMaxTokensResumePrompt(state.ProviderMaxTokensResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts, backoff), "provider_max_tokens_resume"); appendErr != nil {
+					if _, appendErr := e.appendHarnessReminder(meta, "turn_decide", providerMaxTokensResumePrompt(state.ProviderMaxTokensResumeCount, e.cfg.Runtime.ProviderAutoResume.MaxAttempts), "provider_max_tokens_resume"); appendErr != nil {
 						return RunResult{}, appendErr
 					}
-					if sleepErr := sleepProviderAutoResumeBackoff(ctx, backoff); sleepErr != nil {
-						if checkpointErr := childBudgetCheckpointErrorFromContext(ctx); checkpointErr != nil {
-							return e.fail(ctx, meta, state, checkpointErr, hookManager)
+					if err := ctx.Err(); err != nil {
+						if result, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
+							return result, handleErr
 						}
-						if reason := childBudgetReasonFromContext(ctx); reason != "" {
-							return e.pauseChildBudget(ctx, meta, state, reason, hookManager, budgetRun)
-						}
-						return RunResult{}, sleepErr
+						return RunResult{}, err
 					}
 					continue
 				}
@@ -2651,11 +2647,11 @@ func (e *Engine) appendProviderAutoResume(sessionID string, err error, attempt i
 	return e.appendEvent(sessionID, "provider.auto_resume", "provider_call", data)
 }
 
-func (e *Engine) appendProviderMaxTokensResume(sessionID string, result provider.TurnResult, attempt int, backoff time.Duration) error {
+func (e *Engine) appendProviderMaxTokensResume(sessionID string, result provider.TurnResult, attempt int) error {
 	data := map[string]any{
 		"attempt":      attempt,
 		"max_attempts": e.cfg.Runtime.ProviderAutoResume.MaxAttempts,
-		"backoff_ms":   backoff.Milliseconds(),
+		"backoff_ms":   0,
 		"stop_reason":  result.StopReason,
 		"error":        maxOutputTokensError,
 	}
@@ -2697,8 +2693,8 @@ func providerAutoResumePrompt(err error, attempt, maxAttempts int, backoff time.
 	return fmt.Sprintf("Harness reminder: the provider request timed out while waiting for the model (%s). This is a provider/gateway timeout, not a shell or tool hang; the session is still running and the runtime is auto-resuming (%d/%d) after a %s backoff. Continue from existing durable evidence. Do not restart broad exploration because of this timeout. If the current task is report finalization, fix the specific finish guard or call finish with current evidence.", err.Error(), attempt, maxAttempts, formatProviderBackoff(backoff))
 }
 
-func providerMaxTokensResumePrompt(attempt, maxAttempts int, backoff time.Duration) string {
-	return fmt.Sprintf("Harness reminder: max_output_tokens was reached. The runtime is auto-resuming (%d/%d) after a %s backoff. Use the conversation and existing workspace state to take the next unfinished step. Keep this step small enough to complete within the output limit.", attempt, maxAttempts, formatProviderBackoff(backoff))
+func providerMaxTokensResumePrompt(attempt, maxAttempts int) string {
+	return fmt.Sprintf("Harness reminder: max_output_tokens was reached. The runtime is auto-resuming (%d/%d) immediately. Use the conversation and existing workspace state to take the next unfinished step. Keep this step small enough to complete within the output limit.", attempt, maxAttempts)
 }
 
 func providerAutoResumeBackoff(meta session.SessionMetadata, attempt int) time.Duration {

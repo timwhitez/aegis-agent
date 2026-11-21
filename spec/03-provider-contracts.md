@@ -527,7 +527,7 @@ HTTP status 映射必须满足：
 - 请求超时、等待响应头超时、stream idle 超时应归类为 `upstream_timeout`，并尽量填充 `timeout_kind`
 - adapter 必须先判断 caller-owned run context 是否已经结束：parent cancel、child budget deadline、manual interrupt 等上层取消必须原样返回 cancellation，并保留 runtime 可读取的 `context.Cause`，不能被 per-attempt request timeout 归类成 `upstream_timeout`，也不能进入 transport retry；只有 caller context 仍存活时触发的 provider-owned deadline 才属于 operation timeout
 - provider call 在没有新工具副作用前遇到 `upstream_timeout` 时，runtime 可按 `runtime.provider_auto_resume.max_attempts` 做有界自动续跑；超过预算后必须正常 failed
-- provider 因 `max_tokens` / `max_output_tokens` 截断时，runtime 在保存部分 assistant 消息后，可按 `runtime.provider_auto_resume.max_attempts` 的上限续跑。提醒要求根据已有对话和工作区完成下一小步。各 adapter 按自己的回放规则构造后续请求。
+- provider 因 `max_tokens` / `max_output_tokens` 截断时，若允许续跑，runtime 会保存部分 assistant 消息、追加提醒并立即开始下一轮。`runtime.provider_auto_resume.max_attempts` 限制连续续跑次数。`provider.max_tokens_resume` 事件的 `backoff_ms` 为 `0`，对应的 attempt 记录省略零值。提醒要求根据已有对话和工作区完成下一小步。各 adapter 按自己的回放规则构造后续请求。
 - 截断响应只有孤立的 Anthropic `redacted_thinking` 或空内容时，runtime 以 `provider_max_tokens` 停止。有可保存的输出但已用完续跑次数时，也以该原因停止。不完整响应中的工具调用不会执行。
 - cancel 后必须尽快返回，不能伪装成普通失败
 - provider HTTP 响应体必须有硬上限；超限响应归类为 `response_parse_error`，避免兼容网关或异常上游通过超大 JSON / error body 造成内存型拒绝服务
