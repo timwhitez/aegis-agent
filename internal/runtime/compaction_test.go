@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 
 	"aegis-agent/internal/config"
 	"aegis-agent/internal/events"
+	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
 )
 
@@ -910,7 +914,7 @@ func TestCompactorIncludesSemanticSummaryWhenProviderSummarySucceeds(t *testing.
 		HysteresisDeltaChars:  8,
 		KeepRecentMessages:    1,
 	}
-	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(_ context.Context, dropped []session.Message, budget int) (string, error) {
+	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(_ context.Context, dropped []semanticSummaryItem, budget int) (string, error) {
 		sawDropped = len(dropped) > 0 && budget > 0
 		return "semantic middle summary", nil
 	}, func(evt events.Event) error {
@@ -931,6 +935,151 @@ func TestCompactorIncludesSemanticSummaryWhenProviderSummarySucceeds(t *testing.
 	}
 	if len(emitted) != 2 || emitted[1].Data["semantic_summary_status"] != "ok" {
 		t.Fatalf("expected ok semantic summary event, got %#v", emitted)
+	}
+}
+
+func TestEngineSemanticSummaryUsesPublicDroppedHistory(t *testing.T) {
+	for _, visible := range []bool{false, true} {
+		name := "private only"
+		if visible {
+			name = "visible history and retained tools"
+		}
+		t.Run(name, func(t *testing.T) {
+			engine, meta, state, registry, hooks, catalog := newTestEngine(t, session.ModeExec)
+			engine.cfg.Runtime.Compact.InputCharThreshold = 1
+			engine.cfg.Runtime.Compact.KeepRecentMessages = 1
+			engine.cfg.Runtime.Compact.KeepRecentToolResults = 4
+			meta.ProviderOptions.ContextWindowTokens = 200000
+			const private = "fixture-private-"
+			hidden := session.NewAssistantMessage("", private+"thinking", nil)
+			thought := true
+			hidden.ProviderContentBlocks = []session.ProviderContentBlock{
+				{Provider: "anthropic", Type: "thinking", Thinking: private + "block", Signature: private + "signature"},
+				{Provider: "anthropic", Type: "redacted_thinking", Data: private + "redacted"},
+				{Provider: "openai", Type: "reasoning", Summary: []string{private + "summary"}, Data: private + "encrypted"},
+				{Provider: "google", Type: "part", Thought: &thought, Text: private + "thought", ThoughtSignature: private + "google-signature"},
+			}
+			hidden.Meta = map[string]any{"fixture": private + "metadata"}
+			messages := []session.Message{hidden}
+			if visible {
+				call := session.ToolCall{ID: "old-tool", Name: "read_file", Arguments: json.RawMessage(`{"path":"visible-path"}`), ProviderCallID: private + "alias"}
+				assistant := session.NewAssistantMessage("visible decision", private+"mixed", []session.ToolCall{call})
+				assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Type: "text", Text: private + "superseded-text"},
+					{Provider: "anthropic", Type: "tool_use", ID: call.ID, Name: call.Name, Input: json.RawMessage(`{"path":"fixture-private-superseded-args"}`)},
+				}
+				legacy := session.NewAssistantMessage("", "", nil)
+				legacy.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Type: "text", Text: "legacy anthropic text"},
+					{Provider: "anthropic", Type: "tool_use", ID: "legacy-anthropic-call", Name: call.Name, Input: json.RawMessage(`{"path":"legacy-anthropic-path"}`)},
+				}
+				legacyGoogle := session.NewAssistantMessage("", "", nil)
+				legacyGoogle.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "google", Type: "part", Text: "legacy google text", ThoughtSignature: private + "signed"},
+					{Provider: "google", Type: "function_call", ID: "legacy-google-call", Name: call.Name, Args: json.RawMessage(`{"path":"legacy-google-path"}`)},
+				}
+				messages = append(messages, legacy, legacyGoogle)
+				messages = append(messages, session.NewMessage("system", "historic system note"), session.NewMessage("user", "visible earlier request"), assistant, session.NewToolMessage([]session.ToolResult{{
+					ToolCallID: call.ID, Name: call.Name, LLMOutput: "visible failure", DisplayOutput: private + "display",
+					IsError: true, Metadata: map[string]any{"fixture": private + "tool-meta"},
+				}}))
+			}
+			messages = append(messages, session.NewMessage("user", "latest user request"))
+			if visible {
+				call := session.ToolCall{ID: "retained-tool", Name: "read_file", Arguments: json.RawMessage(`{"path":"recent"}`)}
+				assistant := session.NewAssistantMessage("", "retained thinking", []session.ToolCall{call})
+				assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Model: meta.Model, ProviderProfile: meta.Provider, Type: "thinking", Thinking: "retained thinking", Signature: "retained-sig"},
+					{Provider: "anthropic", Type: "tool_use", ID: call.ID, Name: call.Name, Input: call.Arguments},
+				}
+				messages = append(messages, assistant, session.NewToolMessage([]session.ToolResult{{ToolCallID: call.ID, Name: call.Name, LLMOutput: "retained output"}}))
+			}
+			for _, msg := range messages {
+				if err := engine.store.AppendMessage(meta.ID, msg); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := engine.store.LoadMessages(meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var summaries, mains int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					System   json.RawMessage `json:"system"`
+					Messages []struct {
+						Role    string           `json:"role"`
+						Content []map[string]any `json:"content"`
+					} `json:"messages"`
+					Tools []json.RawMessage `json:"tools"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				if len(body.Tools) == 0 {
+					summaries++
+					if len(body.Messages) != 1 || body.Messages[0].Role != "user" || len(body.Messages[0].Content) != 1 || strings.Contains(string(body.System), "historic system note") {
+						t.Error("expected a single user message containing historical references")
+						return
+					}
+					input, _ := body.Messages[0].Content[0]["text"].(string)
+					for _, want := range []string{`"role":"system"`, "historic system note", "visible earlier request", "visible decision", "legacy anthropic text", "legacy-anthropic-call", "legacy-anthropic-path", "legacy google text", "legacy-google-call", "legacy-google-path", "old-tool", "read_file", "visible-path", "visible failure", `"is_error":true`} {
+						if visible && !strings.Contains(input, want) {
+							t.Errorf("summary is missing %q", want)
+						}
+					}
+					for _, excluded := range []string{private, "retained-sig", "latest user request", "retained output"} {
+						if strings.Contains(input, excluded) {
+							t.Errorf("summary contains %q", excluded)
+						}
+					}
+					_, _ = w.Write([]byte(`{"stop_reason":"end_turn","content":[{"type":"text","text":"fixture summary"}]}`))
+					return
+				}
+				mains++
+				var signed, called, returned bool
+				for _, msg := range body.Messages {
+					for _, block := range msg.Content {
+						switch block["type"] {
+						case "thinking":
+							signed = block["signature"] == "retained-sig"
+						case "tool_use":
+							called = signed && block["id"] == "retained-tool"
+						case "tool_result":
+							returned = called && block["tool_use_id"] == "retained-tool" && block["content"] == "retained output"
+						}
+					}
+				}
+				if returned != visible {
+					t.Errorf("retained signed call/result replay = %v, want %v", returned, visible)
+				}
+				_, _ = w.Write([]byte(`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"done","name":"finish","input":{"message":"done"}}]}`))
+			}))
+			adapter := provider.NewAnthropic(server.URL, "fixture", "2023-06-01", server.Client())
+			result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hooks)
+			server.Close()
+			if err != nil || result.Status != session.StatusCompleted || mains != 1 {
+				t.Fatalf("run=%q err=%v main requests=%d", result.Status, err, mains)
+			}
+			wantCalls, wantStatus := 0, "skipped"
+			if visible {
+				wantCalls, wantStatus = 1, "ok"
+			}
+			events, err := loadEvents(engine.store, meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			finished, ok := findEventByType(events, "compact.finished")
+			if !ok || finished.Data["semantic_summary_status"] != wantStatus || summaries != wantCalls {
+				t.Errorf("summary calls=%d status=%v, want %d %s", summaries, finished.Data["semantic_summary_status"], wantCalls, wantStatus)
+			}
+			after, err := engine.store.LoadMessages(meta.ID)
+			if err != nil || len(after) < len(before) || !reflect.DeepEqual(before, after[:len(before)]) {
+				t.Fatalf("durable history changed, err=%v", err)
+			}
+		})
 	}
 }
 
@@ -964,7 +1113,7 @@ func TestCompactorFallsBackWhenSemanticSummaryFails(t *testing.T) {
 		HysteresisDeltaChars:  8,
 		KeepRecentMessages:    1,
 	}
-	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(context.Context, []session.Message, int) (string, error) {
+	view, _, didCompact, err := newCompactor(store).build(context.Background(), meta.ID, meta.Workdir, state, messages, nil, nil, profile, 0, 0, func(context.Context, []semanticSummaryItem, int) (string, error) {
 		return "", errors.New("summary unavailable")
 	}, func(evt events.Event) error {
 		emitted = append(emitted, evt)

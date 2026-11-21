@@ -92,9 +92,10 @@ compact summary 至少保留（确定性结构化抽取，始终生成）：
 
 ### 4.4 可选语义摘要层
 
-确定性结构化抽取是 baseline，始终生成。在其之上，runtime 默认开启一层 provider 语义摘要（`runtime.compact.semantic_summary.enabled`，默认 `true`），用于补回被裁掉的中段消息里的推理 / 决策 / 试错叙事：
+确定性结构化抽取是 baseline，始终生成。在其之上，runtime 默认开启一层 provider 语义摘要（`runtime.compact.semantic_summary.enabled`，默认 `true`），用于保留被裁掉的中段对话中已经说出的决定、试错过程和后续工作。
 
-- 输入**只**包含被丢弃的中段消息（不含将要保留的最近尾部、不含完整 transcript），按 `semantic_summary.max_input_chars` 截断，避免重复携带完整历史导致的 `context canceled` / 双份上下文问题。
+- 摘要输入取自被裁掉的对话，包含用户、助手和历史 system 消息的可见正文、工具调用的名称和参数，以及模型收到的 `llm_output`、调用编号和结果状态。旧记录缺少助手正文或工具调用字段时，适配器从 Anthropic 或 Google 已知的公开文本和调用块补全该字段。摘要器把这些内容按历史消息顺序作为一条用户消息中的历史引用读取，受 `semantic_summary.max_input_chars` 限制。
+- 若被裁掉的记录仅含私有推理或协议块，runtime 跳过摘要请求并记录 `semantic_summary_status = "skipped"`。转录仍保存原记录，主请求按各适配器的规则重放带签名的推理和工具调用。
 - 使用独立的 `semantic_summary.timeout_sec` 超时与自己的请求预算，单次 `RunTurn`，不带工具、不递归触发压缩。
 - 成功时写入 `summary["semantic_summary"]`，compact event 标记 `semantic_summary_status = "ok"`。
 - 失败 / 超时 / 关闭时**绝不**使压缩失败：省略该字段、回退到确定性 baseline，并把状态标记为 `failed` / `skipped` / `disabled`。
