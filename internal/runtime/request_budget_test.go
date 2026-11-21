@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"aegis-agent/internal/config"
@@ -70,12 +71,12 @@ func (a *messageOnlyEstimateAdapter) RunTurn(_ context.Context, req provider.Tur
 
 func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	adapter := &fixedEstimateAdapter{estimate: provider.WireRequestEstimate{
-		RequestOutputOptions: session.RequestOutputOptions{EffectiveMaxOutputTokens: 10, MaxOutputTokensSource: "configured", OutputConfigEffort: "high"},
+		RequestOutputOptions: session.RequestOutputOptions{EffectiveMaxOutputTokens: 10, MaxOutputTokensSource: "thinking_budget", OutputConfigEffort: "high"},
 		SchemaVersion:        1,
 		WireBodyBytes:        400,
 		EstimatedInputTokens: 100,
 	}}
-	req := provider.TurnRequest{SessionID: "session-1", Model: "model-1", MaxOutputTokens: 10}
+	req := provider.TurnRequest{SessionID: "session-1", Model: "model-1", MaxOutputTokens: 8}
 	context := requestBudgetContext{RequestKind: requestKindMain, SessionID: req.SessionID, Turn: 7}
 
 	fit, err := preflightProviderRequest(adapter, req, requestBudgetPolicy{EffectiveWindowTokens: 110, UtilizationFactor: 1}, context)
@@ -85,7 +86,7 @@ func TestRequestBudgetBoundaryAndTypedError(t *testing.T) {
 	if fit.RequestOutputOptions != adapter.estimate.RequestOutputOptions {
 		t.Fatalf("snapshot lost adapter output settings: %+v", fit.RequestOutputOptions)
 	}
-	if !fit.Fit || fit.HeadroomTokens != 0 || fit.RequiredTokens != 110 {
+	if !fit.Fit || fit.HeadroomTokens != 0 || fit.RequiredTokens != 110 || fit.ReservedOutputTokens != 10 || fit.OutputReserveSource != "effective_max_output_tokens" {
 		t.Fatalf("unexpected exact-boundary snapshot: %#v", fit)
 	}
 
@@ -1070,6 +1071,80 @@ func TestEngineRejectsOversizedMainRequestBeforeProviderCall(t *testing.T) {
 	}
 	if len(attempts) != 1 || attempts[0].Outcome != "failure" || attempts[0].ErrorClass != requestBudgetUnfitCode {
 		t.Fatalf("expected one local budget failure without retry, got %#v", attempts)
+	}
+}
+
+func TestEngineReservesAnthropicWireOutputLimit(t *testing.T) {
+	const window = 32768
+	for _, tc := range []struct {
+		name, reserveSource, wireSource            string
+		configured, thinking, wire, reserve, calls int
+	}{
+		{"raised limit exceeds window", "effective_max_output_tokens", "thinking_budget", 4096, 32768, 33792, 33792, 0},
+		{"raised limit fits", "effective_max_output_tokens", "thinking_budget", 4096, 4096, 5120, 5120, 1},
+		{"configured limit fits", "max_output_tokens", "configured", 4096, 1024, 4096, 4096, 1},
+		{"conservative default", "default", "adapter_default", 0, 0, 4096, defaultRequestOutputReserveTokens, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+			engine.cfg.Runtime.Compact.SemanticSummary.Enabled = false
+			meta.ProviderOptions.ContextWindowTokens = window
+			meta.ProviderOptions.MaxOutputTokens = tc.configured
+			if tc.thinking > 0 {
+				meta.ProviderOptions.ThinkingBudget = config.IntPtr(tc.thinking)
+			}
+			if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Write a short note.")); err != nil {
+				t.Fatal(err)
+			}
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var body struct {
+					MaxTokens int `json:"max_tokens"`
+					Thinking  struct {
+						BudgetTokens int `json:"budget_tokens"`
+					} `json:"thinking"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				t.Logf("received max_tokens=%d thinking_budget=%d", body.MaxTokens, body.Thinking.BudgetTokens)
+				if body.MaxTokens != tc.wire || body.Thinking.BudgetTokens != tc.thinking {
+					t.Errorf("unexpected wire options: %+v", body)
+				}
+				_, _ = w.Write([]byte(`{"stop_reason":"tool_use","content":[{"type":"tool_use","id":"end","name":"finish","input":{"message":"done"}}]}`))
+			}))
+			defer server.Close()
+			adapter := provider.NewAnthropic(server.URL, "fixture", "2023-06-01", server.Client())
+			result, err := engine.Run(context.Background(), meta, state, "", adapter, catalog, registry, hookManager)
+			if got := int(calls.Load()); got != tc.calls {
+				t.Errorf("HTTP requests=%d, want %d", got, tc.calls)
+			}
+			if tc.calls == 0 {
+				var unfit *RequestBudgetUnfitError
+				if !errors.As(err, &unfit) || unfit.ReservedOutputTokens != tc.reserve || unfit.AvailableInputTokens != window-tc.reserve-unfit.SafetyHeadroomTokens {
+					t.Errorf("unexpected local rejection: %v", err)
+				}
+			} else if err != nil || result.Status != session.StatusCompleted {
+				t.Errorf("run status=%q, error=%v", result.Status, err)
+			}
+			events, err := loadEvents(engine.store, meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, ok := findEventByType(events, "provider.request.prepared")
+			if !ok {
+				t.Fatal("missing provider.request.prepared")
+			}
+			budget := prepared.Data["request_budget"].(map[string]any)
+			required := intFromAny(budget["estimated_input_tokens"]) + tc.reserve + intFromAny(budget["safety_headroom_tokens"])
+			if prepared.Data["fit"] != (tc.calls == 1) || intFromAny(budget["required_tokens"]) != required ||
+				intFromAny(budget["headroom_tokens"]) != window-required || intFromAny(budget["reserved_output_tokens"]) != tc.reserve ||
+				budget["output_reserve_source"] != tc.reserveSource || intFromAny(budget["effective_max_output_tokens"]) != tc.wire || budget["max_output_tokens_source"] != tc.wireSource {
+				t.Errorf("unexpected prepared budget: %+v", budget)
+			}
+		})
 	}
 }
 
