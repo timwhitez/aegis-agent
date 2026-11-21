@@ -957,13 +957,28 @@ func TestEngineSemanticSummaryUsesPublicDroppedHistory(t *testing.T) {
 				{Provider: "anthropic", Type: "thinking", Thinking: private + "block", Signature: private + "signature"},
 				{Provider: "anthropic", Type: "redacted_thinking", Data: private + "redacted"},
 				{Provider: "openai", Type: "reasoning", Summary: []string{private + "summary"}, Data: private + "encrypted"},
-				{Provider: "google", Type: "text", Thought: &thought, Text: private + "thought", ThoughtSignature: private + "google-signature"},
+				{Provider: "google", Type: "part", Thought: &thought, Text: private + "thought", ThoughtSignature: private + "google-signature"},
 			}
 			hidden.Meta = map[string]any{"fixture": private + "metadata"}
 			messages := []session.Message{hidden}
 			if visible {
 				call := session.ToolCall{ID: "old-tool", Name: "read_file", Arguments: json.RawMessage(`{"path":"visible-path"}`), ProviderCallID: private + "alias"}
 				assistant := session.NewAssistantMessage("visible decision", private+"mixed", []session.ToolCall{call})
+				assistant.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Type: "text", Text: private + "superseded-text"},
+					{Provider: "anthropic", Type: "tool_use", ID: call.ID, Name: call.Name, Input: json.RawMessage(`{"path":"fixture-private-superseded-args"}`)},
+				}
+				legacy := session.NewAssistantMessage("", "", nil)
+				legacy.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "anthropic", Type: "text", Text: "legacy anthropic text"},
+					{Provider: "anthropic", Type: "tool_use", ID: "legacy-anthropic-call", Name: call.Name, Input: json.RawMessage(`{"path":"legacy-anthropic-path"}`)},
+				}
+				legacyGoogle := session.NewAssistantMessage("", "", nil)
+				legacyGoogle.ProviderContentBlocks = []session.ProviderContentBlock{
+					{Provider: "google", Type: "part", Text: "legacy google text", ThoughtSignature: private + "signed"},
+					{Provider: "google", Type: "function_call", ID: "legacy-google-call", Name: call.Name, Args: json.RawMessage(`{"path":"legacy-google-path"}`)},
+				}
+				messages = append(messages, legacy, legacyGoogle)
 				messages = append(messages, session.NewMessage("system", "historic system note"), session.NewMessage("user", "visible earlier request"), assistant, session.NewToolMessage([]session.ToolResult{{
 					ToolCallID: call.ID, Name: call.Name, LLMOutput: "visible failure", DisplayOutput: private + "display",
 					IsError: true, Metadata: map[string]any{"fixture": private + "tool-meta"},
@@ -1010,7 +1025,7 @@ func TestEngineSemanticSummaryUsesPublicDroppedHistory(t *testing.T) {
 						return
 					}
 					input, _ := body.Messages[0].Content[0]["text"].(string)
-					for _, want := range []string{`"role":"system"`, "historic system note", "visible earlier request", "visible decision", "old-tool", "read_file", "visible-path", "visible failure", `"is_error":true`} {
+					for _, want := range []string{`"role":"system"`, "historic system note", "visible earlier request", "visible decision", "legacy anthropic text", "legacy-anthropic-call", "legacy-anthropic-path", "legacy google text", "legacy-google-call", "legacy-google-path", "old-tool", "read_file", "visible-path", "visible failure", `"is_error":true`} {
 						if visible && !strings.Contains(input, want) {
 							t.Errorf("summary is missing %q", want)
 						}

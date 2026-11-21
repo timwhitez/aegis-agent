@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"aegis-agent/internal/events"
+	"aegis-agent/internal/provider"
 	"aegis-agent/internal/session"
 	"aegis-agent/internal/tools"
 )
@@ -30,7 +31,7 @@ type compactor struct {
 	lastArtifactTime time.Time
 }
 
-// Semantic summary input contains only canonical conversation and tool facts.
+// Semantic summary input contains only visible conversation and tool facts.
 // Provider replay blocks and operator-only fields stay in the transcript.
 type semanticSummaryItem struct {
 	Role       string          `json:"role"`
@@ -618,13 +619,15 @@ func droppedMessagesForSemanticSummary(messages, retained []session.Message) []s
 		}
 		switch msg.Role {
 		case "user", "assistant", "system":
-			if strings.TrimSpace(msg.Text) != "" {
-				out = append(out, semanticSummaryItem{Role: msg.Role, Text: msg.Text})
-			}
+			text, calls := msg.Text, msg.ToolCalls
 			if msg.Role == "assistant" {
-				for _, call := range msg.ToolCalls {
-					out = append(out, semanticSummaryItem{Role: msg.Role, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
-				}
+				text, calls = provider.VisibleAssistantHistory(msg)
+			}
+			if strings.TrimSpace(text) != "" {
+				out = append(out, semanticSummaryItem{Role: msg.Role, Text: text})
+			}
+			for _, call := range calls {
+				out = append(out, semanticSummaryItem{Role: msg.Role, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
 			}
 		case "tool":
 			for _, result := range msg.ToolResults {
