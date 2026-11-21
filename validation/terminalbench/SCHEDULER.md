@@ -10,6 +10,38 @@ python3 validation/terminalbench/scheduler.py run --run "$RUN" --jobs 4
 python3 validation/terminalbench/scheduler.py summary --run "$RUN"
 ```
 
+### 私有产物的 Docker 复制权限
+
+Docker 客户端和 Harbor 应使用同一个宿主 UID。独立验证容器及配置了产物采集的任务会在 Agent 初始化时复制一个私有文件。如果 Docker 客户端写出的文件属于其他用户，本次尝试会在模型调用前结束，并在 `outcome.json` 记录 `stage=setup` 和 `DockerArtifactOwnershipError`。检查 PATH 或站点 Docker 包装脚本最终运行的客户端身份。优先使用普通用户已经获准访问的本机 Docker 上下文，并保留原有网络及资源配置。
+
+如果 Linux 主机只允许该用户通过 `sudo -n /usr/bin/docker` 访问本机 daemon，并已授权 `system dial-stdio`，可以用系统自带的 socket activation 转发这一个批次的连接。以下命令使用 Bash。在启动器中确保 Docker 客户端最终以当前用户身份执行，并将 `DOCKER_HOST` 传给它。如果站点包装器还负责镜像、网络或其他设置，保留这些设置，只调整最后调用客户端的方式。
+
+```bash
+(
+  set -eu
+  umask 077
+  transport=$(mktemp -d)
+  /usr/bin/systemd-socket-activate --listen="$transport/docker.sock" --accept --inetd \
+    /usr/bin/sudo -n /usr/bin/docker --host=unix:///var/run/docker.sock system dial-stdio \
+    >"$transport/transport.log" 2>&1 &
+  listener=$!
+  trap 'kill "$listener" 2>/dev/null || true; wait "$listener" 2>/dev/null || true; rm -f "$transport/docker.sock" "$transport/transport.log"; rmdir "$transport"' EXIT
+  trap 'exit 1' HUP INT TERM
+  for ((i=0; i<100; i++)); do
+    [[ -S "$transport/docker.sock" ]] && break
+    sleep 0.05
+  done
+  test -S "$transport/docker.sock"
+  chmod 600 "$transport/docker.sock"
+  unset DOCKER_CONTEXT
+  export DOCKER_HOST="unix://$transport/docker.sock"
+  /usr/bin/docker version --format '{{.Server.Version}}'
+  python3 validation/terminalbench/scheduler.py run --run "$RUN" --jobs 4
+)
+```
+
+私有套接字的目录仅供批次所有者访问。请将它放在任务挂载路径之外。Docker CLI 在操作员进程中将下载的文件写入宿主，守护进程继续使用既有授权。可执行 `python validation/terminalbench/smoke_docker.py --evidence-helper "$EVIDENCE_HELPER"` 复核当前入口能将嵌套的私有目录与文件交给原生验证器。
+
 `init` 需要一个尚未存在的批次目录。小样本可在此步用 `--only task-a task-b` 固定题目。初始化会复制任务、运行脚本、二进制和脱敏配置，记录运行计划、文件 SHA-256、可执行位和目录清单。任务树每批复制一次。只使用来源可信、已审查的任务包与二进制。各题的容器定义和 verifier 脚本会实际执行，冻结只保证批次使用同一版内容。冻结时会拒绝指向题目目录外的符号链接。再次运行该批时，入口先校验摘要，再使用批次内的运行脚本。另开批次即可使用新版脚本或配置。
 
 `run` 默认串行执行。`--jobs` 控制并发上限。`--cpu-budget` 和 `--memory-mb` 可限制并发任务申请的 CPU 核数和内存 MiB，按每题 agent 和 verifier 两阶段中较高的声明值预留。额外 Compose 服务的实际开销需要单独预留。若单题申请超出指定预算，调度器在启动 trial 前报告该题。

@@ -113,6 +113,8 @@ class ResultEvidenceTest(unittest.TestCase):
         cases = [
             ("terminated session", "incomplete", [], 143, 0, 0, "infra_invalid", "agent", ["incomplete"], None),
             ("missing evidence", None, [], 0, 0, 0, "infra_invalid", "agent", ["diagnostics_unavailable"], None),
+            ("artifact owner", None, ["DockerArtifactOwnershipError"], None, None, None,
+             "infra_invalid", "setup", ["DockerArtifactOwnershipError"], None),
             ("verifier permission", "incomplete", ["PermissionError"], 1, None, None,
              "infra_invalid", "verifier", ["PermissionError"], None),
             ("unknown exception", None, ["private details"], 1, None, None,

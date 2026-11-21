@@ -30,6 +30,10 @@ print({MARKER!r})
 p=Path({output!r})
 p.mkdir()
 (p/'answer').write_text('correct')
+private = p/'private'
+private.mkdir(mode=0o700)
+(private/'result').write_text('fixture')
+(private/'result').chmod(0o600)
 (p/'skip.tmp').write_text('excluded')
 Path('/tmp/agent-only-marker').touch()
 subprocess.Popen([sys.executable,'-m','http.server','17990','--bind','127.0.0.1','--directory',str(p)],
@@ -92,6 +96,7 @@ test "$(cat /submission/answer)" = correct
 if test -e /tmp/agent-only-marker; then
     python3 -c 'import urllib.request; assert urllib.request.urlopen("http://127.0.0.1:17990/answer",timeout=2).read()==b"correct"'
 else
+    test "$(cat /submission/private/result)" = fixture
     test ! -e /submission/skip.tmp
     test ! -S /run/aegis-provider/provider.sock
 fi
