@@ -68,6 +68,8 @@ python3 -B validation/terminalbench/compare.py "$BASELINE_RUN" "$CANDIDATE_RUN" 
 
 每个请求的 `status` 记录已准备、已完成、失败、预检拒绝或取消，`stop_reason` 记录 provider 响应给出的停止原因。旧记录保留原有停止原因，缺少的请求状态显示为 null。每次尝试的 `verify_rc` 单独记录评分脚本退出码，旧版缺失时显示为 null。
 
+每次尝试的 `outcome.json` 记录未计分的阶段。验证器已经返回分数、但 Agent 缺少可计分的终态时，`stage` 指向 `agent`，汇总将分数保留在 `observed_reward`。Harbor 报告异常时保留实际运行阶段；权限异常记录为 `PermissionError`，未知异常统一记录为 `execution_failed`。Agent 或验证器超时的记录另附 `phase_timeout_sec`，取自该题冻结计划的原生阶段时限。
+
 ### 选择共享任务的交付物
 
 共享任务没有原生 `artifacts` 时，可在 `init` 命令中重复传入 `--capture`。例如 `--capture polyglot-rust-c=/app/polyglot/main.rs` 选择一个文件，`--capture example=/workspace/generated` 选择一个目录。每次运行只接受已选任务名，路径必须是明确的绝对路径。每题最多 16 个，不能互相覆盖，也不能选择通配符、隐藏文件或运行器和系统控制目录。已有原生交付声明和单独 verifier 的任务沿用题目定义。
