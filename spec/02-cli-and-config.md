@@ -44,6 +44,7 @@
 - `--goal`、`--goal-mode`、`--goal-token-budget`、`--goal-time-budget`、`--goal-success`、`--goal-validate`：创建 Goal draft；
 - `--thinking-level`：请求适合当前 adapter 的思考级别；OpenAI 系映射为 `reasoning.effort`，Anthropic 系映射为 `thinking.budget_tokens`，并且只在 profile 声明了 `output_config_effort` 时额外改写 `output_config.effort`；
 - `--json`：输出 JSON；`--output-format stream-json`：输出事件协议；二者互斥；
+- `--input-format raw` 从标准输入读取一条 UTF-8 文本题面，保留前后空白和换行，最多 4 MiB。输入为空、仅有空白或同时传入位置参数时返回错误。
 - `--input-format stream-json`：从 stdin 读取初始 prompt，不再接受位置 prompt；
 - `--resume`：仅适用于 `exec` 的已有 session；
 - `--allow-builtin-config`：明确允许没有配置文件时使用内置默认；

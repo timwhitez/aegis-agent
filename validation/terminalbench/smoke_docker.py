@@ -11,7 +11,7 @@ from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
 IMAGE = "python:3.12-slim"
-PROMPT = "- first line\n--json literal 'quoted'\n"
+PROMPT = "- first line\n--json literal 'quoted' $(echo fixture) 服务 fixture-service-613.py\n\n"
 MARKER = "SYNTHETIC_DISCARDED_PROVIDER_OUTPUT_2731"
 def write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,14 @@ def fixture_agent(path, *, output="/submission", self_check=True):
     write(path, f"""#!/usr/local/bin/python3
 import json, os, subprocess, sys
 from pathlib import Path
-assert sys.argv[1:] == ['exec', '--config', '/tmp/aegis-benchmark/config.yaml', '--', {PROMPT!r}]
+assert sys.argv[1:] == ['exec', '--config', '/tmp/aegis-benchmark/config.yaml', '--input-format', 'raw']
+assert sys.stdin.buffer.read() == {PROMPT.encode()!r}
+assert not Path('/tmp/aegis-benchmark/instruction').exists()
+for cmdline in Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+        assert b'fixture-service-613.py' not in cmdline.read_bytes()
+    except (FileNotFoundError, PermissionError):
+        pass
 assert not Path('/tests/test.sh').exists()
 assert 'SMOKE_PROVIDER_KEY' not in os.environ
 assert 'SMOKE_HOST_SECRET' not in Path('/tmp/aegis-benchmark/config.yaml').read_text()

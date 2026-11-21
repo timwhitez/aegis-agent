@@ -255,7 +255,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *outputFormat != "text" && *outputFormat != "stream-json" {
 		return fmt.Errorf("unsupported --output-format %q", *outputFormat)
 	}
-	if *inputFormat != "text" && *inputFormat != "stream-json" {
+	if *inputFormat != "text" && *inputFormat != "stream-json" && *inputFormat != "raw" {
 		return fmt.Errorf("unsupported --input-format %q", *inputFormat)
 	}
 	if *outputFormat == "stream-json" && *jsonMode {
@@ -264,8 +264,8 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *resumeSession != "" && mode != session.ModeExec {
 		return fmt.Errorf("--resume is only supported on exec")
 	}
-	if *inputFormat == "stream-json" && len(fs.Args()) > 0 {
-		return fmt.Errorf("positional prompt arguments are not allowed with --input-format stream-json")
+	if *inputFormat != "text" && len(fs.Args()) > 0 {
+		return fmt.Errorf("positional prompt arguments are not allowed with --input-format %s", *inputFormat)
 	}
 	invokeCWD, err := procutil.Getwd()
 	if err != nil {
@@ -285,9 +285,20 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		_, _ = fmt.Fprintln(stderr, "warning: stdin is not a TTY; Esc interrupt is disabled in run mode. Prefer exec for zero-interaction runs.")
 	}
 	var prompt string
-	if *inputFormat == "stream-json" {
+	switch *inputFormat {
+	case "stream-json":
 		prompt, err = streamjson.ReadInitialPrompt(os.Stdin, maxPromptStdinBytes)
-	} else {
+	case "raw":
+		prompt, err = readPromptStdin(os.Stdin)
+		if err == nil {
+			if !utf8.ValidString(prompt) {
+				return fmt.Errorf("raw stdin prompt must be valid UTF-8")
+			}
+			if strings.TrimSpace(prompt) == "" {
+				return fmt.Errorf("raw stdin prompt is empty")
+			}
+		}
+	default:
 		prompt, err = resolvePrompt(fs.Args(), os.Stdin)
 	}
 	if err != nil {

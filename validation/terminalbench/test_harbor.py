@@ -5,11 +5,33 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from aegis_harbor import ObservedVerifier, Verifier, observe_resources
+from aegis_harbor import AegisAgent, ObservedVerifier, Verifier, observe_resources
 from harbor.models.task.config import TaskOS
 from harbor.models.trial.paths import TrialPaths
 from harbor.trial.errors import VerifierTimeoutError
 from harbor.trial.trial import Trial
+
+
+class TaskInputTest(unittest.IsolatedAsyncioTestCase):
+    async def test_uploads_prompt_data_without_shell_arguments(self):
+        instruction = " --json '$(echo input)' service-613.py\n\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = SimpleNamespace(config_file=Path(tmp) / "config.yaml", relay_env={})
+            uploads = []
+
+            async def upload(source, target):
+                self.assertEqual(source.read_bytes(), instruction.encode())
+                self.assertEqual(source.parent.stat().st_mode & 0o777, 0o700)
+                uploads.append(source)
+
+            env = SimpleNamespace(upload_file=upload, exec=AsyncMock(return_value=SimpleNamespace(return_code=0)))
+            await AegisAgent.run(agent, instruction, env, None)
+            self.assertEqual(agent.agent_rc, 0)
+            self.assertEqual(len(uploads), 1)
+            self.assertFalse(uploads[0].exists())
+            command, = env.exec.await_args.args
+            self.assertNotIn("service-613.py", command)
+            self.assertNotIn("$(echo input)", command)
 
 
 class VerifierLifecycleTest(unittest.IsolatedAsyncioTestCase):

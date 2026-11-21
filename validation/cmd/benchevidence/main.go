@@ -49,6 +49,7 @@ func run(args []string) int {
 	output := flags.String("output", "", "destination of safe JSON")
 	socket := flags.String("provider-socket", "", "mounted host credential relay")
 	check := flags.Bool("check", false, "validate projected evidence on stdin")
+	forwardStdin := flags.Bool("forward-stdin", false, "pass standard input to the benchmark child")
 	inspect := flags.Bool("collect", false, "project existing sessions after interruption")
 	if flags.Parse(args) != nil {
 		return 2
@@ -76,6 +77,9 @@ func run(args []string) int {
 			defer ln.Close()
 		}
 		child := exec.Command(flags.Arg(0), flags.Args()[1:]...)
+		if *forwardStdin {
+			child.Stdin = os.Stdin
+		}
 		// nil stdout/stderr in os/exec connect to the null device. The canonical
 		// session supplies evidence even when rendering is interrupted.
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

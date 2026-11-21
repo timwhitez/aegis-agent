@@ -150,11 +150,20 @@ class AegisAgent(BaseAgent):
                 upload.unlink()
 
     async def run(self, instruction, environment, context):
+        prompt = PRIVATE + "/instruction"
+        with tempfile.TemporaryDirectory(dir=self.config_file.parent) as stage:
+            source = Path(stage) / "instruction"
+            source.write_bytes(instruction.encode("utf-8"))
+            # Both parent directories are 0700. Compose may copy as a different UID.
+            source.chmod(0o444)
+            await environment.upload_file(source, prompt)
         args = [HELPER, "--provider-socket", "/run/aegis-provider/provider.sock",
-                "--sessions", SESSIONS, "--output", SUMMARY, "--",
-                PRIVATE + "/aegis-agent", "exec", "--config", PRIVATE + "/config.yaml",
-                "--", instruction]
-        outcome = await environment.exec(shlex.join(args) + " >/dev/null 2>&1", env=self.relay_env)
+                "--sessions", SESSIONS, "--output", SUMMARY, "--forward-stdin", "--",
+                PRIVATE + "/aegis-agent", "exec", "--config", PRIVATE + "/config.yaml", "--input-format", "raw"]
+        # Open the file before unlinking it. Only stable paths reach the shell
+        # and the Docker client. The agent reads the open descriptor on stdin.
+        command = f"(rm -f -- {prompt} && exec {shlex.join(args)}) <{prompt} >/dev/null 2>&1"
+        outcome = await environment.exec(command, env=self.relay_env)
         self.agent_rc = outcome.return_code
 
     async def collect(self, environment, attempt, host_helper):
