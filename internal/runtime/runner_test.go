@@ -3031,6 +3031,13 @@ func TestRunnerContinueKeepsDurableTurnAndResetsRunBudgetAfterMaxTurnsFailure(t 
 		if r.URL.Path != "/v1/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		if strings.Contains(string(data), "last model response available in this run") {
+			t.Error("fresh continue request included a final-turn notice")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"id":"resp_1",
