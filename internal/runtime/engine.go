@@ -376,6 +376,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}); err != nil {
 					return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.LastError, err)
 				}
+				_ = writeSessionSummary(e.store, meta.ID)
+				_ = writeLongRunCheckpoint(e.store, meta.ID)
 				return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
 			}
 			usingResolutionTurn = true
@@ -1455,6 +1457,8 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					if err := e.appendEvent(meta.ID, "session.failed", state.Phase, map[string]any{"reason": state.IncompleteReason}); err != nil {
 						return RunResult{}, fmt.Errorf("record session.failed event for %s: %w", state.IncompleteReason, err)
 					}
+					_ = writeSessionSummary(e.store, meta.ID)
+					_ = writeLongRunCheckpoint(e.store, meta.ID)
 					return RunResult{SessionID: meta.ID, Status: state.Status, LastError: state.LastError}, nil
 				}
 				doneCandidates = 0

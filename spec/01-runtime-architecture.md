@@ -94,7 +94,7 @@ provider storage 选项由 profile/session metadata 记录；本地 session 是 
 
 Web 服务持有当前进程的 launch handle，用于把 start、continue、steer、interrupt、stop 与当前 owner 关联。持久化 state 仍然是跨进程可读事实；handle 不是事实源。
 
-运行归属本身也是 runtime 写下的 durable 事实，而不是适配器的内存状态。每次运行进入 engine 之前，runtime 在唯一的运行漏斗（`runExisting`）追加 `run.owner.acquired`；engine 返回后（包括返回错误与 panic 的 defer 路径）追加 `run.owner.released`。start、continue、审批恢复、委派子会话和 queue worker 都经过这个漏斗，因此 CLI、SDK 与 Web 启动的运行留下同样的归属事实。事件 data 固定包含 `source`（`runtime`）、`pid`、`process_start_id`、`started_at`，released 事件再加 `released_at`；`process_start_id` 使用 `<pid>:<started_at>`（`started_at` 为 RFC3339Nano），与 Web 控制台 handle 事件同格式，同一进程只有一种属主标识（`runtime.CurrentProcessOwner()`）。读取方（Web 控制台、session summary、long-run checkpoint）必须把 `webconsole.handle.*` 与 `run.owner.*` 当作同一类属主线索：`run.owner.released` 表示归属已结算，`run.owner.acquired` 能否协调取决于属主进程是否仍然存活。
+运行归属本身也是 runtime 写下的 durable 事实，而不是适配器的内存状态。每次运行进入 engine 之前，runtime 在唯一的运行漏斗（`runExisting`）追加 `run.owner.acquired`；engine 返回后（包括返回错误与 panic 的 defer 路径）追加 `run.owner.released`，随后重新生成 `session.md` 与 long-run checkpoint，使两者的最近属主显示为已释放。start、continue、审批恢复、委派子会话和 queue worker 都经过这个漏斗，因此 CLI、SDK 与 Web 启动的运行留下同样的归属事实。事件 data 固定包含 `source`（`runtime`）、`pid`、`process_start_id`、`started_at`，released 事件再加 `released_at`；`process_start_id` 使用 `<pid>:<started_at>`（`started_at` 为 RFC3339Nano），与 Web 控制台 handle 事件同格式，同一进程只有一种属主标识（`runtime.CurrentProcessOwner()`）。读取方（Web 控制台、session summary、long-run checkpoint）必须把 `webconsole.handle.*` 与 `run.owner.*` 当作同一类属主线索：`run.owner.released` 表示归属已结算，`run.owner.acquired` 能否协调取决于属主进程是否仍然存活。
 
 queue worker、child session 和 stale reaper 使用 durable job、lease、heartbeat 和 cancel state。父 session 只能观察或显式控制它们，不能用浏览器是否在线判断 child 是否完成。
 

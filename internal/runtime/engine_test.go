@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -535,6 +536,58 @@ func TestEngineExecDuplicateUnresolvedBackgroundProgressableReturnsAwaitingInput
 	}
 	if loadedState.Status != session.StatusAwaitingInput || loadedState.IncompleteReason == "unresolved_background_work" {
 		t.Fatalf("expected awaiting_input without unresolved failure, got %#v", loadedState)
+	}
+}
+
+func TestEngineExecUnresolvedBackgroundFailureRefreshesDerivedViews(t *testing.T) {
+	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeExec)
+	// A queue job without a record cannot make progress, so a repeated
+	// unresolved reminder ends the exec run as failed.
+	if err := addParentQueueJob(engine.store, meta.ID, "job_missing_record", parentWaitAll); err != nil {
+		t.Fatalf("add parent queue job: %v", err)
+	}
+	unresolved, err := engine.unresolvedBackgroundExitState(meta.ID)
+	if err != nil {
+		t.Fatalf("load unresolved state: %v", err)
+	}
+	if unresolved.Reminder == "" || unresolved.CanProgress {
+		t.Fatalf("expected non-progressable unresolved work: %#v", unresolved)
+	}
+	if _, err := engine.appendHarnessReminderWithSignature(meta, "turn_decide", unresolved.Reminder, "background_work_unresolved", unresolved.Signature); err != nil {
+		t.Fatalf("seed existing reminder: %v", err)
+	}
+	fake := provider.NewFake(func(context.Context, provider.TurnRequest) (provider.TurnResult, error) {
+		return provider.TurnResult{Text: "nothing else to do", StopReason: "done_candidate"}, nil
+	})
+
+	result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if result.Status != session.StatusFailed || result.LastError != unresolvedBackgroundError {
+		t.Fatalf("expected unresolved background failure, got %#v", result)
+	}
+	loaded := assertSessionSummaryMatchesState(t, engine.store, meta.ID)
+	if loaded.Status != session.StatusFailed || loaded.Phase != "turn_decide" || loaded.IncompleteReason != "unresolved_background_work" {
+		t.Fatalf("unexpected durable unresolved failure state: %#v", loaded)
+	}
+	eventsList, err := engine.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	failedEvent, ok := findEventByType(eventsList, "session.failed")
+	if !ok || failedEvent.Phase != loaded.Phase || fmt.Sprint(failedEvent.Data["reason"]) != loaded.IncompleteReason {
+		t.Fatalf("expected session.failed event to match state, got %#v", eventsList)
+	}
+	// Parent coordination makes this session checkpoint-eligible; the resume
+	// index must carry the terminal error rather than an earlier snapshot.
+	checkpoint, err := engine.store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load long-run checkpoint: %v", err)
+	}
+	wantHint := "resume from last error: " + truncateText(unresolvedBackgroundError, 120)
+	if !slices.Contains(checkpoint.ResumeHints, wantHint) {
+		t.Fatalf("expected checkpoint hint %q, got %#v", wantHint, checkpoint.ResumeHints)
 	}
 }
 
@@ -3763,6 +3816,46 @@ func TestEngineFailsAfterResolutionTurnNeedsAnotherProviderPass(t *testing.T) {
 	if failedEvent.Phase != "turn_limit" || fmt.Sprint(failedEvent.Data["reason"]) != "max_turns_hard_exceeded" {
 		t.Fatalf("expected turn_limit failure event, got %#v", failedEvent)
 	}
+	// The resolution turn reached the provider, so session.md was last written
+	// as running/provider_call. The hard-limit exit must replace that snapshot.
+	state = assertSessionSummaryMatchesState(t, engine.store, meta.ID)
+	if state.Status != session.StatusFailed || state.Phase != "turn_limit" || state.LastError != hardTurnLimitError || state.Turn != 2 {
+		t.Fatalf("expected failed turn_limit state after the resolution turn, got %#v", state)
+	}
+	if failedEvent.Phase != state.Phase || fmt.Sprint(failedEvent.Data["reason"]) != state.LastError {
+		t.Fatalf("expected session.failed event to match state, got event=%#v state=%#v", failedEvent, state)
+	}
+}
+
+// assertSessionSummaryMatchesState reads session.md from disk and checks that
+// the operator summary shows the same status, phase, turn and error as
+// state.json. It returns the loaded state for further checks.
+func assertSessionSummaryMatchesState(t *testing.T, store *session.Store, sessionID string) session.State {
+	t.Helper()
+	state, err := store.LoadState(sessionID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(sessionID), "session.md"))
+	if err != nil {
+		t.Fatalf("read session.md: %v", err)
+	}
+	wants := []string{
+		fmt.Sprintf("- status: `%s`\n", state.Status),
+		fmt.Sprintf("- phase: `%s`\n", state.Phase),
+		fmt.Sprintf("- turn count: `%d`\n", state.Turn),
+	}
+	if state.LastError != "" {
+		wants = append(wants, fmt.Sprintf("- last error: `%s`\n", state.LastError))
+	} else if strings.Contains(string(summary), "- last error: ") {
+		t.Fatalf("expected session.md without a stale last error, got:\n%s", summary)
+	}
+	for _, want := range wants {
+		if !strings.Contains(string(summary), want) {
+			t.Fatalf("expected session.md to contain %q, got:\n%s", want, summary)
+		}
+	}
+	return state
 }
 
 func TestEngineHardTurnLimitReportsFailedEventAppendError(t *testing.T) {

@@ -253,6 +253,8 @@ It summarizes:
 - latest long-run checkpoint path
 - canonical fact-file locations
 
+When a run ends with a recorded terminal state, the engine rewrites `session.md` after the final `state.json` and terminal event are persisted, and rewrites the long-run checkpoint when the session is checkpoint-eligible. This includes the global `max_turns_hard` failure (`failed` / `turn_limit`) and the unresolved-background failure, not only exits that go through the shared fail/complete/pause helpers. Every run enters the engine through `runExisting`; after it appends `run.owner.released`, it rewrites both views again so the recent owner shows the released handle. A finished run that records a new checkpoint hint, such as `resume from last error: max_turns_hard_exceeded`, adds one resume note on the next non-background `continue`. These rewrites are best-effort: when an append or write fails, the previous view can remain until the next write.
+
 `session.md` is never a fact source. If summary writing fails, the runtime task should continue.
 
 ## 7. Long-Run Checkpoint
