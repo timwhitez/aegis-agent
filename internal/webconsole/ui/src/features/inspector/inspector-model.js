@@ -255,8 +255,15 @@ export function providerOptionRows(options) {
   return rows;
 }
 
-/** Counters over provider attempts (retry evidence). */
+/**
+ * Counters over provider attempts (retry evidence). Cache usage is counted once
+ * per received response, with the same rule as the runtime session summary: a
+ * max_tokens_resume row that repeats the latest unclaimed success row of the
+ * same turn (same response id, possibly empty, and same counters) describes
+ * that response again and adds no cache usage.
+ */
 export function providerAttemptStats(attempts) {
+  const unclaimedSuccess = new Map();
   return maybeArray(attempts).reduce((stats, attempt) => {
     const outcome = lower(attempt?.outcome);
     stats.total += 1;
@@ -264,8 +271,23 @@ export function providerAttemptStats(attempts) {
     else if (outcome === 'failure') stats.failure += 1;
     else if (outcome === 'retry') stats.retry += 1;
     else if (outcome === 'auto_resume') stats.autoResume += 1;
-    stats.cacheRead += Number(attempt?.cache_read_input_tokens || 0);
-    stats.cacheCreation += Number(attempt?.cache_creation_input_tokens || 0);
+    const usage = {
+      turn: Number(attempt?.turn || 0),
+      responseId: str(attempt?.provider_response_id),
+      read: Number(attempt?.cache_read_input_tokens || 0),
+      creation: Number(attempt?.cache_creation_input_tokens || 0),
+    };
+    if (outcome === 'success') {
+      unclaimedSuccess.set(usage.turn, usage);
+    } else if (outcome === 'max_tokens_resume') {
+      const success = unclaimedSuccess.get(usage.turn);
+      if (success && success.responseId === usage.responseId && success.read === usage.read && success.creation === usage.creation) {
+        unclaimedSuccess.delete(usage.turn);
+        return stats;
+      }
+    }
+    stats.cacheRead += usage.read;
+    stats.cacheCreation += usage.creation;
     return stats;
   }, { total: 0, success: 0, failure: 0, retry: 0, autoResume: 0, cacheRead: 0, cacheCreation: 0 });
 }

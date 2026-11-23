@@ -326,9 +326,27 @@ type providerAttemptCacheSummary struct {
 	HitAttempts    int
 }
 
+// summarizeProviderAttemptCache totals cache usage once per received provider
+// response. When a response stops at max_tokens and is auto-resumed, the ledger
+// keeps two audit records for it: the success record and a max_tokens_resume
+// decision that repeats the same usage. A max_tokens_resume record is skipped
+// when it repeats the latest unclaimed success record of the same turn (same
+// response ID, which may be empty, and the same counters). The rule reads the
+// ledger only, so it also covers records already on disk, and it never merges
+// records from different turns, even when their response IDs are empty.
 func summarizeProviderAttemptCache(attempts []session.ProviderAttempt) providerAttemptCacheSummary {
 	var out providerAttemptCacheSummary
+	unclaimedSuccess := map[int]session.ProviderAttempt{}
 	for _, attempt := range attempts {
+		switch attempt.Outcome {
+		case "success":
+			unclaimedSuccess[attempt.Turn] = attempt
+		case "max_tokens_resume":
+			if success, ok := unclaimedSuccess[attempt.Turn]; ok && repeatsProviderResponseUsage(success, attempt) {
+				delete(unclaimedSuccess, attempt.Turn)
+				continue
+			}
+		}
 		out.CreationTokens += attempt.CacheCreationInputTokens
 		out.ReadTokens += attempt.CacheReadInputTokens
 		if attempt.CacheReadInputTokens > 0 {
@@ -336,6 +354,14 @@ func summarizeProviderAttemptCache(attempts []session.ProviderAttempt) providerA
 		}
 	}
 	return out
+}
+
+// repeatsProviderResponseUsage reports whether a max_tokens_resume record
+// describes the same received response as a success record.
+func repeatsProviderResponseUsage(success, resume session.ProviderAttempt) bool {
+	return success.ProviderResponseID == resume.ProviderResponseID &&
+		success.CacheCreationInputTokens == resume.CacheCreationInputTokens &&
+		success.CacheReadInputTokens == resume.CacheReadInputTokens
 }
 
 func writeLongRunCheckpoint(store *session.Store, sessionID string) error {

@@ -2076,7 +2076,7 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 				Text:               "Partial report section already drafted.",
 				StopReason:         "max_tokens",
 				ProviderResponseID: "resp_partial",
-				Usage:              provider.Usage{InputTokens: 10, OutputTokens: 32768},
+				Usage:              provider.Usage{InputTokens: 10, OutputTokens: 32768, CacheReadInputTokens: 23, CacheCreationInputTokens: 5},
 			}, nil
 		},
 		func(_ context.Context, req provider.TurnRequest) (provider.TurnResult, error) {
@@ -2151,6 +2151,30 @@ func TestEngineAutoResumesProviderMaxTokensAfterPartialAssistantMessage(t *testi
 	}
 	if !sawResume {
 		t.Fatalf("expected max_tokens_resume provider attempt, got %#v", attempts)
+	}
+	// Both audit records describe the one truncated response, so the cache
+	// summary counts its usage once.
+	var partialRecords int
+	for _, attempt := range attempts {
+		if attempt.ProviderResponseID == "resp_partial" {
+			partialRecords++
+			if attempt.CacheReadInputTokens != 23 || attempt.CacheCreationInputTokens != 5 {
+				t.Fatalf("expected audit record to keep the response cache usage, got %#v", attempt)
+			}
+		}
+	}
+	if partialRecords != 2 {
+		t.Fatalf("expected success and max_tokens_resume records for the truncated response, got %#v", attempts)
+	}
+	if got, want := summarizeProviderAttemptCache(attempts), (providerAttemptCacheSummary{ReadTokens: 23, CreationTokens: 5, HitAttempts: 1}); got != want {
+		t.Fatalf("summarizeProviderAttemptCache() = %+v, want %+v", got, want)
+	}
+	summary, err := os.ReadFile(filepath.Join(engine.store.SessionDir(meta.ID), "session.md"))
+	if err != nil {
+		t.Fatalf("read session.md: %v", err)
+	}
+	if !strings.Contains(string(summary), "cache usage: read=`23` creation=`5` hit_attempts=`1`") {
+		t.Fatalf("expected session.md to count the truncated response once, got:\n%s", summary)
 	}
 }
 
