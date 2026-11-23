@@ -2430,13 +2430,19 @@ func (r *Runner) runExisting(ctx context.Context, meta session.SessionMetadata, 
 	// Every run path (start, continue, approval resume, delegated child, queue
 	// worker) reaches the engine here, so the durable owner fact is recorded
 	// once for all adapters. The release is deferred so an engine error or panic
-	// still leaves a readable ownership fact behind.
+	// still leaves a readable ownership fact behind. session.md and the long-run
+	// checkpoint both show the latest owner, so they are refreshed after the
+	// release instead of keeping the engine's last "acquired" snapshot.
 	owner := CurrentProcessOwner()
 	if err := r.appendEvent(meta.ID, RunOwnerAcquiredEventType, "prepare", owner.acquiredEventData()); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", fmt.Errorf("record %s event: %w", RunOwnerAcquiredEventType, err))
 	}
 	defer func() {
-		_ = r.appendEvent(meta.ID, RunOwnerReleasedEventType, "control", owner.releasedEventData(time.Now().UTC().Format(time.RFC3339Nano)))
+		if err := r.appendEvent(meta.ID, RunOwnerReleasedEventType, "control", owner.releasedEventData(time.Now().UTC().Format(time.RFC3339Nano))); err != nil {
+			return
+		}
+		_ = writeSessionSummary(r.store, meta.ID)
+		_ = writeLongRunCheckpoint(r.store, meta.ID)
 	}()
 	return r.engine.Run(ctx, meta, state, systemOverride, adapter, catalog, registry, hookManager)
 }

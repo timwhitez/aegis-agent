@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -140,6 +141,49 @@ func TestRunExistingRecordsDurableRunOwnerEvents(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339Nano, releasedAt); err != nil {
 		t.Fatalf("owner released_at must be RFC3339Nano: %v", err)
 	}
+	assertSummaryShowsReleasedOwner(t, runner.store, meta.ID)
+}
+
+// assertSummaryShowsReleasedOwner checks that session.md was refreshed after
+// the deferred run.owner.released event rather than keeping the engine's last
+// "acquired" snapshot.
+func assertSummaryShowsReleasedOwner(t *testing.T, store *session.Store, sessionID string) {
+	t.Helper()
+	summary, err := os.ReadFile(filepath.Join(store.SessionDir(sessionID), "session.md"))
+	if err != nil {
+		t.Fatalf("read session.md: %v", err)
+	}
+	if !strings.Contains(string(summary), "handle=`released`") || strings.Contains(string(summary), "handle=`acquired`") {
+		t.Fatalf("expected session.md to show the released run owner, got:\n%s", summary)
+	}
+}
+
+func TestRunExistingRefreshesCheckpointOwnerAfterRelease(t *testing.T) {
+	runner, meta, state := newRunOwnerTestRunner(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"id\":\"resp_run_owner_checkpoint\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}"))
+	})
+	// Parent coordination without unresolved work makes the session eligible
+	// for a long-run checkpoint without changing how the run ends.
+	if _, _, err := runner.store.MutateParentCoordination(meta.ID, func(coordination *session.ParentCoordination) error {
+		*coordination = session.ParentCoordination{SchemaVersion: 1, ParentSessionID: meta.ID, WaitMode: parentWaitAll}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed parent coordination: %v", err)
+	}
+
+	if _, err := runner.runExisting(context.Background(), meta, state, "", nil); err != nil {
+		t.Fatalf("runExisting: %v", err)
+	}
+
+	assertSummaryShowsReleasedOwner(t, runner.store, meta.ID)
+	checkpoint, err := runner.store.LoadLongRunCheckpoint(meta.ID)
+	if err != nil {
+		t.Fatalf("load long-run checkpoint: %v", err)
+	}
+	if checkpoint.RecentOwner == nil || checkpoint.RecentOwner.HandleState != "released" || checkpoint.RecentOwner.EventType != RunOwnerReleasedEventType {
+		t.Fatalf("expected checkpoint to record the released run owner, got %#v", checkpoint.RecentOwner)
+	}
 }
 
 func TestRunExistingRecordsRunOwnerReleaseAfterEngineFailure(t *testing.T) {
@@ -169,6 +213,7 @@ func TestRunExistingRecordsRunOwnerReleaseAfterEngineFailure(t *testing.T) {
 	if eventIndexOfType(eventsList, RunOwnerReleasedEventType) != len(eventsList)-1 {
 		t.Fatalf("expected run.owner.released to be the final event after failure, got %#v", eventsList)
 	}
+	assertSummaryShowsReleasedOwner(t, runner.store, meta.ID)
 }
 
 // TestRunOwnerEventsCoverEveryEngineRunCallSite guards the funnel invariant:

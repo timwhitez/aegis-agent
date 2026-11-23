@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,7 +50,7 @@ func TestGlobalHardTurnLimitAppliesToRootAndDirectChild(t *testing.T) {
 					return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: session.NewQueueJobID(), Name: "noop", Arguments: json.RawMessage(`{}`)}}, StopReason: "tool_use"}, nil
 				})
 				result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, reg, hooks)
-				assertHardTurnFailure(t, engine, result, err)
+				assertHardTurnFailure(t, engine, result, err, true)
 				return
 			}
 
@@ -65,12 +66,12 @@ func TestGlobalHardTurnLimitAppliesToRootAndDirectChild(t *testing.T) {
 				return provider.TurnResult{ToolCalls: []provider.ToolCall{{ID: session.NewQueueJobID(), Name: "noop", Arguments: json.RawMessage(`{}`)}}, StopReason: "tool_use"}, nil
 			})
 			result, err := engine.Run(context.Background(), meta, state, "", fake, catalog, reg, hooks)
-			assertHardTurnFailure(t, engine, result, err)
+			assertHardTurnFailure(t, engine, result, err, false)
 		})
 	}
 }
 
-func assertHardTurnFailure(t *testing.T, engine *Engine, result RunResult, err error) {
+func assertHardTurnFailure(t *testing.T, engine *Engine, result RunResult, err error, wantCheckpoint bool) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -84,6 +85,17 @@ func assertHardTurnFailure(t *testing.T, engine *Engine, result RunResult, err e
 	}
 	if state.Status != session.StatusFailed || state.LastError != "max_turns_hard_exceeded" {
 		t.Fatalf("unexpected durable hard turn state: %#v", state)
+	}
+	assertSessionSummaryMatchesState(t, engine.store, result.SessionID)
+	if !wantCheckpoint {
+		return
+	}
+	checkpoint, loadErr := engine.store.LoadLongRunCheckpoint(result.SessionID)
+	if loadErr != nil {
+		t.Fatalf("load long-run checkpoint: %v", loadErr)
+	}
+	if want := "resume from last error: " + hardTurnLimitError; !slices.Contains(checkpoint.ResumeHints, want) {
+		t.Fatalf("expected checkpoint hint %q, got %#v", want, checkpoint.ResumeHints)
 	}
 }
 
@@ -120,6 +132,66 @@ func TestGlobalHardTurnLimitAppliesToQueueChild(t *testing.T) {
 	}
 }
 
+func TestGlobalHardTurnLimitCheckpointHintIsInjectedOnceOnContinue(t *testing.T) {
+	var calls atomic.Int64
+	runner, meta, state := newRunOwnerTestRunner(t, func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		_, _ = io.ReadAll(r.Body)
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"resp_%d","status":"completed","output":[{"type":"function_call","call_id":"call_%d","name":"read_file","arguments":"{\"path\":\"missing-%d.txt\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}`, call, call, call)
+	})
+	runner.cfg.Runtime.MaxTurnsHard = 1
+	runner.cfg.Runtime.MaxTurnsSoft = 100
+	runner.cfg.Runtime.ChildBudget = config.ChildBudgetConfig{}
+	// Parent coordination without unresolved work makes the session eligible
+	// for a long-run checkpoint without changing how the run ends.
+	if _, _, err := runner.store.MutateParentCoordination(meta.ID, func(coordination *session.ParentCoordination) error {
+		*coordination = session.ParentCoordination{SchemaVersion: 1, ParentSessionID: meta.ID, WaitMode: parentWaitAll}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed parent coordination: %v", err)
+	}
+	if err := runner.store.AppendMessage(meta.ID, session.NewMessage("user", "keep working")); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+
+	first, err := runner.runExisting(context.Background(), meta, state, "", nil)
+	if err != nil || first.Status != session.StatusFailed || first.LastError != hardTurnLimitError {
+		t.Fatalf("expected first run to stop at the hard turn limit, got %#v err=%v", first, err)
+	}
+	// Continue preparation already rewrote the checkpoint before this fix, so
+	// the first continue adds one resume note in both versions. The terminal
+	// refresh must not add a second note, and a repeated continue must not
+	// repeat it either.
+	for i := 0; i < 2; i++ {
+		result, err := runner.Continue(context.Background(), ContinueRequest{SessionID: meta.ID})
+		if err != nil || result.Status != session.StatusFailed || result.LastError != hardTurnLimitError {
+			t.Fatalf("continue %d: expected hard turn failure, got %#v err=%v", i+1, result, err)
+		}
+	}
+	eventsList, err := runner.store.LoadEvents(meta.ID)
+	if err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if got := countEventType(eventsList, "checkpoint.resume_hint.injected"); got != 1 {
+		t.Fatalf("expected one checkpoint resume hint event, got %d", got)
+	}
+	messages, err := runner.store.LoadMessages(meta.ID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	var hints []string
+	for _, msg := range messages {
+		if msg.Meta != nil && msg.Meta["kind"] == "longrun_checkpoint" {
+			hints = append(hints, msg.Text)
+		}
+	}
+	if len(hints) != 1 || !strings.Contains(hints[0], "resume from last error: "+hardTurnLimitError) {
+		t.Fatalf("expected one resume note naming the hard turn limit, got %#v", hints)
+	}
+}
+
 func TestGlobalHardTurnLimitResetsForEachEngineRun(t *testing.T) {
 	cfg := config.Default()
 	cfg.Runtime.GuardrailsMode = "standard"
@@ -138,7 +210,7 @@ func TestGlobalHardTurnLimitResetsForEachEngineRun(t *testing.T) {
 		}, nil
 	}
 	first, err := engine.Run(context.Background(), meta, state, "", provider.NewFake(turn), catalog, registry, hookManager)
-	assertHardTurnFailure(t, engine, first, err)
+	assertHardTurnFailure(t, engine, first, err, false)
 	firstState, err := engine.store.LoadState(meta.ID)
 	// A tool result at the configured boundary retains the existing single
 	// resolution-turn allowance; the accounting reset being tested here is the
@@ -147,7 +219,7 @@ func TestGlobalHardTurnLimitResetsForEachEngineRun(t *testing.T) {
 		t.Fatalf("unexpected first-run turn state: %#v err=%v", firstState, err)
 	}
 	second, err := engine.Run(context.Background(), meta, firstState, "", provider.NewFake(turn), catalog, registry, hookManager)
-	assertHardTurnFailure(t, engine, second, err)
+	assertHardTurnFailure(t, engine, second, err, false)
 	secondState, err := engine.store.LoadState(meta.ID)
 	if err != nil || secondState.Turn != 4 {
 		t.Fatalf("hard limit must reset and allow a fresh bounded run: %#v err=%v", secondState, err)
