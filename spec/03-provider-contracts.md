@@ -188,7 +188,7 @@ v1 允许 adapter 采用“单次响应 + 事件回放”的伪流式模式。
 - 若 provider 因 `429` / `5xx` / transport timeout 发生有限重试，必须在事件流里留下 `provider.retry` 证据
 - 若 provider 在没有新工具副作用前因 `upstream_timeout` 失败，runtime 可以按有界策略自动续跑，并必须留下 `provider.auto_resume` 证据
 - 若 provider 因 `max_tokens` / `max_output_tokens` 停止但已经产生可持久化的部分 assistant 输出，runtime 可以在同一自动续跑预算内把部分输出落盘、追加 harness reminder、重新进入下一轮，并必须留下 `provider.max_tokens_resume` 与 `provider-attempts.jsonl` 证据；没有部分输出或预算耗尽时仍按 provider failure 处理
-- runtime 还会把 retry、auto-resume、failure、success 追加到 `provider-attempts.jsonl`；success attempt 会保存 provider 返回的 cache read/write token 计数。该 ledger 只用于诊断、恢复与 WebConsole 展示，不反向驱动 adapter retry policy。
+- runtime 还会把 retry、auto-resume、failure、success 与 max-tokens 续跑追加到 `provider-attempts.jsonl`；success attempt 会保存 provider 返回的 cache read/write token 计数。`max_tokens_resume` attempt 是对同一已收到响应的续跑决策，保留该响应的 response id 与 cache 计数作为审计记录。`session.md` 与 WebConsole 汇总 cache 用量时每个响应只计一次：同一 turn 内与最近一条未配对 success 的 response id（可为空）和计数都相同的 `max_tokens_resume` 不再累加；已写盘的旧 ledger 按同一规则读取。该 ledger 只用于诊断、恢复与 WebConsole 展示，不反向驱动 adapter retry policy。
 
 ## 4. Replay 规则
 

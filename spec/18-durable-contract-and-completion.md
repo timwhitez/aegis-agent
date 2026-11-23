@@ -215,7 +215,7 @@ Provider attempts are recorded in:
 .aegis-agent/sessions/<id>/provider-attempts.jsonl
 ```
 
-The ledger records retry, auto-resume, final failure, and success facts:
+The ledger records retry, auto-resume, max-tokens resume, final failure, and success facts:
 
 - turn and attempt
 - provider and model
@@ -226,6 +226,8 @@ The ledger records retry, auto-resume, final failure, and success facts:
 - response id when available
 - cache read/write token counters when available
 - created time
+
+A `max_tokens_resume` record repeats the response ID and cache counters of the success record written for the same response. Cache totals in `session.md` and the Web console count each received response once: a `max_tokens_resume` record that repeats the latest unpaired success record of the same turn (same response ID, possibly empty, and same counters) adds nothing. Records from different turns are never merged, and existing ledgers are read with the same rule.
 
 The ledger is diagnostic only. Provider retry policy remains adapter-owned and is not driven by this file.
 
@@ -246,7 +248,7 @@ It summarizes:
 - plan mode status, objective, version, pending input, and plan summary
 - required artifacts
 - todo and task state
-- recent provider attempts
+- recent provider attempts and cache usage per received response (`hit_attempts` counts responses with a cache read)
 - child sessions, queue jobs, and background notifications
 - latest long-run checkpoint path
 - canonical fact-file locations

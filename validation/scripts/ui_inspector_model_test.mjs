@@ -95,6 +95,28 @@ test('provider attempts summarize retry evidence newest first', () => {
   assert.deepEqual(recent.map((item) => item.outcome), ['auto_resume', 'success']);
 });
 
+test('provider attempt cache usage counts each received response once', () => {
+  const row = (turn, outcome, id, read, creation) => ({
+    turn, attempt: 1, outcome, provider_response_id: id, cache_read_input_tokens: read, cache_creation_input_tokens: creation,
+  });
+  const cache = (attempts) => {
+    const { cacheRead, cacheCreation } = providerAttemptStats(attempts);
+    return { cacheRead, cacheCreation };
+  };
+  // A truncated response is recorded as success plus max_tokens_resume.
+  const resumed = [row(1, 'success', 'resp_partial', 23, 5), row(1, 'max_tokens_resume', 'resp_partial', 23, 5), row(2, 'success', 'resp_done', 0, 0)];
+  assert.deepEqual(cache(resumed), { cacheRead: 23, cacheCreation: 5 });
+  assert.equal(providerAttemptStats(resumed).total, 3, 'both audit rows stay visible');
+  assert.deepEqual(cache([row(1, 'success', 'resp_1', 9, 5)]), { cacheRead: 9, cacheCreation: 5 });
+  assert.deepEqual(cache([row(1, 'success', 'resp_a', 13053, 0), row(2, 'success', 'resp_b', 13053, 0)]), { cacheRead: 26106, cacheCreation: 0 });
+  // Ledgers without response ids pair only within a turn.
+  const legacy = [row(1, 'success', undefined, 23, 5), row(1, 'max_tokens_resume', undefined, 23, 5), row(2, 'success', undefined, 23, 5)];
+  assert.deepEqual(cache(legacy), { cacheRead: 46, cacheCreation: 10 });
+  // A resume row whose success fell outside the loaded tail is still counted.
+  assert.deepEqual(cache([row(4, 'max_tokens_resume', 'resp_tail', 8, 1)]), { cacheRead: 8, cacheCreation: 1 });
+  assert.deepEqual(cache([row(1, 'success', 'resp_x', 5, 0), row(1, 'max_tokens_resume', 'resp_y', 6, 0)]), { cacheRead: 11, cacheCreation: 0 });
+});
+
 test('provider option rows skip empty values and keep booleans', () => {
   const rows = providerOptionRows({ reasoning_effort: 'high', max_output_tokens: 2048, store: false, temperature: 0, retry_policy: { max_attempts: 3 }, timeout_policy: { request_timeout_sec: 30 } });
   assert.deepEqual(rows.map((row) => row.key), ['inspector.option.reasoningEffort', 'inspector.option.maxOutputTokens', 'inspector.option.temperature', 'inspector.option.store', 'inspector.option.retryAttempts', 'inspector.option.requestTimeout']);
