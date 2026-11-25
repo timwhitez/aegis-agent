@@ -3956,3 +3956,55 @@ func TestAdapterFromConfigRejectsInvalidBaseURLBeforeNetworkCall(t *testing.T) {
 		}
 	}
 }
+
+func TestContinueRejectsEmptyMessageOnCompletedSessionWithoutProviderCalls(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Session.Dir = filepath.Join(dir, "sessions")
+	runner := NewRunner(cfg)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		ID:               "completed_empty_continue",
+		RootSessionID:    "completed_empty_continue",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          dir,
+		CreatedAt:        now,
+	}
+	state := session.State{Status: session.StatusCompleted, Phase: "completed", UpdatedAt: now}
+	if err := runner.store.Create(meta, state); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "   ",
+	})
+	if !errors.Is(err, ErrContinueMessageRequired) {
+		t.Fatalf("expected ErrContinueMessageRequired, got %v", err)
+	}
+	// Disabled non-nil PlanMode must still be rejected on completed empty continue.
+	if err := ValidateContinueRequest(state, ContinueRequest{
+		SessionID: meta.ID,
+		PlanMode:  &session.PlanModeDraft{Enabled: false},
+	}); !errors.Is(err, ErrContinueMessageRequired) {
+		t.Fatalf("expected ErrContinueMessageRequired for disabled PlanMode, got %v", err)
+	}
+	// Active PlanMode on completed session is allowed.
+	if err := ValidateContinueRequest(state, ContinueRequest{
+		SessionID: meta.ID,
+		PlanMode:  &session.PlanModeDraft{Enabled: true},
+	}); err != nil {
+		t.Fatalf("expected enabled PlanMode continue on completed session to be allowed, got %v", err)
+	}
+	// Non-completed resumable statuses still allow empty-message continuation.
+	for _, status := range []string{session.StatusPaused, session.StatusFailed, session.StatusAwaitingInput} {
+		s := state
+		s.Status = status
+		if err := ValidateContinueRequest(s, ContinueRequest{SessionID: meta.ID}); err != nil {
+			t.Fatalf("expected %s empty continue to be allowed, got %v", status, err)
+		}
+	}
+}

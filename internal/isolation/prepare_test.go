@@ -375,3 +375,53 @@ func runGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v: %v: %s", args, err, string(output))
 	}
 }
+
+func TestPrepareGitWorktreeCleansUpOnMissingWorkdirAndListsValidModes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for worktree test")
+	}
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "init")
+
+	untrackedSubdir := filepath.Join(repo, "untracked-subdir")
+	if err := os.MkdirAll(untrackedSubdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootDir := t.TempDir()
+	_, err := Prepare(Request{
+		SessionID:     "session-orphan-check",
+		ParentWorkdir: untrackedSubdir,
+		RequestedMode: "git",
+		RootDir:       rootDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "git worktree does not contain requested workdir") {
+		t.Fatalf("expected missing workdir error, got %v", err)
+	}
+	target := filepath.Join(rootDir, "session-orphan-check")
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("expected failed git worktree target dir to be removed, statErr=%v", statErr)
+	}
+	out, listErr := exec.Command("git", "-C", repo, "worktree", "list", "--porcelain").CombinedOutput()
+	if listErr != nil {
+		t.Fatalf("git worktree list: %v: %s", listErr, string(out))
+	}
+	if strings.Contains(string(out), "session-orphan-check") {
+		t.Fatalf("expected orphaned worktree to be cleaned from git metadata, got:\n%s", string(out))
+	}
+
+	// #245: unsupported isolation mode lists valid modes.
+	_, err = Prepare(Request{
+		SessionID:     "session-bad-mode",
+		ParentWorkdir: repo,
+		RequestedMode: "worktree",
+		RootDir:       rootDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "expected off, auto, git, or copy") {
+		t.Fatalf("expected unsupported isolation mode error listing valid modes, got %v", err)
+	}
+}

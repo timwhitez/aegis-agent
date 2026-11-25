@@ -15795,3 +15795,34 @@ session:
 		t.Fatalf("expected reasoning_mode=off to clear pre-existing stale output_config_effort, got %#v", reloadedStale.Providers["appintheloop"])
 	}
 }
+
+func TestWebContinueCompletedSessionRejectsEmptyMessageWith400(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		ID:               "web_completed_empty_continue",
+		RootSessionID:    "web_completed_empty_continue",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          t.TempDir(),
+		CreatedAt:        now,
+	}
+	if err := svc.store.Create(meta, session.State{Status: session.StatusCompleted, Phase: "completed", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	errResp := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/continue", map[string]any{}, http.StatusBadRequest)
+	if errResp.Code == "" || errResp.Detail == "" || errResp.Action == "" {
+		t.Fatalf("expected structured 400 error on empty completed continue, got %#v", errResp)
+	}
+}

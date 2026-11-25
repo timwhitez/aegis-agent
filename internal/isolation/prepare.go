@@ -98,7 +98,7 @@ func Prepare(req Request) (Result, error) {
 	case "copy":
 		return prepareCopy(result, resolvedTarget)
 	default:
-		return Result{}, fmt.Errorf("unsupported isolation mode: %s", mode)
+		return Result{}, fmt.Errorf("unsupported isolation mode: %s (expected off, auto, git, or copy)", mode)
 	}
 }
 
@@ -149,12 +149,28 @@ func prepareGitWorktree(result Result, gitRoot, target string) (Result, error) {
 		workdir = filepath.Join(target, rel)
 	}
 	if _, err := os.Stat(workdir); err != nil {
+		cleanupFailedGitWorktree(gitRoot, result.RootDir, target)
 		return Result{}, fmt.Errorf("git worktree does not contain requested workdir %s: %w", result.ParentWorkdir, err)
 	}
 	result.Mode = "git"
 	result.Workdir = workdir
 	result.GitRepoRoot = gitRoot
 	return result, nil
+}
+
+func cleanupFailedGitWorktree(gitRoot, rootDir, target string) {
+	if strings.TrimSpace(target) == "" || filepath.Clean(target) == filepath.Clean(rootDir) {
+		return
+	}
+	_, removeErr := exec.Command("git", "-C", gitRoot, "worktree", "remove", "--force", target).CombinedOutput()
+	dirRemained := false
+	if _, err := os.Lstat(target); err == nil {
+		dirRemained = true
+		_ = os.RemoveAll(target)
+	}
+	if removeErr != nil || dirRemained {
+		_, _ = exec.Command("git", "-C", gitRoot, "worktree", "prune").CombinedOutput()
+	}
 }
 
 func prepareCopy(result Result, target string) (Result, error) {

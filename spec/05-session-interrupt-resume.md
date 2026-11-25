@@ -163,7 +163,7 @@ completed child / queue session 不允许走通用 `continue`。child 完成时 
 
 - 必须能找到现有 session
 - 允许恢复 `paused`、`awaiting_input`、`failed`，以及 root session 的 `completed`
-- completed root session 收到新的 user message 时按普通 continue 延续既有历史；completed child / queue session 返回结构化恢复提示，要求从 parent 使用 `agent_prompt` 或重新提交 queue job
+- completed root session 收到新的非空 user message（或显式 Plan Mode 控制动作）时按普通 continue 延续既有历史；空消息 continue 一个 completed session 直接在本地返回错误且不发 provider 请求；completed child / queue session 返回结构化恢复提示，要求从 parent 使用 `agent_prompt` 或重新提交 queue job
 - 正在 `running` 的 session 不允许 continue，应改用 `steer`
 
 启动 `steer` 时：
