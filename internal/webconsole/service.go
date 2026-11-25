@@ -2850,6 +2850,18 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := runtime.ValidateContinueRequest(state, runtime.ContinueRequest{
+		Message:  req.Message,
+		PlanMode: planModeDraft,
+	}); err != nil {
+		writeError(w, http.StatusBadRequest, newWebError(
+			"INVALID_REQUEST",
+			err.Error(),
+			"completed sessions have no pending work to resume without a follow-up message",
+			"Provide a non-empty message or start Plan Mode before continuing a completed session.",
+		))
+		return
+	}
 	runner := runtime.NewRunner(cfg)
 	runner.SetRunLifecycleHooks(s.runLifecycleHooks())
 	runCtx, cancel := context.WithCancel(context.Background())

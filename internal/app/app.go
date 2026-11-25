@@ -259,6 +259,8 @@ var stdinIsTerminal = func() bool {
 
 const maxPromptStdinBytes int64 = 4 << 20
 
+const isolationModeFlagUsage = "Workspace isolation mode (off, auto, git, copy)"
+
 const streamJSONDrainBarrierEvent = "cli.stream_json.drain_barrier"
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
@@ -273,7 +275,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 		jsonMode         = flagSet.Bool("json", false, "Output JSON result")
 		initMode         = flagSet.Bool("init", false, "Run with init completion policy")
 		timeoutRaw       = flagSet.String("timeout", "", "Run timeout as positive seconds or Go duration (e.g. 30 or 2m)")
-		isolationMode    = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationMode    = flagSet.String("isolation", "", isolationModeFlagUsage)
 		isolationRoot    = flagSet.String("isolation-root", "", "Isolation root directory")
 		goalObjective    = flagSet.String("goal", "", "Create a goal or mission with this objective")
 		goalMode         = flagSet.String("goal-mode", "goal", "Goal mode (goal or mission)")
@@ -690,7 +692,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		approvalTarget, err = resolveCLIApprovalOperationTarget(ctx, runner, approvalStore, flagSet.Arg(0), approvalFlags, os.Stdin, stderr)
 		if err != nil {
-			return sanitizeCLISessionErr(flagSet.Arg(0), err)
+			return sanitizeCLISessionErr(approvalStore, flagSet.Arg(0), err)
 		}
 	}
 	renderer := output.New(*jsonMode, stdout)
@@ -748,7 +750,7 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return printCLIApprovalResult(stdout, *jsonMode, result, approvalStore, err)
 	}
 	if err != nil {
-		return sanitizeCLISessionErr(flagSet.Arg(0), err)
+		return sanitizeCLISessionErr(sessionStoreOf(runner), flagSet.Arg(0), err)
 	}
 	return printResult(stdout, stderr, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
 }
@@ -789,7 +791,7 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		Interrupt: *interrupt,
 	})
 	if *jsonMode {
-		err = sanitizeCLISessionErr(flagSet.Arg(0), err)
+		err = sanitizeCLISessionErr(sessionStoreOf(runner), flagSet.Arg(0), err)
 		_ = json.NewEncoder(stdout).Encode(steerJSONPayload(flagSet.Arg(0), result, err))
 		if err != nil {
 			return ExitError{Code: 1}
@@ -797,7 +799,7 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return nil
 	}
 	if err != nil {
-		return sanitizeCLISessionErr(flagSet.Arg(0), err)
+		return sanitizeCLISessionErr(sessionStoreOf(runner), flagSet.Arg(0), err)
 	}
 	_, _ = fmt.Fprintf(stdout, "steer queued for %s (%s)\n", result.SessionID, result.Behavior)
 	return nil
@@ -876,10 +878,7 @@ func sessionsContextCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	report, err := runner.Context(strings.TrimSpace(flagSet.Arg(0)))
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return unknownSessionErr(flagSet.Arg(0))
-		}
-		return err
+		return sanitizeCLISessionErr(sessionStoreOf(runner), strings.TrimSpace(flagSet.Arg(0)), err)
 	}
 	if *jsonMode {
 		return json.NewEncoder(stdout).Encode(report)
@@ -1870,7 +1869,7 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 	}
 	board, err := runner.Tasks(sessionID)
 	if err != nil {
-		return sanitizeCLISessionErr(sessionID, err)
+		return sanitizeCLISessionErr(sessionStoreOf(runner), sessionID, err)
 	}
 	board = normalizeTaskBoard(board)
 	if *jsonMode {
@@ -2921,16 +2920,24 @@ func defaultInitSessionDir(cwd, configured string) string {
 
 func resolvePrompt(args []string, stdin io.Reader) (string, error) {
 	if len(args) > 0 {
-		return strings.Join(args, " "), nil
+		raw := strings.Join(args, " ")
+		if strings.TrimSpace(raw) == "" {
+			return "", fmt.Errorf("prompt is required")
+		}
+		return raw, nil
 	}
-	if term.IsTerminal(int(os.Stdin.Fd())) {
+	if stdinIsTerminal() {
 		return "", fmt.Errorf("prompt is required")
 	}
 	data, err := readPromptStdin(stdin)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(data), nil
+	prompt := strings.TrimSpace(data)
+	if prompt == "" {
+		return "", fmt.Errorf("prompt is required")
+	}
+	return prompt, nil
 }
 
 func readPromptStdin(stdin io.Reader) (string, error) {
@@ -3126,7 +3133,14 @@ func unknownQueueJobErr(jobID string) error {
 	return cliNotFoundError{msg: fmt.Sprintf("unknown queue job: %s", strings.TrimSpace(jobID))}
 }
 
-func sanitizeCLISessionErr(sessionID string, err error) error {
+func sessionStoreOf(runner any) *session.Store {
+	if owner, ok := runner.(interface{ Store() *session.Store }); ok {
+		return owner.Store()
+	}
+	return nil
+}
+
+func sanitizeCLISessionErr(store *session.Store, sessionID string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -3135,7 +3149,12 @@ func sanitizeCLISessionErr(sessionID string, err error) error {
 		return err
 	}
 	if errors.Is(err, fs.ErrNotExist) {
-		return unknownSessionErr(sessionID)
+		if store == nil {
+			return unknownSessionErr(sessionID)
+		}
+		if _, loadErr := store.LoadMetadata(strings.TrimSpace(sessionID)); errors.Is(loadErr, fs.ErrNotExist) {
+			return unknownSessionErr(sessionID)
+		}
 	}
 	return err
 }

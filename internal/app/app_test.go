@@ -4910,3 +4910,98 @@ role_providers:
 		t.Fatalf("expected doctor JSON to report effective_context_window_tokens, got: %s", doctorOut.String())
 	}
 }
+
+func TestCLIPromptValidationIsolationHelpAndSanitizeSessionErr(t *testing.T) {
+	origTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return false }
+	defer func() { stdinIsTerminal = origTTY }()
+
+	// #236: resolvePrompt rejects empty/whitespace-only positional args and empty/whitespace stdin.
+	for _, args := range [][]string{{""}, {"   "}, {"\t\n"}} {
+		if _, err := resolvePrompt(args, strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "prompt is required") {
+			t.Fatalf("expected prompt is required for args=%q, got %v", args, err)
+		}
+	}
+	for _, stdinBody := range []string{"", "   \n\t  "} {
+		if _, err := resolvePrompt(nil, strings.NewReader(stdinBody)); err == nil || !strings.Contains(err.Error(), "prompt is required") {
+			t.Fatalf("expected prompt is required for stdin=%q, got %v", stdinBody, err)
+		}
+	}
+	if got, err := resolvePrompt(nil, strings.NewReader("  from stdin  \n")); err != nil || got != "from stdin" {
+		t.Fatalf("expected trimmed stdin prompt, got %q %v", got, err)
+	}
+	if got, err := resolvePrompt([]string{"hello", "world"}, strings.NewReader("")); err != nil || got != "hello world" {
+		t.Fatalf("expected normal args prompt, got %q %v", got, err)
+	}
+
+	// #236: CLI commands fail locally on empty/whitespace prompt arguments without calling provider.
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`default_provider: openai
+providers:
+  openai:
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    model: gpt-5
+session:
+  dir: `+filepath.Join(t.TempDir(), "sessions")+`
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, emptyArgs := range [][]string{
+		{"exec", "--config", cfgPath, ""},
+		{"run", "--config", cfgPath, "   "},
+		{"experimental", "delegate", "--config", cfgPath, "parent_sess", ""},
+		{"experimental", "queue", "submit", "--config", cfgPath, "   "},
+	} {
+		if err := Run(context.Background(), emptyArgs, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "prompt is required") {
+			t.Fatalf("expected local prompt is required for %v, got %v", emptyArgs, err)
+		}
+	}
+
+	// #245: --isolation help across exec, delegate, and queue submit advertises (off, auto, git, copy) and never worktree.
+	for _, helpArgs := range [][]string{
+		{"exec", "--help"},
+		{"experimental", "delegate", "--help"},
+		{"experimental", "queue", "submit", "--help"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), helpArgs, &stdout, &stderr); err != nil {
+			t.Fatalf("help %v: %v", helpArgs, err)
+		}
+		text := stdout.String()
+		if !strings.Contains(text, "(off, auto, git, copy)") || strings.Contains(text, "(off, auto, worktree)") {
+			t.Fatalf("unexpected --isolation help for %v:\n%s", helpArgs, text)
+		}
+	}
+
+	// #246: sanitizeCLISessionErr only reports unknown session when the session itself is missing.
+	store := session.NewStore(filepath.Join(t.TempDir(), "sessions"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		ID:               "existing_sess",
+		RootSessionID:    "existing_sess",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          t.TempDir(),
+		CreatedAt:        now,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusCompleted, Phase: "completed", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := fmt.Errorf("git worktree does not contain requested workdir /tmp/missing: %w", fs.ErrNotExist)
+	gotExisting := sanitizeCLISessionErr(store, meta.ID, unrelated)
+	if strings.Contains(gotExisting.Error(), "unknown session") || !strings.Contains(gotExisting.Error(), "git worktree does not contain requested workdir") {
+		t.Fatalf("expected existing session to preserve unrelated fs.ErrNotExist error, got %v", gotExisting)
+	}
+	gotMissing := sanitizeCLISessionErr(store, " nonexistent_sess ", fs.ErrNotExist)
+	if gotMissing == nil || gotMissing.Error() != "unknown session: nonexistent_sess" {
+		t.Fatalf("expected missing session to report unknown session, got %v", gotMissing)
+	}
+	gotInvalid := sanitizeCLISessionErr(store, "../escape", unrelated)
+	if strings.Contains(gotInvalid.Error(), "unknown session") {
+		t.Fatalf("expected invalid session id not to be masked as unknown session, got %v", gotInvalid)
+	}
+}

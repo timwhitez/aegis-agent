@@ -870,7 +870,7 @@ func normalizeAndValidateIsolationMode(value, fallback string) (string, error) {
 	case "", "off", "auto", "copy", "git":
 		return mode, nil
 	default:
-		return "", fmt.Errorf("unsupported isolation mode: %s", strings.TrimSpace(value))
+		return "", fmt.Errorf("unsupported isolation mode: %s (expected off, auto, git, or copy)", strings.TrimSpace(value))
 	}
 }
 
@@ -1047,6 +1047,9 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	}
 	if r.approvalOperation == nil || !r.approvalOperation.ResumeClaim {
 		if err := ValidateContinueTargetWithStore(r.store, meta, state); err != nil {
+			return RunResult{}, err
+		}
+		if err := ValidateContinueRequest(state, req); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -1311,6 +1314,20 @@ func (r *Runner) appendSessionResumedEvent(meta session.SessionMetadata, resumed
 		"model":        meta.Model,
 	}); err != nil {
 		return fmt.Errorf("record session.resumed event: %w", err)
+	}
+	return nil
+}
+
+var ErrContinueMessageRequired = errors.New("continuing a completed session requires a non-empty message")
+
+func ValidateContinueRequest(state session.State, req ContinueRequest) error {
+	if state.Status == session.StatusCompleted &&
+		strings.TrimSpace(req.Message) == "" &&
+		!req.ApprovePlan &&
+		!req.CancelPlan &&
+		(req.PlanMode == nil || !req.PlanMode.Enabled) &&
+		len(req.PlanInputAnswers) == 0 {
+		return ErrContinueMessageRequired
 	}
 	return nil
 }

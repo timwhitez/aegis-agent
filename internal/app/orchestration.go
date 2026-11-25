@@ -31,7 +31,7 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		timeoutRaw    = flagSet.String("timeout", "", "Timeout as positive seconds or Go duration (e.g. 30 or 2m)")
 		background    = flagSet.Bool("background", false, "Submit delegated child to the background queue")
 		jsonMode      = flagSet.Bool("json", false, "Output JSON")
-		isolationMode = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationMode = flagSet.String("isolation", "", isolationModeFlagUsage)
 		isolationRoot = flagSet.String("isolation-root", "", "Isolation root directory")
 	)
 	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental delegate <parent-session-id> <prompt> [flags]"); err != nil || helped {
@@ -78,10 +78,7 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		IsolationRoot:   *isolationRoot,
 	})
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return unknownSessionErr(parentSessionID)
-		}
-		return err
+		return sanitizeCLISessionErr(runner.Store(), parentSessionID, err)
 	}
 	if *jsonMode {
 		return json.NewEncoder(stdout).Encode(result)
@@ -193,7 +190,7 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		mode            = flagSet.String("mode", session.ModeExec, "Execution mode (exec, run)")
 		waitMode        = flagSet.String("wait-mode", "", "Parent wait mode (wait-all, wait-any, all, any, default)")
 		jsonMode        = flagSet.Bool("json", false, "Output JSON")
-		isolationMode   = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationMode   = flagSet.String("isolation", "", isolationModeFlagUsage)
 		isolationRoot   = flagSet.String("isolation-root", "", "Isolation root directory")
 	)
 	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental queue submit [flags] <prompt>"); err != nil || helped {
@@ -226,8 +223,8 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		IsolationRoot:   *isolationRoot,
 	})
 	if err != nil {
-		if strings.TrimSpace(*parentSessionID) != "" && errors.Is(err, fs.ErrNotExist) {
-			return unknownSessionErr(*parentSessionID)
+		if strings.TrimSpace(*parentSessionID) != "" {
+			return sanitizeCLISessionErr(runner.Store(), *parentSessionID, err)
 		}
 		return err
 	}

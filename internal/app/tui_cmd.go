@@ -2,11 +2,9 @@ package app
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
 
@@ -44,8 +42,8 @@ func tuiCommand(args []string, stdout, stderr io.Writer) error {
 	if *once {
 		snapshot, err := agenttui.BuildSnapshot(runner.Store(), *sessionID, *limit)
 		if err != nil {
-			if strings.TrimSpace(*sessionID) != "" && errors.Is(err, fs.ErrNotExist) {
-				return unknownSessionErr(*sessionID)
+			if strings.TrimSpace(*sessionID) != "" {
+				return sanitizeCLISessionErr(runner.Store(), *sessionID, err)
 			}
 			return err
 		}
