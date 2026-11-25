@@ -216,3 +216,43 @@ func TestBlankLineLayoutSkipsNodeComments(t *testing.T) {
 		t.Fatalf("blankLines[b]=%d, want 1 (all=%#v)", got, layout.blanks)
 	}
 }
+
+// Leading blank lines are not a separator between two blocks. Recording them
+// would make restore() prepend a blank line to a document that never had one.
+func TestBlankLineLayoutIgnoresLeadingBlankLines(t *testing.T) {
+	const raw = "\n\na: 1\n\nb: 2\n"
+	doc := parseYAMLForTest(t, raw)
+	layout := captureBlankLineLayout(doc, []byte(raw))
+	if _, ok := layout.blanks[joinYAMLPath([]string{"a"})]; ok {
+		t.Fatalf("leading blanks recorded as a separator: %#v", layout.blanks)
+	}
+	if got := layout.blanks[joinYAMLPath([]string{"b"})]; got != 1 {
+		t.Fatalf("blankLines[b]=%d, want 1 (all=%#v)", got, layout.blanks)
+	}
+	if restored := string(layout.restore([]byte("a: 1\n\nb: 2\n"))); strings.HasPrefix(restored, "\n") {
+		t.Fatalf("restore introduced a leading blank line:\n%q", restored)
+	}
+}
+
+// CRLF input must count separators the same way.
+func TestBlankLineLayoutHandlesCRLF(t *testing.T) {
+	const raw = "a: 1\r\n\r\n# note\r\nb: 2\r\n"
+	doc := parseYAMLForTest(t, raw)
+	layout := captureBlankLineLayout(doc, []byte(raw))
+	if got := layout.blanks[joinYAMLPath([]string{"b"})]; got != 1 {
+		t.Fatalf("blankLines[b]=%d, want 1 (all=%#v)", got, layout.blanks)
+	}
+}
+
+// Multiple consecutive blank lines are preserved as authored.
+func TestBlankLineLayoutKeepsMultipleBlanks(t *testing.T) {
+	const raw = "a: 1\n\n\n\nb: 2\n"
+	doc := parseYAMLForTest(t, raw)
+	layout := captureBlankLineLayout(doc, []byte(raw))
+	if got := layout.blanks[joinYAMLPath([]string{"b"})]; got != 3 {
+		t.Fatalf("blankLines[b]=%d, want 3 (all=%#v)", got, layout.blanks)
+	}
+	if restored := string(layout.restore([]byte(raw))); restored != raw {
+		t.Fatalf("restore changed an already-matching document:\nwant %q\ngot  %q", raw, restored)
+	}
+}

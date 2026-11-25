@@ -137,7 +137,8 @@ func joinYAMLPath(path []string) string {
 
 // blankLinesBeforeKey counts the blank lines that separate the block starting at
 // line (1-based) from the previous block. Comment lines directly above the key
-// are part of that block and are skipped first.
+// are part of that block and are skipped first. A block at the very start of the
+// file has no previous block, so its preceding blank lines are not a separator.
 func blankLinesBeforeKey(lines []string, line int) int {
 	index := line - 2 // 0-based index of the line directly above
 	for index >= 0 && strings.HasPrefix(strings.TrimSpace(lines[index]), "#") {
@@ -147,6 +148,11 @@ func blankLinesBeforeKey(lines []string, line int) int {
 	for index >= 0 && strings.TrimSpace(lines[index]) == "" {
 		count++
 		index--
+	}
+	if index < 0 {
+		// Ran past the start of the file: these blanks led the document rather
+		// than separating two blocks.
+		return 0
 	}
 	return count
 }
