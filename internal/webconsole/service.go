@@ -7757,7 +7757,7 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 	if err != nil {
 		return false, err
 	}
-	owner := latestActiveOwnerFromEvents(eventsList)
+	owner := effectiveRunningOwner(latestActiveOwnerFromEvents(eventsList), state)
 	if !staleRunningOwnerCanBeReconciledAt(owner, state, time.Now().UTC(), forceMissingOwner || deadExecutingApproval) {
 		return false, nil
 	}
@@ -7951,7 +7951,44 @@ func staleRunningOwnerCanBeReconciled(owner ActiveHandleOwner) bool {
 	return ownerProcessKnownDead(owner)
 }
 
+func parseRFC3339OwnerTime(raw string) (time.Time, bool) {
+	stamp := strings.TrimSpace(raw)
+	if stamp == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+		return parsed, true
+	}
+	if parsed, err := time.Parse(time.RFC3339, stamp); err == nil {
+		return parsed, true
+	}
+	return time.Time{}, false
+}
+
+func ownerReleasePredatesState(owner ActiveHandleOwner, state session.State) bool {
+	if !ownerEventTypeIsRelease(owner.EventType) {
+		return false
+	}
+	updatedAt, hasStateTime := parseRFC3339OwnerTime(state.UpdatedAt)
+	if !hasStateTime {
+		return false
+	}
+	releaseTime, hasReleaseTime := parseRFC3339OwnerTime(owner.ReleasedAt)
+	if !hasReleaseTime {
+		releaseTime, hasReleaseTime = parseRFC3339OwnerTime(owner.LastEventAt)
+	}
+	return hasReleaseTime && releaseTime.Before(updatedAt)
+}
+
+func effectiveRunningOwner(owner ActiveHandleOwner, state session.State) ActiveHandleOwner {
+	if ownerReleasePredatesState(owner, state) {
+		return ActiveHandleOwner{}
+	}
+	return owner
+}
+
 func staleRunningOwnerCanBeReconciledAt(owner ActiveHandleOwner, state session.State, now time.Time, forceMissingOwner bool) bool {
+	owner = effectiveRunningOwner(owner, state)
 	if staleRunningOwnerCanBeReconciled(owner) {
 		return true
 	}
@@ -7961,16 +7998,9 @@ func staleRunningOwnerCanBeReconciledAt(owner ActiveHandleOwner, state session.S
 	if forceMissingOwner {
 		return true
 	}
-	stamp := strings.TrimSpace(state.UpdatedAt)
-	if stamp == "" {
+	updatedAt, hasStateTime := parseRFC3339OwnerTime(state.UpdatedAt)
+	if !hasStateTime {
 		return true
-	}
-	updatedAt, err := time.Parse(time.RFC3339Nano, stamp)
-	if err != nil {
-		updatedAt, err = time.Parse(time.RFC3339, stamp)
-		if err != nil {
-			return true
-		}
 	}
 	return now.Sub(updatedAt) >= staleMissingOwnerGrace
 }

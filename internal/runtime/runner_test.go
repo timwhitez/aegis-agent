@@ -2272,8 +2272,12 @@ func TestRunnerContinueClaimsSessionBeforeUserMessageHook(t *testing.T) {
 
 	waitForPath(t, hookStarted, 2*time.Second)
 	secondResult, secondErr := runner2.Continue(context.Background(), ContinueRequest{SessionID: meta.ID, Message: "second continuation"})
-	if secondErr == nil || !strings.Contains(secondErr.Error(), "session is not resumable") {
-		t.Fatalf("expected concurrent same-session continue rejection, result=%#v err=%v", secondResult, secondErr)
+	var notResumable *SessionNotResumableError
+	if !errors.As(secondErr, &notResumable) || !errors.Is(secondErr, session.ErrSessionNotResumable) {
+		t.Fatalf("expected structured concurrent same-session continue rejection, result=%#v err=%v", secondResult, secondErr)
+	}
+	if strings.TrimSpace(notResumable.Detail) == "" || strings.TrimSpace(notResumable.Action) == "" || strings.Contains(notResumable.Detail, "no longer alive") {
+		t.Fatalf("expected active-run diagnostic on concurrent continue, got %#v", notResumable)
 	}
 	if err := os.WriteFile(hookRelease, []byte("1"), 0o600); err != nil {
 		t.Fatalf("release hook: %v", err)
@@ -4006,5 +4010,172 @@ func TestContinueRejectsEmptyMessageOnCompletedSessionWithoutProviderCalls(t *te
 		if err := ValidateContinueRequest(s, ContinueRequest{SessionID: meta.ID}); err != nil {
 			t.Fatalf("expected %s empty continue to be allowed, got %v", status, err)
 		}
+	}
+}
+
+func TestRunningSessionOwnerStaleIgnoresPriorRunReleaseWithinStartupGrace(t *testing.T) {
+	now := time.Now().UTC()
+	priorReleased := events.Event{
+		Type: RunOwnerReleasedEventType,
+		Time: now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		Data: map[string]any{
+			"pid":         os.Getpid(),
+			"released_at": now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		},
+	}
+
+	// Freshly claimed running state (< 5s old) with only a prior run's release event must NOT look owner-dead.
+	freshRunning := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: now.Add(-500 * time.Millisecond).Format(time.RFC3339Nano),
+	}
+	if runningSessionOwnerStaleForContinue([]events.Event{priorReleased}, freshRunning) {
+		t.Fatal("prior run release event must not mark a freshly claimed running session as owner-dead")
+	}
+
+	// Same prior release event after the 5s startup grace window expires without a new owner acquire IS stale.
+	agedRunning := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: now.Add(-6 * time.Second).Format(time.RFC3339Nano),
+	}
+	if !runningSessionOwnerStaleForContinue([]events.Event{priorReleased}, agedRunning) {
+		t.Fatal("expected running session with no post-claim owner acquire after 5s grace window to be stale")
+	}
+
+	// A release event recorded at or after state.UpdatedAt immediately proves the current owner released.
+	postClaimReleased := events.Event{
+		Type: RunOwnerReleasedEventType,
+		Time: now.Format(time.RFC3339Nano),
+		Data: map[string]any{
+			"pid":         os.Getpid(),
+			"released_at": now.Format(time.RFC3339Nano),
+		},
+	}
+	if !runningSessionOwnerStaleForContinue([]events.Event{postClaimReleased}, freshRunning) {
+		t.Fatal("expected post-claim owner release event to immediately mark running session stale")
+	}
+
+	// An older dead-PID acquire followed by a prior-run release must not leak past the release into freshRunning.
+	deadPriorAcquired := events.Event{
+		Type: RunOwnerAcquiredEventType,
+		Time: now.Add(-15 * time.Second).Format(time.RFC3339Nano),
+		Data: map[string]any{"pid": 999999},
+	}
+	if runningSessionOwnerStaleForContinue([]events.Event{deadPriorAcquired, priorReleased}, freshRunning) {
+		t.Fatal("older dead acquire before prior release must not mark a freshly claimed run stale")
+	}
+
+	// A post-release acquire with a dead PID still marks the current run stale.
+	deadNewAcquired := events.Event{
+		Type: RunOwnerAcquiredEventType,
+		Time: now.Format(time.RFC3339Nano),
+		Data: map[string]any{"pid": 999999},
+	}
+	if !runningSessionOwnerStaleForContinue([]events.Event{priorReleased, deadNewAcquired}, freshRunning) {
+		t.Fatal("expected post-release dead acquire to mark running session stale")
+	}
+
+	// Missing released_at falls back to evt.Time for prior-run release detection.
+	priorReleasedTimeOnly := events.Event{
+		Type: RunOwnerReleasedEventType,
+		Time: now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		Data: map[string]any{"pid": os.Getpid()},
+	}
+	if runningSessionOwnerStaleForContinue([]events.Event{priorReleasedTimeOnly}, freshRunning) {
+		t.Fatal("prior release using evt.Time fallback must not mark freshly claimed run stale")
+	}
+}
+
+func TestConcurrentContinueReturnsStructuredSessionNotResumableError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Session.Dir = filepath.Join(dir, "sessions")
+	runner := NewRunner(cfg)
+	now := time.Now().UTC()
+	meta := session.SessionMetadata{
+		ID:               "concurrent_continue_diag",
+		RootSessionID:    "concurrent_continue_diag",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          dir,
+		CreatedAt:        now.Add(-20 * time.Second).Format(time.RFC3339Nano),
+	}
+	if err := runner.store.Create(meta, session.State{
+		Status:    session.StatusCompleted,
+		Phase:     "completed",
+		UpdatedAt: now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a completed previous run that left run.owner.released in events.jsonl.
+	if err := runner.store.AppendEvent(meta.ID, events.Event{
+		SchemaVersion: events.SchemaVersion,
+		ID:            "evt_prior_release",
+		SessionID:     meta.ID,
+		Type:          RunOwnerReleasedEventType,
+		Time:          now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		Phase:         "control",
+		Data: map[string]any{
+			"pid":         os.Getpid(),
+			"released_at": now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate runner 1 atomically claiming the session as running (before writing run.owner.acquired).
+	claimedState, err := runner.store.ClaimSessionRun(meta.ID, session.StatusCompleted)
+	if err != nil {
+		t.Fatalf("claim run: %v", err)
+	}
+	// Runner 2 attempting Continue must get a structured *SessionNotResumableError saying "already running",
+	// never bare "session is not resumable" and never falsely claiming the owner process is dead.
+	_, err = runner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "concurrent follow-up",
+	})
+	var notResumable *SessionNotResumableError
+	if !errors.As(err, &notResumable) {
+		t.Fatalf("expected structured *SessionNotResumableError, got %T (%v)", err, err)
+	}
+	if !errors.Is(err, session.ErrSessionNotResumable) {
+		t.Fatalf("expected error to unwrap session.ErrSessionNotResumable, got %v", err)
+	}
+	if !strings.Contains(notResumable.Detail, "already running") || strings.Contains(notResumable.Detail, "no longer alive") {
+		t.Fatalf("unexpected concurrent continue diagnostic detail=%q action=%q", notResumable.Detail, notResumable.Action)
+	}
+	if strings.TrimSpace(notResumable.Action) == "" {
+		t.Fatalf("expected non-empty action guidance, got %#v", notResumable)
+	}
+
+	// Deterministic TOCTOU branch: pass preflight ValidateContinueTargetWithStore on completed state,
+	// then lose ClaimSessionRun to another run claiming StatusRunning right before ClaimSessionRun.
+	stateCompleted := claimedState
+	stateCompleted.Status = session.StatusCompleted
+	stateCompleted.Phase = "completed"
+	stateCompleted.UpdatedAt = now.Add(-10 * time.Second).Format(time.RFC3339Nano)
+	if err := runner.store.SaveState(meta.ID, stateCompleted); err != nil {
+		t.Fatal(err)
+	}
+	toctouRunner := NewRunner(cfg)
+	toctouRunner.beforeContinueClaim = func(sessionID string) {
+		if _, claimErr := toctouRunner.store.ClaimSessionRun(sessionID, session.StatusCompleted); claimErr != nil {
+			t.Errorf("competing claim failed: %v", claimErr)
+		}
+	}
+	_, toctouErr := toctouRunner.Continue(context.Background(), ContinueRequest{
+		SessionID: meta.ID,
+		Message:   "toctou follow-up",
+	})
+	var toctouNotResumable *SessionNotResumableError
+	if !errors.As(toctouErr, &toctouNotResumable) || !errors.Is(toctouErr, session.ErrSessionNotResumable) {
+		t.Fatalf("expected structured *SessionNotResumableError on TOCTOU claim loss, got %T (%v)", toctouErr, toctouErr)
+	}
+	if !strings.Contains(toctouNotResumable.Detail, "already running") || strings.Contains(toctouNotResumable.Detail, "no longer alive") {
+		t.Fatalf("expected active-run diagnostic on TOCTOU claim loss, got detail=%q action=%q", toctouNotResumable.Detail, toctouNotResumable.Action)
 	}
 }

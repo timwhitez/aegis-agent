@@ -49,7 +49,7 @@ func (s *Store) ClaimSessionRunWithGeneration(sessionID, generation string, allo
 				return fmt.Errorf("validate state.json: %w", err)
 			}
 			if _, ok := allowed[claimed.Status]; !ok {
-				return errors.New("session is not resumable")
+				return ErrSessionNotResumable
 			}
 			previous, err := time.Parse(time.RFC3339Nano, claimed.UpdatedAt)
 			if err != nil || !stamp.After(previous) {

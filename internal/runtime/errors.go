@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"aegis-agent/internal/session"
 )
 
 type ConfigError struct {
@@ -68,4 +70,8 @@ func (e *SessionNotResumableError) Error() string {
 		return "session is not resumable: " + detail + "; " + action
 	}
 	return "session is not resumable: " + detail
+}
+
+func (e *SessionNotResumableError) Unwrap() error {
+	return session.ErrSessionNotResumable
 }
