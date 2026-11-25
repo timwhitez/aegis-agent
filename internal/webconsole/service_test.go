@@ -15858,3 +15858,158 @@ func TestStaleRunningOwnerReconcileRespectsGraceAfterPriorRunRelease(t *testing.
 		t.Fatal("post-claim release should be immediately reconcilable")
 	}
 }
+
+func TestWebConflict409ResponsesIncludeStructuredCodeAndActionAndMkdirFieldHint(t *testing.T) {
+	workdir := t.TempDir()
+	origWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(origWD) }()
+
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Running session owned by a live PID (current process via run.owner.acquired) cannot be deleted or cleared.
+	runningMeta := session.SessionMetadata{
+		ID:               "running_conflict_sess",
+		RootSessionID:    "running_conflict_sess",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          workdir,
+		CreatedAt:        now,
+	}
+	if err := svc.store.Create(runningMeta, session.State{Status: session.StatusRunning, Phase: "turn_decide", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.store.AppendEvent(runningMeta.ID, events.New(runningMeta.ID, agentruntime.RunOwnerAcquiredEventType, "prepare", map[string]any{
+		"source":           "runtime",
+		"pid":              os.Getpid() + 1000000, // replaced below by live handle check
+		"process_start_id": fmt.Sprintf("%d:%s", os.Getpid(), now),
+		"started_at":       now,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	// Register an active handle in-process so DELETE /api/sessions/{id} and POST /api/sessions/clear deterministically hit 409.
+	svc.mu.Lock()
+	svc.handles[runningMeta.ID] = newLaunchHandle(runningMeta.ID, nil, func() {})
+	svc.mu.Unlock()
+	defer func() {
+		svc.mu.Lock()
+		delete(svc.handles, runningMeta.ID)
+		svc.mu.Unlock()
+	}()
+
+	// Completed session with active Plan Mode (no pending input request) for steer & planmode/input 409 checks.
+	completedMeta := session.SessionMetadata{
+		ID:               "completed_conflict_sess",
+		RootSessionID:    "completed_conflict_sess",
+		SchemaVersion:    1,
+		Mode:             session.ModeExec,
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+		Provider:         "openai",
+		Model:            "gpt-5",
+		Workdir:          workdir,
+		CreatedAt:        now,
+	}
+	if err := svc.store.Create(completedMeta, session.State{Status: session.StatusCompleted, Phase: "completed", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.CreatePlanMode(completedMeta.ID, session.PlanModeDraft{Enabled: true, Objective: "check 409", Source: session.PlanModeSourceWeb}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	// 1. DELETE /api/sessions/{id} on active session returns structured 409.
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/sessions/"+runningMeta.ID, nil)
+	delReq.Header.Set("X-Aegis-Agent-Web", "1")
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var delErr ErrorResponse
+	if err := json.NewDecoder(delResp.Body).Decode(&delErr); err != nil {
+		t.Fatal(err)
+	}
+	delResp.Body.Close()
+	if delResp.StatusCode != http.StatusConflict || delErr.Code != "SESSION_ACTIVE_CONFLICT" || delErr.Action == "" || !strings.Contains(delErr.Error, "cannot delete") {
+		t.Fatalf("expected structured SESSION_ACTIVE_CONFLICT 409 on DELETE, status=%d body=%#v", delResp.StatusCode, delErr)
+	}
+
+	// 2. POST /api/sessions/clear while active returns structured 409 preserving backend error detail.
+	clearErr := postJSONError(t, ts.URL+"/api/sessions/clear", map[string]any{}, http.StatusConflict)
+	if clearErr.Code != "HISTORY_ACTIVE_CONFLICT" || clearErr.Action == "" || !strings.Contains(clearErr.Error, "cannot clear history") {
+		t.Fatalf("expected structured HISTORY_ACTIVE_CONFLICT 409 on clear, got %#v", clearErr)
+	}
+
+	// 3. POST /api/sessions/{id}/steer on non-running session returns structured 409.
+	steerErr := postJSONError(t, ts.URL+"/api/sessions/"+completedMeta.ID+"/steer", map[string]any{"message": "ping"}, http.StatusConflict)
+	if steerErr.Code != "SESSION_NOT_RUNNING" || steerErr.Action == "" || steerErr.Detail == "" {
+		t.Fatalf("expected structured SESSION_NOT_RUNNING 409 on steer, got %#v", steerErr)
+	}
+
+	// 4. POST /api/sessions/{id}/planmode/input without pending request returns structured 409.
+	planInputErr := postJSONError(t, ts.URL+"/api/sessions/"+completedMeta.ID+"/planmode/input", map[string]any{
+		"request_id": "req_missing",
+		"answers":    []map[string]any{{"question_id": "q1", "value": "a"}},
+	}, http.StatusConflict)
+	if planInputErr.Code != "PLAN_MODE_CONFLICT" || planInputErr.Action == "" || planInputErr.Detail == "" {
+		t.Fatalf("expected structured PLAN_MODE_CONFLICT 409 on planmode/input, got %#v", planInputErr)
+	}
+
+	// 5. POST /api/files/mkdir on existing folder returns structured 409; missing name includes field hint (#242).
+	postJSON(t, ts.URL+"/api/files/mkdir", map[string]any{"path": ".", "name": "existing-dir"}, http.StatusCreated, nil)
+	mkdirConflict := postJSONError(t, ts.URL+"/api/files/mkdir", map[string]any{"path": ".", "name": "existing-dir"}, http.StatusConflict)
+	if mkdirConflict.Code != "WORKSPACE_PATH_EXISTS" || mkdirConflict.Action == "" || mkdirConflict.Detail == "" {
+		t.Fatalf("expected structured WORKSPACE_PATH_EXISTS 409 on mkdir, got %#v", mkdirConflict)
+	}
+	mkdirMissing := postJSONError(t, ts.URL+"/api/files/mkdir", map[string]any{"path": "."}, http.StatusBadRequest)
+	if !strings.Contains(mkdirMissing.Error, "field: name") {
+		t.Fatalf("expected mkdir missing name error to include field hint, got %#v", mkdirMissing)
+	}
+
+	// 6. Direct writeError coverage: sentinels, precedence, neutral non-running, pre-classified preservation, and generic fallback.
+	for _, tc := range []struct {
+		name           string
+		err            error
+		wantCode       string
+		disallowAction string
+	}{
+		{name: "history_mutation", err: errHistoryMutation, wantCode: "HISTORY_MUTATION_IN_PROGRESS"},
+		{name: "session_already_active", err: errSessionAlreadyActive, wantCode: "SESSION_ALREADY_ACTIVE"},
+		{name: "approval_receipt_capacity", err: session.ErrApprovalReceiptCapacity, wantCode: "APPROVAL_RECEIPT_CAPACITY"},
+		{name: "approval_conflict_preserved", err: session.ErrApprovalConflict, wantCode: "APPROVAL_TARGET_CONFLICT"},
+		{name: "session_not_resumable", err: &agentruntime.SessionNotResumableError{SessionID: "s1", Status: session.StatusRunning, Detail: "already running", Action: "use steer"}, wantCode: errorCodeSessionNotResumable},
+		{name: "neutral_not_running", err: errors.New("session is not running"), wantCode: "SESSION_NOT_RUNNING", disallowAction: "steer"},
+		{name: "plan_input_prefix_precedence", err: errors.New("plan input request mismatch: not running"), wantCode: "PLAN_MODE_CONFLICT"},
+		{name: "coverage_blocks_precedence", err: errors.New("mission validation coverage blocks approval: assertion_not running"), wantCode: "MISSION_COVERAGE_CONFLICT"},
+		{name: "goal_already_exists", err: errors.New("session already has a current goal"), wantCode: "GOAL_ALREADY_EXISTS"},
+		{name: "generic_fallback", err: errors.New("unexpected conflict condition"), wantCode: "CONFLICT"},
+	} {
+		rec := httptest.NewRecorder()
+		writeError(rec, http.StatusConflict, tc.err)
+		var got ErrorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+			t.Fatalf("%s decode: %v", tc.name, err)
+		}
+		if got.Code != tc.wantCode || got.Action == "" {
+			t.Fatalf("%s: want code=%q with non-empty action, got %#v", tc.name, tc.wantCode, got)
+		}
+		if tc.disallowAction != "" && strings.Contains(strings.ToLower(got.Action), tc.disallowAction) {
+			t.Fatalf("%s: action unexpectedly contained %q: %#v", tc.name, tc.disallowAction, got)
+		}
+	}
+}

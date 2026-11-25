@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 )
 
 // A scoped view shares the real Service for configuration/handles but owns only
@@ -127,6 +128,11 @@ func (s *Service) approvalResponse(id string, result runtime.ApprovalPreparation
 		if result.Lookup.Receipt.Stage == session.ApprovalReceiptRejected {
 			resp.Error = result.Lookup.Receipt.Rejection
 			resp.Code = "APPROVAL_REJECTED"
+			if strings.Contains(strings.ToLower(resp.Error), "coverage blocks approval") {
+				resp.Action = "Update the mission validation plan or explicitly retry with override_coverage=true after review."
+			} else {
+				resp.Action = "Reload the plan and review it again."
+			}
 		}
 	}
 	if result.RecoveryRequired {
@@ -167,6 +173,9 @@ func (s *Service) respondApproval(w http.ResponseWriter, r *http.Request, req ru
 		resp.Error = err.Error()
 		if resp.Code == "" {
 			resp.Code = "APPROVAL_PREPARATION_FAILED"
+		}
+		if status == http.StatusConflict && resp.Action == "" {
+			resp.Action = "Review the session and approval receipt state before retrying."
 		}
 	}
 	writeJSON(w, status, resp)
