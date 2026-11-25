@@ -962,3 +962,233 @@ hooks:
 		}
 	}
 }
+
+func TestPatchFilePreservesCommentsIndentOrderAndUntouchedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	original := `# Top-level operator comment
+schema_version: 1
+default_provider: appintheloop
+
+providers:
+  appintheloop:
+    # anthropic-compatible appends /v1/messages, so set origin only (no /v1).
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+    context_window_tokens: 1000000
+    request_timeout_sec: 600
+    stream_idle_timeout_ms: 300000
+    retry:
+      max_attempts: 5
+      base_delay_ms: 1000
+      retry_5xx: true
+      retry_transport: true
+    anthropic_version: 2023-06-01
+    prompt_cache: true
+    output_config_effort: max
+
+# Role overrides are optional.
+role_providers:
+  planner:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  generator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  evaluator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  explorer:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+
+runtime:
+  isolation:
+    default_mode: off
+  compact:
+    hysteresis_delta_chars: 0
+    keep_recent_messages: 0
+
+hooks:
+  default_timeout_sec: 300
+
+# Browser tools stay at the end of the file.
+tools:
+  browser:
+    enabled: false
+    timeout_sec: 0
+`
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadWithReport(path, dir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	// 1. No-op save (same values + all empty role_providers) must preserve file byte-for-byte.
+	dp := "appintheloop"
+	if err := PatchFile(path, cfg, FilePatch{
+		DefaultProviderBefore: cfg.DefaultProvider,
+		DefaultProvider:       &dp,
+		ProviderName:          "appintheloop",
+		ProviderBefore:        cfg.Providers["appintheloop"],
+		ProviderAfter:         cfg.Providers["appintheloop"],
+		ProviderFields: ProviderFieldMask{
+			BaseURL:             true,
+			Model:               true,
+			ContextWindowTokens: true,
+		},
+		RoleProviders: map[string]RoleProviderPatch{
+			"planner":   {Before: cfg.RoleProviders.Planner, After: RoleProviderOverride{}},
+			"generator": {Before: cfg.RoleProviders.Generator, After: RoleProviderOverride{}},
+			"evaluator": {Before: cfg.RoleProviders.Evaluator, After: RoleProviderOverride{}},
+			"explorer":  {Before: cfg.RoleProviders.Explorer, After: RoleProviderOverride{}},
+		},
+	}); err != nil {
+		t.Fatalf("no-op patch: %v", err)
+	}
+	afterNoOp, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterNoOp) != original {
+		t.Fatalf("no-op PatchFile modified config.yaml:\n--- want ---\n%s\n--- got ---\n%s", original, string(afterNoOp))
+	}
+
+	// 2. Real single-field edit must update only the mutated fields while preserving comments, indent, order, and untouched keys.
+	afterP := cfg.Providers["appintheloop"]
+	afterP.Model = "MiniMax-M3.1-Pro"
+	afterP.ContextWindowTokens = 2000000
+	if err := PatchFile(path, cfg, FilePatch{
+		DefaultProviderBefore: cfg.DefaultProvider,
+		DefaultProvider:       &dp,
+		ProviderName:          "appintheloop",
+		ProviderBefore:        cfg.Providers["appintheloop"],
+		ProviderAfter:         afterP,
+		ProviderFields: ProviderFieldMask{
+			BaseURL:             true,
+			Model:               true,
+			ContextWindowTokens: true,
+		},
+	}); err != nil {
+		t.Fatalf("model patch: %v", err)
+	}
+	editedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := string(editedBytes)
+	for _, want := range []string{
+		"# Top-level operator comment",
+		"# anthropic-compatible appends /v1/messages, so set origin only (no /v1).",
+		"# Role overrides are optional.",
+		"# Browser tools stay at the end of the file.",
+		"\n  appintheloop:",
+		"\n    model: MiniMax-M3.1-Pro",
+		"\n    context_window_tokens: 2000000",
+		"\n    output_config_effort: max",
+		"\n  planner:\n    provider: \"\"",
+		"\n  generator:\n    provider: \"\"",
+		"\n  evaluator:\n    provider: \"\"",
+		"\n  explorer:\n    provider: \"\"",
+		"\n    default_mode: off",
+		"\n    hysteresis_delta_chars: 0",
+		"\n    keep_recent_messages: 0",
+		"\n  browser:\n    enabled: false\n    timeout_sec: 0",
+	} {
+		if !strings.Contains(edited, want) {
+			t.Fatalf("expected %q to be preserved/updated in patched YAML:\n%s", want, edited)
+		}
+	}
+	for _, unwanted := range []string{
+		"\n    timeout_sec: 600",
+		"default_mode: 'off'",
+		"default_mode: \"off\"",
+		"openai-compatible:",
+		"http://localhost:3000/v1",
+		"assistant_message:",
+		"session_start:",
+	} {
+		if strings.Contains(edited, unwanted) {
+			t.Fatalf("unexpected %q in patched YAML:\n%s", unwanted, edited)
+		}
+	}
+	if !(strings.Index(edited, "runtime:") < strings.Index(edited, "hooks:") && strings.Index(edited, "hooks:") < strings.Index(edited, "tools:")) {
+		t.Fatalf("top-level section order changed:\n%s", edited)
+	}
+
+	reloaded, err := Load(path, dir)
+	if err != nil {
+		t.Fatalf("reload patched config: %v", err)
+	}
+	if reloaded.Providers["appintheloop"].Model != "MiniMax-M3.1-Pro" ||
+		reloaded.Providers["appintheloop"].ContextWindowTokens != 2000000 ||
+		reloaded.Providers["appintheloop"].OutputConfigEffort != "max" ||
+		reloaded.Runtime.Isolation.DefaultMode != "off" {
+		t.Fatalf("unexpected reloaded provider/runtime: %#v / %#v", reloaded.Providers["appintheloop"], reloaded.Runtime.Isolation)
+	}
+
+	// 3. Updating a single role override updates only that field, leaving sibling empty placeholders intact.
+	if err := PatchFile(path, reloaded, FilePatch{
+		RoleProviders: map[string]RoleProviderPatch{
+			"evaluator": {
+				Before: reloaded.RoleProviders.Evaluator,
+				After:  RoleProviderOverride{Provider: "appintheloop", Model: "MiniMax-M3.1-Pro"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("role override patch: %v", err)
+	}
+	roleEditedBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleEdited := string(roleEditedBytes)
+	if !strings.Contains(roleEdited, "evaluator:\n    provider: \"appintheloop\"\n    api_provider: \"\"\n    base_url: \"\"\n    model: \"MiniMax-M3.1-Pro\"") {
+		t.Fatalf("expected targeted role_providers.evaluator update preserving empty siblings:\n%s", roleEdited)
+	}
+
+	// 4. Editing a builtin provider not yet in config.yaml materializes only that provider, never untouched builtins.
+	reloaded2, err := Load(path, dir)
+	if err != nil {
+		t.Fatalf("reload after role patch: %v", err)
+	}
+	openAIBefore := reloaded2.Providers["openai"]
+	openAIAfter := openAIBefore
+	openAIAfter.Model = "gpt-5.4-custom"
+	openAIName := "openai"
+	if err := PatchFile(path, reloaded2, FilePatch{
+		DefaultProviderBefore: reloaded2.DefaultProvider,
+		DefaultProvider:       &openAIName,
+		ProviderName:          "openai",
+		ProviderBefore:        openAIBefore,
+		ProviderAfter:         openAIAfter,
+		ProviderFields:        ProviderFieldMask{Model: true},
+	}); err != nil {
+		t.Fatalf("materialize openai patch: %v", err)
+	}
+	matBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matText := string(matBytes)
+	if !strings.Contains(matText, "default_provider: openai") || !strings.Contains(matText, "\n  openai:") || !strings.Contains(matText, "model: gpt-5.4-custom") {
+		t.Fatalf("expected materialized openai provider:\n%s", matText)
+	}
+	for _, untouched := range []string{"\n  anthropic:", "\n  google:", "\n  openai-compatible:", "http://localhost:3000/v1"} {
+		if strings.Contains(matText, untouched) {
+			t.Fatalf("untouched builtin %q was materialized:\n%s", untouched, matText)
+		}
+	}
+}

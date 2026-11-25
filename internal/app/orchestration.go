@@ -79,7 +79,7 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	})
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("unknown session %s: %w", parentSessionID, fs.ErrNotExist)
+			return unknownSessionErr(parentSessionID)
 		}
 		return err
 	}
@@ -129,7 +129,7 @@ func childrenCommand(args []string, stdout, stderr io.Writer) error {
 	store := runner.Store()
 	if _, err := store.LoadMetadata(sessionID); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+			return unknownSessionErr(sessionID)
 		}
 		return err
 	}
@@ -227,7 +227,7 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	})
 	if err != nil {
 		if strings.TrimSpace(*parentSessionID) != "" && errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("unknown session %s: %w", strings.TrimSpace(*parentSessionID), fs.ErrNotExist)
+			return unknownSessionErr(*parentSessionID)
 		}
 		return err
 	}
@@ -298,7 +298,7 @@ func queueShowCommand(args []string, stdout, stderr io.Writer) error {
 	job, err := runner.QueueShow(jobID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("unknown queue job %s: %w", jobID, fs.ErrNotExist)
+			return unknownQueueJobErr(jobID)
 		}
 		return err
 	}

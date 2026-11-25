@@ -35,7 +35,7 @@
 | `/api/sessions/{id}/approval-receipts/{request_id}` | GET | 审批 receipt 查询，先于当前 session metadata 检查 |
 | `/api/queue/jobs`、`/api/queue/jobs/{id}` | GET、POST；GET | 后台队列 job 列表与创建；job 详情 |
 | `/api/workers` | GET、POST | worker 快照；调整 worker 数量 |
-| `/api/config` | GET、POST | 读取与保存 provider 配置（含 `source`、`api_key_env`、timeout/retry/协议选项）和 `.env` API key；保存仅写回配置文件显式声明或本次修改的 provider，不展开未触及的内建默认 |
+| `/api/config` | GET、POST | 读取与保存 provider 配置（含 `source`、`api_key_env`、timeout/retry/协议选项）和 `.env` API key；更新已有配置文件时执行字段级 YAML AST patch，保留原文件注释、键顺序、缩进与未修改键（含空 `role_providers`、零值字段等），不展开未触及的内建默认与空 hook 键 |
 | `/api/config/test` | POST | 用表单值测试 provider 连接，不保存 |
 | `/api/files` | GET、DELETE | Workspace 目录列表（一次返回整个目录）；删除单个路径 |
 | `/api/files/mkdir`、`upload`、`delete` | POST | 新建目录、上传文件、批量删除 |

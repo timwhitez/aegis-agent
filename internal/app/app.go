@@ -877,7 +877,7 @@ func sessionsContextCommand(args []string, stdout, stderr io.Writer) error {
 	report, err := runner.Context(strings.TrimSpace(flagSet.Arg(0)))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("unknown session: %s", strings.TrimSpace(flagSet.Arg(0)))
+			return unknownSessionErr(flagSet.Arg(0))
 		}
 		return err
 	}
@@ -934,14 +934,14 @@ func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
 	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
 		if _, err := scoped.LoadMetadata(sessionID); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("unknown session: %s", sessionID)
+				return unknownSessionErr(sessionID)
 			}
 			return err
 		}
 		state, err := scoped.LoadState(sessionID)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("unknown session: %s", sessionID)
+				return unknownSessionErr(sessionID)
 			}
 			return err
 		}
@@ -954,9 +954,10 @@ func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
 		if state.Status != session.StatusRunning {
 			return nil
 		}
+		deadExecutingApproval := runtime.HasDeadExecutingApprovalOperation(scoped, sessionID, state.RunGeneration)
 		canReconcile, err := runtime.CanReconcileApprovalPreparation(scoped, sessionID)
 		if err != nil {
-			if !(*force && errors.Is(err, session.ErrApprovalConflict)) {
+			if !errors.Is(err, session.ErrApprovalConflict) || (!*force && !deadExecutingApproval) {
 				return err
 			}
 			canReconcile = true
@@ -974,7 +975,7 @@ func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("session %s is owned by live process pid=%d; stop that process first or pass --force", sessionID, ownerPID)
 		}
 		pauseReason := "manual_reconcile"
-		if ownerType == "" {
+		if ownerType == "" && !deadExecutingApproval {
 			pauseReason = "stale_owner_missing"
 		}
 		previousState := state
@@ -1003,12 +1004,13 @@ func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
 			}
 		}
 		paused := events.New(sessionID, "session.paused", "interrupt", map[string]any{
-			"reason":           pauseReason,
-			"source":           "cli",
-			"reconciled":       true,
-			"owner_process_id": ownerPID,
-			"missing_owner":    ownerType == "",
-			"forced":           *force,
+			"reason":            pauseReason,
+			"source":            "cli",
+			"reconciled":        true,
+			"owner_process_id":  ownerPID,
+			"missing_owner":     ownerType == "",
+			"approval_recovery": deadExecutingApproval,
+			"forced":            *force,
 		})
 		if err := scoped.AppendEvent(sessionID, paused); err != nil {
 			return err
@@ -1019,7 +1021,7 @@ func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return sanitizeApprovalLockErr(store, sessionID, err)
 	}
 	if *jsonMode {
 		return json.NewEncoder(stdout).Encode(result)
@@ -1178,7 +1180,7 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 			return nil
 		})
 		if err != nil {
-			return err
+			return sanitizeApprovalLockErr(store, sessionID, err)
 		}
 		if *jsonMode {
 			return json.NewEncoder(stdout).Encode(map[string]any{"session_id": sessionID, "cleared": cleared})
@@ -1653,7 +1655,7 @@ func loadCLIGoal(store *session.Store, sessionID string) (session.SessionGoal, e
 	if _, err := store.LoadMetadata(sessionID); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if _, statErr := os.Stat(store.SessionDir(sessionID)); errors.Is(statErr, fs.ErrNotExist) {
-				return session.SessionGoal{}, fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+				return session.SessionGoal{}, unknownSessionErr(sessionID)
 			}
 		}
 		return session.SessionGoal{}, err
@@ -1661,7 +1663,7 @@ func loadCLIGoal(store *session.Store, sessionID string) (session.SessionGoal, e
 	goal, err := store.LoadGoal(sessionID)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return session.SessionGoal{}, fmt.Errorf("session %s has no goal: %w", sessionID, fs.ErrNotExist)
+			return session.SessionGoal{}, sessionHasNoGoalErr(sessionID)
 		}
 		return session.SessionGoal{}, err
 	}
@@ -1711,7 +1713,7 @@ func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status,
 		return nil
 	})
 	if err != nil {
-		return err
+		return sanitizeApprovalLockErr(store, sessionID, err)
 	}
 	if jsonMode {
 		return json.NewEncoder(stdout).Encode(goal)
@@ -3096,12 +3098,51 @@ func parseTimeoutDuration(value string) (time.Duration, error) {
 	return d, nil
 }
 
+type cliNotFoundError struct {
+	msg string
+}
+
+func (e cliNotFoundError) Error() string { return e.msg }
+func (e cliNotFoundError) Unwrap() error { return fs.ErrNotExist }
+
+func unknownSessionErr(sessionID string) error {
+	return cliNotFoundError{msg: fmt.Sprintf("unknown session: %s", strings.TrimSpace(sessionID))}
+}
+
+func sessionHasNoGoalErr(sessionID string) error {
+	return cliNotFoundError{msg: fmt.Sprintf("session %s has no goal", strings.TrimSpace(sessionID))}
+}
+
+func unknownQueueJobErr(jobID string) error {
+	return cliNotFoundError{msg: fmt.Sprintf("unknown queue job: %s", strings.TrimSpace(jobID))}
+}
+
 func sanitizeCLISessionErr(sessionID string, err error) error {
 	if err == nil {
 		return nil
 	}
+	var notFound cliNotFoundError
+	if errors.As(err, &notFound) {
+		return err
+	}
 	if errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+		return unknownSessionErr(sessionID)
+	}
+	return err
+}
+
+func sanitizeApprovalLockErr(store *session.Store, sessionID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var notFound cliNotFoundError
+	if errors.As(err, &notFound) {
+		return err
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		if _, statErr := os.Stat(store.SessionDir(sessionID)); errors.Is(statErr, fs.ErrNotExist) {
+			return unknownSessionErr(sessionID)
+		}
 	}
 	return err
 }

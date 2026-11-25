@@ -75,7 +75,7 @@ type Provider struct {
 	BaseURL             string   `yaml:"base_url"`
 	Model               string   `yaml:"model"`
 	ContextWindowTokens int      `yaml:"context_window_tokens,omitempty"`
-	TimeoutSec          int      `yaml:"timeout_sec"`
+	TimeoutSec          int      `yaml:"timeout_sec,omitempty"`
 	RequestTimeoutSec   int      `yaml:"request_timeout_sec,omitempty"`
 	StreamIdleTimeoutMS int      `yaml:"stream_idle_timeout_ms,omitempty"`
 	Retry               Retry    `yaml:"retry,omitempty"`
@@ -914,6 +914,9 @@ func WriteFile(path string, cfg *Config) error {
 		filtered := make(map[string]Provider, len(cloned.Providers))
 		for name, p := range cloned.Providers {
 			if cfg.declaredProviders[name] {
+				if p.RequestTimeoutSec > 0 && p.TimeoutSec == p.RequestTimeoutSec {
+					p.TimeoutSec = 0
+				}
 				filtered[name] = p
 			}
 		}

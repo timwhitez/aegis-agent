@@ -3,6 +3,7 @@ package webconsole
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -417,6 +418,187 @@ func TestReconcileDeadExecutingApprovalOperationUsesApprovalRecoveryReason(t *te
 	}
 	if after.Status != session.StatusPaused || after.PauseReason != "stale_owner_reconciled_approval_recovery" {
 		t.Fatalf("expected approval recovery pause reason, got %#v", after)
+	}
+}
+
+func TestReaperReconcilesDeadExecutingApprovalAfterPhaseAdvance(t *testing.T) {
+	svc := newCrossProcessControlService(t, func(pid int) bool { return pid == os.Getpid() })
+
+	createExecutingApproval := func(id, requestID string, ownerPID int, advanceState, withOwnerEvent bool) (session.SessionMetadata, session.ApprovalTarget) {
+		t.Helper()
+		meta := testSessionMetadata(t, id)
+		nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+		if err := svc.store.Create(meta, session.State{
+			Status:    session.StatusAwaitingInput,
+			Phase:     "plan_approval",
+			UpdatedAt: nowStr,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+			Enabled:   true,
+			Objective: "Approve and execute plan",
+			Source:    session.PlanModeSourceCLI,
+		}); err != nil {
+			t.Fatalf("create plan mode: %v", err)
+		}
+		submitted, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+			Title:        "Plan",
+			Summary:      "Summary",
+			PlanMarkdown: "# Plan",
+			Verification: []string{"go test ./..."},
+			Source:       session.PlanModeSourceTool,
+		})
+		if err != nil {
+			t.Fatalf("submit plan mode: %v", err)
+		}
+		snap, err := svc.store.LoadApprovalSnapshot(meta.ID)
+		if err != nil {
+			t.Fatalf("load snapshot: %v", err)
+		}
+		target := session.ApprovalTarget{
+			PlanModeID:       submitted.PlanModeID,
+			PlanVersion:      submitted.PlanVersion,
+			ExpectedRevision: snap.Revision,
+		}
+		prepResult, err := runtime.NewCoreRunner(svc.cfg).PrepareApprovalOperation(context.Background(), runtime.ContinueRequest{
+			SessionID:         meta.ID,
+			ApprovePlan:       true,
+			ApprovalTarget:    &target,
+			ApprovalRequestID: requestID,
+			Source:            session.PlanModeSourceCLI,
+		})
+		if err != nil {
+			t.Fatalf("prepare approval operation: %v", err)
+		}
+		receipt := prepResult.Lookup.Receipt
+		var dataMap map[string]any
+		if err := json.Unmarshal(receipt.Recovery.Data, &dataMap); err != nil {
+			t.Fatal(err)
+		}
+		prepMap := dataMap["preparation"].(map[string]any)
+		prepMap["phase"] = "executing"
+		prepMap["completed_phase"] = "executing"
+		prepMap["owner_pid"] = ownerPID
+		prepMap["owner_identity"] = ""
+		recoveryPayload := receipt.Recovery
+		recoveryPayload.OwnerPID = ownerPID
+		recoveryPayload.OwnerIdentity = ""
+		recoveryPayload.Data = mustMarshalTestJSON(t, dataMap)
+		if _, err := svc.store.CheckpointApprovalOperation(meta.ID, receipt.OperationID, receipt.Recovery.RunGeneration, "executing", recoveryPayload); err != nil {
+			t.Fatalf("checkpoint executing: %v", err)
+		}
+		if advanceState {
+			current, err := svc.store.LoadState(meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			current.Phase = "provider_call"
+			current.Turn = 1
+			if err := svc.store.SaveState(meta.ID, current); err != nil {
+				t.Fatalf("advance state to provider_call: %v", err)
+			}
+		}
+		if withOwnerEvent {
+			appendRunOwnerAcquire(t, svc, meta.ID, ownerPID, "2026-11-25T07:09:45Z")
+		}
+		return meta, target
+	}
+
+	// Case 1 (#217 exact repro): state advanced to running/provider_call Turn=1, dead owner PID.
+	deadMeta, deadTarget := createExecutingApproval("dead_approval_provider_call", "req_dead_exec_advanced", 999998, true, true)
+	deadState, err := svc.store.LoadState(deadMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canReconcile, err := runtime.CanReconcileApprovalPreparation(svc.store, deadMeta.ID); canReconcile || !errors.Is(err, session.ErrApprovalConflict) {
+		t.Fatalf("expected CanReconcileApprovalPreparation to return ErrApprovalConflict after phase advance, got canReconcile=%v err=%v", canReconcile, err)
+	}
+	if !runtime.HasDeadExecutingApprovalOperation(svc.store, deadMeta.ID, deadState.RunGeneration) {
+		t.Fatalf("expected HasDeadExecutingApprovalOperation=true for dead executing approval")
+	}
+
+	// Case 2: dead executing approval killed before run.owner.acquired was appended (fresh UpdatedAt < 5s).
+	noOwnerMeta, _ := createExecutingApproval("dead_approval_missing_owner_evt", "req_dead_exec_no_owner", 999997, true, false)
+
+	// Case 3: live executing approval (current process PID) must NOT be reconciled.
+	liveMeta, _ := createExecutingApproval("live_approval_provider_call", "req_live_exec_advanced", os.Getpid(), true, true)
+
+	// Run the actual background reaper pass.
+	svc.runReaperPass()
+
+	// Verify Case 1 reconciled cleanly without reaper error audit entries.
+	afterDead, err := svc.store.LoadState(deadMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterDead.Status != session.StatusPaused || afterDead.Phase != "interrupt" || afterDead.PauseReason != "stale_owner_reconciled_approval_recovery" || afterDead.Turn != 1 {
+		t.Fatalf("expected dead executing approval to reconcile to paused/stale_owner_reconciled_approval_recovery, got %#v", afterDead)
+	}
+	deadEvents, err := svc.store.LoadEvents(deadMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundApprovalRecoveryEvt := false
+	for _, evt := range deadEvents {
+		if evt.Type == "session.paused" && evt.Data["reason"] == "stale_owner_reconciled_approval_recovery" && evt.Data["approval_recovery"] == true {
+			foundApprovalRecoveryEvt = true
+		}
+	}
+	if !foundApprovalRecoveryEvt {
+		t.Fatalf("expected session.paused event with approval_recovery=true, got %#v", deadEvents)
+	}
+	if err := runtime.ValidateContinueTargetWithStore(svc.store, deadMeta, afterDead); err != nil {
+		t.Fatalf("expected reconciled session to accept ordinary continue, got %v", err)
+	}
+	replayRes, err := runtime.NewCoreRunner(svc.cfg).PrepareApprovalOperation(context.Background(), runtime.ContinueRequest{
+		SessionID:         deadMeta.ID,
+		ApprovePlan:       true,
+		ApprovalTarget:    &deadTarget,
+		ApprovalRequestID: "req_dead_exec_advanced",
+		Source:            session.PlanModeSourceCLI,
+	})
+	if err != nil || !replayRes.Replay || replayRes.RecoveryRequired || replayRes.Prepared != nil {
+		t.Fatalf("expected admitted approval replay without duplicate execution, got res=%#v err=%v", replayRes, err)
+	}
+
+	// Verify Case 2 reconciled immediately even without run.owner.acquired event.
+	afterNoOwner, err := svc.store.LoadState(noOwnerMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterNoOwner.Status != session.StatusPaused || afterNoOwner.PauseReason != "stale_owner_reconciled_approval_recovery" {
+		t.Fatalf("expected dead executing approval without owner event to reconcile with approval recovery reason, got %#v", afterNoOwner)
+	}
+
+	// Verify Case 3 (live owner) stayed running.
+	afterLive, err := svc.store.LoadState(liveMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterLive.Status != session.StatusRunning {
+		t.Fatalf("live executing approval must stay running, got %#v", afterLive)
+	}
+
+	// Verify zero web.reaper.error audit entries were produced.
+	if auditBytes, err := os.ReadFile(webAuditLogPath(svc.cfg.Session.Dir)); err == nil && strings.Contains(string(auditBytes), "web.reaper.error") {
+		t.Fatalf("unexpected web.reaper.error audit event during healthy approval recovery:\n%s", string(auditBytes))
+	}
+
+	// Case 4: corrupt approval-operations.json must still fail and must NOT reconcile.
+	corruptMeta, _ := createExecutingApproval("corrupt_approval_ledger", "req_corrupt_ledger", 999996, true, true)
+	if err := os.WriteFile(filepath.Join(svc.store.SessionDir(corruptMeta.ID), "approval-operations.json"), []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.reconcileAllStaleRunningSessions(); err == nil {
+		t.Fatal("expected corrupt approval ledger to return error during reconciliation")
+	}
+	afterCorrupt, err := svc.store.LoadState(corruptMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterCorrupt.Status != session.StatusRunning {
+		t.Fatalf("corrupt approval ledger session must not be reconciled, got %#v", afterCorrupt)
 	}
 }
 

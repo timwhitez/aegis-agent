@@ -4586,6 +4586,102 @@ session:
 	if after.Status != session.StatusPaused || after.PauseReason != "manual_reconcile" {
 		t.Fatalf("expected paused after reconcile, got %#v", after)
 	}
+
+	// #217: sessions reconcile without --force must also reconcile a dead executing approval whose state advanced to provider_call.
+	appMeta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "zombie_approval_exec",
+		CreatedAt:        staleTime,
+		Workdir:          dir,
+		Mode:             session.ModeExec,
+		Provider:         "gateway",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := store.Create(appMeta, session.State{Status: session.StatusAwaitingInput, Phase: "plan_approval", UpdatedAt: staleTime}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePlanMode(appMeta.ID, session.PlanModeDraft{Enabled: true, Objective: "Execute", Source: session.PlanModeSourceCLI}); err != nil {
+		t.Fatal(err)
+	}
+	submitted, err := store.SubmitPlanMode(appMeta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Summary",
+		PlanMarkdown: "# Plan",
+		Verification: []string{"go test ./..."},
+		Source:       session.PlanModeSourceTool,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := store.LoadApprovalSnapshot(appMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := session.ApprovalTarget{PlanModeID: submitted.PlanModeID, PlanVersion: submitted.PlanVersion, ExpectedRevision: snap.Revision}
+	loadedCfg, err := config.Load(cfgPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepRes, err := runtime.NewCoreRunner(loadedCfg).PrepareApprovalOperation(context.Background(), runtime.ContinueRequest{
+		SessionID:         appMeta.ID,
+		ApprovePlan:       true,
+		ApprovalTarget:    &target,
+		ApprovalRequestID: "cli_dead_exec",
+		Source:            session.PlanModeSourceCLI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := prepRes.Lookup.Receipt
+	var dataMap map[string]any
+	if err := json.Unmarshal(receipt.Recovery.Data, &dataMap); err != nil {
+		t.Fatal(err)
+	}
+	prepMap := dataMap["preparation"].(map[string]any)
+	prepMap["phase"] = "executing"
+	prepMap["completed_phase"] = "executing"
+	prepMap["owner_pid"] = 999995
+	prepMap["owner_identity"] = ""
+	rawData, err := json.Marshal(dataMap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery := receipt.Recovery
+	recovery.OwnerPID = 999995
+	recovery.OwnerIdentity = ""
+	recovery.Data = rawData
+	if _, err := store.CheckpointApprovalOperation(appMeta.ID, receipt.OperationID, receipt.Recovery.RunGeneration, "executing", recovery); err != nil {
+		t.Fatal(err)
+	}
+	advState, err := store.LoadState(appMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advState.Phase = "provider_call"
+	advState.Turn = 1
+	if err := store.SaveState(appMeta.ID, advState); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent(appMeta.ID, events.New(appMeta.ID, runtime.RunOwnerAcquiredEventType, "prepare", map[string]any{
+		"pid":              999995,
+		"process_start_id": "999995:2026-01-01T00:00:00Z",
+		"started_at":       "2026-01-01T00:00:00Z",
+	})); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"sessions", "reconcile", appMeta.ID, "--config", cfgPath, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("sessions reconcile without --force failed on dead executing approval: %v stderr=%s", err, stderr.String())
+	}
+	afterApproval, err := store.LoadState(appMeta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterApproval.Status != session.StatusPaused || afterApproval.PauseReason != "manual_reconcile" {
+		t.Fatalf("expected paused after approval reconcile, got %#v", afterApproval)
+	}
 }
 
 func TestCLIUXHelpTimeoutLimitAndPathSanitization(t *testing.T) {
@@ -4687,23 +4783,39 @@ func TestCLIUXHelpTimeoutLimitAndPathSanitization(t *testing.T) {
 		t.Fatalf("expected leading --json before goal show to work and report missing goal, got %v", err)
 	}
 
-	// #218: missing session / missing goal errors do not leak internal sessionDir path.
+	// #218: missing session / missing goal errors do not leak internal sessionDir path or raw fs wording.
 	for _, args := range [][]string{
 		{"goal", "show", "missing_sess_id", "--config", cfgPath},
+		{"goal", "pause", "missing_sess_id", "--config", cfgPath},
+		{"goal", "clear", "missing_sess_id", "--config", cfgPath},
 		{"tasks", "missing_sess_id", "--config", cfgPath},
 		{"sessions", "context", "missing_sess_id", "--config", cfgPath},
+		{"sessions", "reconcile", "missing_sess_id", "--config", cfgPath},
 		{"experimental", "children", "missing_sess_id", "--config", cfgPath},
+		{"continue", "missing_sess_id", "--config", cfgPath, "--message", "hi"},
 	} {
 		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
-		if err == nil || !strings.Contains(err.Error(), "unknown session") {
+		if err == nil || err.Error() != "unknown session: missing_sess_id" {
 			t.Fatalf("expected clean unknown session error for %v, got %v", args, err)
 		}
-		if strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "session.json") {
-			t.Fatalf("internal filesystem path leaked for %v: %v", args, err)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("expected unknown session error for %v to unwrap fs.ErrNotExist, got %v", args, err)
+		}
+		if strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "session.json") || strings.Contains(err.Error(), "file does not exist") {
+			t.Fatalf("internal filesystem path or wording leaked for %v: %v", args, err)
 		}
 	}
-	if err := Run(context.Background(), []string{"goal", "show", "no_goal_sess", "--config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "has no goal") || strings.Contains(err.Error(), dir) {
-		t.Fatalf("expected clean has-no-goal error without path leak, got %v", err)
+	for _, args := range [][]string{
+		{"goal", "show", "no_goal_sess", "--config", cfgPath},
+		{"goal", "pause", "no_goal_sess", "--config", cfgPath},
+		{"goal", "clear", "no_goal_sess", "--config", cfgPath},
+	} {
+		if err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || err.Error() != "session no_goal_sess has no goal" || !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("expected clean has-no-goal error without fs wording for %v, got %v", args, err)
+		}
+	}
+	if err := Run(context.Background(), []string{"experimental", "queue", "show", "missing_job_id", "--config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || err.Error() != "unknown queue job: missing_job_id" || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected clean unknown queue job error without fs wording, got %v", err)
 	}
 
 	// #219: missing --approval-request-id returns CLI flag message and wraps ErrMissingApprovalRequestID.
