@@ -47,13 +47,18 @@ func KnownModelContextWindow(model string) (int, bool) {
 }
 
 func ResolveContextWindowTokens(model string, configured int) int {
+	tokens, _ := ResolveContextWindowTokensWithSource(model, configured)
+	return tokens
+}
+
+func ResolveContextWindowTokensWithSource(model string, configured int) (int, string) {
 	if configured > 0 {
-		return configured
+		return configured, "configured"
 	}
 	if tokens, ok := KnownModelContextWindow(model); ok {
-		return tokens
+		return tokens, "known_model"
 	}
-	return DefaultContextWindowTokens
+	return DefaultContextWindowTokens, "default"
 }
 
 func DeriveInputCharThreshold(contextWindowTokens int, utilizationFactor float64) int {

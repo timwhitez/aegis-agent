@@ -10551,7 +10551,7 @@ func TestServiceConfigDefaultsProviderScopedFieldsToCurrentDefault(t *testing.T)
 	}
 }
 
-func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
+func TestServiceConfigSaveRejectsClearingRequiredProviderFields(t *testing.T) {
 	cfg := testConfig(t, "")
 	provider := cfg.Providers["openai"]
 	provider.APIProvider = "openai-compatible"
@@ -10567,19 +10567,41 @@ func TestServiceConfigSaveClearsExplicitProviderFields(t *testing.T) {
 	ts := httptest.NewServer(svc)
 	defer ts.Close()
 
+	// Builtin profile still allows clearing explicit api_provider to inherit family.
 	postJSON(t, ts.URL+"/api/config", map[string]any{
 		"provider":     "openai",
 		"api_provider": "",
-		"base_url":     "",
-		"model":        "",
 	}, http.StatusOK, nil)
 	updated, err := svc.configSnapshot()
 	if err != nil {
 		t.Fatalf("config snapshot: %v", err)
 	}
-	p := updated.Providers["openai"]
-	if p.APIProvider != "" || p.BaseURL != "" || p.Model != "" {
-		t.Fatalf("expected explicit provider fields to be cleared, got %#v", p)
+	if updated.Providers["openai"].APIProvider != "" {
+		t.Fatalf("expected api_provider to be cleared, got %#v", updated.Providers["openai"])
+	}
+
+	// Clearing required model or base_url must fail closed (issues #237/#238).
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+		wantErr string
+	}{
+		{"empty model", map[string]any{"provider": "openai", "model": ""}, "model is required"},
+		{"whitespace model", map[string]any{"provider": "openai", "model": "   "}, "model is required"},
+		{"empty base_url", map[string]any{"provider": "openai", "base_url": ""}, "base_url is required"},
+		{"invalid base_url", map[string]any{"provider": "openai", "base_url": "not-a-url"}, "base_url scheme must be http or https"},
+		{"ftp base_url", map[string]any{"provider": "openai", "base_url": "ftp://example.invalid/v1"}, "base_url scheme must be http or https"},
+		{"javascript base_url", map[string]any{"provider": "openai", "base_url": "javascript:alert(1)"}, "base_url scheme must be http or https"},
+		{"empty host base_url", map[string]any{"provider": "openai", "base_url": "http://"}, "base_url must include a host"},
+		{"userinfo base_url", map[string]any{"provider": "openai", "base_url": "https://user:pass@example.invalid/v1"}, "must not contain userinfo"},
+		{"zero context_window_tokens", map[string]any{"provider": "openai", "context_window_tokens": 0}, "context_window_tokens must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			errResp := postJSONError(t, ts.URL+"/api/config", tc.payload, http.StatusBadRequest)
+			if !strings.Contains(errResp.Error, tc.wantErr) {
+				t.Fatalf("expected %q, got %#v", tc.wantErr, errResp)
+			}
+		})
 	}
 }
 
@@ -15539,7 +15561,7 @@ tools:
 		"base_url":              "https://api.appintheloop.com",
 		"model":                 "MiniMax-M3.1-Flash",
 		"context_window_tokens": 1000000,
-		"reasoning_mode":        "default",
+		"reasoning_mode":        "max",
 		"reasoning_summary":     "default",
 		"api_key":               maskedAPIKey,
 		"role_providers": map[string]any{
@@ -15607,5 +15629,169 @@ tools:
 	}
 	if reloaded.Providers["appintheloop"].Model != "MiniMax-M3.1-Pro" || reloaded.Providers["appintheloop"].OutputConfigEffort != "max" {
 		t.Fatalf("unexpected reloaded provider: %#v", reloaded.Providers["appintheloop"])
+	}
+}
+
+func TestWebConfigValidationAndReasoningModeClearsOutputConfigEffort(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	t.Setenv("APPINTHELOOP_API_KEY", "sk-test-dummy-value")
+	initial := `default_provider: appintheloop
+providers:
+  appintheloop:
+    api_provider: anthropic-compatible
+    api_key_env: APPINTHELOOP_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+    context_window_tokens: 1000000
+    output_config_effort: max
+session:
+  dir: ` + filepath.Join(dir, "sessions") + `
+`
+	if err := os.WriteFile(configPath, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.LoadWithReport(configPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	// #243: GET /api/config reports reasoning_mode="max" when output_config_effort="max" and thinking_mode="".
+	resp, err := http.Get(ts.URL + "/api/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfgResp struct {
+		Providers map[string]struct {
+			ReasoningMode      string `json:"reasoning_mode"`
+			OutputConfigEffort string `json:"output_config_effort"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cfgResp); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := cfgResp.Providers["appintheloop"].ReasoningMode; got != "max" {
+		t.Fatalf("expected GET /api/config reasoning_mode=max for output_config_effort=max, got %q", got)
+	}
+
+	// #237/#238/#241/#247: POST /api/config and /api/config/test reject invalid base_url, empty model, context_window_tokens<=0, and bad role_providers.
+	for _, endpoint := range []string{"/api/config", "/api/config/test"} {
+		for _, badBody := range []map[string]any{
+			{"provider": "appintheloop", "base_url": "not-a-url", "model": "MiniMax-M3.1-Flash"},
+			{"provider": "appintheloop", "base_url": "https://api.appintheloop.com", "model": "   "},
+			{"provider": "appintheloop", "base_url": "https://api.appintheloop.com", "model": "MiniMax-M3.1-Flash", "context_window_tokens": 0},
+			{"provider": "appintheloop", "base_url": "https://api.appintheloop.com", "model": "MiniMax-M3.1-Flash", "context_window_tokens": -100},
+		} {
+			postJSON(t, ts.URL+endpoint, badBody, http.StatusBadRequest, nil)
+		}
+	}
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider": "appintheloop",
+		"role_providers": map[string]any{
+			"planner": map[string]any{"base_url": "https://api.appintheloop.com/v1"},
+		},
+	}, http.StatusBadRequest, nil)
+
+	// #243: Setting reasoning_mode="off" clears output_config_effort in memory and on disk.
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":       "appintheloop",
+		"reasoning_mode": "off",
+	}, http.StatusOK, nil)
+	reloaded, err := config.Load(configPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Providers["appintheloop"].OutputConfigEffort != "" {
+		t.Fatalf("expected reasoning_mode=off to clear output_config_effort, got %q", reloaded.Providers["appintheloop"].OutputConfigEffort)
+	}
+	if reloaded.Providers["appintheloop"].ThinkingMode != "disabled" {
+		t.Fatalf("expected reasoning_mode=off to set thinking_mode=disabled, got %q", reloaded.Providers["appintheloop"].ThinkingMode)
+	}
+
+	// #243: Setting reasoning_mode="default" directly on a config with output_config_effort="max" clears it.
+	dirDefault := t.TempDir()
+	cfgDefaultPath := filepath.Join(dirDefault, "config.yaml")
+	if err := os.WriteFile(cfgDefaultPath, []byte(`default_provider: appintheloop
+providers:
+  appintheloop:
+    api_provider: anthropic-compatible
+    api_key_env: APPINTHELOOP_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+    output_config_effort: max
+session:
+  dir: `+filepath.Join(dirDefault, "sessions")+`
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgDefault, _, err := config.LoadWithReport(cfgDefaultPath, dirDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcDefault, err := New(cfgDefault, Options{WorkerCount: 0, ConfigPath: cfgDefaultPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svcDefault.Close()
+	tsDefault := httptest.NewServer(svcDefault)
+	defer tsDefault.Close()
+	postJSON(t, tsDefault.URL+"/api/config", map[string]any{
+		"provider":       "appintheloop",
+		"reasoning_mode": "default",
+	}, http.StatusOK, nil)
+	reloaded, err = config.Load(cfgDefaultPath, dirDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Providers["appintheloop"].OutputConfigEffort != "" || reloaded.Providers["appintheloop"].ThinkingMode != "" {
+		t.Fatalf("expected reasoning_mode=default to clear both output_config_effort and thinking_mode, got %#v", reloaded.Providers["appintheloop"])
+	}
+
+	// #243 edge case: pre-existing thinking_mode=disabled + output_config_effort=max must still be cleaned when saving reasoning_mode=off.
+	dirStale := t.TempDir()
+	cfgStalePath := filepath.Join(dirStale, "config.yaml")
+	if err := os.WriteFile(cfgStalePath, []byte(`default_provider: appintheloop
+providers:
+  appintheloop:
+    api_provider: anthropic-compatible
+    api_key_env: APPINTHELOOP_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+    thinking_mode: disabled
+    output_config_effort: max
+session:
+  dir: `+filepath.Join(dirStale, "sessions")+`
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgStale, _, err := config.LoadWithReport(cfgStalePath, dirStale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svcStale, err := New(cfgStale, Options{WorkerCount: 0, ConfigPath: cfgStalePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svcStale.Close()
+	tsStale := httptest.NewServer(svcStale)
+	defer tsStale.Close()
+	postJSON(t, tsStale.URL+"/api/config", map[string]any{
+		"provider":       "appintheloop",
+		"reasoning_mode": "off",
+	}, http.StatusOK, nil)
+	reloadedStale, err := config.Load(cfgStalePath, dirStale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloadedStale.Providers["appintheloop"].OutputConfigEffort != "" {
+		t.Fatalf("expected reasoning_mode=off to clear pre-existing stale output_config_effort, got %#v", reloadedStale.Providers["appintheloop"])
 	}
 }

@@ -4832,3 +4832,81 @@ func TestCLIUXHelpTimeoutLimitAndPathSanitization(t *testing.T) {
 		t.Fatalf("expected valid wait modes in error, got %v", err)
 	}
 }
+
+func TestInitAndDoctorValidateEndpointsRolesAndContextWindowSource(t *testing.T) {
+	dir := t.TempDir()
+	// #247: init rejects malformed base_url and anthropic trailing /v1 before writing config.
+	badCfgPath := filepath.Join(dir, "bad-init.yaml")
+	if err := Run(context.Background(), []string{
+		"init",
+		"--config", badCfgPath,
+		"--provider", "anthropic",
+		"--base-url", "https://api.example.com/v1",
+		"--model", "claude-sonnet-4-6",
+	}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "/v1/messages") {
+		t.Fatalf("expected init to reject anthropic /v1 base_url, got %v", err)
+	}
+	if _, err := os.Stat(badCfgPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed init should not write config file, stat err=%v", err)
+	}
+
+	if err := Run(context.Background(), []string{
+		"init",
+		"--config", badCfgPath,
+		"--provider", "openai-compatible",
+		"--base-url", "not-a-url",
+		"--model", "custom-model",
+	}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("expected init to reject invalid base_url, got %v", err)
+	}
+	if err := Run(context.Background(), []string{
+		"init",
+		"--config", badCfgPath,
+		"--provider", "openai-compatible",
+		"--base-url", "",
+		"--model", "custom-model",
+	}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("expected init to reject explicit empty --base-url, got %v", err)
+	}
+	if err := Run(context.Background(), []string{
+		"init",
+		"--config", badCfgPath,
+		"--provider", "openai-compatible",
+		"--base-url", "https://api.example.com/v1",
+		"--model", "",
+	}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "model") {
+		t.Fatalf("expected init to reject explicit empty --model, got %v", err)
+	}
+
+	// #237/#238/#247: doctor catches invalid base_url and invalid role_providers.
+	t.Setenv("TEST_CUSTOM_KEY", "sk-test-dummy-value")
+	invalidRoleCfg := filepath.Join(dir, "invalid-role.yaml")
+	if err := os.WriteFile(invalidRoleCfg, []byte(`default_provider: custom
+providers:
+  custom:
+    api_provider: anthropic-compatible
+    api_key_env: TEST_CUSTOM_KEY
+    base_url: https://api.example.com
+    model: Unknown-Custom-Model
+role_providers:
+  planner:
+    base_url: https://api.example.com/v1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var doctorOut bytes.Buffer
+	err := Run(context.Background(), []string{"doctor", "--json", "--config", invalidRoleCfg}, &doctorOut, &bytes.Buffer{})
+	if err == nil {
+		t.Fatalf("expected doctor to fail on invalid role_providers base_url, stdout=%s", doctorOut.String())
+	}
+	if !strings.Contains(doctorOut.String(), `"role_providers.config"`) || !strings.Contains(doctorOut.String(), "/v1/messages") {
+		t.Fatalf("expected doctor JSON to report role_providers.config failure, got: %s", doctorOut.String())
+	}
+	// #241: doctor reports effective_context_window_tokens and context_window_source="default" for unconfigured custom model.
+	if !strings.Contains(doctorOut.String(), `"context_window_source":"default"`) && !strings.Contains(doctorOut.String(), `"context_window_source": "default"`) {
+		t.Fatalf("expected doctor JSON to report default context_window_source, got: %s", doctorOut.String())
+	}
+	if !strings.Contains(doctorOut.String(), `"effective_context_window_tokens"`) {
+		t.Fatalf("expected doctor JSON to report effective_context_window_tokens, got: %s", doctorOut.String())
+	}
+}

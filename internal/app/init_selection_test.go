@@ -37,7 +37,11 @@ func TestInitPersistentMetadataSelection(t *testing.T) {
 			guidanceWorkingDirectory(t, cwd)
 			guidanceIsolatedEnvironment(t, t.TempDir())
 			args := []string{"init", "--provider", tc.profile, "--example-hook=false"}
-			const model, endpoint, keyEnv = "init-selected-model", "http://127.0.0.1:1/init-selected/v1", "INIT_SELECTION_TEST_API_KEY"
+			const model, keyEnv = "init-selected-model", "INIT_SELECTION_TEST_API_KEY"
+			endpoint := "http://127.0.0.1:1/init-selected/v1"
+			if tc.profile == "anthropic" {
+				endpoint = "http://127.0.0.1:1/init-selected"
+			}
 			args = append(args, "--model", model, "--base-url", endpoint, "--api-key-env", keyEnv)
 			expected := config.Default().Providers[tc.profile]
 			expected.Model, expected.BaseURL, expected.APIKeyEnv = model, endpoint, keyEnv

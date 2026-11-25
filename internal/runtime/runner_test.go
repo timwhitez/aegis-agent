@@ -3940,3 +3940,19 @@ func waitForPath(t *testing.T, path string, timeout time.Duration) {
 	}
 	t.Fatalf("timed out waiting for %s", path)
 }
+
+func TestAdapterFromConfigRejectsInvalidBaseURLBeforeNetworkCall(t *testing.T) {
+	t.Setenv("TEST_INVALID_URL_KEY", "sk-test-dummy")
+	runner := &Runner{cfg: config.Default()}
+	for _, apiProvider := range []string{"openai-compatible", "anthropic-compatible", "openai", "anthropic", "google"} {
+		_, err := runner.adapterFromConfig(apiProvider, config.Provider{
+			APIProvider: apiProvider,
+			BaseURL:     "not-a-url",
+			Model:       "test-model",
+			APIKeyEnv:   "TEST_INVALID_URL_KEY",
+		})
+		if err == nil || !strings.Contains(err.Error(), "base_url") {
+			t.Fatalf("expected immediate invalid base_url config error for %s, got %v", apiProvider, err)
+		}
+	}
+}

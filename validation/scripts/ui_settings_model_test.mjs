@@ -55,7 +55,7 @@ test('default save payload keeps empty API keys, a disabled budget and no legacy
   assert.equal(payload.api_key, '');
   assert.deepEqual(payload.child_budget, { disabled: true, max_active_runtime_sec: 0, max_elapsed_sec: 0, max_turns_per_attempt: 0 });
   assert.equal(Object.prototype.hasOwnProperty.call(payload, 'legacy_ui_enabled'), false, 'legacy_ui_enabled is removed from the DTO');
-  assert.deepEqual(Object.keys(payload).sort(), ['api_key', 'api_provider', 'base_url', 'child_budget', 'context_window_tokens', 'disable_hard_turn_limit',
+  assert.deepEqual(Object.keys(payload).sort(), ['api_key', 'api_provider', 'base_url', 'child_budget', 'disable_hard_turn_limit',
     'guardrails_mode', 'max_turns_hard', 'max_turns_soft', 'model', 'provider', 'reasoning_mode', 'reasoning_summary', 'role_providers'].sort());
   assert.equal(payload.provider, 'openai');
   assert.equal(payload.guardrails_mode, 'standard');
@@ -93,7 +93,7 @@ test('the provider test payload omits child budget and turn guard controls', () 
   for (const key of ['child_budget', 'max_turns_hard', 'max_turns_soft', 'role_providers', 'legacy_ui_enabled', 'guardrails_mode']) {
     assert.equal(Object.prototype.hasOwnProperty.call(payload, key), false, key);
   }
-  assert.deepEqual(payload, { provider: 'openai', api_provider: '', base_url: 'https://example.invalid/v1', model: 'gpt-test', context_window_tokens: 0, reasoning_mode: 'default', reasoning_summary: 'default', api_key: '' });
+  assert.deepEqual(payload, { provider: 'openai', api_provider: '', base_url: 'https://example.invalid/v1', model: 'gpt-test', reasoning_mode: 'default', reasoning_summary: 'default', api_key: '' });
 });
 
 test('a persisted API key stays masked and is never resubmitted', () => {
@@ -174,6 +174,7 @@ test('turn guard validation', () => {
   assert.throws(() => S.validateSettingsForm({ ...form, disableHardTurnLimit: false, maxTurnsHard: '' }), (err) => err.key === 'settings.error.hardTurns');
   assert.equal(S.validateSettingsForm({ ...form, disableHardTurnLimit: true, maxTurnsHard: '' }), true);
   assert.throws(() => S.validateSettingsForm({ ...form, contextWindowTokens: '1.5' }), (err) => err.key === 'settings.error.contextWindow');
+  assert.throws(() => S.validateSettingsForm({ ...form, contextWindowTokens: '0' }), (err) => err.key === 'settings.error.contextWindow');
   assert.throws(() => S.validateSettingsForm({ ...form, provider: 'missing' }), (err) => err.key === 'settings.error.unknownProvider' && err.params.provider === 'missing');
   assert.equal(S.buildConfigSavePayload({ ...form, disableHardTurnLimit: false, maxTurnsHard: '60', contextWindowTokens: '200000' }).context_window_tokens, 200000);
 });

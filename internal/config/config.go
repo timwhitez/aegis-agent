@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"aegis-agent/internal/fileutil"
 
@@ -991,6 +992,35 @@ func (c *Config) MarkProviderDeclared(name string) {
 	c.declaredProviders[name] = true
 }
 
+// ValidateBaseURL checks that baseURL is a valid http/https URL with a host
+// and without embedded userinfo credentials. When required is false, an empty
+// baseURL is allowed (for example on role_providers overrides that inherit the
+// base provider URL).
+func ValidateBaseURL(baseURL string, required bool) error {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		if required {
+			return fmt.Errorf("base_url is required")
+		}
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return fmt.Errorf("base_url is not a valid URL: %w", err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("base_url scheme must be http or https, got %q", parsed.Scheme)
+	}
+	if strings.TrimSpace(parsed.Host) == "" || strings.TrimSpace(parsed.Hostname()) == "" {
+		return fmt.Errorf("base_url must include a host")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("base_url must not contain userinfo credentials")
+	}
+	return nil
+}
+
 // ValidateAnthropicBaseURL rejects base_url values ending with /v1 (or /v1/) for
 // anthropic-compatible providers because AnthropicAdapter appends /v1/messages.
 func ValidateAnthropicBaseURL(baseURL string) error {
@@ -1015,8 +1045,145 @@ func ValidateAnthropicBaseURL(baseURL string) error {
 	return nil
 }
 
-// ValidateProvidersConfig validates provider thinking and endpoint conventions
-// after config loading and normalization.
+// ValidateProviderEndpoint validates URL syntax/scheme and protocol-specific
+// endpoint conventions for apiProvider.
+func ValidateProviderEndpoint(apiProvider, baseURL string, required bool) error {
+	if err := ValidateBaseURL(baseURL, required); err != nil {
+		return err
+	}
+	if normalizeAPIProvider(apiProvider) == "anthropic-compatible" {
+		if err := ValidateAnthropicBaseURL(baseURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateEffortValue rejects control characters or whitespace in effort
+// values while allowing forward-compatible provider-native effort names.
+func ValidateEffortValue(field, value string) error {
+	if value == "" {
+		return nil
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf("invalid %s %q: must not contain whitespace or control characters", field, value)
+		}
+	}
+	return nil
+}
+
+// ValidateProviderProfile validates a single provider profile's protocol
+// family, required model/base_url fields, URL syntax, and thinking/effort
+// settings.
+func ValidateProviderProfile(name string, provider Provider) error {
+	return ValidateProviderProfileOptions(name, provider, true, true)
+}
+
+// ValidateProviderProfileOptions validates a provider profile with explicit
+// control over whether model and base_url must be non-empty (partial settings
+// mutations that do not touch base_url/model still validate non-empty values
+// while explicit updates require them).
+func ValidateProviderProfileOptions(name string, provider Provider, requireModel, requireBaseURL bool) error {
+	apiProvider, err := EffectiveAPIProvider(name, provider)
+	if err != nil {
+		return err
+	}
+	switch apiProvider {
+	case "openai-compatible", "anthropic-compatible", "google":
+	default:
+		return fmt.Errorf("unsupported api_provider for %s: %s", name, apiProvider)
+	}
+	if requireModel && strings.TrimSpace(provider.Model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	if err := ValidateProviderEndpoint(apiProvider, provider.BaseURL, requireBaseURL); err != nil {
+		return err
+	}
+	if err := ValidateEffortValue("reasoning_effort", provider.ReasoningEffort); err != nil {
+		return err
+	}
+	if err := ValidateEffortValue("output_config_effort", provider.OutputConfigEffort); err != nil {
+		return err
+	}
+	return ValidateProviderThinking(name, provider)
+}
+
+// ValidateRoleProviderOverride validates a single role_providers.<role>
+// override, inheriting default_provider's protocol family when neither
+// provider nor api_provider is explicitly set on the override.
+func ValidateRoleProviderOverride(cfg *Config, role string, override RoleProviderOverride) error {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if override.MaxOutputTokens < 0 {
+		return fmt.Errorf("role_providers.%s.max_output_tokens must be non-negative", role)
+	}
+	if err := ValidateEffortValue("reasoning_effort", override.ReasoningEffort); err != nil {
+		return fmt.Errorf("role_providers.%s: %w", role, err)
+	}
+	if err := ValidateEffortValue("output_config_effort", override.OutputConfigEffort); err != nil {
+		return fmt.Errorf("role_providers.%s: %w", role, err)
+	}
+	apiProvider := normalizeAPIProvider(override.APIProvider)
+	if apiProvider != "" {
+		switch apiProvider {
+		case "openai-compatible", "anthropic-compatible", "google":
+		default:
+			return fmt.Errorf("role_providers.%s: unsupported api_provider %q", role, override.APIProvider)
+		}
+	} else if cfg != nil {
+		explicitProvider := strings.TrimSpace(override.Provider)
+		targetProvider := explicitProvider
+		if targetProvider == "" {
+			targetProvider = strings.TrimSpace(cfg.DefaultProvider)
+		}
+		if explicitProvider != "" {
+			baseProvider, ok := cfg.Providers[explicitProvider]
+			if !ok {
+				return fmt.Errorf("role_providers.%s: unknown provider %q", role, explicitProvider)
+			}
+			resolved, err := EffectiveAPIProvider(explicitProvider, baseProvider)
+			if err != nil {
+				return fmt.Errorf("role_providers.%s: %w", role, err)
+			}
+			apiProvider = resolved
+		} else if baseProvider, ok := cfg.Providers[targetProvider]; ok {
+			resolved, err := EffectiveAPIProvider(targetProvider, baseProvider)
+			if err == nil {
+				apiProvider = resolved
+			}
+		}
+	}
+	if strings.TrimSpace(override.BaseURL) != "" {
+		if err := ValidateProviderEndpoint(apiProvider, override.BaseURL, false); err != nil {
+			return fmt.Errorf("role_providers.%s: %w", role, err)
+		}
+	}
+	return nil
+}
+
+// ValidateRoleProviders validates all role_providers overrides on cfg.
+func ValidateRoleProviders(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, entry := range []struct {
+		role     string
+		override RoleProviderOverride
+	}{
+		{"planner", cfg.RoleProviders.Planner},
+		{"generator", cfg.RoleProviders.Generator},
+		{"evaluator", cfg.RoleProviders.Evaluator},
+		{"explorer", cfg.RoleProviders.Explorer},
+	} {
+		if err := ValidateRoleProviderOverride(cfg, entry.role, entry.override); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateProvidersConfig validates provider thinking, required fields,
+// endpoint conventions, and role_providers overrides.
 func ValidateProvidersConfig(cfg *Config) error {
 	if err := ValidateProvidersThinking(cfg); err != nil {
 		return err
@@ -1025,35 +1192,11 @@ func ValidateProvidersConfig(cfg *Config) error {
 		return nil
 	}
 	for name, provider := range cfg.Providers {
-		apiProvider, err := EffectiveAPIProvider(name, provider)
-		if err != nil {
-			continue
-		}
-		if apiProvider == "anthropic-compatible" {
-			if err := ValidateAnthropicBaseURL(provider.BaseURL); err != nil {
-				return fmt.Errorf("provider %s: %w", name, err)
-			}
+		if err := ValidateProviderProfile(name, provider); err != nil {
+			return fmt.Errorf("provider %s: %w", name, err)
 		}
 	}
-	for role, override := range map[string]RoleProviderOverride{
-		"planner":   cfg.RoleProviders.Planner,
-		"generator": cfg.RoleProviders.Generator,
-		"evaluator": cfg.RoleProviders.Evaluator,
-		"explorer":  cfg.RoleProviders.Explorer,
-	} {
-		apiProvider := normalizeAPIProvider(override.APIProvider)
-		if apiProvider == "" && override.Provider != "" {
-			if baseProvider, ok := cfg.Providers[override.Provider]; ok {
-				apiProvider, _ = EffectiveAPIProvider(override.Provider, baseProvider)
-			}
-		}
-		if apiProvider == "anthropic-compatible" {
-			if err := ValidateAnthropicBaseURL(override.BaseURL); err != nil {
-				return fmt.Errorf("role_providers.%s: %w", role, err)
-			}
-		}
-	}
-	return nil
+	return ValidateRoleProviders(cfg)
 }
 
 func boolPtr(value bool) *bool {

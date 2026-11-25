@@ -5192,6 +5192,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var afterProvider config.Provider
 	if providerName != "" {
 		beforeProvider = beforeCfg.Providers[providerName]
+		beforeFamily := providerReasoningFamily(providerName, beforeProvider)
+		beforeReasoningMode := providerReasoningMode(providerName, beforeProvider)
+		beforeAdaptive := config.AnthropicThinkingModeForLevel(beforeProvider, beforeProvider.Model) == config.ThinkingModeAdaptive
 		p := updatedCfg.Providers[providerName]
 		if req.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*req.BaseURL)
@@ -5200,8 +5203,8 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			p.Model = strings.TrimSpace(*req.Model)
 		}
 		if req.ContextWindowTokens != nil {
-			if *req.ContextWindowTokens < 0 {
-				writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be non-negative"))
+			if *req.ContextWindowTokens <= 0 {
+				writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be positive; omit the field to keep or use the adapter default"))
 				return
 			}
 			p.ContextWindowTokens = *req.ContextWindowTokens
@@ -5209,10 +5212,21 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.APIProvider != nil {
 			p.APIProvider = strings.TrimSpace(*req.APIProvider)
 		}
-		if req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "" {
-			if err := applyProviderReasoningMode(providerName, &p, *req.ReasoningMode); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
+		afterFamily := providerReasoningFamily(providerName, p)
+		afterAdaptive := config.AnthropicThinkingModeForLevel(p, p.Model) == config.ThinkingModeAdaptive
+		reasoningModeChanged := false
+		if req.ReasoningMode != nil {
+			reqMode := strings.TrimSpace(*req.ReasoningMode)
+			reasoningModeChanged = reqMode != "" &&
+				(!strings.EqualFold(reqMode, beforeReasoningMode) ||
+					afterFamily != beforeFamily ||
+					beforeAdaptive != afterAdaptive ||
+					(strings.EqualFold(reqMode, "off") && strings.TrimSpace(p.OutputConfigEffort) != ""))
+			if reasoningModeChanged {
+				if err := applyProviderReasoningMode(providerName, &p, reqMode); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
 			}
 		}
 		if req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "" {
@@ -5222,16 +5236,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		normalizeProviderReasoningFields(providerName, &p)
-		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, p)
-		if err != nil {
+		if err := config.ValidateProviderProfileOptions(providerName, p, req.Model != nil, req.BaseURL != nil); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
-		}
-		if effectiveAPIProvider == "anthropic-compatible" {
-			if err := config.ValidateAnthropicBaseURL(p.BaseURL); err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
 		}
 		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
 			envPath := config.DefaultEnvFilePath(cwd)
@@ -5256,7 +5263,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			BaseURL:             req.BaseURL != nil,
 			Model:               req.Model != nil,
 			ContextWindowTokens: req.ContextWindowTokens != nil,
-			ReasoningMode:       req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "",
+			ReasoningMode:       reasoningModeChanged,
 			ReasoningSummary:    req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "",
 		}
 	}
@@ -5632,11 +5639,8 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 	if req.MaxOutputTokens < 0 {
 		return config.RoleProviderOverride{}, newWebSettingsValidationError("role_providers.%s.max_output_tokens must be non-negative", strings.TrimSpace(role))
 	}
-	var providerCfg config.Provider
 	if providerName != "" {
-		var ok bool
-		providerCfg, ok = cfg.Providers[providerName]
-		if !ok {
+		if _, ok := cfg.Providers[providerName]; !ok {
 			return config.RoleProviderOverride{}, newWebError(
 				errorCodeUnknownProvider,
 				"unknown role provider",
@@ -5645,33 +5649,7 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 			)
 		}
 	}
-	if apiProvider != "" {
-		if providerName != "" {
-			providerCfg.APIProvider = apiProvider
-		} else {
-			providerCfg = config.Provider{APIProvider: apiProvider}
-		}
-		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg)
-		if err != nil {
-			return config.RoleProviderOverride{}, err
-		}
-		if effectiveAPIProvider == "anthropic-compatible" {
-			if err := config.ValidateAnthropicBaseURL(baseURL); err != nil {
-				return config.RoleProviderOverride{}, err
-			}
-		}
-	} else if providerName != "" {
-		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, providerCfg)
-		if err != nil {
-			return config.RoleProviderOverride{}, err
-		}
-		if effectiveAPIProvider == "anthropic-compatible" {
-			if err := config.ValidateAnthropicBaseURL(baseURL); err != nil {
-				return config.RoleProviderOverride{}, err
-			}
-		}
-	}
-	return config.RoleProviderOverride{
+	override := config.RoleProviderOverride{
 		Provider:           providerName,
 		APIProvider:        apiProvider,
 		BaseURL:            baseURL,
@@ -5679,7 +5657,11 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 		ReasoningEffort:    reasoningEffort,
 		OutputConfigEffort: outputConfigEffort,
 		MaxOutputTokens:    req.MaxOutputTokens,
-	}, nil
+	}
+	if err := config.ValidateRoleProviderOverride(cfg, role, override); err != nil {
+		return config.RoleProviderOverride{}, err
+	}
+	return override, nil
 }
 
 func roleProviderOverrideCount(cfg config.RoleProvidersConfig) int {
@@ -5770,6 +5752,9 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		))
 		return
 	}
+	beforeFamily := providerReasoningFamily(providerName, p)
+	beforeReasoningMode := providerReasoningMode(providerName, p)
+	beforeAdaptive := config.AnthropicThinkingModeForLevel(p, p.Model) == config.ThinkingModeAdaptive
 	testCfg.DefaultProvider = providerName
 	if req.BaseURL != nil {
 		p.BaseURL = strings.TrimSpace(*req.BaseURL)
@@ -5778,8 +5763,8 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		p.Model = strings.TrimSpace(*req.Model)
 	}
 	if req.ContextWindowTokens != nil {
-		if *req.ContextWindowTokens < 0 {
-			writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be non-negative"))
+		if *req.ContextWindowTokens <= 0 {
+			writeError(w, http.StatusBadRequest, errors.New("context_window_tokens must be positive; omit the field to keep or use the adapter default"))
 			return
 		}
 		p.ContextWindowTokens = *req.ContextWindowTokens
@@ -5787,10 +5772,20 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	if req.APIProvider != nil {
 		p.APIProvider = strings.TrimSpace(*req.APIProvider)
 	}
-	if req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "" {
-		if err := applyProviderReasoningMode(providerName, &p, *req.ReasoningMode); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
+	afterFamily := providerReasoningFamily(providerName, p)
+	afterAdaptive := config.AnthropicThinkingModeForLevel(p, p.Model) == config.ThinkingModeAdaptive
+	if req.ReasoningMode != nil {
+		reqMode := strings.TrimSpace(*req.ReasoningMode)
+		shouldApplyReasoningMode := reqMode != "" &&
+			(!strings.EqualFold(reqMode, beforeReasoningMode) ||
+				afterFamily != beforeFamily ||
+				beforeAdaptive != afterAdaptive ||
+				(strings.EqualFold(reqMode, "off") && strings.TrimSpace(p.OutputConfigEffort) != ""))
+		if shouldApplyReasoningMode {
+			if err := applyProviderReasoningMode(providerName, &p, reqMode); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 	}
 	if req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "" {
@@ -5800,16 +5795,14 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	normalizeProviderReasoningFields(providerName, &p)
+	if err := config.ValidateProviderProfileOptions(providerName, p, true, true); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, p)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
-	}
-	if effectiveAPIProvider == "anthropic-compatible" {
-		if err := config.ValidateAnthropicBaseURL(p.BaseURL); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
 	}
 	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
 	if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
@@ -5926,6 +5919,12 @@ func providerReasoningMode(providerName string, provider config.Provider) string
 		if budget > 0 || (provider.ThinkingBudget != nil && *provider.ThinkingBudget == -1) || (provider.IncludeThoughts != nil && *provider.IncludeThoughts) {
 			return "standard"
 		}
+		if effort := strings.ToLower(strings.TrimSpace(provider.OutputConfigEffort)); effort != "" {
+			if effort == "max" {
+				return "max"
+			}
+			return "standard"
+		}
 		return "default"
 	default:
 		return "default"
@@ -5956,10 +5955,12 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 			provider.ThinkingMode = ""
 			provider.ThinkingDisplay = ""
 			provider.IncludeThoughts = nil
+			provider.OutputConfigEffort = ""
 		case "off":
 			provider.ThinkingMode = config.ThinkingModeDisabled
 			provider.ThinkingBudget = nil
 			provider.IncludeThoughts = nil
+			provider.OutputConfigEffort = ""
 		case "standard":
 			if isAdaptive {
 				provider.ThinkingMode = config.ThinkingModeAdaptive
@@ -5971,6 +5972,7 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 				provider.ThinkingMode = config.ThinkingModeEnabled
 				provider.ThinkingBudget = config.IntPtr(settingsThinkingStandardBudget)
 				provider.IncludeThoughts = &value
+				provider.OutputConfigEffort = ""
 				if provider.MaxOutputTokens > 0 && provider.MaxOutputTokens <= settingsThinkingStandardBudget {
 					provider.MaxOutputTokens = settingsThinkingStandardBudget + 1024
 				}
@@ -5987,6 +5989,7 @@ func applyProviderReasoningMode(providerName string, provider *config.Provider, 
 				provider.ThinkingMode = config.ThinkingModeEnabled
 				provider.ThinkingBudget = config.IntPtr(maxBudget)
 				provider.IncludeThoughts = &value
+				provider.OutputConfigEffort = ""
 				if provider.MaxOutputTokens < settingsThinkingMaxOutputTokens {
 					provider.MaxOutputTokens = settingsThinkingMaxOutputTokens
 				}
