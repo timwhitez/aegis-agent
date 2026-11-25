@@ -637,8 +637,8 @@ func CanReconcileApprovalPreparation(store *session.Store, sessionID string) (ca
 }
 
 // HasDeadExecutingApprovalOperation reports whether sessionID has a durable
-// approval operation in the executing phase for runGeneration whose owner
-// process is dead.
+// admitted approval operation in the executing phase for runGeneration whose
+// owner process is dead.
 func HasDeadExecutingApprovalOperation(store *session.Store, sessionID, runGeneration string) bool {
 	if store == nil || strings.TrimSpace(runGeneration) == "" {
 		return false
@@ -647,7 +647,10 @@ func HasDeadExecutingApprovalOperation(store *session.Store, sessionID, runGener
 	if err != nil {
 		return false
 	}
-	return lookup.Receipt.Phase == "executing" && !session.ProcessOwnerAlive(lookup.Receipt.Recovery.OwnerPID, lookup.Receipt.Recovery.OwnerIdentity)
+	return lookup.Receipt.Stage == session.ApprovalReceiptAdmitted &&
+		lookup.Receipt.Phase == "executing" &&
+		lookup.Receipt.Recovery.OwnerPID > 0 &&
+		!session.ProcessOwnerAlive(lookup.Receipt.Recovery.OwnerPID, lookup.Receipt.Recovery.OwnerIdentity)
 }
 
 func validateApprovalPreparationRecord(sessionID string, record approvalPreparationRecord) error {

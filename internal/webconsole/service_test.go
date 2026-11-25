@@ -15424,3 +15424,188 @@ func TestWebPlanModeEmptyStateAndSanitizedNotFoundErrors(t *testing.T) {
 		t.Fatalf("expected sanitized PLAN_MODE_NOT_FOUND, got %#v", cancelErr)
 	}
 }
+
+func TestWebSettingsSavePatchesConfigWithoutRewritingCommentsOrUntouchedKeys(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	t.Setenv("AEGIS_AGENT_ENV_FILE", envPath)
+	configPath := filepath.Join(dir, "config.yaml")
+	original := `# Operator reviewed config
+schema_version: 1
+default_provider: appintheloop
+
+providers:
+  appintheloop:
+    # Keep origin only without /v1.
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+    context_window_tokens: 1000000
+    request_timeout_sec: 600
+    stream_idle_timeout_ms: 300000
+    anthropic_version: 2023-06-01
+    prompt_cache: true
+    output_config_effort: max
+
+# Keep explicit empty role override placeholders.
+role_providers:
+  planner:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  generator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  evaluator:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+  explorer:
+    provider: ""
+    api_provider: ""
+    base_url: ""
+    model: ""
+
+session:
+  dir: ` + filepath.Join(dir, "sessions") + `
+
+runtime:
+  isolation:
+    default_mode: off
+  compact:
+    hysteresis_delta_chars: 0
+    keep_recent_messages: 0
+
+hooks:
+  default_timeout_sec: 300
+
+# Browser config stays last.
+tools:
+  browser:
+    enabled: false
+    timeout_sec: 0
+`
+	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.LoadWithReport(configPath, dir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	// 1. Repro from #228: saving the same 4 fields via API must leave config.yaml byte-for-byte unchanged.
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":              "appintheloop",
+		"base_url":              "https://api.appintheloop.com",
+		"model":                 "MiniMax-M3.1-Flash",
+		"context_window_tokens": 1000000,
+	}, http.StatusOK, nil)
+	savedBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(savedBytes) != original {
+		t.Fatalf("unchanged API save rewrote config.yaml:\n--- want ---\n%s\n--- got ---\n%s", original, string(savedBytes))
+	}
+
+	// 2. Full Settings UI payload with unchanged values (including all 4 empty role_providers) must also stay byte-for-byte unchanged.
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"guardrails_mode":         "yolo",
+		"max_turns_soft":          24,
+		"max_turns_hard":          40,
+		"disable_hard_turn_limit": true,
+		"child_budget": map[string]any{
+			"disabled":                     true,
+			"max_active_runtime_sec":       0,
+			"max_elapsed_sec":              0,
+			"max_turns_per_attempt":        0,
+			"active_runtime_checkpoint_ms": config.DefaultChildBudgetActiveRuntimeCheckpointMS,
+		},
+		"provider":              "appintheloop",
+		"api_provider":          "anthropic-compatible",
+		"base_url":              "https://api.appintheloop.com",
+		"model":                 "MiniMax-M3.1-Flash",
+		"context_window_tokens": 1000000,
+		"reasoning_mode":        "default",
+		"reasoning_summary":     "default",
+		"api_key":               maskedAPIKey,
+		"role_providers": map[string]any{
+			"planner":   map[string]any{"provider": "", "api_provider": "", "base_url": "", "model": "", "reasoning_effort": "", "max_output_tokens": 0},
+			"generator": map[string]any{"provider": "", "api_provider": "", "base_url": "", "model": "", "reasoning_effort": "", "max_output_tokens": 0},
+			"evaluator": map[string]any{"provider": "", "api_provider": "", "base_url": "", "model": "", "reasoning_effort": "", "max_output_tokens": 0},
+			"explorer":  map[string]any{"provider": "", "api_provider": "", "base_url": "", "model": "", "reasoning_effort": "", "max_output_tokens": 0},
+		},
+	}, http.StatusOK, nil)
+	if _, err := os.Stat(envPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("masked api_key must not create .env file, stat err=%v", err)
+	}
+	savedBytes, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(savedBytes) != original {
+		t.Fatalf("unchanged full Settings UI save rewrote config.yaml:\n--- want ---\n%s\n--- got ---\n%s", original, string(savedBytes))
+	}
+
+	// 3. Changing only model via Settings save updates model in place without dropping comments, role_providers, zero fields, or adding timeout_sec/builtins.
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":              "appintheloop",
+		"base_url":              "https://api.appintheloop.com",
+		"model":                 "MiniMax-M3.1-Pro",
+		"context_window_tokens": 1000000,
+	}, http.StatusOK, nil)
+	savedBytes, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(savedBytes)
+	for _, want := range []string{
+		"# Operator reviewed config",
+		"# Keep origin only without /v1.",
+		"# Keep explicit empty role override placeholders.",
+		"# Browser config stays last.",
+		"\n  appintheloop:",
+		"\n    model: MiniMax-M3.1-Pro",
+		"\n    output_config_effort: max",
+		"\n  evaluator:\n    provider: \"\"",
+		"\n    default_mode: off",
+		"\n    hysteresis_delta_chars: 0",
+		"\n    keep_recent_messages: 0",
+		"\n  browser:\n    enabled: false\n    timeout_sec: 0",
+	} {
+		if !strings.Contains(savedText, want) {
+			t.Fatalf("expected %q in patched config.yaml:\n%s", want, savedText)
+		}
+	}
+	for _, unwanted := range []string{
+		"\n    timeout_sec: 600",
+		"default_mode: 'off'",
+		"http://localhost:3000/v1",
+		"openai-compatible:",
+		"assistant_message:",
+	} {
+		if strings.Contains(savedText, unwanted) {
+			t.Fatalf("unexpected %q in patched config.yaml:\n%s", unwanted, savedText)
+		}
+	}
+	reloaded, err := config.Load(configPath, dir)
+	if err != nil {
+		t.Fatalf("reload config after web save: %v", err)
+	}
+	if reloaded.Providers["appintheloop"].Model != "MiniMax-M3.1-Pro" || reloaded.Providers["appintheloop"].OutputConfigEffort != "max" {
+		t.Fatalf("unexpected reloaded provider: %#v", reloaded.Providers["appintheloop"])
+	}
+}

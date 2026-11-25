@@ -17,6 +17,7 @@ import (
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/extensions"
 	"aegis-agent/internal/fileutil"
+	agentruntime "aegis-agent/internal/runtime"
 	"aegis-agent/internal/session"
 )
 
@@ -548,7 +549,14 @@ func doctorStaleRunningSessions(sessionRoot string, now time.Time) []map[string]
 				})
 			}
 		default:
-			if doctorMissingOwnerIsStale(state.UpdatedAt, now) {
+			if agentruntime.HasDeadExecutingApprovalOperation(store, id, state.RunGeneration) {
+				out = append(out, map[string]any{
+					"session_id": id,
+					"reason":     "approval_owner_process_dead",
+					"updated_at": state.UpdatedAt,
+					"advice":     "aegis-agent sessions reconcile " + id,
+				})
+			} else if doctorMissingOwnerIsStale(state.UpdatedAt, now) {
 				out = append(out, map[string]any{
 					"session_id": id,
 					"reason":     "owner_event_missing",

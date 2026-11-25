@@ -5039,10 +5039,14 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	beforeCfg := s.cfg
 	updatedCfg, err := config.Clone(s.cfg)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	filePatch := config.FilePatch{
+		DefaultProviderBefore: beforeCfg.DefaultProvider,
 	}
 	providerName := strings.TrimSpace(req.Provider)
 	providerScopedUpdate := configRequestHasProviderScopedFields(req)
@@ -5057,6 +5061,8 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.DefaultProvider = providerName
+		dp := providerName
+		filePatch.DefaultProvider = &dp
 	} else if providerScopedUpdate {
 		providerName = strings.TrimSpace(updatedCfg.DefaultProvider)
 		if _, ok := updatedCfg.Providers[providerName]; !ok {
@@ -5076,15 +5082,24 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.GuardrailsMode = guardrailsMode
+		gm := guardrailsMode
+		filePatch.Runtime.GuardrailsModeBefore = beforeCfg.Runtime.GuardrailsMode
+		filePatch.Runtime.GuardrailsMode = &gm
 	}
 	if req.DisableHardTurnLimit {
 		updatedCfg.Runtime.MaxTurnsHard = -1
+		hard := -1
+		filePatch.Runtime.MaxTurnsHardBefore = beforeCfg.Runtime.MaxTurnsHard
+		filePatch.Runtime.MaxTurnsHard = &hard
 	} else if req.MaxTurnsHard != nil {
 		if *req.MaxTurnsHard <= 0 {
 			writeError(w, http.StatusBadRequest, errors.New("max_turns_hard must be positive unless hard turn limit is disabled"))
 			return
 		}
 		updatedCfg.Runtime.MaxTurnsHard = *req.MaxTurnsHard
+		hard := *req.MaxTurnsHard
+		filePatch.Runtime.MaxTurnsHardBefore = beforeCfg.Runtime.MaxTurnsHard
+		filePatch.Runtime.MaxTurnsHard = &hard
 	}
 	if req.MaxTurnsSoft != nil {
 		if *req.MaxTurnsSoft <= 0 {
@@ -5092,6 +5107,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.Runtime.MaxTurnsSoft = *req.MaxTurnsSoft
+		soft := *req.MaxTurnsSoft
+		filePatch.Runtime.MaxTurnsSoftBefore = beforeCfg.Runtime.MaxTurnsSoft
+		filePatch.Runtime.MaxTurnsSoft = &soft
 	}
 	if req.ChildBudget != nil {
 		childBudget := *req.ChildBudget
@@ -5156,6 +5174,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				ActiveRuntimeCheckpointMS: checkpointMS,
 			}
 		}
+		filePatch.Runtime.ChildBudget = &config.ChildBudgetPatch{
+			Before: beforeCfg.Runtime.ChildBudget,
+			After:  updatedCfg.Runtime.ChildBudget,
+		}
 	}
 
 	cwd, err := procutil.Getwd()
@@ -5166,7 +5188,10 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var apiKeyAudit map[string]any
 	var apiKeyUpdate *webAPIKeyUpdate
+	var beforeProvider config.Provider
+	var afterProvider config.Provider
 	if providerName != "" {
+		beforeProvider = beforeCfg.Providers[providerName]
 		p := updatedCfg.Providers[providerName]
 		if req.BaseURL != nil {
 			p.BaseURL = strings.TrimSpace(*req.BaseURL)
@@ -5221,8 +5246,19 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				"env_file": envPath,
 			}
 		}
+		afterProvider = p
 		updatedCfg.Providers[providerName] = p
-		updatedCfg.MarkProviderDeclared(providerName)
+		filePatch.ProviderName = providerName
+		filePatch.ProviderBefore = beforeProvider
+		filePatch.ProviderAfter = afterProvider
+		filePatch.ProviderFields = config.ProviderFieldMask{
+			APIProvider:         req.APIProvider != nil,
+			BaseURL:             req.BaseURL != nil,
+			Model:               req.Model != nil,
+			ContextWindowTokens: req.ContextWindowTokens != nil,
+			ReasoningMode:       req.ReasoningMode != nil && strings.TrimSpace(*req.ReasoningMode) != "",
+			ReasoningSummary:    req.ReasoningSummary != nil && strings.TrimSpace(*req.ReasoningSummary) != "",
+		}
 	}
 	if req.RoleProviders != nil {
 		roleProviders, err := roleProvidersFromRequest(updatedCfg, req.RoleProviders)
@@ -5231,6 +5267,16 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedCfg.RoleProviders = roleProviders
+		if len(req.RoleProviders) > 0 {
+			filePatch.RoleProviders = make(map[string]config.RoleProviderPatch, len(req.RoleProviders))
+			for rawRole := range req.RoleProviders {
+				role := strings.ToLower(strings.TrimSpace(rawRole))
+				filePatch.RoleProviders[role] = config.RoleProviderPatch{
+					Before: beforeCfg.RoleProviderOverride(role),
+					After:  updatedCfg.RoleProviderOverride(role),
+				}
+			}
+		}
 	}
 
 	configPath := s.configPath
@@ -5264,6 +5310,9 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	if providerName != "" && (!configSnapshot.exists || beforeCfg.ProviderSource(providerName) == config.ProviderSourceFile || !config.ProvidersEqual(beforeProvider, afterProvider)) {
+		updatedCfg.MarkProviderDeclared(providerName)
+	}
 	var envSnapshot webConfigFileSnapshot
 	var previousEnvValue string
 	var previousEnvExists bool
@@ -5275,7 +5324,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		previousEnvValue, previousEnvExists = os.LookupEnv(apiKeyUpdate.envKey)
 	}
-	if err := config.WriteFile(configPath, updatedCfg); err != nil {
+	if err := config.PatchFile(configPath, updatedCfg, filePatch); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -7673,9 +7722,15 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 	if state.Status != session.StatusRunning {
 		return false, nil
 	}
+	deadExecutingApproval := runtime.HasDeadExecutingApprovalOperation(s.store, sessionID, state.RunGeneration)
 	canReconcile, err := runtime.CanReconcileApprovalPreparation(s.store, sessionID)
 	if err != nil {
-		if (pauseReason != "manual_stop" && pauseReason != "manual_interrupt" && pauseReason != "delete_session") || !errors.Is(err, session.ErrApprovalConflict) {
+		if !errors.Is(err, session.ErrApprovalConflict) {
+			return false, err
+		}
+		manual := pauseReason == "manual_stop" || pauseReason == "manual_interrupt" || pauseReason == "delete_session"
+		autoDeadApproval := pauseReason == queueReaperPauseReason && deadExecutingApproval
+		if !manual && !autoDeadApproval {
 			return false, err
 		}
 		canReconcile = true
@@ -7688,17 +7743,16 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 		return false, err
 	}
 	owner := latestActiveOwnerFromEvents(eventsList)
-	if !staleRunningOwnerCanBeReconciledAt(owner, state, time.Now().UTC(), forceMissingOwner) {
+	if !staleRunningOwnerCanBeReconciledAt(owner, state, time.Now().UTC(), forceMissingOwner || deadExecutingApproval) {
 		return false, nil
 	}
 	effectivePauseReason := pauseReason
-	approvalRecovery := false
+	approvalRecovery := deadExecutingApproval
 	if pauseReason == queueReaperPauseReason {
-		if owner.EventType == "" {
-			effectivePauseReason = "stale_owner_missing"
-		} else if runtime.HasDeadExecutingApprovalOperation(s.store, sessionID, state.RunGeneration) {
+		if deadExecutingApproval {
 			effectivePauseReason = "stale_owner_reconciled_approval_recovery"
-			approvalRecovery = true
+		} else if owner.EventType == "" {
+			effectivePauseReason = "stale_owner_missing"
 		}
 	}
 	requests, err := s.store.LoadSteerRequests(sessionID)

@@ -45,7 +45,7 @@ func tuiCommand(args []string, stdout, stderr io.Writer) error {
 		snapshot, err := agenttui.BuildSnapshot(runner.Store(), *sessionID, *limit)
 		if err != nil {
 			if strings.TrimSpace(*sessionID) != "" && errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("unknown session %s: %w", strings.TrimSpace(*sessionID), fs.ErrNotExist)
+				return unknownSessionErr(*sessionID)
 			}
 			return err
 		}
