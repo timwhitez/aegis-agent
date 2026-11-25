@@ -130,7 +130,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 每次扩展 reservation 前重建当前 artifact usage；final files 按实际长度计费，active reservations 按 reserved bytes 计费，因此多个 Store/进程并发时总承诺量不能超过 `artifact_session_max_bytes` / `artifact_max_files`
 - reservation 文件由活跃 writer 持有 OS file lock；进程崩溃会自动释放。后续 quota scan 必须回收没有活跃 lock 的 reservation 与 orphan temp，再重新计算 quota，不能让 crash 永久耗尽 session 配额
 - stream 只允许持久化 prefix，达到 file/session hard cap 后不得绕过 quota 写 tail。collector 仍要继续消费进程输出、累计 raw bytes，并保留 bounded tail 供 inline preview
-- preview 必须是合法 UTF-8；非法源字节用等长安全占位符显示，原始字节不能因此被冒充为完整 inline 文本。即使总字节未越过 inline cap，只要源包含非法 UTF-8，就要通过 artifact 保留 byte-exact 原文
+- preview 必须是合法 UTF-8；非法源字节用等长安全占位符显示，原始字节不能因此被冒充为完整 inline 文本。即使总字节未越过 inline cap，只要源包含非法 UTF-8，就要通过 artifact 保留 byte-exact 原文，并标记 `budget_reason=non_utf8_output`；非 UTF-8 完整 artifact 的 notice 明确说明 `read_file` 需要合法 UTF-8，不诱导模型调用 `read_file byte_offset/byte_limit` 分页（且 `read_file` 的 UTF-8 错误只展示相对路径，不暴露宿主绝对 session 目录）
 - 正常结束、非零退出、command timeout、manual interrupt、child budget cancel 与 process-group kill 都必须 finalize collector。只有 artifact 写入、`fsync`、close 和 atomic no-replace rename 全部成功且 `persisted_bytes == raw_bytes` 时，才设置 `artifact_complete=true` / `recoverable=true` 并显示 `Complete artifact`
 - quota 截断但成功发布的 prefix 设置 `artifact_truncated=true`、`recoverable=false`，使用 `Partial artifact` / `Recoverable prefix` 文案；create/write/fsync/close/rename 失败必须记录稳定 `budget_reason` 与 `artifact_error`，不得显示 complete/full
 - command collector 没有有效 Store/session/tool-call context 时安全退化为 bounded preview + `artifact unavailable`；不得 panic，也不得为了补 artifact 重新缓存无界输出

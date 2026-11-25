@@ -1613,6 +1613,14 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 					rawBytes,
 					artifactPath,
 				)
+				if toolResultIsNonUTF8(original) {
+					pointer = fmt.Sprintf(
+						"[Older %s output moved out of the provider context window. Complete artifact (non-UTF-8): %s (%d bytes). Raw bytes are preserved in the session artifact; read_file requires UTF-8 text, so re-run the command with a binary-safe filter if needed.]",
+						original.Name,
+						artifactPath,
+						rawBytes,
+					)
+				}
 				result.LLMOutput = pointer
 				result.DisplayOutput = pointer
 				if result.Metadata == nil {
@@ -1675,6 +1683,17 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 		}
 	}
 	return view
+}
+
+func toolResultIsNonUTF8(result session.ToolResult) bool {
+	if result.Metadata == nil {
+		return false
+	}
+	if flagged, _ := result.Metadata["non_utf8_output"].(bool); flagged {
+		return true
+	}
+	reason, _ := result.Metadata["budget_reason"].(string)
+	return strings.TrimSpace(reason) == "non_utf8_output"
 }
 
 func completeFinalizedToolOutputArtifact(result session.ToolResult) (string, int, bool) {

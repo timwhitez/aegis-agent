@@ -101,7 +101,7 @@ func TestOutputCollectorCompleteArtifactMatchesRawMergedBytes(t *testing.T) {
 func TestBuildCommandLLMChannelPreservesArtifactPointerBeforeLongSummary(t *testing.T) {
 	const maxBytes = 512
 	artifactPath := "artifacts/tool-outputs/" + strings.Repeat("deep-segment-", 15) + "output.txt"
-	notice := commandArtifactNotice(maxBytes, artifactPath, 4096, 4096, 0, true, false, "")
+	notice := commandArtifactNotice(maxBytes, artifactPath, 4096, 4096, 0, true, false, "", false)
 	status := InterruptedToolExecutionMessage
 	summary := "[command_result tool=shell workdir=" + strings.Repeat("very-long-workdir/", 300) + "]"
 	result := buildCommandLLMChannel(summary, status, notice, strings.Repeat("preview", 200), maxBytes)
@@ -194,6 +194,15 @@ func TestOutputCollectorPersistsSmallInvalidUTF8Source(t *testing.T) {
 	if result.Metadata["artifact_complete"] != true || result.Metadata["recoverable"] != true || result.Metadata["truncated"] != true {
 		t.Fatalf("small invalid source was mislabeled as fully recoverable inline text: %#v", result.Metadata)
 	}
+	if result.Metadata["budget_reason"] != commandNonUTF8BudgetReason {
+		t.Fatalf("small invalid UTF-8 output expected budget_reason=%q, got %#v", commandNonUTF8BudgetReason, result.Metadata["budget_reason"])
+	}
+	if strings.Contains(result.LLMOutput, "Page with read_file") || strings.Contains(result.DisplayOutput, "Page with read_file") {
+		t.Fatalf("non-UTF-8 artifact notice must not instruct model to page with read_file: llm=%q display=%q", result.LLMOutput, result.DisplayOutput)
+	}
+	if !strings.Contains(result.LLMOutput, "Complete artifact (non-UTF-8)") || !strings.Contains(result.LLMOutput, "UTF-8") {
+		t.Fatalf("non-UTF-8 artifact notice missing binary/UTF-8 guidance: %q", result.LLMOutput)
+	}
 	if !strings.Contains(result.LLMOutput, "truncated=true") || strings.Contains(result.LLMOutput, "truncated=false") {
 		t.Fatalf("command summary disagrees with finalized compatibility metadata: %q", result.LLMOutput)
 	}
@@ -203,6 +212,83 @@ func TestOutputCollectorPersistsSmallInvalidUTF8Source(t *testing.T) {
 	data, err := os.ReadFile(commandArtifactAbsolutePath(t, execCtx, result))
 	if err != nil || !bytes.Equal(data, raw) {
 		t.Fatalf("small invalid source artifact changed bytes: data=%v err=%v", data, err)
+	}
+
+	// #244: calling read_file byte mode on the non-UTF-8 artifact returns relative display path without leaking host session dir.
+	registry, err := NewRegistry(cfg, nil, execCtx.Store, nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	artifactRel, _ := result.Metadata["artifact_path"].(string)
+	readRes, readErr := registry.Execute(context.Background(), "read_file", execCtx, mustJSON(t, map[string]any{
+		"path":        artifactRel,
+		"byte_offset": 0,
+		"byte_limit":  128,
+	}))
+	if readErr != nil || !readRes.IsError || readRes.Metadata["failure_class"] != FailureClassUnsupportedEncoding {
+		t.Fatalf("expected unsupported_encoding error reading non-UTF-8 artifact, got res=%#v err=%v", readRes, readErr)
+	}
+	sessionDir := execCtx.Store.SessionDir(execCtx.SessionID)
+	if strings.Contains(readRes.LLMOutput, sessionDir) || !strings.Contains(readRes.LLMOutput, artifactRel) {
+		t.Fatalf("read_file encoding error leaked host path or omitted relative artifact path: sessionDir=%q llm=%q", sessionDir, readRes.LLMOutput)
+	}
+}
+
+func TestOutputCollectorUTF8StreamValidatorAcrossChunkSplits(t *testing.T) {
+	// 1. Valid multi-byte UTF-8 split 1 byte at a time across writes remains valid UTF-8 and uses normal read_file notice when spilled.
+	cfg := smallOutputCollectorConfig()
+	cfg.Runtime.ToolOutput.ArtifactFileMaxBytes = 8192
+	cfg.Runtime.ToolOutput.ArtifactSessionMaxBytes = 16384
+	execCtx := newOutputCollectorExecContext(t, cfg)
+	collector := newCommandOutputCollector(execCtx, "shell")
+	validMultiByte := []byte(strings.Repeat("中文🚀测试", 100))
+	for i := 0; i < len(validMultiByte); i++ {
+		_, _ = collector.Write(validMultiByte[i : i+1])
+	}
+	res := collector.finalize(commandOutputResultOptions{Summary: "[command_result tool=shell exit_code=0]"})
+	if res.Metadata["budget_reason"] != "llm_output_max_bytes" {
+		t.Fatalf("valid split multi-byte UTF-8 expected budget_reason=llm_output_max_bytes, got %#v", res.Metadata)
+	}
+	if !strings.Contains(res.LLMOutput, "Page with read_file") {
+		t.Fatalf("valid UTF-8 spilled artifact should still offer read_file paging: %q", res.LLMOutput)
+	}
+
+	// 2. Large streamed non-UTF-8 output uses budget_reason=llm_output_max_bytes AND non-UTF-8 notice without read_file prompt.
+	execCtx2 := newOutputCollectorExecContext(t, cfg)
+	collector2 := newCommandOutputCollector(execCtx2, "shell")
+	streamedBad := append([]byte(strings.Repeat("hello ", 150)), 0xff, 0xfe)
+	for start := 0; start < len(streamedBad); start += 19 {
+		end := min(len(streamedBad), start+19)
+		_, _ = collector2.Write(streamedBad[start:end])
+	}
+	res2 := collector2.finalize(commandOutputResultOptions{Summary: "[command_result tool=shell exit_code=0]"})
+	if res2.Metadata["budget_reason"] != "llm_output_max_bytes" || res2.Metadata["non_utf8_output"] != true {
+		t.Fatalf("large streamed non-UTF-8 expected budget_reason=llm_output_max_bytes and non_utf8_output=true, got %#v", res2.Metadata)
+	}
+	if strings.Contains(res2.LLMOutput, "Page with read_file") || !strings.Contains(res2.LLMOutput, "Complete artifact (non-UTF-8)") {
+		t.Fatalf("large streamed non-UTF-8 should not instruct model to page with read_file: %q", res2.LLMOutput)
+	}
+
+	// 3. utf8StreamValidator edge cases: overlong, surrogate halves, truncated EOF, literal U+FFFD, empty writes mid-rune.
+	for _, tc := range []struct {
+		name   string
+		chunks [][]byte
+		want   bool
+	}{
+		{name: "valid_ufffd_contiguous", chunks: [][]byte{{0xef, 0xbf, 0xbd}}, want: true},
+		{name: "valid_ufffd_split_with_empty", chunks: [][]byte{{0xef}, {}, {0xbf}, {0xbd}}, want: true},
+		{name: "overlong_2byte_split", chunks: [][]byte{{0xc0}, {0xaf}}, want: false},
+		{name: "overlong_3byte_split", chunks: [][]byte{{0xe0, 0x80}, {0xaf}}, want: false},
+		{name: "surrogate_half_split", chunks: [][]byte{{0xed}, {0xa0, 0x80}}, want: false},
+		{name: "truncated_eof", chunks: [][]byte{[]byte("ok"), {0xe4, 0xb8}}, want: false},
+	} {
+		var v utf8StreamValidator
+		for _, ch := range tc.chunks {
+			v.Write(ch)
+		}
+		if got := v.Valid(); got != tc.want {
+			t.Fatalf("utf8StreamValidator %s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
