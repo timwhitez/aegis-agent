@@ -9,6 +9,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		}
 		resp, err := client.Do(req)
 		if err == nil {
-			err = c.decodeResponse(attemptCtx, resp, out, providerName)
+			err = c.decodeResponse(attemptCtx, resp, out, providerName, sanitizeRequestURL(endpoint))
 		} else {
 			err = classifyTransportError(attemptCtx, providerName, err)
 		}
@@ -117,7 +118,24 @@ func (c JSONClient) providerName(fallback string) string {
 	return fallback
 }
 
-func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out any, providerName string) error {
+func sanitizeRequestURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	clean := &url.URL{
+		Scheme: parsed.Scheme,
+		Host:   parsed.Host,
+		Path:   parsed.Path,
+	}
+	return clean.String()
+}
+
+func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out any, providerName, requestURL string) error {
 	defer resp.Body.Close()
 	// Never return a redirect body or Location in errors: either can contain
 	// credentials. Returning the original response also prevents net/http from
@@ -170,6 +188,14 @@ func (c JSONClient) decodeResponse(ctx context.Context, resp *http.Response, out
 		var httpErr *HTTPError
 		if errors.As(err, &httpErr) {
 			httpErr.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+			httpErr.RequestURL = requestURL
+			if resp.StatusCode == http.StatusNotFound && requestURL != "" {
+				msg := strings.TrimSpace(httpErr.Message)
+				if msg == "" {
+					msg = "HTTP 404"
+				}
+				httpErr.Message = truncateErrorMessage(fmt.Sprintf("%s (request URL: %s)", msg, requestURL))
+			}
 		}
 		return err
 	}

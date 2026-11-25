@@ -257,7 +257,7 @@ func (s *Service) approvalLaunchPreflight(ctx context.Context, id string) error 
 	if err != nil {
 		return err
 	}
-	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+	if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 		return webContinueError(err)
 	}
 	if s.hasActiveHandle(id) {
@@ -268,7 +268,7 @@ func (s *Service) approvalLaunchPreflight(ctx context.Context, id string) error 
 		if err != nil {
 			return err
 		}
-		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+		if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 			return webContinueError(err)
 		}
 	}
@@ -298,8 +298,12 @@ func decodeOptionalPlanModeApproveRequest(w http.ResponseWriter, r *http.Request
 // Reconciliation shares the approval boundary so a run claim between prepare
 // and handle acquisition cannot be mistaken for a prior settled generation.
 func (s *Service) reconcileStaleRunningSession(sessionID, pauseReason string) (changed bool, err error) {
+	return s.reconcileStaleRunningSessionWithOptions(sessionID, pauseReason, false)
+}
+
+func (s *Service) reconcileStaleRunningSessionWithOptions(sessionID, pauseReason string, forceMissingOwner bool) (changed bool, err error) {
 	err = s.store.WithApprovalLock(sessionID, func(store *session.Store) error {
-		changed, err = (&goalMutationService{Service: s, store: store}).reconcileStaleRunningSession(sessionID, pauseReason)
+		changed, err = (&goalMutationService{Service: s, store: store}).reconcileStaleRunningSession(sessionID, pauseReason, forceMissingOwner)
 		return err
 	})
 	return

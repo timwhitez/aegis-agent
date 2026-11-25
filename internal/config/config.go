@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -42,6 +44,11 @@ const (
 	DefaultCompactKeepRecentToolResultBytes     = 64 * 1024
 )
 
+const (
+	ProviderSourceFile    = "file"
+	ProviderSourceBuiltin = "builtin"
+)
+
 type Config struct {
 	SchemaVersion   int                 `yaml:"schema_version"`
 	DefaultProvider string              `yaml:"default_provider"`
@@ -57,7 +64,9 @@ type Config struct {
 
 	// Transient facts from the same load that produced this configuration.
 	// Unexported so they cannot be supplied by or persisted into YAML/JSON.
-	loadReport LoadReport
+	loadReport            LoadReport
+	hasProviderProvenance bool
+	declaredProviders     map[string]bool
 }
 
 type Provider struct {
@@ -311,15 +320,15 @@ type OutputConfig struct {
 
 type HooksConfig struct {
 	DefaultTimeoutSec int              `yaml:"default_timeout_sec"`
-	SessionStart      []HookDefinition `yaml:"session_start"`
-	SessionAwaiting   []HookDefinition `yaml:"session_awaiting_input"`
-	SessionPause      []HookDefinition `yaml:"session_pause"`
-	SessionComplete   []HookDefinition `yaml:"session_complete"`
-	SessionFail       []HookDefinition `yaml:"session_fail"`
-	UserMessage       []HookDefinition `yaml:"user_message"`
-	AssistantMessage  []HookDefinition `yaml:"assistant_message"`
-	ToolBefore        []HookDefinition `yaml:"tool_before"`
-	ToolAfter         []HookDefinition `yaml:"tool_after"`
+	SessionStart      []HookDefinition `yaml:"session_start,omitempty"`
+	SessionAwaiting   []HookDefinition `yaml:"session_awaiting_input,omitempty"`
+	SessionPause      []HookDefinition `yaml:"session_pause,omitempty"`
+	SessionComplete   []HookDefinition `yaml:"session_complete,omitempty"`
+	SessionFail       []HookDefinition `yaml:"session_fail,omitempty"`
+	UserMessage       []HookDefinition `yaml:"user_message,omitempty"`
+	AssistantMessage  []HookDefinition `yaml:"assistant_message,omitempty"`
+	ToolBefore        []HookDefinition `yaml:"tool_before,omitempty"`
+	ToolAfter         []HookDefinition `yaml:"tool_after,omitempty"`
 }
 
 type HookDefinition struct {
@@ -896,7 +905,22 @@ func WriteFile(path string, cfg *Config) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("config path is required")
 	}
-	data, err := MarshalYAML(cfg)
+	toWrite := cfg
+	if cfg != nil && cfg.hasProviderProvenance {
+		cloned, err := Clone(cfg)
+		if err != nil {
+			return err
+		}
+		filtered := make(map[string]Provider, len(cloned.Providers))
+		for name, p := range cloned.Providers {
+			if cfg.declaredProviders[name] {
+				filtered[name] = p
+			}
+		}
+		cloned.Providers = filtered
+		toWrite = cloned
+	}
+	data, err := MarshalYAML(toWrite)
 	if err != nil {
 		return err
 	}
@@ -917,7 +941,116 @@ func Clone(cfg *Config) (*Config, error) {
 	if err := yaml.Unmarshal(data, &out); err != nil {
 		return nil, err
 	}
+	if cfg != nil {
+		out.loadReport = cloneLoadReport(cfg.loadReport)
+		out.hasProviderProvenance = cfg.hasProviderProvenance
+		out.declaredProviders = maps.Clone(cfg.declaredProviders)
+	}
 	return &out, nil
+}
+
+func isBuiltinProviderName(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai", "anthropic", "google", "openai-compatible":
+		return true
+	default:
+		return false
+	}
+}
+
+// ProviderSource reports whether a provider profile came from a loaded config
+// file / explicit settings mutation ("file") or builtin defaults ("builtin").
+func (c *Config) ProviderSource(name string) string {
+	if c == nil {
+		return ProviderSourceBuiltin
+	}
+	if c.declaredProviders[name] {
+		return ProviderSourceFile
+	}
+	if c.hasProviderProvenance {
+		return ProviderSourceBuiltin
+	}
+	if isBuiltinProviderName(name) {
+		return ProviderSourceBuiltin
+	}
+	return ProviderSourceFile
+}
+
+// MarkProviderDeclared marks a provider profile as explicitly declared so
+// subsequent writes preserve it without materializing untouched builtin defaults.
+func (c *Config) MarkProviderDeclared(name string) {
+	if c == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	if c.declaredProviders == nil {
+		c.declaredProviders = make(map[string]bool)
+	}
+	c.declaredProviders[name] = true
+}
+
+// ValidateAnthropicBaseURL rejects base_url values ending with /v1 (or /v1/) for
+// anthropic-compatible providers because AnthropicAdapter appends /v1/messages.
+func ValidateAnthropicBaseURL(baseURL string) error {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return nil
+	}
+	cleanPath := strings.TrimRight(parsed.Path, "/")
+	if cleanPath == "/v1" || strings.HasSuffix(strings.ToLower(cleanPath), "/v1") {
+		suggested := *parsed
+		suggested.User = nil
+		suggested.RawQuery = ""
+		suggested.Fragment = ""
+		suggested.Path = cleanPath[:len(cleanPath)-3]
+		origin := strings.TrimRight(suggested.String(), "/")
+		return fmt.Errorf("anthropic-compatible base_url must not end with /v1 (got %q; the adapter appends /v1/messages, so use the origin such as %q)", trimmed, origin)
+	}
+	return nil
+}
+
+// ValidateProvidersConfig validates provider thinking and endpoint conventions
+// after config loading and normalization.
+func ValidateProvidersConfig(cfg *Config) error {
+	if err := ValidateProvidersThinking(cfg); err != nil {
+		return err
+	}
+	if cfg == nil {
+		return nil
+	}
+	for name, provider := range cfg.Providers {
+		apiProvider, err := EffectiveAPIProvider(name, provider)
+		if err != nil {
+			continue
+		}
+		if apiProvider == "anthropic-compatible" {
+			if err := ValidateAnthropicBaseURL(provider.BaseURL); err != nil {
+				return fmt.Errorf("provider %s: %w", name, err)
+			}
+		}
+	}
+	for role, override := range map[string]RoleProviderOverride{
+		"planner":   cfg.RoleProviders.Planner,
+		"generator": cfg.RoleProviders.Generator,
+		"evaluator": cfg.RoleProviders.Evaluator,
+		"explorer":  cfg.RoleProviders.Explorer,
+	} {
+		apiProvider := normalizeAPIProvider(override.APIProvider)
+		if apiProvider == "" && override.Provider != "" {
+			if baseProvider, ok := cfg.Providers[override.Provider]; ok {
+				apiProvider, _ = EffectiveAPIProvider(override.Provider, baseProvider)
+			}
+		}
+		if apiProvider == "anthropic-compatible" {
+			if err := ValidateAnthropicBaseURL(override.BaseURL); err != nil {
+				return fmt.Errorf("role_providers.%s: %w", role, err)
+			}
+		}
+	}
+	return nil
 }
 
 func boolPtr(value bool) *bool {

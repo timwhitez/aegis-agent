@@ -3164,7 +3164,7 @@ func defRequestUserInput() Definition {
 				return errorResult("request_user_input", errors.New("request_user_input is only available in the root session")), nil
 			}
 			if execCtx.PlanInputResponder == nil {
-				return errorResult("request_user_input", errors.New("request_user_input requires an interactive responder (TTY or Web API)")), nil
+				return errorResult("request_user_input", errors.New("request_user_input requires an interactive responder (TTY or Web API); proceed with reasonable assumptions and call submit_plan or finish")), nil
 			}
 			request := session.PlanModeInputRequest{
 				RequestID:  session.NewPlanModeQuestionID(),

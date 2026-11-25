@@ -40,7 +40,7 @@ func normalizeAndValidateParentWaitMode(value string) (string, error) {
 	case "any", "wait-any", "wait_any":
 		return parentWaitAny, nil
 	default:
-		return "", fmt.Errorf("unsupported wait mode: %s", strings.TrimSpace(value))
+		return "", fmt.Errorf("unsupported wait mode %q (expected one of: wait-all, wait-any, all, any, default)", strings.TrimSpace(value))
 	}
 }
 

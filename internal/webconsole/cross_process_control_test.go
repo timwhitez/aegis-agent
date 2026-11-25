@@ -1,11 +1,16 @@
 package webconsole
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"aegis-agent/internal/events"
 	"aegis-agent/internal/runtime"
@@ -264,4 +269,162 @@ func TestCrossProcessControlKeepsNotOwnedResponseWithoutOwnerEvents(t *testing.T
 			t.Fatalf("sessions without an owner clue must not queue steers, got %#v", requests)
 		}
 	}
+}
+
+func TestReconcileMissingOwnerRunningSessionAfterGraceAndForceControl(t *testing.T) {
+	svc := newCrossProcessControlService(t, func(int) bool { return false })
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	// Stale running session with NO owner events (UpdatedAt 30s ago).
+	stale := testSessionMetadata(t, "missing_owner_stale")
+	staleState := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "provider_call",
+		UpdatedAt: time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339Nano),
+	}
+	if err := svc.store.Create(stale, staleState); err != nil {
+		t.Fatalf("create stale session: %v", err)
+	}
+	if err := svc.reconcileAllStaleRunningSessions(); err != nil {
+		t.Fatalf("reconcileAllStaleRunningSessions: %v", err)
+	}
+	after, err := svc.store.LoadState(stale.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != session.StatusPaused || after.PauseReason != "stale_owner_missing" {
+		t.Fatalf("expected stale missing-owner session paused with stale_owner_missing, got %#v", after)
+	}
+
+	// Fresh (<5s) running session with NO owner events: ?force=true reconciles immediately on interrupt, stop, and delete.
+	for _, action := range []string{"stop", "interrupt"} {
+		fresh := testSessionMetadata(t, "missing_owner_force_"+action)
+		if err := svc.store.Create(fresh, testSessionState(session.StatusRunning)); err != nil {
+			t.Fatal(err)
+		}
+		var resp map[string]any
+		postJSON(t, ts.URL+"/api/sessions/"+fresh.ID+"/"+action+"?force=true", map[string]any{}, http.StatusAccepted, &resp)
+		if resp["reconciled"] != true {
+			t.Fatalf("expected ?force=true %s to reconcile missing-owner session, got %#v", action, resp)
+		}
+		loaded, err := svc.store.LoadState(fresh.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.Status != session.StatusPaused {
+			t.Fatalf("expected paused after force %s, got %#v", action, loaded)
+		}
+	}
+
+	// Corrupt session must not abort reconciling subsequent valid stale sessions, and runReaperPass logs audit errors instead of silently stopping.
+	corrupt := testSessionMetadata(t, "corrupt_running")
+	if err := svc.store.Create(corrupt, staleState); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svc.store.SessionDir(corrupt.ID), "events.jsonl"), []byte("{not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	validAfterCorrupt := testSessionMetadata(t, "valid_after_corrupt")
+	if err := svc.store.Create(validAfterCorrupt, staleState); err != nil {
+		t.Fatal(err)
+	}
+	svc.runReaperPass()
+	reconciledAfter, err := svc.store.LoadState(validAfterCorrupt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reconciledAfter.Status != session.StatusPaused {
+		t.Fatalf("expected valid stale session after corrupt session to be reconciled, got %#v", reconciledAfter)
+	}
+	auditBytes, err := os.ReadFile(webAuditLogPath(svc.cfg.Session.Dir))
+	if err != nil || !strings.Contains(string(auditBytes), "web.reaper.error") {
+		t.Fatalf("expected web.reaper.error audit event when reaper hits corrupt session, err=%v audit=%s", err, string(auditBytes))
+	}
+}
+
+func TestReconcileDeadExecutingApprovalOperationUsesApprovalRecoveryReason(t *testing.T) {
+	svc := newCrossProcessControlService(t, func(int) bool { return false })
+
+	meta := testSessionMetadata(t, "dead_approval_executing")
+	nowStr := time.Now().UTC().Add(-20 * time.Second).Format(time.RFC3339Nano)
+	if err := svc.store.Create(meta, session.State{
+		Status:    session.StatusAwaitingInput,
+		Phase:     "plan_approval",
+		UpdatedAt: nowStr,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.CreatePlanMode(meta.ID, session.PlanModeDraft{
+		Enabled:   true,
+		Objective: "Approve plan",
+		Source:    session.PlanModeSourceWeb,
+	}); err != nil {
+		t.Fatalf("create plan mode: %v", err)
+	}
+	submitted, err := svc.store.SubmitPlanMode(meta.ID, session.PlanModeSubmitInput{
+		Title:        "Plan",
+		Summary:      "Summary",
+		PlanMarkdown: "# Plan",
+		Verification: []string{"go test ./..."},
+		Source:       session.PlanModeSourceTool,
+	})
+	if err != nil {
+		t.Fatalf("submit plan mode: %v", err)
+	}
+	snap, err := svc.store.LoadApprovalSnapshot(meta.ID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	target := session.ApprovalTarget{
+		PlanModeID:       submitted.PlanModeID,
+		PlanVersion:      submitted.PlanVersion,
+		ExpectedRevision: snap.Revision,
+	}
+	prepResult, err := runtime.NewCoreRunner(svc.cfg).PrepareApprovalOperation(context.Background(), runtime.ContinueRequest{
+		SessionID:         meta.ID,
+		ApprovePlan:       true,
+		ApprovalTarget:    &target,
+		ApprovalRequestID: "req_dead_exec",
+		Source:            session.PlanModeSourceWeb,
+	})
+	if err != nil {
+		t.Fatalf("prepare approval operation: %v", err)
+	}
+	receipt := prepResult.Lookup.Receipt
+	var dataMap map[string]any
+	if err := json.Unmarshal(receipt.Recovery.Data, &dataMap); err != nil {
+		t.Fatal(err)
+	}
+	prepMap := dataMap["preparation"].(map[string]any)
+	prepMap["phase"] = "executing"
+	prepMap["completed_phase"] = "executing"
+	prepMap["owner_pid"] = 999998
+	recoveryPayload := receipt.Recovery
+	recoveryPayload.OwnerPID = 999998
+	recoveryPayload.Data = mustMarshalTestJSON(t, dataMap)
+	if _, err := svc.store.CheckpointApprovalOperation(meta.ID, receipt.OperationID, receipt.Recovery.RunGeneration, "executing", recoveryPayload); err != nil {
+		t.Fatalf("checkpoint executing: %v", err)
+	}
+	appendRunOwnerAcquire(t, svc, meta.ID, 999998, "2026-06-12T06:09:05Z")
+
+	if err := svc.reconcileAllStaleRunningSessions(); err != nil {
+		t.Fatalf("reconcileAllStaleRunningSessions: %v", err)
+	}
+	after, err := svc.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != session.StatusPaused || after.PauseReason != "stale_owner_reconciled_approval_recovery" {
+		t.Fatalf("expected approval recovery pause reason, got %#v", after)
+	}
+}
+
+func mustMarshalTestJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

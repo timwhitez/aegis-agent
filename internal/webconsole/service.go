@@ -236,6 +236,7 @@ type ProviderMeta struct {
 	Name    string `json:"name"`
 	Model   string `json:"model"`
 	BaseURL string `json:"base_url"`
+	Source  string `json:"source,omitempty"`
 }
 
 type MetaResponse struct {
@@ -666,6 +667,7 @@ func (s *Service) meta() (MetaResponse, error) {
 			Name:    name,
 			Model:   provider.Model,
 			BaseURL: provider.BaseURL,
+			Source:  cfg.ProviderSource(name),
 		})
 	}
 	sort.Slice(providers, func(i, j int) bool { return providers[i].Name < providers[j].Name })
@@ -1036,6 +1038,7 @@ func (s *Service) handleSessionRoute(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			resp, err := s.sessionDetail(sessionID, queryBoundedInt(r, "limit", 40, 1, 200))
 			if err != nil {
+				err = s.sanitizeSessionNotExist(sessionID, err)
 				writeError(w, sessionStoreStatus(err), err)
 				return
 			}
@@ -1274,6 +1277,7 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	if _, err := s.store.LoadMetadata(sessionID); err != nil {
+		err = s.sanitizeSessionNotExist(sessionID, err)
 		writeError(w, sessionStoreStatus(err), err)
 		return
 	}
@@ -1286,7 +1290,8 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 		writeError(w, http.StatusConflict, errActiveSessionTree)
 		return
 	}
-	if err := s.reconcileStaleRunningSessionTree(sessionID, "delete_session"); err != nil {
+	forceReconcile := r.URL.Query().Get("force") == "true"
+	if err := s.reconcileStaleRunningSessionTree(sessionID, "delete_session", forceReconcile); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -1324,10 +1329,26 @@ func (s *Service) handleDeleteSession(w http.ResponseWriter, r *http.Request, se
 
 func (s *Service) requireSession(w http.ResponseWriter, sessionID string) bool {
 	if _, err := s.store.LoadMetadata(sessionID); err != nil {
+		err = s.sanitizeSessionNotExist(sessionID, err)
 		writeError(w, sessionStoreStatus(err), err)
 		return false
 	}
 	return true
+}
+
+func (s *Service) sanitizeSessionNotExist(sessionID string, err error) error {
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if _, statErr := os.Stat(s.store.SessionDir(sessionID)); errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("%w: %w", newWebError(
+			"SESSION_NOT_FOUND",
+			"session not found",
+			"the requested session does not exist",
+			"refresh the session list and choose an existing session",
+		), fs.ErrNotExist)
+	}
+	return err
 }
 
 func sessionStoreStatus(err error) int {
@@ -2796,7 +2817,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 		writeError(w, status, err)
 		return
 	}
-	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+	if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 		writeError(w, http.StatusConflict, webContinueError(err))
 		return
 	}
@@ -2810,7 +2831,7 @@ func (s *Service) handleContinueSession(w http.ResponseWriter, r *http.Request, 
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+		if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 			writeError(w, http.StatusConflict, webContinueError(err))
 			return
 		}
@@ -2872,7 +2893,10 @@ func (s *Service) handlePlanModeGet(w http.ResponseWriter, sessionID string) {
 		return
 	}
 	if approval.PlanMode.PlanModeID == "" {
-		writeError(w, http.StatusNotFound, fs.ErrNotExist)
+		writeJSON(w, http.StatusOK, session.PlanModeState{
+			Enabled: false,
+			Status:  "off",
+		})
 		return
 	}
 	approval.PlanMode.ApprovalRevision = approval.Revision
@@ -3085,7 +3109,7 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 	if err != nil {
 		return err
 	}
-	if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+	if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 		return webContinueError(err)
 	}
 	if s.hasActiveHandle(sessionID) {
@@ -3096,7 +3120,7 @@ func (s *Service) launchPlanModeContinue(ctx context.Context, sessionID string, 
 		if err != nil {
 			return err
 		}
-		if err := runtime.ValidateContinueTarget(meta, state); err != nil {
+		if err := runtime.ValidateContinueTargetWithStore(s.store, meta, state); err != nil {
 			return webContinueError(err)
 		}
 	}
@@ -3229,8 +3253,18 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, r *http.Request,
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
+	forceReconcile := r.URL.Query().Get("force") == "true"
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
+		reconciled, err := s.reconcileStaleRunningSessionWithOptions(sessionID, "manual_interrupt", forceReconcile)
+		if err != nil {
+			writeError(w, sessionStoreStatus(err), err)
+			return
+		}
+		if reconciled {
+			writeJSON(w, http.StatusAccepted, map[string]any{"session_id": sessionID, "status": "interrupted", "reconciled": true})
+			return
+		}
 		steerState, err := s.queueCrossProcessInterruptSteer(r.Context(), sessionID, runtime.InterruptWithoutFinishSteerMessage)
 		if err != nil {
 			writeError(w, steerActionStatus(err), err)
@@ -3249,7 +3283,7 @@ func (s *Service) handleInterruptSession(w http.ResponseWriter, r *http.Request,
 			errorCodeActiveHandleNotOwned,
 			"session is not actively owned by this web console; use steer with interrupt instead",
 			"this server process does not own an in-memory cancel handle for the session",
-			"send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles",
+			"send POST /api/sessions/{id}/steer with interrupt=true, pass ?force=true if the run owner is missing, or run 'aegis-agent sessions reconcile' after the run stalls",
 		))
 		return
 	}
@@ -3264,14 +3298,15 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 	if !decodeOptionalEmptyJSONRequest(w, r) {
 		return
 	}
+	forceReconcile := r.URL.Query().Get("force") == "true"
 	handle, ok := s.handleForSession(sessionID)
 	if !ok {
-		descendantStops, err := s.stopDescendantSessionsAndJobs(sessionID)
+		descendantStops, err := s.stopDescendantSessionsAndJobsWithOptions(sessionID, forceReconcile)
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		reconciled, err := s.reconcileStaleRunningSession(sessionID, "manual_stop")
+		reconciled, err := s.reconcileStaleRunningSessionWithOptions(sessionID, "manual_stop", forceReconcile)
 		if err != nil {
 			writeError(w, sessionStoreStatus(err), err)
 			return
@@ -3312,7 +3347,7 @@ func (s *Service) handleStopSession(w http.ResponseWriter, r *http.Request, sess
 			errorCodeActiveHandleNotOwned,
 			"session is not actively owned by this web console; it may already be settled",
 			"this server process does not own an in-memory cancel handle for the session",
-			"refresh the session; if it is still running, send interrupt steer or wait for the run to settle",
+			"refresh the session; if it is still running without a live owner, pass ?force=true or run 'aegis-agent sessions reconcile'",
 		))
 		return
 	}
@@ -3419,10 +3454,17 @@ func (s *Service) handleShowJob(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.store.LoadJob(jobID)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, fs.ErrNotExist) {
-			status = http.StatusNotFound
-		} else if isStoreIDClientError(err) {
+			writeError(w, http.StatusNotFound, newWebError(
+				"QUEUE_JOB_NOT_FOUND",
+				"queue job not found",
+				"the requested queue job does not exist",
+				"refresh the queue job list and choose an existing job",
+			))
+			return
+		}
+		status := http.StatusInternalServerError
+		if isStoreIDClientError(err) {
 			status = http.StatusBadRequest
 		}
 		writeError(w, status, err)
@@ -4923,24 +4965,41 @@ func (s *Service) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	for name, p := range cfg.Providers {
 		effectiveAPIProvider, _ := config.EffectiveAPIProvider(name, p)
 		provs[name] = map[string]any{
+			"source":                          cfg.ProviderSource(name),
 			"api_provider":                    strings.TrimSpace(p.APIProvider),
 			"effective_api_provider":          effectiveAPIProvider,
+			"api_key_env":                     strings.TrimSpace(p.APIKeyEnv),
 			"base_url":                        p.BaseURL,
 			"model":                           p.Model,
 			"context_window_tokens":           p.ContextWindowTokens,
 			"effective_context_window_tokens": config.ResolveContextWindowTokens(p.Model, p.ContextWindowTokens),
 			"has_key":                         cfg.APIKey(name) != "",
-			"reasoning_mode":                  providerReasoningMode(name, p),
-			"reasoning_modes":                 providerReasoningModes(name, p),
-			"reasoning_summary":               providerReasoningSummary(p),
-			"reasoning_summary_modes":         providerReasoningSummaryModes(name, p),
-			"reasoning_effort":                strings.TrimSpace(p.ReasoningEffort),
-			"output_config_effort":            strings.TrimSpace(p.OutputConfigEffort),
-			"thinking_budget":                 p.ThinkingBudget,
-			"thinking_mode":                   config.NormalizeThinkingMode(p.ThinkingMode),
-			"thinking_display":                config.NormalizeThinkingDisplay(p.ThinkingDisplay),
-			"include_thoughts":                p.IncludeThoughts,
-			"max_output_tokens":               p.MaxOutputTokens,
+			"timeout_sec":                     p.TimeoutSec,
+			"request_timeout_sec":             p.RequestTimeoutSec,
+			"stream_idle_timeout_ms":          p.StreamIdleTimeoutMS,
+			"retry": map[string]any{
+				"max_attempts":    p.Retry.MaxAttempts,
+				"base_delay_ms":   p.Retry.BaseDelayMS,
+				"retry_429":       p.Retry.Retry429,
+				"retry_5xx":       p.Retry.Retry5xx,
+				"retry_transport": p.Retry.RetryTransport,
+			},
+			"anthropic_version":       strings.TrimSpace(p.AnthropicVersion),
+			"wire_api":                strings.TrimSpace(p.WireAPI),
+			"prompt_cache":            p.PromptCache,
+			"store":                   p.Store,
+			"send_metadata":           p.SendMetadata,
+			"reasoning_mode":          providerReasoningMode(name, p),
+			"reasoning_modes":         providerReasoningModes(name, p),
+			"reasoning_summary":       providerReasoningSummary(p),
+			"reasoning_summary_modes": providerReasoningSummaryModes(name, p),
+			"reasoning_effort":        strings.TrimSpace(p.ReasoningEffort),
+			"output_config_effort":    strings.TrimSpace(p.OutputConfigEffort),
+			"thinking_budget":         p.ThinkingBudget,
+			"thinking_mode":           config.NormalizeThinkingMode(p.ThinkingMode),
+			"thinking_display":        config.NormalizeThinkingDisplay(p.ThinkingDisplay),
+			"include_thoughts":        p.IncludeThoughts,
+			"max_output_tokens":       p.MaxOutputTokens,
 		}
 	}
 	childBudgetCheckpointMS := cfg.Runtime.ChildBudget.ActiveRuntimeCheckpointMS
@@ -5138,9 +5197,16 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		normalizeProviderReasoningFields(providerName, &p)
-		if _, err := effectiveWebSettingsAPIProvider(providerName, p); err != nil {
+		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, p)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
+		}
+		if effectiveAPIProvider == "anthropic-compatible" {
+			if err := config.ValidateAnthropicBaseURL(p.BaseURL); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		}
 		if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
 			envPath := config.DefaultEnvFilePath(cwd)
@@ -5156,6 +5222,7 @@ func (s *Service) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		updatedCfg.Providers[providerName] = p
+		updatedCfg.MarkProviderDeclared(providerName)
 	}
 	if req.RoleProviders != nil {
 		roleProviders, err := roleProvidersFromRequest(updatedCfg, req.RoleProviders)
@@ -5535,12 +5602,24 @@ func roleProviderOverrideFromRequest(cfg *config.Config, role string, req RolePr
 		} else {
 			providerCfg = config.Provider{APIProvider: apiProvider}
 		}
-		if _, err := effectiveWebSettingsAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg); err != nil {
+		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(firstNonEmpty(providerName, "role-"+strings.TrimSpace(role)), providerCfg)
+		if err != nil {
 			return config.RoleProviderOverride{}, err
 		}
+		if effectiveAPIProvider == "anthropic-compatible" {
+			if err := config.ValidateAnthropicBaseURL(baseURL); err != nil {
+				return config.RoleProviderOverride{}, err
+			}
+		}
 	} else if providerName != "" {
-		if _, err := effectiveWebSettingsAPIProvider(providerName, providerCfg); err != nil {
+		effectiveAPIProvider, err := effectiveWebSettingsAPIProvider(providerName, providerCfg)
+		if err != nil {
 			return config.RoleProviderOverride{}, err
+		}
+		if effectiveAPIProvider == "anthropic-compatible" {
+			if err := config.ValidateAnthropicBaseURL(baseURL); err != nil {
+				return config.RoleProviderOverride{}, err
+			}
 		}
 	}
 	return config.RoleProviderOverride{
@@ -5676,6 +5755,12 @@ func (s *Service) handleTestConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if effectiveAPIProvider == "anthropic-compatible" {
+		if err := config.ValidateAnthropicBaseURL(p.BaseURL); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
 	probeReq := runtime.ProbeRequest{Provider: providerName, APIProvider: p.APIProvider, ThinkingProbe: true, ReasoningSummary: p.ReasoningSummary}
 	if req.APIKey != nil && *req.APIKey != "" && *req.APIKey != maskedAPIKey {
@@ -7333,7 +7418,7 @@ func (s *Service) activeHandleOwner(sessionID, sessionStatus string, eventsList 
 		case ownerEventTypeIsAcquire(owner.EventType):
 			owner.Action = "stop and interrupt queue a durable interrupt steer for the owning process; continue after the active run settles"
 		default:
-			owner.Action = "send POST /api/sessions/{id}/steer with interrupt=true, or continue after the active run settles"
+			owner.Action = "no run owner event was recorded; stop, delete, ?force=true, or 'aegis-agent sessions reconcile' can recover this run if stalled"
 		}
 		return owner
 	}
@@ -7431,6 +7516,10 @@ func (s *Service) stopActiveDescendantSessions(sessionID string) (int, error) {
 }
 
 func (s *Service) stopDescendantSessionsAndJobs(sessionID string) (int, error) {
+	return s.stopDescendantSessionsAndJobsWithOptions(sessionID, false)
+}
+
+func (s *Service) stopDescendantSessionsAndJobsWithOptions(sessionID string, forceMissingOwner bool) (int, error) {
 	stopped, err := s.stopActiveDescendantSessions(sessionID)
 	if err != nil {
 		return stopped, err
@@ -7452,7 +7541,7 @@ func (s *Service) stopDescendantSessionsAndJobs(sessionID string) (int, error) {
 		if s.hasActiveHandle(id) {
 			continue
 		}
-		reconciled, err := s.reconcileStaleRunningSession(id, "manual_stop")
+		reconciled, err := s.reconcileStaleRunningSessionWithOptions(id, "manual_stop", forceMissingOwner)
 		if err != nil {
 			return stopped, fmt.Errorf("stop descendant session %s: %w", id, err)
 		}
@@ -7552,7 +7641,7 @@ func currentProcessHandleCanBePruned(status string) bool {
 	return status == session.StatusCompleted || status == session.StatusCancelled || status == session.StatusFailed
 }
 
-func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string) error {
+func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string, forceMissingOwner bool) error {
 	items, _, err := s.store.ListPage(1000000, 0)
 	if err != nil {
 		return err
@@ -7564,14 +7653,16 @@ func (s *Service) reconcileStaleRunningSessionTree(sessionID, pauseReason string
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		if _, err := s.reconcileStaleRunningSession(id, pauseReason); err != nil {
+		if _, err := s.reconcileStaleRunningSessionWithOptions(id, pauseReason, forceMissingOwner); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReason string) (bool, error) {
+const staleMissingOwnerGrace = 5 * time.Second
+
+func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReason string, forceMissingOwner bool) (bool, error) {
 	if s.hasActiveHandle(sessionID) {
 		return false, nil
 	}
@@ -7584,7 +7675,7 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 	}
 	canReconcile, err := runtime.CanReconcileApprovalPreparation(s.store, sessionID)
 	if err != nil {
-		if (pauseReason != "manual_stop" && pauseReason != "delete_session") || !errors.Is(err, session.ErrApprovalConflict) {
+		if (pauseReason != "manual_stop" && pauseReason != "manual_interrupt" && pauseReason != "delete_session") || !errors.Is(err, session.ErrApprovalConflict) {
 			return false, err
 		}
 		canReconcile = true
@@ -7597,8 +7688,18 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 		return false, err
 	}
 	owner := latestActiveOwnerFromEvents(eventsList)
-	if !staleRunningOwnerCanBeReconciled(owner) {
+	if !staleRunningOwnerCanBeReconciledAt(owner, state, time.Now().UTC(), forceMissingOwner) {
 		return false, nil
+	}
+	effectivePauseReason := pauseReason
+	approvalRecovery := false
+	if pauseReason == queueReaperPauseReason {
+		if owner.EventType == "" {
+			effectivePauseReason = "stale_owner_missing"
+		} else if runtime.HasDeadExecutingApprovalOperation(s.store, sessionID, state.RunGeneration) {
+			effectivePauseReason = "stale_owner_reconciled_approval_recovery"
+			approvalRecovery = true
+		}
 	}
 	requests, err := s.store.LoadSteerRequests(sessionID)
 	if err != nil {
@@ -7610,7 +7711,7 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 	previousRequests := append([]session.SteerRequest(nil), requests...)
 	state.Status = session.StatusPaused
 	state.Phase = "interrupt"
-	state.PauseReason = pauseReason
+	state.PauseReason = effectivePauseReason
 	state.LastError = ""
 	committed, saved, err := s.store.SwapStateIfCurrent(sessionID, previousState, state)
 	if err != nil {
@@ -7627,24 +7728,27 @@ func (s *goalMutationService) reconcileStaleRunningSession(sessionID, pauseReaso
 		"started_at":        owner.StartedAt,
 		"released_at":       nowString(),
 		"reason":            "stale_owner_reconciled",
+		"missing_owner":     owner.EventType == "",
 		"previous_event_at": owner.LastEventAt,
 	})
 	if err := s.store.AppendEvent(sessionID, released); err != nil {
 		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
 	paused := events.New(sessionID, "session.paused", "interrupt", map[string]any{
-		"reason":             pauseReason,
+		"reason":             effectivePauseReason,
 		"source":             "webconsole",
 		"reconciled":         true,
 		"reconciled_from":    "stale_webconsole_owner",
 		"owner_process_id":   owner.PID,
 		"owner_process_dead": ownerProcessKnownDead(owner),
+		"missing_owner":      owner.EventType == "",
+		"approval_recovery":  approvalRecovery,
 		"process_start_id":   owner.ProcessStartID,
 	})
 	if err := s.store.AppendEvent(sessionID, paused); err != nil {
 		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
-	if _, err := s.rejectPendingStopFallbackSteers(sessionID, requests, pauseReason, &committed); err != nil {
+	if _, err := s.rejectPendingStopFallbackSteers(sessionID, requests, effectivePauseReason, &committed); err != nil {
 		return false, s.restoreStaleRunningSessionReconcile(sessionID, previousState, previousEvents, previousRequests, err, committed)
 	}
 	return true, nil
@@ -7776,6 +7880,30 @@ func staleRunningOwnerCanBeReconciled(owner ActiveHandleOwner) bool {
 		return true
 	}
 	return ownerProcessKnownDead(owner)
+}
+
+func staleRunningOwnerCanBeReconciledAt(owner ActiveHandleOwner, state session.State, now time.Time, forceMissingOwner bool) bool {
+	if staleRunningOwnerCanBeReconciled(owner) {
+		return true
+	}
+	if owner.EventType != "" {
+		return false
+	}
+	if forceMissingOwner {
+		return true
+	}
+	stamp := strings.TrimSpace(state.UpdatedAt)
+	if stamp == "" {
+		return true
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		updatedAt, err = time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return true
+		}
+	}
+	return now.Sub(updatedAt) >= staleMissingOwnerGrace
 }
 
 // ownerIsCurrentProcess reports whether the durable owner clue names this
@@ -9538,9 +9666,12 @@ func writeError(w http.ResponseWriter, status int, err error) {
 	}
 	var coded webError
 	if errors.As(err, &coded) {
+		resp.Error = coded.Error()
 		resp.Code = coded.code
 		resp.Detail = coded.detail
 		resp.Action = coded.action
+	} else if errors.Is(err, fs.ErrNotExist) {
+		resp = sanitizeWebNotExistError(err)
 	} else {
 		var httpErr *provider.HTTPError
 		if errors.As(err, &httpErr) && strings.TrimSpace(httpErr.Class) != "" {
@@ -9554,6 +9685,60 @@ func writeError(w http.ResponseWriter, status int, err error) {
 		}
 	}
 	writeJSON(w, status, resp)
+}
+
+func sanitizeWebNotExistError(err error) ErrorResponse {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		p := filepath.ToSlash(pathErr.Path)
+		switch {
+		case strings.Contains(p, "/_queue/"):
+			return ErrorResponse{
+				Error:  "queue job not found",
+				Code:   "QUEUE_JOB_NOT_FOUND",
+				Action: "Refresh the queue job list and choose an existing job.",
+			}
+		case strings.HasSuffix(p, "/session.json") || strings.HasSuffix(p, "/state.json"):
+			return ErrorResponse{
+				Error:  "session not found",
+				Code:   "SESSION_NOT_FOUND",
+				Action: "Refresh the session list and choose an existing session.",
+			}
+		case strings.HasSuffix(p, "/planmode.json"):
+			return ErrorResponse{
+				Error:  "plan mode is not active for this session",
+				Code:   "PLAN_MODE_NOT_FOUND",
+				Action: "Enable Plan Mode before cancelling or submitting a revision.",
+			}
+		case strings.HasSuffix(p, "/goal.json"):
+			return ErrorResponse{
+				Error:  "session has no goal",
+				Code:   "GOAL_NOT_FOUND",
+				Action: "Create a goal before updating or clearing it.",
+			}
+		case strings.HasSuffix(p, "/approval-operations.json"):
+			return ErrorResponse{
+				Error:  "approval receipt not found",
+				Code:   "APPROVAL_RECEIPT_NOT_FOUND",
+				Action: "Verify the session and approval_request_id.",
+			}
+		default:
+			return ErrorResponse{
+				Error:  "file or resource not found",
+				Code:   "NOT_FOUND",
+				Action: "Verify the requested path or resource exists.",
+			}
+		}
+	}
+	msg := err.Error()
+	if strings.Contains(msg, string(filepath.Separator)) || msg == fs.ErrNotExist.Error() {
+		msg = "resource not found"
+	}
+	return ErrorResponse{
+		Error:  msg,
+		Code:   "NOT_FOUND",
+		Action: "Verify the requested resource exists.",
+	}
 }
 
 func webProviderErrorAction(class string) string {

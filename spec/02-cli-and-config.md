@@ -7,13 +7,13 @@
 | 命令 | 作用 |
 | --- | --- |
 | `init` | 生成或更新一份配置、provider profile、session/skill 目录和可选示例 hook |
-| `models` | 列出当前配置中的 provider/model 记录；不是远端模型发现 |
+| `models` | 列出当前有效配置（内建默认与已加载配置合并）中的 provider/model 记录；不是远端模型发现。文本输出列为 `<provider>/<model>`、`<provider>: <model>`、协议族（`openai`/`anthropic`/`google`）和来源（`file`/`builtin`，默认 profile 附 `default`）；`--declared` 仅列出配置文件声明的 provider |
 | `web` | 启动本地 Web 服务；默认 `127.0.0.1:3940`，worker 默认 2，范围 0–8 |
 | `run` | 交互执行；TTY 下 Esc 可触发 interrupt |
 | `exec` | 非交互执行；可输出 JSON/stream-json，默认要求显式 `finish` |
 | `continue` | 读取已有 session，提交普通 follow-up 或显式恢复/审批操作 |
 | `steer` | 向运行中的 session 写入 steering，可选择 interrupt 当前执行 |
-| `sessions` | 列出 session；`sessions context <id>` 输出上下文报告 |
+| `sessions` | 列出 session；`sessions context <id>` 输出上下文报告；`sessions reconcile <id>` 恢复无活属主的 zombie `running` session 为 `paused` |
 | `goal` | 查询和改变 Goal、mission plan、validation 和审批 |
 | `tasks` | 读取 session 的 todo/task 视图 |
 | `probe-provider` | 使用当前或显式 profile 检查 provider 能力和请求 |
@@ -39,8 +39,8 @@
 - `--config`：选择配置文件；显式缺失会失败；
 - `--provider`、`--model`：覆盖当前启动的 profile/model，并记录到 session snapshot；
 - `--workdir`：选择本次执行的工作目录；
-- `--timeout`：本次运行的超时；runtime command timeout 另由配置控制；
-- `--plan`、`--plan-only`：进入 Plan Mode；
+- `--timeout`：本次运行的超时，支持正整数秒或 Go duration（如 `30` 或 `2m`）；runtime command timeout 另由配置控制；
+- `--plan`、`--plan-only`：进入 Plan Mode（非 TTY 无交互输入时 `request_user_input` 会立即返回错误引导模型基于合理假设调用 `submit_plan`，`--plan-only` 同时对探索轮次设上限）；
 - `--goal`、`--goal-mode`、`--goal-token-budget`、`--goal-time-budget`、`--goal-success`、`--goal-validate`：创建 Goal draft；
 - `--thinking-level`：请求适合当前 adapter 的思考级别；OpenAI 系映射为 `reasoning.effort`，Anthropic 系映射为 `thinking.budget_tokens`，并且只在 profile 声明了 `output_config_effort` 时额外改写 `output_config.effort`；
 - `--json`：输出 JSON；`--output-format stream-json`：输出事件协议；二者互斥；
@@ -50,7 +50,7 @@
 - `--allow-builtin-config`：明确允许没有配置文件时使用内置默认；
 - `--send-metadata=true|false`：显式覆盖 provider metadata 选项，并可持久化到 resume 事实。
 
-审批/恢复命令还可能需要 `--plan-mode-id`、`--plan-version`、`--expected-revision`、`--approval-request-id`、`--approve-latest` 或 `--approval-receipt`。审批目标必须明确，不能用普通 continue 伪装审批。
+审批/恢复命令（`continue --approve-plan`、`goal plan approve`）还必须显式传 `--approval-request-id <id>`（重试复用同一 ID），以及 `--plan-mode-id` + `--plan-version` + `--expected-revision` 或 `--approve-latest`；只读查询可用 `--approval-receipt --approval-request-id <id>`。审批目标必须明确，不能用普通 continue 伪装审批。所有 CLI 命令均支持 `--help` / `-h`（退出码 `0` 输出到 stdout），缺失 session 或 goal 时返回明确提示而不泄漏内部存储路径。
 
 普通文本模式下，`run`、`exec` 和 `continue` 将最终回答写到 stdout。runtime 返回失败结果且附有错误详情时，stderr 显示已知停止原因。对于自由文本，最终摘要提示查看本机会话状态。stderr 不可写时仍返回会话退出码。若命令直接返回 provider 或传输错误，CLI 沿用该错误的诊断和退出码。
 
@@ -87,11 +87,11 @@ hooks: {}
 
 每个 `providers.<name>` 至少需要 `api_provider`、`api_key_env`、`base_url` 和 `model`。可选字段包括 `context_window_tokens`、request/stream timeout、retry、`max_output_tokens`、reasoning/thinking、`store`、`send_metadata` 和 provider-specific header/format。
 
-当前 adapter family：
+当前 adapter family 与 `base_url` 路径约定：
 
-- `openai-compatible`：Responses wire API；OpenAI 以及兼容 Responses 的网关；
-- `anthropic-compatible`：Anthropic Messages；
-- `google`：Gemini `generateContent`。
+- `openai-compatible`：Responses wire API；adapter 在 `base_url` 后拼接 `/responses`，因此 `base_url` 通常需要带 `/v1`（例如 `https://api.openai.com/v1`）；
+- `anthropic-compatible`：Anthropic Messages；adapter 在 `base_url` 后拼接 `/v1/messages`，因此 `base_url` 必须只写 origin（例如 `https://api.anthropic.com`），不要以 `/v1` 结尾（配置加载和构造器会拒绝末尾 `/v1`）；
+- `google`：Gemini `generateContent`；adapter 在 `base_url` 后拼接 `/v1beta/models/<model>:generateContent`，因此 `base_url` 写 origin（例如 `https://generativelanguage.googleapis.com`），不要带 `/v1beta`。
 
 `wire_api` 是兼容字段，OpenAI-compatible 当前接受 `responses`。不能在文档或样例中承诺旧的 chat-completions 入口。
 

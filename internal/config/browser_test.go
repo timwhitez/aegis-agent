@@ -31,3 +31,29 @@ func TestBrowserConfigCanonicalRoundTripAndValidation(t *testing.T) {
 		t.Fatal("non-absolute default")
 	}
 }
+
+func TestBrowserConfigAllowsDisabledWithoutHomeOrInstallRoot(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+
+	if root := DefaultBrowserInstallRoot(); !filepath.IsAbs(root) {
+		t.Fatalf("expected absolute default browser install root without HOME, got %q", root)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("schema_version: 1\ntools:\n  browser:\n    enabled: false\n    install_root: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path, dir)
+	if err != nil {
+		t.Fatalf("disabled browser without HOME/install_root should load cleanly: %v", err)
+	}
+	if loaded.Tools.Browser.Enabled {
+		t.Fatal("expected browser to remain disabled")
+	}
+
+	if err := ValidateBrowserConfig(BrowserConfig{Enabled: true, InstallRoot: ""}); err == nil {
+		t.Fatal("enabled browser with empty install_root must fail validation")
+	}
+}

@@ -3207,3 +3207,29 @@ func assertProviderParseError(t *testing.T, err error, providerName, messagePart
 		t.Fatalf("expected error message to contain %q, got %q", messagePart, httpErr.Message)
 	}
 }
+
+func TestHTTPError404IncludesSanitizedRequestURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "404 page not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	adapter := NewAnthropic(server.URL+"/v1", "key", "2023-06-01", server.Client())
+	_, err := adapter.RunTurn(context.Background(), TurnRequest{
+		SessionID:    "s1",
+		Model:        "MiniMax-M3.1-Flash",
+		SystemPrompt: "system",
+		Messages:     []session.Message{session.NewMessage("user", "hello")},
+	}, func(string, map[string]any) {})
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("expected HTTPError, got %T %v", err, err)
+	}
+	wantURL := server.URL + "/v1/v1/messages"
+	if httpErr.StatusCode != http.StatusNotFound || httpErr.RequestURL != wantURL {
+		t.Fatalf("unexpected 404 metadata: %#v", httpErr)
+	}
+	if !strings.Contains(httpErr.Error(), wantURL) {
+		t.Fatalf("expected 404 error to include full request URL %q, got %q", wantURL, httpErr.Error())
+	}
+}

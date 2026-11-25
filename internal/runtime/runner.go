@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -49,9 +50,11 @@ type Runner struct {
 	lifecycleMu    sync.Mutex
 	lifecycleHooks RunLifecycleHooks
 
-	planInputMu       sync.Mutex
-	planInputWaiters  map[string]chan planInputResponse
-	planInputHandlers map[string]PlanInputHandler
+	planInputMu          sync.Mutex
+	planInputWaiters     map[string]chan planInputResponse
+	planInputHandlers    map[string]PlanInputHandler
+	planInputUnavailable map[string]bool
+	planOnlySessions     map[string]bool
 
 	// beforeStartSessionCreatedEvent is set only by package tests to force
 	// deterministic failures around the start-time lifecycle event boundary.
@@ -100,13 +103,15 @@ func NewRunner(cfg *config.Config) *Runner {
 	control := &runControl{}
 	engine := NewEngine(cfg, store, bus, control)
 	r := &Runner{
-		cfg:               cfg,
-		store:             store,
-		bus:               bus,
-		control:           control,
-		engine:            engine,
-		planInputWaiters:  map[string]chan planInputResponse{},
-		planInputHandlers: map[string]PlanInputHandler{},
+		cfg:                  cfg,
+		store:                store,
+		bus:                  bus,
+		control:              control,
+		engine:               engine,
+		planInputWaiters:     map[string]chan planInputResponse{},
+		planInputHandlers:    map[string]PlanInputHandler{},
+		planInputUnavailable: map[string]bool{},
+		planOnlySessions:     map[string]bool{},
 	}
 	engine.SetRunner(r)
 	return r
@@ -162,11 +167,68 @@ func (r *Runner) clearPlanInputHandler(sessionID string) {
 	delete(r.planInputHandlers, sessionID)
 }
 
+func (r *Runner) setPlanInputAvailability(sessionID string, available bool) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	if r.planInputUnavailable == nil {
+		r.planInputUnavailable = map[string]bool{}
+	}
+	if available {
+		delete(r.planInputUnavailable, sessionID)
+		return
+	}
+	r.planInputUnavailable[sessionID] = true
+}
+
+func (r *Runner) clearPlanInputAvailability(sessionID string) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	delete(r.planInputUnavailable, sessionID)
+}
+
+func (r *Runner) CanRespondPlanInput(sessionID string) bool {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	if r.planInputHandlers[sessionID] != nil {
+		return true
+	}
+	return !r.planInputUnavailable[sessionID]
+}
+
+func (r *Runner) setPlanOnly(sessionID string, enabled bool) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	if r.planOnlySessions == nil {
+		r.planOnlySessions = map[string]bool{}
+	}
+	if !enabled {
+		delete(r.planOnlySessions, sessionID)
+		return
+	}
+	r.planOnlySessions[sessionID] = true
+}
+
+func (r *Runner) clearPlanOnly(sessionID string) {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	delete(r.planOnlySessions, sessionID)
+}
+
+func (r *Runner) IsPlanOnly(sessionID string) bool {
+	r.planInputMu.Lock()
+	defer r.planInputMu.Unlock()
+	return r.planOnlySessions[sessionID]
+}
+
 func (r *Runner) RequestPlanInput(ctx context.Context, sessionID string, request session.PlanModeInputRequest) ([]session.PlanModeInputAnswer, error) {
 	r.planInputMu.Lock()
 	if handler := r.planInputHandlers[sessionID]; handler != nil {
 		r.planInputMu.Unlock()
 		return handler(ctx, request)
+	}
+	if r.planInputUnavailable[sessionID] {
+		r.planInputMu.Unlock()
+		return nil, errors.New("request_user_input requires an interactive responder (TTY or Web API); proceed with reasonable assumptions and call submit_plan or finish")
 	}
 	key := planInputWaiterKey(sessionID, request.RequestID)
 	ch := make(chan planInputResponse, 1)
@@ -257,7 +319,9 @@ type StartRequest struct {
 	SystemOverride          string
 	Goal                    *session.GoalDraft
 	PlanMode                *session.PlanModeDraft
+	PlanOnly                bool
 	PlanInputHandler        PlanInputHandler
+	PlanInputUnavailable    bool
 	ParentSessionID         string
 	AgentName               string
 	AgentRole               string
@@ -277,6 +341,7 @@ type ContinueRequest struct {
 	SystemOverride         string
 	PlanMode               *session.PlanModeDraft
 	PlanInputHandler       PlanInputHandler
+	PlanInputUnavailable   bool
 	ApprovePlan            bool
 	ApprovalTarget         *session.ApprovalTarget
 	ApprovalRequestID      string
@@ -516,6 +581,10 @@ func (r *Runner) Start(ctx context.Context, req StartRequest) (RunResult, error)
 	if err := r.notifySessionActive(meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
+	r.setPlanInputAvailability(meta.ID, req.PlanInputHandler != nil || !req.PlanInputUnavailable)
+	defer r.clearPlanInputAvailability(meta.ID)
+	r.setPlanOnly(meta.ID, req.PlanOnly)
+	defer r.clearPlanOnly(meta.ID)
 	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 	r.notifySessionInactive(meta, result, err)
 	if err != nil {
@@ -977,7 +1046,7 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 		return RunResult{}, fmt.Errorf("child session %s is paused by %s; only its parent can resume it with an explicit budget extension", meta.ID, state.PauseReason)
 	}
 	if r.approvalOperation == nil || !r.approvalOperation.ResumeClaim {
-		if err := ValidateContinueTarget(meta, state); err != nil {
+		if err := ValidateContinueTargetWithStore(r.store, meta, state); err != nil {
 			return RunResult{}, err
 		}
 	}
@@ -1224,6 +1293,8 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 	if err := r.notifySessionActive(meta); err != nil {
 		return r.failBeforeRun(meta.ID, state, "prepare", err)
 	}
+	r.setPlanInputAvailability(meta.ID, req.PlanInputHandler != nil || !req.PlanInputUnavailable)
+	defer r.clearPlanInputAvailability(meta.ID)
 	result, err := r.runExisting(ctx, meta, state, req.SystemOverride, req.PlanInputHandler)
 	r.notifySessionInactive(meta, result, err)
 	if err != nil && result.SessionID == "" {
@@ -1263,7 +1334,7 @@ func ValidateContinueTarget(meta session.SessionMetadata, state session.State) e
 			SessionID: meta.ID,
 			Status:    state.Status,
 			Detail:    fmt.Sprintf("session %s is already running", meta.ID),
-			Action:    "Send steer to the active run, or wait for it to settle before continuing.",
+			Action:    "Send steer to the active run, wait for it to settle, or run 'aegis-agent sessions reconcile " + meta.ID + "' if the owning process died.",
 		}
 	default:
 		return &SessionNotResumableError{
@@ -1273,6 +1344,59 @@ func ValidateContinueTarget(meta session.SessionMetadata, state session.State) e
 			Action:    "Continue only paused, awaiting_input, failed, or completed root sessions.",
 		}
 	}
+}
+
+func ValidateContinueTargetWithStore(store *session.Store, meta session.SessionMetadata, state session.State) error {
+	err := ValidateContinueTarget(meta, state)
+	if err == nil || store == nil || state.Status != session.StatusRunning {
+		return err
+	}
+	var notResumable *SessionNotResumableError
+	if !errors.As(err, &notResumable) {
+		return err
+	}
+	eventsList, loadErr := store.LoadEvents(meta.ID)
+	if loadErr != nil {
+		return err
+	}
+	if runningSessionOwnerStaleForContinue(eventsList, state) {
+		notResumable.Detail = fmt.Sprintf("session %s is marked running, but its recorded owner process is missing or no longer alive", meta.ID)
+		notResumable.Action = fmt.Sprintf("Run 'aegis-agent sessions reconcile %s' or stop/delete the session in the web console before continuing.", meta.ID)
+	}
+	return notResumable
+}
+
+func runningSessionOwnerStaleForContinue(eventsList []events.Event, state session.State) bool {
+	for i := len(eventsList) - 1; i >= 0; i-- {
+		evt := eventsList[i]
+		switch evt.Type {
+		case "webconsole.handle.released", RunOwnerReleasedEventType:
+			return true
+		case "webconsole.handle.acquired", RunOwnerAcquiredEventType:
+			pid := intFromEventData(evt.Data, "pid")
+			if pid <= 0 {
+				if rawID, _ := evt.Data["process_start_id"].(string); rawID != "" {
+					pidText, _, _ := strings.Cut(strings.TrimSpace(rawID), ":")
+					if parsed, convErr := strconv.Atoi(strings.TrimSpace(pidText)); convErr == nil {
+						pid = parsed
+					}
+				}
+			}
+			return pid > 0 && !session.ProcessOwnerAlive(pid, "")
+		}
+	}
+	stamp := strings.TrimSpace(state.UpdatedAt)
+	if stamp == "" {
+		return true
+	}
+	updatedAt, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		updatedAt, err = time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return true
+		}
+	}
+	return time.Since(updatedAt) >= 5*time.Second
 }
 
 func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata) error {
@@ -3057,6 +3181,9 @@ func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.A
 		}
 		return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
 	case "anthropic-compatible":
+		if err := config.ValidateAnthropicBaseURL(cfg.BaseURL); err != nil {
+			return nil, WrapConfigError(err)
+		}
 		return provider.NewAnthropicWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), cfg.AnthropicVersion, client, retryCfg), nil
 	case "google":
 		return provider.NewGoogleWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil

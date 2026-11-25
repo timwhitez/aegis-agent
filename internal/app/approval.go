@@ -42,7 +42,7 @@ func (flags *cliApprovalFlags) hasTarget() bool {
 func (flags *cliApprovalFlags) validate(approval bool) error {
 	if flags.receipt {
 		if flags.requestID == "" {
-			return session.ErrMissingApprovalRequestID
+			return fmt.Errorf("--approval-request-id is required with --approval-receipt (supply the operation identity from the original approval): %w", session.ErrMissingApprovalRequestID)
 		}
 		if approval || flags.hasTarget() || flags.latest {
 			return errors.New("--approval-receipt is a read-only query; do not combine it with approval flags")
@@ -68,7 +68,7 @@ func (flags *cliApprovalFlags) validate(approval bool) error {
 // ledger before a binding can supply the original target for a retry.
 func resolveCLIApprovalOperationTarget(ctx context.Context, runner coreRunner, store *session.Store, sessionID string, flags *cliApprovalFlags, stdin io.Reader, stderr io.Writer) (*session.ApprovalTarget, error) {
 	if flags.requestID == "" {
-		return nil, session.ErrMissingApprovalRequestID
+		return nil, fmt.Errorf("--approval-request-id is required when approving a plan (for example: --approval-request-id req_1; keep the same id on retries): %w", session.ErrMissingApprovalRequestID)
 	}
 	if !flags.hasTarget() {
 		lookup, err := runner.ApprovalReceipt(sessionID, flags.requestID)

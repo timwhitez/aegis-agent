@@ -12,10 +12,12 @@ subsystem, browser workflow, queue lock or generation protocol is added.
 ## Configuration and installation
 
 `tools.browser`: `enabled: false`, absolute private `install_root` (default
-XDG_DATA_HOME/aegis-agent/browser-use, otherwise ~/.local/share/aegis-agent/browser-use),
+XDG_DATA_HOME/aegis-agent/browser-use, otherwise ~/.local/share/aegis-agent/browser-use,
+or <temp>/aegis-agent/browser-use when HOME is unset),
 optional absolute `browser_executable`, and `timeout_sec: 0` (inherit host
 command timeout). Positive timeout never extends the host command deadline.
-Invalid relative paths/negative timeout fail config validation. Disabled means
+Invalid relative paths or negative timeout fail config validation; when
+`enabled: false`, an empty/omitted `install_root` does not block startup. Disabled means
 no registration/disclosure, filesystem initialization, installation or process.
 Settings GET exposes read-only local mode/install target/sandbox facts without
 credentials; changes use the existing explicit config-file target guidance.

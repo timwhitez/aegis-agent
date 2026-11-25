@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -16,31 +18,34 @@ import (
 )
 
 func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"agent", "role", "provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root"}, []string{"background", "json"})
-	fs := flag.NewFlagSet("delegate", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"agent", "role", "provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root"}, []string{"background", "json", "help", "h"})
+	flagSet := flag.NewFlagSet("delegate", flag.ContinueOnError)
 	var (
-		agentName     = fs.String("agent", "", "")
-		agentRole     = fs.String("role", "", "")
-		providerName  = fs.String("provider", "", "")
-		model         = fs.String("model", "", "")
-		configPath    = fs.String("config", "", "")
-		workdir       = fs.String("workdir", "", "")
-		system        = fs.String("system", "", "")
-		timeoutSec    = fs.Int("timeout", 0, "")
-		background    = fs.Bool("background", false, "")
-		jsonMode      = fs.Bool("json", false, "")
-		isolationMode = fs.String("isolation", "", "")
-		isolationRoot = fs.String("isolation-root", "", "")
+		agentName     = flagSet.String("agent", "", "Child agent name")
+		agentRole     = flagSet.String("role", "", "Child agent role (default, explorer, generator, evaluator, planner)")
+		providerName  = flagSet.String("provider", "", "Provider profile override")
+		model         = flagSet.String("model", "", "Model override")
+		configPath    = flagSet.String("config", "", "Path to config file")
+		workdir       = flagSet.String("workdir", "", "Working directory override")
+		system        = flagSet.String("system", "", "System prompt override")
+		timeoutRaw    = flagSet.String("timeout", "", "Timeout as positive seconds or Go duration (e.g. 30 or 2m)")
+		background    = flagSet.Bool("background", false, "Submit delegated child to the background queue")
+		jsonMode      = flagSet.Bool("json", false, "Output JSON")
+		isolationMode = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationRoot = flagSet.String("isolation-root", "", "Isolation root directory")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental delegate <parent-session-id> <prompt> [flags]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	timeoutDuration, err := parseTimeoutDuration(*timeoutRaw)
+	if err != nil {
+		return err
+	}
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("delegate requires <parent-session-id>")
 	}
-	parentSessionID := fs.Arg(0)
-	prompt, err := resolvePrompt(fs.Args()[1:], os.Stdin)
+	parentSessionID := flagSet.Arg(0)
+	prompt, err := resolvePrompt(flagSet.Args()[1:], os.Stdin)
 	if err != nil {
 		return err
 	}
@@ -53,9 +58,9 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return err
 	}
 	callCtx := ctx
-	if *timeoutSec > 0 && !*background {
+	if timeoutDuration > 0 && !*background {
 		var cancel context.CancelFunc
-		callCtx, cancel = context.WithTimeout(ctx, time.Duration(*timeoutSec)*time.Second)
+		callCtx, cancel = context.WithTimeout(ctx, timeoutDuration)
 		defer cancel()
 	}
 	result, err := runner.Delegate(callCtx, runtime.DelegateRequest{
@@ -73,6 +78,9 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		IsolationRoot:   *isolationRoot,
 	})
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unknown session %s: %w", parentSessionID, fs.ErrNotExist)
+		}
 		return err
 	}
 	if *jsonMode {
@@ -93,20 +101,23 @@ func delegateCommand(ctx context.Context, args []string, stdout, stderr io.Write
 }
 
 func childrenCommand(args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config", "limit"}, []string{"json"})
-	fs := flag.NewFlagSet("children", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"config", "limit"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("children", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		limit      = fs.Int("limit", 50, "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		limit      = flagSet.Int("limit", 50, "Maximum number of child sessions and jobs to return (must be > 0)")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental children <session-id> [--limit N] [--config path] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if *limit <= 0 {
+		return fmt.Errorf("--limit must be positive (got %d)", *limit)
+	}
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("children requires <session-id>")
 	}
+	sessionID := flagSet.Arg(0)
 	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
@@ -116,15 +127,18 @@ func childrenCommand(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	store := runner.Store()
-	if _, err := store.LoadMetadata(fs.Arg(0)); err != nil {
+	if _, err := store.LoadMetadata(sessionID); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+		}
 		return err
 	}
 	result := runtime.ChildrenResult{}
-	result.Sessions, err = store.ListChildren(fs.Arg(0), *limit)
+	result.Sessions, err = store.ListChildren(sessionID, *limit)
 	if err != nil {
 		return err
 	}
-	result.Jobs, err = store.ListJobsByParent(fs.Arg(0), *limit)
+	result.Jobs, err = store.ListJobsByParent(sessionID, *limit)
 	if err != nil {
 		return err
 	}
@@ -146,6 +160,10 @@ func queueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	if len(args) == 0 {
 		return fmt.Errorf("queue requires a subcommand: submit|list|show|worker")
 	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "-help" {
+		_, _ = fmt.Fprintln(stdout, "usage: aegis-agent experimental queue <submit|list|show|worker> [...]")
+		return nil
+	}
 	switch args[0] {
 	case "submit":
 		return queueSubmitCommand(ctx, args[1:], stdout, stderr)
@@ -156,33 +174,32 @@ func queueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	case "worker":
 		return queueWorkerCommand(ctx, args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown queue subcommand: %s", args[0])
+		return fmt.Errorf("unknown queue subcommand %q (expected one of: submit, list, show, worker)", args[0])
 	}
 }
 
 func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"parent", "agent", "role", "provider", "model", "config", "workdir", "system", "mode", "wait-mode", "isolation", "isolation-root"}, []string{"json"})
-	fs := flag.NewFlagSet("queue submit", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"parent", "agent", "role", "provider", "model", "config", "workdir", "system", "mode", "wait-mode", "isolation", "isolation-root"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("queue submit", flag.ContinueOnError)
 	var (
-		parentSessionID = fs.String("parent", "", "")
-		agentName       = fs.String("agent", "", "")
-		agentRole       = fs.String("role", "", "")
-		providerName    = fs.String("provider", "", "")
-		model           = fs.String("model", "", "")
-		configPath      = fs.String("config", "", "")
-		workdir         = fs.String("workdir", "", "")
-		system          = fs.String("system", "", "")
-		mode            = fs.String("mode", session.ModeExec, "")
-		waitMode        = fs.String("wait-mode", "", "")
-		jsonMode        = fs.Bool("json", false, "")
-		isolationMode   = fs.String("isolation", "", "")
-		isolationRoot   = fs.String("isolation-root", "", "")
+		parentSessionID = flagSet.String("parent", "", "Parent session ID")
+		agentName       = flagSet.String("agent", "", "Child agent name")
+		agentRole       = flagSet.String("role", "", "Child agent role (default, explorer, generator, evaluator, planner)")
+		providerName    = flagSet.String("provider", "", "Provider profile override")
+		model           = flagSet.String("model", "", "Model override")
+		configPath      = flagSet.String("config", "", "Path to config file")
+		workdir         = flagSet.String("workdir", "", "Working directory override")
+		system          = flagSet.String("system", "", "System prompt override")
+		mode            = flagSet.String("mode", session.ModeExec, "Execution mode (exec, run)")
+		waitMode        = flagSet.String("wait-mode", "", "Parent wait mode (wait-all, wait-any, all, any, default)")
+		jsonMode        = flagSet.Bool("json", false, "Output JSON")
+		isolationMode   = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationRoot   = flagSet.String("isolation-root", "", "Isolation root directory")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental queue submit [flags] <prompt>"); err != nil || helped {
 		return err
 	}
-	prompt, err := resolvePrompt(fs.Args(), os.Stdin)
+	prompt, err := resolvePrompt(flagSet.Args(), os.Stdin)
 	if err != nil {
 		return err
 	}
@@ -209,6 +226,9 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 		IsolationRoot:   *isolationRoot,
 	})
 	if err != nil {
+		if strings.TrimSpace(*parentSessionID) != "" && errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unknown session %s: %w", strings.TrimSpace(*parentSessionID), fs.ErrNotExist)
+		}
 		return err
 	}
 	if *jsonMode {
@@ -219,16 +239,18 @@ func queueSubmitCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 }
 
 func queueListCommand(args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config", "limit"}, []string{"json"})
-	fs := flag.NewFlagSet("queue list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"config", "limit"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("queue list", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		limit      = fs.Int("limit", 50, "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		limit      = flagSet.Int("limit", 50, "Maximum number of queue jobs to return (must be > 0)")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental queue list [--limit N] [--config path] [--json]"); err != nil || helped {
 		return err
+	}
+	if *limit <= 0 {
+		return fmt.Errorf("--limit must be positive (got %d)", *limit)
 	}
 	cwd, err := procutil.Getwd()
 	if err != nil {
@@ -252,19 +274,19 @@ func queueListCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func queueShowCommand(args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json"})
-	fs := flag.NewFlagSet("queue show", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("queue show", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental queue show <job-id> [--config path] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("queue show requires <job-id>")
 	}
+	jobID := flagSet.Arg(0)
 	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
@@ -273,8 +295,11 @@ func queueShowCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	job, err := runner.QueueShow(fs.Arg(0))
+	job, err := runner.QueueShow(jobID)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unknown queue job %s: %w", jobID, fs.ErrNotExist)
+		}
 		return err
 	}
 	if *jsonMode {
@@ -286,15 +311,15 @@ func queueShowCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func queueWorkerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("queue worker", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"config", "poll-ms"}, []string{"once", "json", "help", "h"})
+	flagSet := flag.NewFlagSet("queue worker", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		once       = fs.Bool("once", false, "")
-		pollMS     = fs.Int("poll-ms", 1000, "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		once       = flagSet.Bool("once", false, "Process at most one queued job and exit")
+		pollMS     = flagSet.Int("poll-ms", 1000, "Worker poll interval in milliseconds (must be > 0 unless --once)")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent experimental queue worker [--once] [--poll-ms ms] [--config path] [--json]"); err != nil || helped {
 		return err
 	}
 	if !*once && *pollMS <= 0 {

@@ -15262,3 +15262,165 @@ func (d *webTimingDiagnostic) dump(t *testing.T, sessionDir string) {
 	stacks := make([]byte, 32<<10)
 	t.Logf("bounded failure stacks:\n%s", stacks[:goruntime.Stack(stacks, true)])
 }
+
+func TestWebSettingsSavePreservesDeclaredProviderBoundaryAndOmitEmptyHooks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AEGIS_AGENT_ENV_FILE", filepath.Join(dir, ".env"))
+	configPath := filepath.Join(dir, "config.yaml")
+	initialYAML := `schema_version: 1
+default_provider: appintheloop
+providers:
+  appintheloop:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+hooks:
+  default_timeout_sec: 300
+`
+	if err := os.WriteFile(configPath, []byte(initialYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Session.Dir = filepath.Join(dir, "sessions")
+	cfg.Runtime.Isolation.RootDir = filepath.Join(dir, "worktrees")
+	cfg.Runtime.Queue.ReaperIntervalMS = -1
+	cfg.Runtime.Queue.AutoWorker = false
+
+	svc, err := New(cfg, Options{WorkerCount: 0, ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	var meta MetaResponse
+	postGetJSON(t, ts.URL+"/api/meta", &meta)
+	metaSources := map[string]string{}
+	for _, p := range meta.Providers {
+		metaSources[p.Name] = p.Source
+	}
+	if metaSources["appintheloop"] != config.ProviderSourceFile || metaSources["openai"] != config.ProviderSourceBuiltin {
+		t.Fatalf("unexpected meta provider sources: %#v", metaSources)
+	}
+
+	var cfgResp map[string]any
+	postGetJSON(t, ts.URL+"/api/config", &cfgResp)
+	provs, _ := cfgResp["providers"].(map[string]any)
+	appProv, _ := provs["appintheloop"].(map[string]any)
+	if appProv["source"] != config.ProviderSourceFile || appProv["api_key_env"] != "ANTHROPIC_API_KEY" || appProv["request_timeout_sec"] == nil || appProv["stream_idle_timeout_ms"] == nil || appProv["retry"] == nil {
+		t.Fatalf("missing expected /api/config fields: %#v", appProv)
+	}
+
+	// Attempting to save anthropic-compatible with /v1 must be rejected with 400.
+	errResp := postJSONError(t, ts.URL+"/api/config", map[string]any{
+		"provider": "appintheloop",
+		"base_url": "https://api.appintheloop.com/v1",
+	}, http.StatusBadRequest)
+	if !strings.Contains(errResp.Error, "/v1/messages") {
+		t.Fatalf("expected /v1 validation error, got %#v", errResp)
+	}
+
+	postJSON(t, ts.URL+"/api/config", map[string]any{
+		"provider":              "appintheloop",
+		"base_url":              "https://api.appintheloop.com",
+		"model":                 "MiniMax-M3.1-Flash",
+		"context_window_tokens": 1000000,
+	}, http.StatusOK, nil)
+
+	savedBytes, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedText := string(savedBytes)
+	if !strings.Contains(savedText, "appintheloop:") {
+		t.Fatalf("expected appintheloop in saved config:\n%s", savedText)
+	}
+	for _, leaked := range []string{
+		"http://localhost:3000/v1",
+		"openai-compatible:",
+		"assistant_message:",
+		"session_start:",
+		"session_awaiting_input:",
+	} {
+		if strings.Contains(savedText, leaked) {
+			t.Fatalf("unexpected builtin/empty hook key %q in saved config:\n%s", leaked, savedText)
+		}
+	}
+}
+
+func TestWebPlanModeEmptyStateAndSanitizedNotFoundErrors(t *testing.T) {
+	cfg := testConfig(t, "")
+	svc, err := New(cfg, Options{WorkerCount: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	ts := httptest.NewServer(svc)
+	defer ts.Close()
+
+	meta := testSessionMetadata(t, "sess_no_planmode")
+	if err := svc.store.Create(meta, testSessionState(session.StatusPaused)); err != nil {
+		t.Fatal(err)
+	}
+
+	// #223: existing session without Plan Mode returns 200 {"enabled":false,"status":"off"}.
+	resp, err := http.Get(ts.URL + "/api/sessions/" + meta.ID + "/planmode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 on session without planmode, got %d body=%s", resp.StatusCode, string(body))
+	}
+	var pm session.PlanModeState
+	if err := json.Unmarshal(body, &pm); err != nil {
+		t.Fatal(err)
+	}
+	if pm.Enabled || pm.Status != "off" {
+		t.Fatalf("expected {enabled:false,status:off}, got %#v", pm)
+	}
+
+	// #223 + #225: missing session on /planmode and other routes returns 404 without leaking host paths.
+	for _, route := range []string{
+		"/api/sessions/missing_sess",
+		"/api/sessions/missing_sess/planmode",
+		"/api/sessions/missing_sess/goal",
+		"/api/sessions/missing_sess/tasks",
+		"/api/queue/jobs/missing_job",
+		"/api/file/read?path=does_not_exist_123.txt",
+	} {
+		r, err := http.Get(ts.URL + route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d body=%s", route, r.StatusCode, string(raw))
+		}
+		var errResp ErrorResponse
+		if err := json.Unmarshal(raw, &errResp); err != nil {
+			t.Fatalf("decode error for %s: %v body=%s", route, err, string(raw))
+		}
+		if errResp.Code == "" || errResp.Action == "" {
+			t.Fatalf("expected structured code and action for %s, got %#v", route, errResp)
+		}
+		if strings.Contains(errResp.Error, cfg.Session.Dir) || strings.Contains(errResp.Error, "session.json") || strings.Contains(errResp.Error, "/") {
+			t.Fatalf("internal filesystem path leaked for %s: %#v", route, errResp)
+		}
+	}
+
+	// #225: cancel on existing session without planmode returns 404 PLAN_MODE_NOT_FOUND without path leak.
+	cancelErr := postJSONError(t, ts.URL+"/api/sessions/"+meta.ID+"/planmode/cancel", map[string]any{}, http.StatusNotFound)
+	if cancelErr.Code != "PLAN_MODE_NOT_FOUND" || strings.Contains(cancelErr.Error, cfg.Session.Dir) {
+		t.Fatalf("expected sanitized PLAN_MODE_NOT_FOUND, got %#v", cancelErr)
+	}
+}

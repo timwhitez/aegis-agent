@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"aegis-agent/internal/config"
+	"aegis-agent/internal/events"
 	"aegis-agent/internal/extensions"
 	"aegis-agent/internal/fileutil"
 	"aegis-agent/internal/session"
@@ -481,6 +483,7 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 	duplicates := doctorDuplicateQueueJobs(queueJobs)
 	runningWithoutLease := doctorRunningJobsWithoutLease(queueJobs)
 	staleRunning := doctorStaleRunningJobs(queueJobs, time.Now().UTC())
+	staleRunningSessions := doctorStaleRunningSessions(sessionRoot, time.Now().UTC())
 	missingSessionRefs := doctorQueueJobsMissingSessions(sessionRoot, queueJobs)
 
 	check.Details["missing_session_files"] = missingFiles
@@ -489,6 +492,7 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 	check.Details["duplicate_queue_jobs"] = duplicates
 	check.Details["running_jobs_without_lease"] = runningWithoutLease
 	check.Details["stale_running_jobs"] = staleRunning
+	check.Details["stale_running_sessions"] = staleRunningSessions
 	check.Details["queue_jobs_missing_session"] = missingSessionRefs
 	check.Details["unreadable_queue_jobs"] = unreadableJobs
 	check.Details["counts"] = map[string]int{
@@ -498,13 +502,120 @@ func checkSessionPartialState(sessionRoot string) doctorCheck {
 		"duplicate_queue_jobs":       len(duplicates),
 		"running_jobs_without_lease": len(runningWithoutLease),
 		"stale_running_jobs":         len(staleRunning),
+		"stale_running_sessions":     len(staleRunningSessions),
 		"queue_jobs_missing_session": len(missingSessionRefs),
 		"unreadable_queue_jobs":      len(unreadableJobs),
 	}
-	if len(missingFiles)+len(unreadableSessionFiles)+len(unsafeSessionDirs)+len(duplicates)+len(runningWithoutLease)+len(staleRunning)+len(missingSessionRefs)+len(unreadableJobs) > 0 {
+	if len(missingFiles)+len(unreadableSessionFiles)+len(unsafeSessionDirs)+len(duplicates)+len(runningWithoutLease)+len(staleRunning)+len(staleRunningSessions)+len(missingSessionRefs)+len(unreadableJobs) > 0 {
 		check.Status = "warn"
 	}
 	return check
+}
+
+func doctorStaleRunningSessions(sessionRoot string, now time.Time) []map[string]any {
+	out := []map[string]any{}
+	store := session.NewStore(sessionRoot)
+	ids, err := store.ListRunningSessionIDs()
+	if err != nil {
+		return out
+	}
+	for _, id := range ids {
+		state, err := store.LoadState(id)
+		if err != nil || state.Status != session.StatusRunning {
+			continue
+		}
+		eventsList, err := store.LoadEvents(id)
+		if err != nil {
+			continue
+		}
+		ownerType, ownerPID := doctorLatestSessionOwner(eventsList)
+		switch ownerType {
+		case "webconsole.handle.released", "run.owner.released":
+			out = append(out, map[string]any{
+				"session_id": id,
+				"reason":     "owner_released_while_running",
+				"updated_at": state.UpdatedAt,
+				"advice":     "aegis-agent sessions reconcile " + id,
+			})
+		case "webconsole.handle.acquired", "run.owner.acquired":
+			if ownerPID > 0 && !session.ProcessOwnerAlive(ownerPID, "") {
+				out = append(out, map[string]any{
+					"session_id": id,
+					"reason":     "owner_process_dead",
+					"owner_pid":  ownerPID,
+					"updated_at": state.UpdatedAt,
+					"advice":     "aegis-agent sessions reconcile " + id,
+				})
+			}
+		default:
+			if doctorMissingOwnerIsStale(state.UpdatedAt, now) {
+				out = append(out, map[string]any{
+					"session_id": id,
+					"reason":     "owner_event_missing",
+					"updated_at": state.UpdatedAt,
+					"advice":     "aegis-agent sessions reconcile " + id,
+				})
+			}
+		}
+	}
+	return out
+}
+
+func doctorLatestSessionOwner(eventsList []events.Event) (string, int) {
+	for i := len(eventsList) - 1; i >= 0; i-- {
+		evt := eventsList[i]
+		switch evt.Type {
+		case "webconsole.handle.acquired", "run.owner.acquired", "webconsole.handle.released", "run.owner.released":
+			pid := doctorEventInt(evt.Data, "pid")
+			if pid <= 0 {
+				if raw, _ := evt.Data["process_start_id"].(string); raw != "" {
+					pidText, _, _ := strings.Cut(strings.TrimSpace(raw), ":")
+					if parsed, err := strconv.Atoi(strings.TrimSpace(pidText)); err == nil {
+						pid = parsed
+					}
+				}
+			}
+			return evt.Type, pid
+		}
+	}
+	return "", 0
+}
+
+func doctorEventInt(data map[string]any, key string) int {
+	if data == nil {
+		return 0
+	}
+	switch v := data[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(v))
+		return n
+	default:
+		return 0
+	}
+}
+
+func doctorMissingOwnerIsStale(updatedAt string, now time.Time) bool {
+	stamp := strings.TrimSpace(updatedAt)
+	if stamp == "" {
+		return true
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return true
+		}
+	}
+	return now.Sub(parsed) >= 5*time.Second
 }
 
 func doctorSessionCoreFileIssues(sessionRoot string) ([]map[string]any, []map[string]any, []map[string]any, error) {

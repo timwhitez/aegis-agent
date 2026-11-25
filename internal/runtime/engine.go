@@ -75,6 +75,20 @@ func (e *Engine) SetRunner(runner RunnerInterface) {
 	e.runner = runner
 }
 
+func (e *Engine) canRespondPlanInput(sessionID string) bool {
+	if checker, ok := e.runner.(interface{ CanRespondPlanInput(string) bool }); ok {
+		return checker.CanRespondPlanInput(sessionID)
+	}
+	return true
+}
+
+func (e *Engine) isPlanOnly(sessionID string) bool {
+	if checker, ok := e.runner.(interface{ IsPlanOnly(string) bool }); ok {
+		return checker.IsPlanOnly(sessionID)
+	}
+	return false
+}
+
 type providerViewBuild struct {
 	Messages          []session.Message
 	InputChars        int
@@ -352,6 +366,20 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	hardTurnLimitEnabled := hardTurnLimit > 0
 	softTurnLimit := e.cfg.Runtime.MaxTurnsSoft
 	softTurnReminderWritten := false
+	planOnlyMode := e.isPlanOnly(meta.ID)
+	planOnlyHardLimitReason := hardTurnLimitError
+	if planOnlyMode {
+		if initialPlanMode, planErr := loadPlanModeOptional(e.store, meta.ID); planErr == nil && shouldUsePlanModeInstructions(initialPlanMode) {
+			if softTurnLimit <= 0 || (softTurnLimit > 16 && (!hardTurnLimitEnabled || hardTurnLimit >= 16)) {
+				softTurnLimit = 16
+			}
+			if !hardTurnLimitEnabled {
+				hardTurnLimitEnabled = true
+				hardTurnLimit = softTurnLimit + 4
+				planOnlyHardLimitReason = "plan_only_turn_limit_exceeded"
+			}
+		}
+	}
 	runStartTurn := state.Turn
 	for turn := state.Turn; ; turn++ {
 		usingResolutionTurn := false
@@ -366,7 +394,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				state.Status = session.StatusFailed
 				state.Phase = "turn_limit"
-				state.LastError = hardTurnLimitError
+				state.LastError = planOnlyHardLimitReason
 				if err := e.store.SaveState(meta.ID, state); err != nil {
 					return RunResult{}, err
 				}
@@ -392,7 +420,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 			}); err != nil {
 				return RunResult{}, err
 			}
-			if _, err := e.appendHarnessReminder(meta, "prepare", fmt.Sprintf("Global soft turn checkpoint reached at %d turns in this run. Reassess progress, update durable handoff facts if useful, and continue autonomously; this is not a stop condition.", softTurnLimit), "max_turns_soft_reached"); err != nil {
+			reminderText := fmt.Sprintf("Global soft turn checkpoint reached at %d turns in this run. Reassess progress, update durable handoff facts if useful, and continue autonomously; this is not a stop condition.", softTurnLimit)
+			if planOnlyMode {
+				reminderText = fmt.Sprintf("Plan Mode soft turn checkpoint reached at %d turns. Stop broad exploration, summarize your findings, and call submit_plan now (list any remaining questions under Assumptions).", softTurnLimit)
+			}
+			if _, err := e.appendHarnessReminder(meta, "prepare", reminderText, "max_turns_soft_reached"); err != nil {
 				return RunResult{}, err
 			}
 		}
@@ -526,7 +558,7 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		}
 		if planMode != nil {
 			if shouldUsePlanModeInstructions(planMode) {
-				systemPrompt += "\n\n" + buildPlanModeInstructions(*planMode)
+				systemPrompt += "\n\n" + buildPlanModeInstructions(*planMode, e.canRespondPlanInput(meta.ID), planOnlyMode)
 			} else if contextText := buildApprovedPlanContext(*planMode); contextText != "" {
 				systemPrompt += "\n\n" + contextText
 			}
@@ -1090,8 +1122,10 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 					toolCtx, cancel := context.WithCancel(ctx)
 					e.control.setCancel(cancel)
 					var planInputResponder tools.PlanInputResponder
-					if responder, ok := e.runner.(tools.PlanInputResponder); ok {
-						planInputResponder = responder
+					if e.canRespondPlanInput(meta.ID) {
+						if responder, ok := e.runner.(tools.PlanInputResponder); ok {
+							planInputResponder = responder
+						}
 					}
 					toolResult, toolErr = e.executeApprovalSemanticTool(toolCtx, registry, call.Name, tools.ExecContext{
 						SessionID:             meta.ID,
