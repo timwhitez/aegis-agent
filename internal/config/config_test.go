@@ -1192,3 +1192,91 @@ tools:
 		}
 	}
 }
+
+func TestValidateBaseURLAndProviderProfileAndRoleProviders(t *testing.T) {
+	for _, bad := range []string{
+		"not-a-url",
+		"ftp://example.com",
+		"https:///missing-host",
+		"https://:8080",
+		"https://user:pass@example.com",
+		"http://",
+	} {
+		if err := ValidateBaseURL(bad, true); err == nil {
+			t.Fatalf("expected invalid base_url error for %q", bad)
+		}
+	}
+	if err := ValidateBaseURL("", true); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("expected required error for empty base_url, got %v", err)
+	}
+	if err := ValidateBaseURL("", false); err != nil {
+		t.Fatalf("expected optional empty base_url to pass, got %v", err)
+	}
+	for _, okURL := range []string{
+		"https://api.example.com",
+		"http://127.0.0.1:8080/v1",
+		"https://gateway.example.com/openai?api-version=2025-01-01",
+	} {
+		if err := ValidateBaseURL(okURL, true); err != nil {
+			t.Fatalf("expected valid base_url %q, got %v", okURL, err)
+		}
+	}
+
+	// Bitter Lesson: effort validation rejects whitespace/control chars without hardcoding a closed enum.
+	for _, okEffort := range []string{"", "low", "max", "xhigh", "provider-native-value"} {
+		if err := ValidateEffortValue("reasoning_effort", okEffort); err != nil {
+			t.Fatalf("expected effort %q to be accepted, got %v", okEffort, err)
+		}
+	}
+	for _, badEffort := range []string{"bad effort", "high\nlow", "max\t", "max\tlow"} {
+		if err := ValidateEffortValue("reasoning_effort", badEffort); err == nil {
+			t.Fatalf("expected effort %q to be rejected", badEffort)
+		}
+	}
+
+	cfg := Default()
+	cfg.DefaultProvider = "appintheloop"
+	cfg.Providers["appintheloop"] = Provider{
+		APIProvider: "anthropic-compatible",
+		BaseURL:     "https://api.appintheloop.com",
+		Model:       "MiniMax-M3.1-Flash",
+		APIKeyEnv:   "APPINTHELOOP_API_KEY",
+	}
+	// Role override inherits default_provider's anthropic-compatible family when provider/api_provider are empty.
+	cfg.RoleProviders.Planner = RoleProviderOverride{
+		BaseURL: "https://api.appintheloop.com/v1",
+	}
+	if err := ValidateRoleProviders(cfg); err == nil || !strings.Contains(err.Error(), "/v1/messages") {
+		t.Fatalf("expected inherited anthropic /v1 rejection in role_providers.planner, got %v", err)
+	}
+	cfg.RoleProviders.Planner = RoleProviderOverride{
+		BaseURL: "not-a-url",
+	}
+	if err := ValidateRoleProviders(cfg); err == nil || !strings.Contains(err.Error(), "base_url") {
+		t.Fatalf("expected invalid base_url rejection in role_providers.planner, got %v", err)
+	}
+	cfg.RoleProviders.Planner = RoleProviderOverride{
+		ReasoningEffort: "invalid value",
+	}
+	if err := ValidateRoleProviders(cfg); err == nil || !strings.Contains(err.Error(), "reasoning_effort") {
+		t.Fatalf("expected invalid effort rejection in role_providers.planner, got %v", err)
+	}
+	cfg.RoleProviders.Planner = RoleProviderOverride{
+		BaseURL:         "https://api.appintheloop.com",
+		ReasoningEffort: "xhigh",
+	}
+	if err := ValidateRoleProviders(cfg); err != nil {
+		t.Fatalf("expected valid role override to pass, got %v", err)
+	}
+
+	// Context window source reporting without adding hardcoded model catalogs.
+	if tokens, source := ResolveContextWindowTokensWithSource("unknown-custom-model", 1000000); tokens != 1000000 || source != "configured" {
+		t.Fatalf("expected configured context window, got %d (%s)", tokens, source)
+	}
+	if tokens, source := ResolveContextWindowTokensWithSource("unknown-custom-model", 0); tokens != DefaultContextWindowTokens || source != "default" {
+		t.Fatalf("expected default fallback for unknown model, got %d (%s)", tokens, source)
+	}
+	if tokens, source := ResolveContextWindowTokensWithSource("gpt-5.5", 0); tokens != 300000 || source != "known_model" {
+		t.Fatalf("expected known_model resolution, got %d (%s)", tokens, source)
+	}
+}

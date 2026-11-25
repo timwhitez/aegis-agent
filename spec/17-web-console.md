@@ -80,7 +80,7 @@
 | `POST /api/sessions/{id}/planmode/approve`、`revise`、`input` | `approve`：`plan_mode_id`、`plan_version`、`expected_revision`、`approval_request_id`、`override_coverage`、`message`、`provider`、`model`；`revise`：`message`；`input`：`request_id`、`answers` |
 | `POST /api/queue/jobs` | `prompt`（必填）、`parent_session_id`、`agent_name`、`agent_role`、`provider`、`model`、`workdir`、`system`、`mode`、`wait_mode`、`isolation_mode`、`isolation_root` |
 | `POST /api/workers` | `desired_count`（必填整数，`0..8`） |
-| `POST /api/config` / `POST /api/config/test` | `provider`、`api_provider`、`base_url`（`anthropic-compatible` 拒绝末尾 `/v1`）、`model`、`context_window_tokens`、`api_key`、`reasoning_mode`、`reasoning_summary`；`POST /api/config` 另支持 `guardrails_mode`、`max_turns_soft`、`max_turns_hard`、`disable_hard_turn_limit`、`child_budget`、`role_providers` |
+| `POST /api/config` / `POST /api/config/test` | `provider`、`api_provider`、`base_url`（必填合法 `http`/`https` URL，不含 userinfo，`anthropic-compatible` 拒绝末尾 `/v1`）、`model`（非空）、`context_window_tokens`（正整数；省略保持原值/默认，拒绝 `<= 0`）、`api_key`、`reasoning_mode`（切为 `off`/`default` 时同步清理 `output_config_effort`）、`reasoning_summary`；`POST /api/config` 另支持 `guardrails_mode`、`max_turns_soft`、`max_turns_hard`、`disable_hard_turn_limit`、`child_budget`、`role_providers`（复用同一 URL/协议校验） |
 
 - `409 Conflict` 重试语义：遇到 `ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`APPROVAL_TARGET_CONFLICT`、`APPROVAL_RECOVERY_REQUIRED` 等 409 错误时，响应会给出 `code` 和 `action`，调用方应先刷新 session/plan 状态或按 `action` 提示执行 steer / reconcile / 重新审阅后再重试，不应盲目重复相同 mutation。
 - 资源不存在错误（404）：缺失 session、queue job、approval receipt、goal、planmode 或 workspace 路径统一返回脱敏消息与稳定错误码（`SESSION_NOT_FOUND`、`QUEUE_JOB_NOT_FOUND`、`APPROVAL_RECEIPT_NOT_FOUND`、`GOAL_NOT_FOUND`、`PLAN_MODE_NOT_FOUND`、`NOT_FOUND`），不暴露宿主文件系统绝对路径。

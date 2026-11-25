@@ -2238,6 +2238,16 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		Status:  "ok",
 		Details: doctorProviderConfigDetails(selectedProvider, providerCfg),
 	})
+	if err := config.ValidateRoleProviders(cfg); err != nil {
+		report.Checks = append(report.Checks, doctorCheck{
+			Name:   "role_providers.config",
+			Status: "fail",
+			Details: map[string]any{
+				"error": err.Error(),
+			},
+		})
+		return renderDoctorReport(stdout, report, *jsonMode, true)
+	}
 
 	apiKey := providerCfg.ResolvedAPIKey()
 	apiKeyStatus := "ok"
@@ -2418,18 +2428,25 @@ func renderDoctorReport(stdout io.Writer, report doctorReport, jsonMode, failed 
 
 func doctorProviderConfigDetails(providerName string, providerCfg config.Provider) map[string]any {
 	effectiveAPIProvider, _ := config.EffectiveAPIProvider(providerName, providerCfg)
+	effectiveContextWindow, contextWindowSource := config.ResolveContextWindowTokensWithSource(providerCfg.Model, providerCfg.ContextWindowTokens)
 	details := map[string]any{
-		"provider":               providerName,
-		"api_provider":           providerCfg.APIProvider,
-		"effective_api_provider": effectiveAPIProvider,
-		"model":                  providerCfg.Model,
-		"base_url":               providerCfg.BaseURL,
-		"api_key_env":            providerCfg.APIKeyEnv,
-		"wire_api":               providerCfg.WireAPI,
-		"timeout_sec":            providerCfg.TimeoutSec,
-		"request_timeout_sec":    doctorRequestTimeoutSec(providerCfg),
-		"stream_idle_timeout_ms": doctorStreamIdleTimeoutMS(providerCfg),
-		"retry_policy":           doctorRetryPolicyDetails(providerCfg),
+		"provider":                        providerName,
+		"api_provider":                    providerCfg.APIProvider,
+		"effective_api_provider":          effectiveAPIProvider,
+		"model":                           providerCfg.Model,
+		"base_url":                        providerCfg.BaseURL,
+		"api_key_env":                     providerCfg.APIKeyEnv,
+		"wire_api":                        providerCfg.WireAPI,
+		"context_window_tokens":           providerCfg.ContextWindowTokens,
+		"effective_context_window_tokens": effectiveContextWindow,
+		"context_window_source":           contextWindowSource,
+		"timeout_sec":                     providerCfg.TimeoutSec,
+		"request_timeout_sec":             doctorRequestTimeoutSec(providerCfg),
+		"stream_idle_timeout_ms":          doctorStreamIdleTimeoutMS(providerCfg),
+		"retry_policy":                    doctorRetryPolicyDetails(providerCfg),
+	}
+	if contextWindowSource == "default" {
+		details["context_window_note"] = fmt.Sprintf("context_window_tokens is unset; using default %d (set context_window_tokens explicitly if the model supports a larger window)", effectiveContextWindow)
 	}
 	if effectiveAPIProvider == "openai-compatible" {
 		storeValue, storeSource := doctorStoreDetails(effectiveAPIProvider, providerCfg.Store)
@@ -2443,18 +2460,7 @@ func doctorProviderConfigDetails(providerName string, providerCfg config.Provide
 }
 
 func doctorValidateProviderConfig(providerName string, providerCfg config.Provider) error {
-	apiProvider, err := config.EffectiveAPIProvider(providerName, providerCfg)
-	if err != nil {
-		return err
-	}
-	switch apiProvider {
-	case "openai-compatible", "google":
-		return nil
-	case "anthropic-compatible":
-		return config.ValidateAnthropicBaseURL(providerCfg.BaseURL)
-	default:
-		return fmt.Errorf("unsupported api_provider for %s: %s", providerName, apiProvider)
-	}
+	return config.ValidateProviderProfile(providerName, providerCfg)
 }
 
 func doctorRequestTimeoutSec(providerCfg config.Provider) int {
@@ -2775,10 +2781,10 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 			providerCfg.ReasoningEffort = *reasoningEffort
 		}
 	}
-	if *model != "" {
+	if explicitlySet(fs, "model") || *model != "" {
 		providerCfg.Model = *model
 	}
-	if *baseURL != "" {
+	if explicitlySet(fs, "base-url") || *baseURL != "" {
 		providerCfg.BaseURL = *baseURL
 	}
 	if *apiKeyEnv != "" {
@@ -2786,6 +2792,9 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 	}
 	if *wireAPI != "" {
 		providerCfg.WireAPI = *wireAPI
+	}
+	if err := config.ValidateProviderProfile(cfg.DefaultProvider, providerCfg); err != nil {
+		return err
 	}
 	cfg.Providers[cfg.DefaultProvider] = providerCfg
 	effectiveSessionDir := strings.TrimSpace(*sessionDir)

@@ -85,7 +85,7 @@ hooks: {}
 
 ### provider profile
 
-每个 `providers.<name>` 至少需要 `api_provider`、`api_key_env`、`base_url` 和 `model`。可选字段包括 `context_window_tokens`、request/stream timeout、retry、`max_output_tokens`、reasoning/thinking、`store`、`send_metadata` 和 provider-specific header/format。
+每个 `providers.<name>` 至少需要非空的 `api_provider`、`api_key_env`、`base_url`（必须是带 host 的 `http`/`https` URL，不含 userinfo）和 `model`。可选字段包括 `context_window_tokens`（正整数；省略时回落到默认值，`doctor` 会报告生效值及来源）、request/stream timeout、retry、`max_output_tokens`、reasoning/thinking、`store`、`send_metadata` 和 provider-specific header/format。`role_providers.<role>` 覆盖复用同一套 URL、`/v1`（未显式指定 `provider`/`api_provider` 时继承 `default_provider` 协议族）和格式校验，由 `init`、`doctor` 与 Web Settings 共享。
 
 当前 adapter family 与 `base_url` 路径约定：
 

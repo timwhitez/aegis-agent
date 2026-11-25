@@ -15,7 +15,7 @@
  *   settings.error.softTurns         soft checkpoint turns must be positive
  *   settings.error.hardTurns         hard max turns must be positive or disabled
  *   settings.error.childBudgetEmpty  enabled sub-agent budget needs a positive limit
- *   settings.error.contextWindow     context window must be a non-negative integer
+ *   settings.error.contextWindow     context window must be a positive integer
  *   settings.error.unknownProvider   {provider} provider profile is not configured
  *   settings.field.childActiveRuntime | settings.field.childElapsed |
  *   settings.field.childMaxTurns | settings.field.roleMaxOutputTokens   field names in params
@@ -338,12 +338,14 @@ export function settingsFormFromConfig(config = {}, providerName) {
   };
 }
 
-/** Parse the context window field ('' => 0 auto). */
+/** Parse the context window field ('' => omitted/unchanged; explicit 0 rejected). */
 export function parseContextWindowTokens(value) {
   const raw = str(value).trim();
-  if (raw === '') return 0;
+  if (raw === '') return undefined;
   if (!/^\d+$/.test(raw)) throw new SettingsValidationError('settings.error.contextWindow');
-  return Number.parseInt(raw, 10);
+  const parsed = Number.parseInt(raw, 10);
+  if (parsed <= 0) throw new SettingsValidationError('settings.error.contextWindow');
+  return parsed;
 }
 
 /**
@@ -371,16 +373,20 @@ export function validateSettingsForm(form = {}) {
  * no role overrides).
  */
 export function buildConfigTestPayload(form = {}) {
-  return {
+  const contextWindowTokens = parseContextWindowTokens(form.contextWindowTokens);
+  const payload = {
     provider: str(form.provider),
     api_provider: str(form.apiProvider),
     base_url: str(form.baseURL),
     model: str(form.model),
-    context_window_tokens: parseContextWindowTokens(form.contextWindowTokens),
     reasoning_mode: str(form.reasoningMode || 'default'),
     reasoning_summary: str(form.reasoningSummary || 'default'),
     api_key: submittedAPIKey(form.apiKey, form.originalHasKey)
   };
+  if (contextWindowTokens !== undefined) {
+    payload.context_window_tokens = contextWindowTokens;
+  }
+  return payload;
 }
 
 /**

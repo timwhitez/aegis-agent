@@ -3174,6 +3174,9 @@ func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.A
 	if err != nil {
 		return nil, WrapConfigError(err)
 	}
+	if err := config.ValidateProviderEndpoint(apiProvider, cfg.BaseURL, true); err != nil {
+		return nil, WrapConfigError(err)
+	}
 	switch apiProvider {
 	case "openai-compatible":
 		if cfg.WireAPI != "" && cfg.WireAPI != "responses" {
@@ -3181,9 +3184,6 @@ func (r *Runner) adapterFromConfig(name string, cfg config.Provider) (provider.A
 		}
 		return provider.NewOpenAIWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
 	case "anthropic-compatible":
-		if err := config.ValidateAnthropicBaseURL(cfg.BaseURL); err != nil {
-			return nil, WrapConfigError(err)
-		}
 		return provider.NewAnthropicWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), cfg.AnthropicVersion, client, retryCfg), nil
 	case "google":
 		return provider.NewGoogleWithRetry(cfg.BaseURL, cfg.ResolvedAPIKey(), client, retryCfg), nil
