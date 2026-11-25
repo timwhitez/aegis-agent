@@ -4936,7 +4936,7 @@ func workspaceBrowserJoinRel(parentRel, name string) string {
 func validateWorkspaceDirectoryName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return errors.New("folder name is required")
+		return errors.New("folder name is required (field: name)")
 	}
 	if name == "." || name == ".." {
 		return errors.New("folder name is invalid")
@@ -9783,7 +9783,123 @@ func writeError(w http.ResponseWriter, status int, err error) {
 			resp.Action = webProviderErrorAction(httpErr.Class)
 		}
 	}
+	if status == http.StatusConflict {
+		enrichWebConflictError(err, &resp)
+	}
 	writeJSON(w, status, resp)
+}
+
+func enrichWebConflictError(err error, resp *ErrorResponse) {
+	if resp == nil {
+		return
+	}
+	if resp.Code != "" && resp.Action != "" {
+		return
+	}
+	lower := strings.ToLower(strings.TrimSpace(resp.Error))
+	setDefaults := func(code, detail, action string) {
+		if resp.Code == "" {
+			resp.Code = code
+		}
+		if resp.Detail == "" && detail != "" {
+			resp.Detail = detail
+		}
+		if resp.Action == "" {
+			resp.Action = action
+		}
+	}
+	var notResumable *runtime.SessionNotResumableError
+	if errors.As(err, &notResumable) {
+		setDefaults(
+			errorCodeSessionNotResumable,
+			strings.TrimSpace(notResumable.Detail),
+			strings.TrimSpace(notResumable.Action),
+		)
+		if resp.Action == "" {
+			resp.Action = "Refresh the session state before retrying continue."
+		}
+		return
+	}
+	switch {
+	case errors.Is(err, session.ErrSessionNotResumable):
+		setDefaults(
+			errorCodeSessionNotResumable,
+			"",
+			"Refresh the session state before retrying continue.",
+		)
+	case errors.Is(err, errActiveSessionTree) || strings.Contains(lower, "cannot delete a running session tree") || strings.Contains(lower, "cannot delete a session tree with unsettled queue work"):
+		setDefaults(
+			"SESSION_ACTIVE_CONFLICT",
+			"",
+			"Stop the active session or wait for it and its queue jobs to settle before deleting, or pass ?force=true if the owning process is gone.",
+		)
+	case errors.Is(err, errActiveHistory) || strings.Contains(lower, "cannot clear history while"):
+		setDefaults(
+			"HISTORY_ACTIVE_CONFLICT",
+			"",
+			"Stop active runs and wait for unsettled queue jobs to finish before clearing history.",
+		)
+	case errors.Is(err, errHistoryMutation):
+		setDefaults(
+			"HISTORY_MUTATION_IN_PROGRESS",
+			"Another delete or clear history operation is currently removing session files.",
+			"Wait for the ongoing delete or clear operation to finish, refresh the session list, and retry.",
+		)
+	case errors.Is(err, errSessionAlreadyActive) || strings.Contains(lower, "already active in this web console"):
+		setDefaults(
+			"SESSION_ALREADY_ACTIVE",
+			"This session already has an active run handle in the web console.",
+			"Send steer to the active run, wait for it to settle, or stop it before starting another continuation.",
+		)
+	case errors.Is(err, session.ErrApprovalReceiptCapacity):
+		setDefaults(
+			"APPROVAL_RECEIPT_CAPACITY",
+			"The session reached its approval receipt storage limit.",
+			"Inspect existing approval receipts and retry after resolving pending operations.",
+		)
+	case strings.HasPrefix(lower, "mission validation coverage blocks approval") || strings.Contains(lower, "coverage blocks approval"):
+		setDefaults(
+			"MISSION_COVERAGE_CONFLICT",
+			"Mission validation coverage checks have not been satisfied.",
+			"Update the mission validation plan or explicitly retry with override_coverage=true after review.",
+		)
+	case strings.HasPrefix(lower, "plan input request mismatch:") || strings.Contains(lower, "plan input") || strings.Contains(lower, "plan mode") || strings.Contains(lower, "not available before approve or cancel"):
+		setDefaults(
+			"PLAN_MODE_CONFLICT",
+			"The session's Plan Mode state changed or does not match the requested operation.",
+			"Reload the session and Plan Mode state before retrying.",
+		)
+	case strings.Contains(lower, "already has a current goal"):
+		setDefaults(
+			"GOAL_ALREADY_EXISTS",
+			"This session already has an active goal or mission.",
+			"Use PATCH /api/sessions/{id}/goal to update the existing goal, or clear it first.",
+		)
+	case os.IsExist(err) || strings.Contains(lower, "path already exists") || strings.Contains(lower, "existing path"):
+		setDefaults(
+			"WORKSPACE_PATH_EXISTS",
+			"A file or folder already exists at the target workspace path.",
+			"Choose a different name or remove the existing path before retrying.",
+		)
+	case strings.Contains(lower, "use continue instead"):
+		setDefaults(
+			"SESSION_NOT_RUNNING",
+			"Steer can only be delivered to a session that is currently running.",
+			"Refresh the session state and use continue instead of steer.",
+		)
+	case strings.Contains(lower, "not running"):
+		setDefaults(
+			"SESSION_NOT_RUNNING",
+			"The session is not currently running.",
+			"Refresh the session state; it may have already settled.",
+		)
+	default:
+		setDefaults(
+			"CONFLICT",
+			"",
+			"Refresh the latest resource state and retry with updated parameters.",
+		)
+	}
 }
 
 func sanitizeWebNotExistError(err error) ErrorResponse {

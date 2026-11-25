@@ -77,12 +77,20 @@
 | `POST /api/sessions/{id}/continue` | `message`、`provider`、`model`、`system`、`plan_mode`（`{enabled, objective}`） |
 | `POST /api/sessions/{id}/steer` | `message`（必填）、`interrupt`（bool） |
 | `POST /api/sessions/{id}/goal` | `objective`（必填）、`mode`（`goal`/`mission`，默认 `goal`）、`success_criteria`、`validation_plan`、`token_budget`、`provider_time_budget_minutes`、`time_budget_minutes`、`autonomy`、`require_plan_approval`、`stop_on_budget`、`create_tasks_from_plan`、`features`、`milestones`、`ask_before_large_changes`、`ask_before_dependency_change`（路由自动设置 `enabled=true`） |
+| `PATCH /api/sessions/{id}/goal` | `success_criteria`、`validation_plan`、`control`、`mission` |
+| `PATCH /api/sessions/{id}/mission/plan` | `requirements`、`features`、`milestones`、`validation_contract`、`role_plan`、`shared_artifacts`、`knowledge_artifacts`、`plan_status`、`create_tasks_from_plan` |
+| `PATCH /api/sessions/{id}/mission/validation` | `validation_plan`、`validation_contract`（至少传其一） |
 | `POST /api/sessions/{id}/planmode/approve`、`revise`、`input` | `approve`：`plan_mode_id`、`plan_version`、`expected_revision`、`approval_request_id`、`override_coverage`、`message`、`provider`、`model`；`revise`：`message`；`input`：`request_id`、`answers` |
 | `POST /api/queue/jobs` | `prompt`（必填）、`parent_session_id`、`agent_name`、`agent_role`、`provider`、`model`、`workdir`、`system`、`mode`、`wait_mode`、`isolation_mode`、`isolation_root` |
 | `POST /api/workers` | `desired_count`（必填整数，`0..8`） |
 | `POST /api/config` / `POST /api/config/test` | `provider`、`api_provider`、`base_url`（必填合法 `http`/`https` URL，不含 userinfo，`anthropic-compatible` 拒绝末尾 `/v1`）、`model`（非空）、`context_window_tokens`（正整数；省略保持原值/默认，拒绝 `<= 0`）、`api_key`、`reasoning_mode`（切为 `off`/`default` 时同步清理 `output_config_effort`）、`reasoning_summary`；`POST /api/config` 另支持 `guardrails_mode`、`max_turns_soft`、`max_turns_hard`、`disable_hard_turn_limit`、`child_budget`、`role_providers`（复用同一 URL/协议校验） |
+| `POST /api/files/mkdir` | `path`（父目录，默认 `.`）、`name`（必填目录名） |
+| `POST /api/files/upload` | `multipart/form-data`：`file`（必填上传文件）、`path`（目标父目录，默认 `.`） |
+| `PATCH /api/files/rename` | `path`（必填源路径）、`name`（必填新名称） |
+| `DELETE /api/files` / `POST /api/files/delete` | `DELETE` 使用 query `path`（必填）；`POST` 使用 JSON `paths`（必填相对路径数组） |
+| `GET /api/file/read` / `GET /api/file/download` | query `path`（必填）；`read` 另支持可选分页 query `offset`（非负字节偏移）与 `limit`（正字节上限） |
 
-- `409 Conflict` 重试语义：遇到 `ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`APPROVAL_TARGET_CONFLICT`、`APPROVAL_RECOVERY_REQUIRED` 等 409 错误时，响应会给出 `code` 和 `action`，调用方应先刷新 session/plan 状态或按 `action` 提示执行 steer / reconcile / 重新审阅后再重试，不应盲目重复相同 mutation。
+- `409 Conflict` 重试语义：所有 409 响应统一返回稳定的 `code`、`detail`（适用时）和 `action`（例如 `ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`SESSION_ACTIVE_CONFLICT`、`HISTORY_ACTIVE_CONFLICT`、`HISTORY_MUTATION_IN_PROGRESS`、`SESSION_ALREADY_ACTIVE`、`SESSION_NOT_RUNNING`、`PLAN_MODE_CONFLICT`、`MISSION_COVERAGE_CONFLICT`、`GOAL_ALREADY_EXISTS`、`WORKSPACE_PATH_EXISTS`、`APPROVAL_TARGET_CONFLICT`、`APPROVAL_RECOVERY_REQUIRED` 或兜底 `CONFLICT`）。调用方应先刷新对应资源状态或按 `action` 提示执行 stop / steer / reconcile / 重新审阅后再重试，不应盲目重复相同 mutation。
 - 资源不存在错误（404）：缺失 session、queue job、approval receipt、goal、planmode 或 workspace 路径统一返回脱敏消息与稳定错误码（`SESSION_NOT_FOUND`、`QUEUE_JOB_NOT_FOUND`、`APPROVAL_RECEIPT_NOT_FOUND`、`GOAL_NOT_FOUND`、`PLAN_MODE_NOT_FOUND`、`NOT_FOUND`），不暴露宿主文件系统绝对路径。
 - 跨进程控制只写 durable 请求，不写 session state、不做状态 CAS，因此不会协调或抢占另一个存活进程的运行；active handle 不属于当前进程时也不会静默接管。
 
