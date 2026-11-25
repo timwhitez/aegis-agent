@@ -115,6 +115,9 @@ func PatchFile(path string, fallbackCfg *Config, patch FilePatch) error {
 	}
 
 	indent := detectYAMLIndent(root)
+	// Capture the blank-line layout before mutating so the re-encoded document
+	// keeps the operator's block separators.
+	layout := captureBlankLineLayout(&doc, existingBytes)
 	changed := applyFilePatch(root, patch)
 	if !changed {
 		return fileutil.AtomicWriteFileNoSymlink(path, existingBytes, 0o600)
@@ -130,7 +133,7 @@ func PatchFile(path string, fallbackCfg *Config, patch FilePatch) error {
 	if err := enc.Close(); err != nil {
 		return err
 	}
-	return fileutil.AtomicWriteFileNoSymlink(path, buf.Bytes(), 0o600)
+	return fileutil.AtomicWriteFileNoSymlink(path, layout.restore(buf.Bytes()), 0o600)
 }
 
 func applyFilePatch(root *yaml.Node, patch FilePatch) bool {
