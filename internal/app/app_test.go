@@ -4460,3 +4460,263 @@ func TestContinueCommandRejectsPartialOrAmbiguousApprovalTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestModelsDeclaredAndTextProvenance(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`schema_version: 1
+default_provider: mine
+providers:
+  mine:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if err := Run(context.Background(), []string{"models", "--config", path}, &stdout, &stderr); err != nil {
+		t.Fatalf("models text: %v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "mine/MiniMax-M3.1-Flash\tmine: MiniMax-M3.1-Flash\tanthropic\tfile default") {
+		t.Fatalf("expected file source in models output, got:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "openai/gpt-5.4\topenai: gpt-5.4\topenai\tbuiltin") {
+		t.Fatalf("expected builtin source in models output, got:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	if err := Run(context.Background(), []string{"models", "--declared", "--json", "--config", path}, &stdout, &stderr); err != nil {
+		t.Fatalf("models --declared --json: %v stderr=%s", err, stderr.String())
+	}
+	var declared []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &declared); err != nil {
+		t.Fatalf("decode models: %v", err)
+	}
+	if len(declared) != 1 || declared[0]["id"] != "mine/MiniMax-M3.1-Flash" || declared[0]["source"] != "file" {
+		t.Fatalf("expected only declared file provider, got %#v", declared)
+	}
+}
+
+func TestDoctorRejectsAnthropicBaseURLWithTrailingV1(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`schema_version: 1
+default_provider: gateway
+providers:
+  gateway:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com/v1
+    model: MiniMax-M3.1-Flash
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := Run(context.Background(), []string{"doctor", "--config", path, "--skip-probe", "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(stdout.String(), "/v1/messages") {
+		t.Fatalf("expected doctor to flag anthropic /v1 base_url, err=%v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestDoctorDetectsZombieRunningSessionsAndSessionsReconcileCLI(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "sessions")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`schema_version: 1
+default_provider: gateway
+providers:
+  gateway:
+    api_provider: openai-compatible
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    model: gpt-5.4
+session:
+  dir: `+sessionDir+`
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := session.NewStore(sessionDir)
+	staleTime := time.Now().UTC().Add(-30 * time.Second).Format(time.RFC3339Nano)
+	meta := session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "zombie_s1",
+		CreatedAt:        staleTime,
+		Workdir:          dir,
+		Mode:             session.ModeExec,
+		Provider:         "gateway",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}
+	if err := store.Create(meta, session.State{Status: session.StatusRunning, Phase: "provider_call", UpdatedAt: staleTime}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendEvent(meta.ID, events.New(meta.ID, runtime.RunOwnerAcquiredEventType, "prepare", map[string]any{
+		"pid":              999997,
+		"process_start_id": "999997:2026-01-01T00:00:00Z",
+		"started_at":       "2026-01-01T00:00:00Z",
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	_ = Run(context.Background(), []string{"doctor", "--config", cfgPath, "--skip-probe", "--json"}, &stdout, &stderr)
+	if !strings.Contains(stdout.String(), "stale_running_sessions") || !strings.Contains(stdout.String(), "zombie_s1") {
+		t.Fatalf("expected doctor output to detect stale_running_sessions zombie_s1, got:\n%s", stdout.String())
+	}
+
+	// Verify sessions reconcile transitions running -> paused.
+	stdout.Reset()
+	stderr.Reset()
+	if err := Run(context.Background(), []string{"sessions", "reconcile", "zombie_s1", "--config", cfgPath, "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("sessions reconcile failed: %v stderr=%s", err, stderr.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		t.Fatalf("decode reconcile JSON: %v", err)
+	}
+	if res["reconciled"] != true || res["status"] != session.StatusPaused {
+		t.Fatalf("unexpected reconcile result: %#v", res)
+	}
+	after, err := store.LoadState("zombie_s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != session.StatusPaused || after.PauseReason != "manual_reconcile" {
+		t.Fatalf("expected paused after reconcile, got %#v", after)
+	}
+}
+
+func TestCLIUXHelpTimeoutLimitAndPathSanitization(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "sessions")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("schema_version: 1\ndefault_provider: openai\nsession:\n  dir: "+sessionDir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := session.NewStore(sessionDir)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if err := store.Create(session.SessionMetadata{
+		SchemaVersion:    1,
+		ID:               "no_goal_sess",
+		CreatedAt:        now,
+		Workdir:          dir,
+		Mode:             session.ModeExec,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		CompletionPolicy: session.CompletionPolicyAutonomous,
+	}, session.State{Status: session.StatusPaused, Phase: "interrupt", UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	// #221: --help/-h exits 0 and prints to stdout across commands.
+	helpCases := [][]string{
+		{"--help"},
+		{"help"},
+		{"models", "--help"},
+		{"exec", "--help"},
+		{"run", "-h"},
+		{"continue", "--help"},
+		{"steer", "-h"},
+		{"sessions", "--help"},
+		{"sessions", "context", "--help"},
+		{"sessions", "reconcile", "--help"},
+		{"goal", "--help"},
+		{"goal", "plan", "--help"},
+		{"goal", "validation", "--help"},
+		{"tasks", "--help"},
+		{"probe-provider", "--help"},
+		{"doctor", "--help"},
+		{"init", "--help"},
+		{"web", "--help"},
+		{"experimental", "--help"},
+		{"experimental", "delegate", "--help"},
+		{"experimental", "children", "--help"},
+		{"experimental", "queue", "--help"},
+		{"experimental", "queue", "submit", "--help"},
+		{"experimental", "queue", "list", "--help"},
+		{"experimental", "queue", "show", "--help"},
+		{"experimental", "queue", "worker", "--help"},
+		{"experimental", "tui", "--help"},
+	}
+	for _, args := range helpCases {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Fatalf("help %v failed: %v stderr=%s", args, err, stderr.String())
+		}
+		if strings.TrimSpace(stdout.String()) == "" {
+			t.Fatalf("help %v produced empty stdout", args)
+		}
+	}
+
+	// #221: --limit <= 0 rejected.
+	for _, args := range [][]string{
+		{"sessions", "--limit", "0", "--config", cfgPath},
+		{"experimental", "children", "no_goal_sess", "--limit", "-1", "--config", cfgPath},
+		{"experimental", "queue", "list", "--limit", "0", "--config", cfgPath},
+		{"experimental", "tui", "--once", "--limit", "0", "--config", cfgPath},
+	} {
+		if err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "positive") {
+			t.Fatalf("expected positive --limit error for %v, got %v", args, err)
+		}
+	}
+
+	// #221: --timeout supports Go duration & rejects negative/invalid values.
+	if d, err := parseTimeoutDuration("30"); err != nil || d != 30*time.Second {
+		t.Fatalf("parseTimeoutDuration(30): %v %v", d, err)
+	}
+	if d, err := parseTimeoutDuration("2m"); err != nil || d != 2*time.Minute {
+		t.Fatalf("parseTimeoutDuration(2m): %v %v", d, err)
+	}
+	for _, bad := range []string{"-5", "-1s", "notaduration"} {
+		if err := Run(context.Background(), []string{"exec", "--timeout", bad, "--config", cfgPath, "hello"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+			t.Fatalf("expected invalid --timeout error for %q, got %v", bad, err)
+		}
+	}
+
+	// #222: goal subcommand validation and leading flags before subcommand.
+	if err := Run(context.Background(), []string{"goal", "bogus"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "unknown goal subcommand") || !strings.Contains(err.Error(), "show, pause") {
+		t.Fatalf("expected unknown goal subcommand with valid list, got %v", err)
+	}
+	if err := Run(context.Background(), []string{"goal", "plan", "bogus"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "unknown goal plan subcommand") || !strings.Contains(err.Error(), "show, check, approve") {
+		t.Fatalf("expected unknown goal plan subcommand with valid list, got %v", err)
+	}
+	// Flags before subcommand should still resolve to missing goal error, not flag parse error.
+	if err := Run(context.Background(), []string{"goal", "--json", "show", "no_goal_sess", "--config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "has no goal") {
+		t.Fatalf("expected leading --json before goal show to work and report missing goal, got %v", err)
+	}
+
+	// #218: missing session / missing goal errors do not leak internal sessionDir path.
+	for _, args := range [][]string{
+		{"goal", "show", "missing_sess_id", "--config", cfgPath},
+		{"tasks", "missing_sess_id", "--config", cfgPath},
+		{"sessions", "context", "missing_sess_id", "--config", cfgPath},
+		{"experimental", "children", "missing_sess_id", "--config", cfgPath},
+	} {
+		err := Run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "unknown session") {
+			t.Fatalf("expected clean unknown session error for %v, got %v", args, err)
+		}
+		if strings.Contains(err.Error(), dir) || strings.Contains(err.Error(), "session.json") {
+			t.Fatalf("internal filesystem path leaked for %v: %v", args, err)
+		}
+	}
+	if err := Run(context.Background(), []string{"goal", "show", "no_goal_sess", "--config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "has no goal") || strings.Contains(err.Error(), dir) {
+		t.Fatalf("expected clean has-no-goal error without path leak, got %v", err)
+	}
+
+	// #219: missing --approval-request-id returns CLI flag message and wraps ErrMissingApprovalRequestID.
+	err := Run(context.Background(), []string{"continue", "no_goal_sess", "--approve-plan", "--approve-latest", "--config", cfgPath}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !errors.Is(err, session.ErrMissingApprovalRequestID) || !strings.Contains(err.Error(), "--approval-request-id") {
+		t.Fatalf("expected CLI --approval-request-id guidance wrapping ErrMissingApprovalRequestID, got %v", err)
+	}
+
+	// #227: experimental unknown subcommand lists valid subcommands, and queue invalid wait-mode lists valid modes.
+	if err := Run(context.Background(), []string{"experimental", "bogus"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "delegate, children, queue, tui, web") {
+		t.Fatalf("expected valid experimental subcommand list, got %v", err)
+	}
+	if err := Run(context.Background(), []string{"experimental", "queue", "submit", "--wait-mode", "bogus", "--config", cfgPath, "hello"}, &bytes.Buffer{}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "wait-all, wait-any") {
+		t.Fatalf("expected valid wait modes in error, got %v", err)
+	}
+}

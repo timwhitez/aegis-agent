@@ -242,6 +242,7 @@ type HTTPError struct {
 	Message     string
 	StatusCode  int
 	TimeoutKind string
+	RequestURL  string
 	// RetryAfter carries the wait requested by the upstream Retry-After
 	// response header (0 when absent or unparseable). It is optional: only
 	// status-bearing responses populate it, and the retry loop in http.go

@@ -2,6 +2,8 @@ package webconsole
 
 import (
 	"context"
+	"errors"
+	"log"
 	"time"
 
 	"aegis-agent/internal/session"
@@ -64,19 +66,38 @@ func (s *Service) stopQueueReaper() {
 	s.reaperDone = nil
 }
 
-// runReaperPass performs one reclamation sweep. Errors are swallowed (logged via
-// events where applicable) so a transient store error never kills the loop.
+// runReaperPass performs one reclamation sweep. Errors are logged and audited
+// best-effort so a transient store error never kills the background loop.
 func (s *Service) runReaperPass() {
 	s.historyMu.Lock()
 	defer s.historyMu.Unlock()
 	if s.beforeQueueReaperPass != nil {
 		s.beforeQueueReaperPass()
 	}
-	_, _ = s.store.ReapStaleQueueJobs(s.leaseStaleAfter())
+	if _, err := s.store.ReapStaleQueueJobs(s.leaseStaleAfter()); err != nil {
+		log.Printf("webconsole queue reaper: ReapStaleQueueJobs failed: %v", err)
+		s.recordReaperError("reap_stale_queue_jobs", err)
+	}
 	// Zombie running sessions (status=running with no live owning process) are
 	// reconciled to paused via the existing self-filtering helper, which only
 	// acts when the recorded owner is known dead/stale.
-	_ = s.reconcileAllStaleRunningSessions()
+	if err := s.reconcileAllStaleRunningSessions(); err != nil {
+		log.Printf("webconsole queue reaper: reconcileAllStaleRunningSessions failed: %v", err)
+		s.recordReaperError("reconcile_stale_running_sessions", err)
+	}
+}
+
+func (s *Service) recordReaperError(op string, err error) {
+	if err == nil {
+		return
+	}
+	if s.ensureAuditLogWritable() != nil {
+		return
+	}
+	_ = s.appendAuditEvent("web.reaper.error", map[string]any{
+		"operation": op,
+		"error":     err.Error(),
+	})
 }
 
 // reconcileAllStaleRunningSessions sweeps every session recorded as running,
@@ -90,12 +111,13 @@ func (s *Service) reconcileAllStaleRunningSessions() error {
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, id := range ids {
 		if _, err := s.reconcileStaleRunningSession(id, queueReaperPauseReason); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Service) reaperInterval() time.Duration {

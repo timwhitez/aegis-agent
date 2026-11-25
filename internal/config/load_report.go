@@ -51,6 +51,7 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 	} else {
 		candidates = append(candidates, candidate{kind: "cli", path: explicitPath})
 	}
+	var declaredProviders map[string]bool
 	for _, c := range candidates {
 		if c.path == "" {
 			continue
@@ -83,9 +84,19 @@ func LoadWithReport(explicitPath, cwd string) (*Config, LoadReport, error) {
 			report.Sources = append(report.Sources, source)
 			return nil, report, err
 		}
+		if layerKeys := extractDeclaredProviderKeys(data); len(layerKeys) > 0 {
+			if declaredProviders == nil {
+				declaredProviders = make(map[string]bool, len(layerKeys))
+			}
+			for key := range layerKeys {
+				declaredProviders[key] = true
+			}
+		}
 		source.Outcome = "loaded"
 		report.Sources = append(report.Sources, source)
 	}
+	cfg.hasProviderProvenance = true
+	cfg.declaredProviders = declaredProviders
 	normalizeConfig(cfg, cwd)
 	if err := ValidateBrowserConfig(cfg.Tools.Browser); err != nil {
 		return nil, report, err
@@ -111,4 +122,18 @@ func (cfg *Config) LoadReport() LoadReport {
 func cloneLoadReport(report LoadReport) LoadReport {
 	report.Sources = append([]LoadSource(nil), report.Sources...)
 	return report
+}
+
+func extractDeclaredProviderKeys(data []byte) map[string]bool {
+	var raw struct {
+		Providers map[string]yaml.Node `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil || len(raw.Providers) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(raw.Providers))
+	for name := range raw.Providers {
+		out[name] = true
+	}
+	return out
 }

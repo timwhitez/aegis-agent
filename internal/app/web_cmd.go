@@ -19,16 +19,15 @@ import (
 const maxWebWorkerCount = 8
 
 func webCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config", "listen", "workers"}, []string{"allow-builtin-config"})
+	args = normalizeInterspersedFlags(args, []string{"config", "listen", "workers"}, []string{"allow-builtin-config", "help", "h"})
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	var (
-		configPath   = fs.String("config", "", "")
-		listenAddr   = fs.String("listen", "127.0.0.1:3940", "")
-		workers      = fs.Int("workers", 2, "")
+		configPath   = fs.String("config", "", "Path to config file")
+		listenAddr   = fs.String("listen", "127.0.0.1:3940", "Loopback or configured listen host:port")
+		workers      = fs.Int("workers", 2, "Embedded queue worker count (0..8)")
 		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent web [--listen host:port] [--workers N] [--config path] [--allow-builtin-config]"); err != nil || helped {
 		return err
 	}
 	if *workers < 0 {

@@ -12,6 +12,7 @@ type Model struct {
 	ID            string         `json:"id"`
 	Label         string         `json:"label"`
 	Provider      string         `json:"provider,omitempty"`
+	Source        string         `json:"source,omitempty"`
 	Default       bool           `json:"default"`
 	ContextWindow int            `json:"context_window,omitempty"`
 	Thinking      *ModelThinking `json:"thinking,omitempty"`
@@ -52,6 +53,7 @@ func ModelsFromConfig(cfg *config.Config) ([]Model, error) {
 			ID:            name + "/" + modelID,
 			Label:         name + ": " + modelID,
 			Provider:      protocolProviderName(apiProvider),
+			Source:        cfg.ProviderSource(name),
 			Default:       name == cfg.DefaultProvider,
 			ContextWindow: config.ResolveContextWindowTokens(modelID, providerCfg.ContextWindowTokens),
 		}

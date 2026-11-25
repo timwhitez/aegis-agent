@@ -301,7 +301,7 @@ role capability 约束在进入 adapter 之前完成：
 
 ### 7.1 接口与鉴权
 
-- `POST /v1/messages`
+- `POST /v1/messages`（adapter 会在 `base_url` 后拼接 `/v1/messages`，因此配置里的 `base_url` 必须是不含 `/v1` 的 origin，如 `https://api.anthropic.com`）
 - `x-api-key: <ANTHROPIC_API_KEY>`
 - `anthropic-version: <configured-version>`
 

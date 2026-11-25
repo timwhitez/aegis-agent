@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type ToolsConfig struct {
@@ -17,15 +18,32 @@ type BrowserConfig struct {
 }
 
 func DefaultBrowserInstallRoot() string {
-	base := os.Getenv("XDG_DATA_HOME")
+	base := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
 	if !filepath.IsAbs(base) {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".local", "share")
+		home, err := os.UserHomeDir()
+		if err == nil && filepath.IsAbs(home) {
+			base = filepath.Join(home, ".local", "share")
+		} else {
+			base = os.TempDir()
+			if !filepath.IsAbs(base) {
+				if abs, absErr := filepath.Abs(base); absErr == nil && filepath.IsAbs(abs) {
+					base = abs
+				} else {
+					base = string(filepath.Separator) + "tmp"
+				}
+			}
+		}
 	}
 	return filepath.Join(base, "aegis-agent", "browser-use")
 }
+
 func ValidateBrowserConfig(b BrowserConfig) error {
-	if !filepath.IsAbs(b.InstallRoot) {
+	trimmedRoot := strings.TrimSpace(b.InstallRoot)
+	if b.Enabled {
+		if !filepath.IsAbs(trimmedRoot) {
+			return fmt.Errorf("tools.browser.install_root must be absolute (set tools.browser.install_root explicitly)")
+		}
+	} else if trimmedRoot != "" && !filepath.IsAbs(trimmedRoot) {
 		return fmt.Errorf("tools.browser.install_root must be absolute")
 	}
 	if b.BrowserExecutable != "" && !filepath.IsAbs(b.BrowserExecutable) {

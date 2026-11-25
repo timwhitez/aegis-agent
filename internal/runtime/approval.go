@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,8 +74,10 @@ func (r *Runner) PrepareApprovalContinue(ctx context.Context, req ContinueReques
 func (r *Runner) newApprovalPreparationRunner(scoped *session.Store) *Runner {
 	prep := &Runner{
 		cfg: r.cfg, store: scoped, bus: r.bus, control: r.control,
-		planInputWaiters:  map[string]chan planInputResponse{},
-		planInputHandlers: map[string]PlanInputHandler{},
+		planInputWaiters:     map[string]chan planInputResponse{},
+		planInputHandlers:    map[string]PlanInputHandler{},
+		planInputUnavailable: map[string]bool{},
+		planOnlySessions:     map[string]bool{},
 	}
 	prep.engine = NewEngine(r.cfg, scoped, r.bus, r.control)
 	prep.engine.beforeAppendEvent = r.engine.beforeAppendEvent
@@ -207,6 +210,8 @@ func (r *Runner) RunPreparedApproval(ctx context.Context, p *PreparedApproval) (
 	if err := r.notifySessionActive(p.meta); err != nil {
 		return r.failBeforeRun(p.meta.ID, p.state, "prepare", err)
 	}
+	r.setPlanInputAvailability(p.meta.ID, p.req.PlanInputHandler != nil || !p.req.PlanInputUnavailable)
+	defer r.clearPlanInputAvailability(p.meta.ID)
 	result, err = r.runExisting(ctx, p.meta, p.state, p.req.SystemOverride, p.req.PlanInputHandler)
 	r.notifySessionInactive(p.meta, result, err)
 	if err != nil && result.SessionID == "" {
@@ -629,6 +634,20 @@ func CanReconcileApprovalPreparation(store *session.Store, sessionID string) (ca
 		return nil
 	})
 	return canReconcile, err
+}
+
+// HasDeadExecutingApprovalOperation reports whether sessionID has a durable
+// approval operation in the executing phase for runGeneration whose owner
+// process is dead.
+func HasDeadExecutingApprovalOperation(store *session.Store, sessionID, runGeneration string) bool {
+	if store == nil || strings.TrimSpace(runGeneration) == "" {
+		return false
+	}
+	lookup, err := store.LookupApprovalOperationByGeneration(sessionID, runGeneration)
+	if err != nil {
+		return false
+	}
+	return lookup.Receipt.Phase == "executing" && !session.ProcessOwnerAlive(lookup.Receipt.Recovery.OwnerPID, lookup.Receipt.Recovery.OwnerIdentity)
 }
 
 func validateApprovalPreparationRecord(sessionID string, record approvalPreparationRecord) error {

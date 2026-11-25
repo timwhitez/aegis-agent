@@ -1,6 +1,8 @@
 package streamjson
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"aegis-agent/internal/config"
@@ -131,4 +133,38 @@ func TestModelsFromConfigUsesConfiguredContextWindow(t *testing.T) {
 		}
 	}
 	t.Fatalf("openai gpt-5.5 model not found in %#v", models)
+}
+
+func TestModelsFromConfigDistinguishesFileAndBuiltinSources(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(`schema_version: 1
+default_provider: mine
+providers:
+  mine:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := ModelsFromConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Model{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if byID["mine/MiniMax-M3.1-Flash"].Source != config.ProviderSourceFile || !byID["mine/MiniMax-M3.1-Flash"].Default {
+		t.Fatalf("expected mine to have source=file and default=true, got %#v", byID["mine/MiniMax-M3.1-Flash"])
+	}
+	if byID["openai/gpt-5.4"].Source != config.ProviderSourceBuiltin {
+		t.Fatalf("expected openai to have source=builtin, got %#v", byID["openai/gpt-5.4"])
+	}
 }

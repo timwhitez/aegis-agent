@@ -16,26 +16,26 @@
 | --- | --- | --- |
 | `/ui/*` | GET、HEAD | 嵌入的前端资源；缺失文件和目录返回 404，不回退到页面 shell |
 | `/legacy`、`/v2-assets`、`/shared-assets` 及其子路径 | 全部 | 退役前端路由，返回 404 |
-| `/api/meta` | GET | 服务元信息：session/workspace 根、provider、worker 数和能力 |
+| `/api/meta` | GET | 服务元信息：session/workspace 根、provider（含 `source`: `file` / `builtin`）、worker 数和能力 |
 | `/api/overview` | GET | 侧栏数据：计数、最近会话、job、worker、失败和 feed |
 | `/api/history` | GET | 分页会话历史（`page`、`page_size`） |
 | `/api/sessions` | GET | 会话摘要列表（`limit`，最多 200） |
 | `/api/sessions/start` | POST | 启动新会话，返回 202 accepted |
 | `/api/sessions/clear` | POST | 清空历史；本进程有活动 handle 或正在启动、继续的 session，存在未结算的队列 job，或仍有 session 在运行时返回冲突 |
-| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话树；目标或其后代在本进程有活动 handle 或正在继续、审批，仍在运行，或关联了会执行的队列 job（树内会话已暂停或等待输入的 blocked job 除外）时返回冲突 |
+| `/api/sessions/{id}` | GET、DELETE | 会话详情（消息尾部 `limit` 默认 40、最多 200）；删除会话树（支持 `?force=true` 强制协调无属主事件的 `running` 会话）；目标或其后代在本进程有活动 handle 或正在继续、审批，仍在运行，或关联了会执行的队列 job（树内会话已暂停或等待输入的 blocked job 除外）时返回冲突 |
 | `/api/sessions/{id}/messages` | GET | 消息分页（`before_id`、`limit`） |
 | `/api/sessions/{id}/children`、`tasks`、`file-changes`、`context` | GET | 子会话与队列 job、任务板、文件变更、上下文报告 |
-| `/api/sessions/{id}/continue`、`steer`、`interrupt`、`stop` | POST | 运行控制 |
+| `/api/sessions/{id}/continue`、`steer`、`interrupt`、`stop` | POST | 运行控制；`interrupt` 和 `stop` 支持 `?force=true` 强制协调无属主事件的 `running` 会话 |
 | `/api/sessions/{id}/goal` | GET、POST、PATCH、DELETE | 读取、创建、修改、清除 Goal |
 | `/api/sessions/{id}/goal/complete`、`pause`、`resume` | POST | 修改 Goal 状态 |
 | `/api/sessions/{id}/mission/plan`、`mission/validation` | PATCH | 修改 mission plan 与 validation |
 | `/api/sessions/{id}/mission/plan/approve` | POST | 批准 linked mission plan |
-| `/api/sessions/{id}/planmode` | GET | Plan Mode 状态与审批目标 |
+| `/api/sessions/{id}/planmode` | GET | Plan Mode 状态与审批目标；会话存在但未开启 Plan Mode 时返回 200 `{"enabled":false,"status":"off"}`，会话不存在返回 404 `SESSION_NOT_FOUND` |
 | `/api/sessions/{id}/planmode/approve`、`revise`、`cancel`、`input` | POST | 审批、修订、取消计划，回答计划提问 |
 | `/api/sessions/{id}/approval-receipts/{request_id}` | GET | 审批 receipt 查询，先于当前 session metadata 检查 |
 | `/api/queue/jobs`、`/api/queue/jobs/{id}` | GET、POST；GET | 后台队列 job 列表与创建；job 详情 |
 | `/api/workers` | GET、POST | worker 快照；调整 worker 数量 |
-| `/api/config` | GET、POST | 读取与保存 provider 配置和 `.env` API key |
+| `/api/config` | GET、POST | 读取与保存 provider 配置（含 `source`、`api_key_env`、timeout/retry/协议选项）和 `.env` API key；保存仅写回配置文件显式声明或本次修改的 provider，不展开未触及的内建默认 |
 | `/api/config/test` | POST | 用表单值测试 provider 连接，不保存 |
 | `/api/files` | GET、DELETE | Workspace 目录列表（一次返回整个目录）；删除单个路径 |
 | `/api/files/mkdir`、`upload`、`delete` | POST | 新建目录、上传文件、批量删除 |
@@ -63,9 +63,27 @@
 - interrupt 请求停止当前 owner，但不删除已写入的消息和事件；
 - stop 结束当前执行并协调 descendants/queue；
 - 本进程没有内存 handle 时，stop 与 interrupt 先读 durable 属主线索（Web 自己的 `webconsole.handle.*` 与 runtime 的 `run.owner.*`），因此 CLI、SDK 和 queue worker 启动的运行同样受控：
-  - 属主进程已死：走既有的 stale-owner reconcile，把 session 收敛为 `paused` 并写 `session.paused`，之后可以删除；队列 reaper 的周期扫描按同一规则自动协调这类 `running` session；
+  - 属主进程已死（含 `executing` 阶段审批操作且属主已死）：走既有的 stale-owner reconcile，把 session 收敛为 `paused` 并写 `session.paused`，之后可以删除；队列 reaper 的周期扫描按同一规则自动协调这类 `running` session，并将 sweep 异常记录到日志与审计事件 `web.reaper.error`；
   - 属主进程仍存活但不是本进程：不返回冲突，也不抢占。追加一条 durable interrupt steer（stop 用 `StopWithoutFinishSteerMessage`，interrupt 用 `InterruptWithoutFinishSteerMessage`）并返回 202，由属主进程自己的 steer watcher 在安全边界消费；已有等价 pending/deferred 请求时不重复追加，仍返回 202；
-  - 没有任何属主事件、无法证明归属时，保持既有的 `ACTIVE_HANDLE_NOT_OWNED` 冲突响应和下一步动作。
+  - 没有任何属主事件时：刚创建（`< 5s`）的 session 在无 `?force=true` 时保持 `ACTIVE_HANDLE_NOT_OWNED` 409 响应以防误打断启动窗口；超过宽限期（`>= 5s`）或显式带 `?force=true` 时，reaper 与 `stop`/`interrupt`/`delete` 将其协调为 `paused`（`pause_reason: stale_owner_missing`）。
+
+### 请求体字段与错误语义摘要
+
+主要 mutation 路由的请求 JSON 字段：
+
+| 路由 | 关键请求体字段 |
+| --- | --- |
+| `POST /api/sessions/start` | `prompt`（必填）、`provider`、`model`、`workdir`、`mode`（`run`/`exec`/`init`）、`system`、`agent_name`、`agent_role`、`isolation_mode`、`isolation_root`、`goal`、`plan_mode`（`{enabled, objective}`） |
+| `POST /api/sessions/{id}/continue` | `message`、`provider`、`model`、`system`、`plan_mode`（`{enabled, objective}`） |
+| `POST /api/sessions/{id}/steer` | `message`（必填）、`interrupt`（bool） |
+| `POST /api/sessions/{id}/goal` | `objective`（必填）、`mode`（`goal`/`mission`，默认 `goal`）、`success_criteria`、`validation_plan`、`token_budget`、`provider_time_budget_minutes`、`time_budget_minutes`、`autonomy`、`require_plan_approval`、`stop_on_budget`、`create_tasks_from_plan`、`features`、`milestones`、`ask_before_large_changes`、`ask_before_dependency_change`（路由自动设置 `enabled=true`） |
+| `POST /api/sessions/{id}/planmode/approve`、`revise`、`input` | `approve`：`plan_mode_id`、`plan_version`、`expected_revision`、`approval_request_id`、`override_coverage`、`message`、`provider`、`model`；`revise`：`message`；`input`：`request_id`、`answers` |
+| `POST /api/queue/jobs` | `prompt`（必填）、`parent_session_id`、`agent_name`、`agent_role`、`provider`、`model`、`workdir`、`system`、`mode`、`wait_mode`、`isolation_mode`、`isolation_root` |
+| `POST /api/workers` | `desired_count`（必填整数，`0..8`） |
+| `POST /api/config` / `POST /api/config/test` | `provider`、`api_provider`、`base_url`（`anthropic-compatible` 拒绝末尾 `/v1`）、`model`、`context_window_tokens`、`api_key`、`reasoning_mode`、`reasoning_summary`；`POST /api/config` 另支持 `guardrails_mode`、`max_turns_soft`、`max_turns_hard`、`disable_hard_turn_limit`、`child_budget`、`role_providers` |
+
+- `409 Conflict` 重试语义：遇到 `ACTIVE_HANDLE_NOT_OWNED`、`SESSION_NOT_RESUMABLE`、`APPROVAL_TARGET_CONFLICT`、`APPROVAL_RECOVERY_REQUIRED` 等 409 错误时，响应会给出 `code` 和 `action`，调用方应先刷新 session/plan 状态或按 `action` 提示执行 steer / reconcile / 重新审阅后再重试，不应盲目重复相同 mutation。
+- 资源不存在错误（404）：缺失 session、queue job、approval receipt、goal、planmode 或 workspace 路径统一返回脱敏消息与稳定错误码（`SESSION_NOT_FOUND`、`QUEUE_JOB_NOT_FOUND`、`APPROVAL_RECEIPT_NOT_FOUND`、`GOAL_NOT_FOUND`、`PLAN_MODE_NOT_FOUND`、`NOT_FOUND`），不暴露宿主文件系统绝对路径。
 - 跨进程控制只写 durable 请求，不写 session state、不做状态 CAS，因此不会协调或抢占另一个存活进程的运行；active handle 不属于当前进程时也不会静默接管。
 
 ### Goal 与 Plan Mode

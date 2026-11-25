@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,10 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if args[0] == "--version" || args[0] == "version" {
 		return classifyCommandError(printVersion(stdout))
 	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		_ = usage(stdout)
+		return nil
+	}
 	var err error
 	switch args[0] {
 	case "init":
@@ -84,7 +89,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "steer":
 		err = steerCommand(ctx, args[1:], stdout, stderr)
 	case "sessions":
-		err = sessionsCommand(args[1:], stdout)
+		err = sessionsCommand(args[1:], stdout, stderr)
 	case "goal":
 		err = goalCommand(ctx, args[1:], stdout, stderr)
 	case "tasks":
@@ -111,6 +116,43 @@ func usage(w io.Writer) error {
 	return flag.ErrHelp
 }
 
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-h" || arg == "-help" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+func parseFlagSet(fs *flag.FlagSet, args []string, stdout, stderr io.Writer, usageLine string) (bool, error) {
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		if usageLine != "" {
+			fs.Usage = func() {
+				_, _ = fmt.Fprintln(stdout, usageLine)
+				fs.PrintDefaults()
+			}
+		}
+		err := fs.Parse(args)
+		if errors.Is(err, flag.ErrHelp) {
+			return true, nil
+		}
+		return false, err
+	}
+	fs.SetOutput(stderr)
+	if usageLine != "" {
+		fs.Usage = func() {
+			_, _ = fmt.Fprintln(stderr, usageLine)
+			fs.PrintDefaults()
+		}
+	}
+	return false, fs.Parse(args)
+}
+
 func experimentalUsage(w io.Writer) error {
 	_, _ = fmt.Fprintln(w, "usage: aegis-agent experimental <delegate|children|queue|tui|web> [...]")
 	return flag.ErrHelp
@@ -119,6 +161,10 @@ func experimentalUsage(w io.Writer) error {
 func experimentalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return experimentalUsage(stderr)
+	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "-help" {
+		_ = experimentalUsage(stdout)
+		return nil
 	}
 	switch args[0] {
 	case "delegate":
@@ -132,7 +178,7 @@ func experimentalCommand(ctx context.Context, args []string, stdout, stderr io.W
 	case "web":
 		return webCommand(ctx, args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown experimental subcommand: %s", args[0])
+		return fmt.Errorf("unknown experimental subcommand %q (expected one of: delegate, children, queue, tui, web)", args[0])
 	}
 }
 
@@ -216,40 +262,43 @@ const maxPromptStdinBytes int64 = 4 << 20
 const streamJSONDrainBarrierEvent = "cli.stream_json.drain_barrier"
 
 func runCommand(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only", "allow-builtin-config", "send-metadata"})
-	fs := flag.NewFlagSet(mode, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "workdir", "system", "timeout", "isolation", "isolation-root", "goal", "goal-mode", "goal-token-budget", "goal-time-budget", "goal-success", "goal-validate", "output-format", "input-format", "resume", "thinking-level"}, []string{"json", "init", "goal-plan-approval", "goal-stop-on-budget", "plan", "plan-only", "allow-builtin-config", "send-metadata", "help", "h"})
+	flagSet := flag.NewFlagSet(mode, flag.ContinueOnError)
 	var (
-		providerName     = fs.String("provider", "", "")
-		model            = fs.String("model", "", "")
-		configPath       = fs.String("config", "", "")
-		workdir          = fs.String("workdir", "", "")
-		system           = fs.String("system", "", "")
-		jsonMode         = fs.Bool("json", false, "")
-		initMode         = fs.Bool("init", false, "")
-		timeoutSec       = fs.Int("timeout", 0, "")
-		isolationMode    = fs.String("isolation", "", "")
-		isolationRoot    = fs.String("isolation-root", "", "")
-		goalObjective    = fs.String("goal", "", "")
-		goalMode         = fs.String("goal-mode", "goal", "")
-		goalTokenBudget  = fs.Int64("goal-token-budget", 0, "")
-		goalTimeBudget   = fs.String("goal-time-budget", "", "")
-		goalPlanApproval = fs.Bool("goal-plan-approval", false, "")
-		goalStopOnBudget = fs.Bool("goal-stop-on-budget", false, "")
-		planModeEnabled  = fs.Bool("plan", false, "")
-		planOnly         = fs.Bool("plan-only", false, "")
-		outputFormat     = fs.String("output-format", "text", "")
-		inputFormat      = fs.String("input-format", "text", "")
-		resumeSession    = fs.String("resume", "", "")
-		thinkingLevel    = fs.String("thinking-level", "", "")
-		allowBuiltin     = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
-		sendMetadata     = fs.Bool("send-metadata", true, "Explicit metadata option; also overrides this option on resume")
+		providerName     = flagSet.String("provider", "", "Provider profile name")
+		model            = flagSet.String("model", "", "Model name override")
+		configPath       = flagSet.String("config", "", "Path to config file")
+		workdir          = flagSet.String("workdir", "", "Working directory")
+		system           = flagSet.String("system", "", "System prompt override")
+		jsonMode         = flagSet.Bool("json", false, "Output JSON result")
+		initMode         = flagSet.Bool("init", false, "Run with init completion policy")
+		timeoutRaw       = flagSet.String("timeout", "", "Run timeout as positive seconds or Go duration (e.g. 30 or 2m)")
+		isolationMode    = flagSet.String("isolation", "", "Workspace isolation mode (off, auto, worktree)")
+		isolationRoot    = flagSet.String("isolation-root", "", "Isolation root directory")
+		goalObjective    = flagSet.String("goal", "", "Create a goal or mission with this objective")
+		goalMode         = flagSet.String("goal-mode", "goal", "Goal mode (goal or mission)")
+		goalTokenBudget  = flagSet.Int64("goal-token-budget", 0, "Goal token budget")
+		goalTimeBudget   = flagSet.String("goal-time-budget", "", "Goal provider time budget (minutes or Go duration)")
+		goalPlanApproval = flagSet.Bool("goal-plan-approval", false, "Require explicit plan approval before executing mission")
+		goalStopOnBudget = flagSet.Bool("goal-stop-on-budget", false, "Pause automatically when goal budget is exceeded")
+		planModeEnabled  = flagSet.Bool("plan", false, "Start session in Plan Mode")
+		planOnly         = flagSet.Bool("plan-only", false, "Start in Plan Mode and stop after submitting the plan")
+		outputFormat     = flagSet.String("output-format", "text", "Output format (text or stream-json)")
+		inputFormat      = flagSet.String("input-format", "text", "Input format (text, stream-json, or raw)")
+		resumeSession    = flagSet.String("resume", "", "Resume an existing session ID (exec mode only)")
+		thinkingLevel    = flagSet.String("thinking-level", "", "Reasoning/thinking level preset")
+		allowBuiltin     = flagSet.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
+		sendMetadata     = flagSet.Bool("send-metadata", true, "Explicit metadata option; also overrides this option on resume")
 		goalCriteria     stringSliceFlag
 		goalValidation   stringSliceFlag
 	)
-	fs.Var(&goalCriteria, "goal-success", "")
-	fs.Var(&goalValidation, "goal-validate", "")
-	if err := fs.Parse(args); err != nil {
+	flagSet.Var(&goalCriteria, "goal-success", "Repeatable goal success criterion")
+	flagSet.Var(&goalValidation, "goal-validate", "Repeatable goal validation command or check")
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent "+mode+" [flags] [prompt]"); err != nil || helped {
+		return err
+	}
+	timeoutDuration, err := parseTimeoutDuration(*timeoutRaw)
+	if err != nil {
 		return err
 	}
 	if *outputFormat != "text" && *outputFormat != "stream-json" {
@@ -264,7 +313,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if *resumeSession != "" && mode != session.ModeExec {
 		return fmt.Errorf("--resume is only supported on exec")
 	}
-	if *inputFormat != "text" && len(fs.Args()) > 0 {
+	if *inputFormat != "text" && len(flagSet.Args()) > 0 {
 		return fmt.Errorf("positional prompt arguments are not allowed with --input-format %s", *inputFormat)
 	}
 	invokeCWD, err := procutil.Getwd()
@@ -299,7 +348,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 			}
 		}
 	default:
-		prompt, err = resolvePrompt(fs.Args(), os.Stdin)
+		prompt, err = resolvePrompt(flagSet.Args(), os.Stdin)
 	}
 	if err != nil {
 		return err
@@ -308,7 +357,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	if err != nil {
 		return err
 	}
-	if explicitlySet(fs, "send-metadata") {
+	if explicitlySet(flagSet, "send-metadata") {
 		providerOptions.SendMetadata = sendMetadata
 	}
 	goalDraft, err := goalDraftFromCLI(*goalObjective, *goalMode, *goalTokenBudget, *goalTimeBudget, *goalPlanApproval, *goalStopOnBudget, goalCriteria, goalValidation)
@@ -365,8 +414,8 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 
 	runCtx := ctx
 	var cancel context.CancelFunc
-	if *timeoutSec > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(*timeoutSec)*time.Second)
+	if timeoutDuration > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeoutDuration)
 	} else {
 		runCtx, cancel = context.WithCancel(ctx)
 	}
@@ -394,28 +443,31 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	var result runtime.RunResult
 	if *resumeSession != "" {
 		result, err = runner.Continue(runCtx, runtime.ContinueRequest{
-			SessionID:        *resumeSession,
-			Message:          prompt,
-			Provider:         *providerName,
-			Model:            *model,
-			SystemOverride:   *system,
-			PlanInputHandler: planInputHandler,
-			ProviderOptions:  providerOptions,
+			SessionID:            *resumeSession,
+			Message:              prompt,
+			Provider:             *providerName,
+			Model:                *model,
+			SystemOverride:       *system,
+			PlanInputHandler:     planInputHandler,
+			PlanInputUnavailable: planInputHandler == nil,
+			ProviderOptions:      providerOptions,
 		})
 	} else {
 		result, err = runner.Start(runCtx, runtime.StartRequest{
-			Prompt:           prompt,
-			Provider:         *providerName,
-			Model:            *model,
-			ProviderOptions:  providerOptions,
-			Workdir:          *workdir,
-			Mode:             actualMode,
-			SystemOverride:   *system,
-			Goal:             goalDraft,
-			PlanMode:         planDraft,
-			PlanInputHandler: planInputHandler,
-			IsolationMode:    *isolationMode,
-			IsolationRoot:    *isolationRoot,
+			Prompt:               prompt,
+			Provider:             *providerName,
+			Model:                *model,
+			ProviderOptions:      providerOptions,
+			Workdir:              *workdir,
+			Mode:                 actualMode,
+			SystemOverride:       *system,
+			Goal:                 goalDraft,
+			PlanMode:             planDraft,
+			PlanOnly:             *planOnly,
+			PlanInputHandler:     planInputHandler,
+			PlanInputUnavailable: planInputHandler == nil,
+			IsolationMode:        *isolationMode,
+			IsolationRoot:        *isolationRoot,
 		})
 	}
 	cancel()
@@ -588,27 +640,26 @@ func allDigits(value string) bool {
 }
 
 func continueCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage", "approval-receipt", "send-metadata"})
-	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"message", "provider", "model", "config", "system", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "plan", "approve-plan", "approve-latest", "cancel-plan", "override-goal-coverage", "approval-receipt", "send-metadata", "help", "h"})
+	flagSet := flag.NewFlagSet("continue", flag.ContinueOnError)
 	var (
-		message              = fs.String("message", "", "")
-		provider             = fs.String("provider", "", "")
-		model                = fs.String("model", "", "")
-		configPath           = fs.String("config", "", "")
-		jsonMode             = fs.Bool("json", false, "")
-		system               = fs.String("system", "", "")
-		planMode             = fs.Bool("plan", false, "")
-		approvePlan          = fs.Bool("approve-plan", false, "")
-		overrideGoalCoverage = fs.Bool("override-goal-coverage", false, "")
-		cancelPlan           = fs.Bool("cancel-plan", false, "")
-		sendMetadata         = fs.Bool("send-metadata", true, "Explicit metadata option for the resumed session")
+		message              = flagSet.String("message", "", "User message to append on continue")
+		provider             = flagSet.String("provider", "", "Provider profile override")
+		model                = flagSet.String("model", "", "Model name override")
+		configPath           = flagSet.String("config", "", "Path to config file")
+		jsonMode             = flagSet.Bool("json", false, "Output JSON result")
+		system               = flagSet.String("system", "", "System prompt override")
+		planMode             = flagSet.Bool("plan", false, "Enter or continue in Plan Mode")
+		approvePlan          = flagSet.Bool("approve-plan", false, "Approve the pending Plan Mode plan and execute")
+		overrideGoalCoverage = flagSet.Bool("override-goal-coverage", false, "Override mission validation coverage gate on approval")
+		cancelPlan           = flagSet.Bool("cancel-plan", false, "Cancel pending Plan Mode")
+		sendMetadata         = flagSet.Bool("send-metadata", true, "Explicit metadata option for the resumed session")
 	)
-	approvalFlags := registerCLIApprovalFlags(fs)
-	if err := fs.Parse(args); err != nil {
+	approvalFlags := registerCLIApprovalFlags(flagSet)
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent continue <session-id> [flags]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("continue requires <session-id>")
 	}
 	if err := approvalFlags.validate(*approvePlan || approvalFlags.latest); err != nil {
@@ -632,14 +683,14 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		approvalStore = storeView.Store()
 		if approvalFlags.receipt {
-			if *planMode || *cancelPlan || *overrideGoalCoverage || *message != "" || *provider != "" || *model != "" || *system != "" || explicitlySet(fs, "send-metadata") {
+			if *planMode || *cancelPlan || *overrideGoalCoverage || *message != "" || *provider != "" || *model != "" || *system != "" || explicitlySet(flagSet, "send-metadata") {
 				return errors.New("--approval-receipt accepts only session, request ID, config and output flags")
 			}
-			return queryCLIApprovalReceipt(runner, approvalStore, fs.Arg(0), approvalFlags.requestID, *jsonMode, stdout)
+			return queryCLIApprovalReceipt(runner, approvalStore, flagSet.Arg(0), approvalFlags.requestID, *jsonMode, stdout)
 		}
-		approvalTarget, err = resolveCLIApprovalOperationTarget(ctx, runner, approvalStore, fs.Arg(0), approvalFlags, os.Stdin, stderr)
+		approvalTarget, err = resolveCLIApprovalOperationTarget(ctx, runner, approvalStore, flagSet.Arg(0), approvalFlags, os.Stdin, stderr)
 		if err != nil {
-			return err
+			return sanitizeCLISessionErr(flagSet.Arg(0), err)
 		}
 	}
 	renderer := output.New(*jsonMode, stdout)
@@ -667,17 +718,19 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		*message = data
 	}
 	var providerOptions session.ProviderOptions
-	if explicitlySet(fs, "send-metadata") {
+	if explicitlySet(flagSet, "send-metadata") {
 		providerOptions.SendMetadata = sendMetadata
 	}
+	planInputHandler := cliPlanInputHandler(os.Stdin, stderr)
 	result, err := runner.Continue(ctx, runtime.ContinueRequest{
-		SessionID:            fs.Arg(0),
+		SessionID:            flagSet.Arg(0),
 		Message:              strings.TrimSpace(*message),
 		Provider:             *provider,
 		Model:                *model,
 		SystemOverride:       *system,
 		PlanMode:             planModeDraftFromCLI(*planMode, strings.TrimSpace(*message)),
-		PlanInputHandler:     cliPlanInputHandler(os.Stdin, stderr),
+		PlanInputHandler:     planInputHandler,
+		PlanInputUnavailable: planInputHandler == nil,
 		ApprovePlan:          *approvePlan,
 		ApprovalTarget:       approvalTarget,
 		ApprovalRequestID:    approvalFlags.requestID,
@@ -690,30 +743,29 @@ func continueCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	<-done
 	if result.Approval != nil {
 		if result.SessionID == "" {
-			result.SessionID = fs.Arg(0)
+			result.SessionID = flagSet.Arg(0)
 		}
 		return printCLIApprovalResult(stdout, *jsonMode, result, approvalStore, err)
 	}
 	if err != nil {
-		return err
+		return sanitizeCLISessionErr(flagSet.Arg(0), err)
 	}
 	return printResult(stdout, stderr, *jsonMode, result, mapStatusToExitCode(result.Status, result.LastError))
 }
 
 func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"message", "config"}, []string{"interrupt", "json"})
-	fs := flag.NewFlagSet("steer", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"message", "config"}, []string{"interrupt", "json", "help", "h"})
+	flagSet := flag.NewFlagSet("steer", flag.ContinueOnError)
 	var (
-		message    = fs.String("message", "", "")
-		interrupt  = fs.Bool("interrupt", false, "")
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
+		message    = flagSet.String("message", "", "Steering message text")
+		interrupt  = flagSet.Bool("interrupt", false, "Interrupt the current turn before applying steer")
+		configPath = flagSet.String("config", "", "Path to config file")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent steer <session-id> [--message text] [--interrupt] [--config path] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("steer requires <session-id>")
 	}
 	cwd, err := procutil.Getwd()
@@ -732,36 +784,49 @@ func steerCommand(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		*message = data
 	}
 	result, err := runner.Steer(ctx, runtime.SteerRequest{
-		SessionID: fs.Arg(0),
+		SessionID: flagSet.Arg(0),
 		Message:   strings.TrimSpace(*message),
 		Interrupt: *interrupt,
 	})
 	if *jsonMode {
-		_ = json.NewEncoder(stdout).Encode(steerJSONPayload(fs.Arg(0), result, err))
+		err = sanitizeCLISessionErr(flagSet.Arg(0), err)
+		_ = json.NewEncoder(stdout).Encode(steerJSONPayload(flagSet.Arg(0), result, err))
 		if err != nil {
 			return ExitError{Code: 1}
 		}
 		return nil
 	}
 	if err != nil {
-		return err
+		return sanitizeCLISessionErr(flagSet.Arg(0), err)
 	}
 	_, _ = fmt.Fprintf(stdout, "steer queued for %s (%s)\n", result.SessionID, result.Behavior)
 	return nil
 }
 
-func sessionsCommand(args []string, stdout io.Writer) error {
-	if len(args) > 0 && args[0] == "context" {
-		return sessionsContextCommand(args[1:], stdout)
+func sessionsCommand(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "context":
+			return sessionsContextCommand(args[1:], stdout, stderr)
+		case "reconcile":
+			return sessionsReconcileCommand(args[1:], stdout, stderr)
+		}
 	}
+	args = normalizeInterspersedFlags(args, []string{"config", "limit"}, []string{"json", "help", "h"})
 	fs := flag.NewFlagSet("sessions", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		limit      = fs.Int("limit", 20, "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = fs.String("config", "", "Path to config file")
+		limit      = fs.Int("limit", 20, "Maximum number of sessions to display (must be > 0)")
+		jsonMode   = fs.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent sessions [--limit N] [--config path] [--json]\n       aegis-agent sessions <context|reconcile> <session-id> [--config path] [--json]"); err != nil || helped {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unknown sessions subcommand %q (expected: context, reconcile)", fs.Arg(0))
+	}
+	if *limit <= 0 {
+		return fmt.Errorf("--limit must be positive (got %d)", *limit)
 	}
 	cwd, err := procutil.Getwd()
 	if err != nil {
@@ -788,17 +853,17 @@ func sessionsCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func sessionsContextCommand(args []string, stdout io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json"})
-	fs := flag.NewFlagSet("sessions context", flag.ContinueOnError)
+func sessionsContextCommand(args []string, stdout, stderr io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("sessions context", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent sessions context <session-id> [--config path] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+	if flagSet.NArg() != 1 || strings.TrimSpace(flagSet.Arg(0)) == "" {
 		return errors.New("sessions context requires <session-id>")
 	}
 	cwd, err := procutil.Getwd()
@@ -809,8 +874,11 @@ func sessionsContextCommand(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	report, err := runner.Context(strings.TrimSpace(fs.Arg(0)))
+	report, err := runner.Context(strings.TrimSpace(flagSet.Arg(0)))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("unknown session: %s", strings.TrimSpace(flagSet.Arg(0)))
+		}
 		return err
 	}
 	if *jsonMode {
@@ -831,37 +899,215 @@ func sessionsContextCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal <show|pause|resume|clear|complete|plan|validation> <session-id> [--json] [--config path]")
-		return flag.ErrHelp
-	}
-	subcommand := args[0]
-	switch subcommand {
-	case "plan":
-		return goalPlanCommand(ctx, args[1:], stdout, stderr)
-	case "validation":
-		return goalValidationCommand(args[1:], stdout, stderr)
-	}
-	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json"})
-	fs := flag.NewFlagSet("goal "+subcommand, flag.ContinueOnError)
-	fs.SetOutput(stderr)
+func sessionsReconcileCommand(args []string, stdout, stderr io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"force", "json", "help", "h"})
+	fs := flag.NewFlagSet("sessions reconcile", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
+		configPath = fs.String("config", "", "Path to config file")
+		force      = fs.Bool("force", false, "Force reconciliation even if an owner PID appears alive or approval state conflicts")
+		jsonMode   = fs.Bool("json", false, "Output JSON")
 	)
-	if err := fs.Parse(subArgs); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent sessions reconcile <session-id> [--config path] [--force] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
-		return fmt.Errorf("goal %s requires <session-id>", subcommand)
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		return errors.New("sessions reconcile requires <session-id>")
 	}
-	sessionID := fs.Arg(0)
+	sessionID := strings.TrimSpace(fs.Arg(0))
+	cwd, err := procutil.Getwd()
+	if err != nil {
+		return err
+	}
+	runner, _, err := storeRunnerLoader(*configPath, cwd)
+	if err != nil {
+		return err
+	}
+	store := runner.Store()
+	type reconcileResult struct {
+		SessionID      string `json:"session_id"`
+		Reconciled     bool   `json:"reconciled"`
+		PreviousStatus string `json:"previous_status"`
+		Status         string `json:"status"`
+		PauseReason    string `json:"pause_reason,omitempty"`
+	}
+	var result reconcileResult
+	err = store.WithApprovalLock(sessionID, func(scoped *session.Store) error {
+		if _, err := scoped.LoadMetadata(sessionID); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unknown session: %s", sessionID)
+			}
+			return err
+		}
+		state, err := scoped.LoadState(sessionID)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("unknown session: %s", sessionID)
+			}
+			return err
+		}
+		result = reconcileResult{
+			SessionID:      sessionID,
+			Reconciled:     false,
+			PreviousStatus: state.Status,
+			Status:         state.Status,
+		}
+		if state.Status != session.StatusRunning {
+			return nil
+		}
+		canReconcile, err := runtime.CanReconcileApprovalPreparation(scoped, sessionID)
+		if err != nil {
+			if !(*force && errors.Is(err, session.ErrApprovalConflict)) {
+				return err
+			}
+			canReconcile = true
+		}
+		if !canReconcile && !*force {
+			return fmt.Errorf("session %s has an active approval preparation; pass --force only after verifying no process is running", sessionID)
+		}
+		eventsList, err := scoped.LoadEvents(sessionID)
+		if err != nil {
+			return err
+		}
+		ownerType, ownerPID, processStartID, startedAt := cliLatestOwnerEvent(eventsList)
+		ownerAcquired := ownerType == "webconsole.handle.acquired" || ownerType == runtime.RunOwnerAcquiredEventType
+		if ownerAcquired && ownerPID > 0 && session.ProcessOwnerAlive(ownerPID, "") && !*force {
+			return fmt.Errorf("session %s is owned by live process pid=%d; stop that process first or pass --force", sessionID, ownerPID)
+		}
+		pauseReason := "manual_reconcile"
+		if ownerType == "" {
+			pauseReason = "stale_owner_missing"
+		}
+		previousState := state
+		state.Status = session.StatusPaused
+		state.Phase = "interrupt"
+		state.PauseReason = pauseReason
+		state.LastError = ""
+		if _, saved, err := scoped.SwapStateIfCurrent(sessionID, previousState, state); err != nil {
+			return err
+		} else if !saved {
+			return session.ErrApprovalConflict
+		}
+		if ownerType != runtime.RunOwnerReleasedEventType && ownerType != "webconsole.handle.released" {
+			released := events.New(sessionID, runtime.RunOwnerReleasedEventType, "control", map[string]any{
+				"source":           "cli",
+				"process_start_id": processStartID,
+				"pid":              ownerPID,
+				"started_at":       startedAt,
+				"released_at":      time.Now().UTC().Format(time.RFC3339Nano),
+				"reason":           pauseReason,
+				"missing_owner":    ownerType == "",
+				"forced":           *force,
+			})
+			if err := scoped.AppendEvent(sessionID, released); err != nil {
+				return err
+			}
+		}
+		paused := events.New(sessionID, "session.paused", "interrupt", map[string]any{
+			"reason":           pauseReason,
+			"source":           "cli",
+			"reconciled":       true,
+			"owner_process_id": ownerPID,
+			"missing_owner":    ownerType == "",
+			"forced":           *force,
+		})
+		if err := scoped.AppendEvent(sessionID, paused); err != nil {
+			return err
+		}
+		result.Reconciled = true
+		result.Status = state.Status
+		result.PauseReason = pauseReason
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonMode {
+		return json.NewEncoder(stdout).Encode(result)
+	}
+	if !result.Reconciled {
+		_, _ = fmt.Fprintf(stdout, "session %s is already %s; nothing to reconcile\n", result.SessionID, result.Status)
+		return nil
+	}
+	_, _ = fmt.Fprintf(stdout, "reconciled session %s: %s -> %s (reason=%s)\n", result.SessionID, result.PreviousStatus, result.Status, result.PauseReason)
+	return nil
+}
+
+func cliLatestOwnerEvent(eventsList []events.Event) (string, int, string, string) {
+	for i := len(eventsList) - 1; i >= 0; i-- {
+		evt := eventsList[i]
+		switch evt.Type {
+		case "webconsole.handle.acquired", runtime.RunOwnerAcquiredEventType, "webconsole.handle.released", runtime.RunOwnerReleasedEventType:
+			startID, _ := evt.Data["process_start_id"].(string)
+			startedAt, _ := evt.Data["started_at"].(string)
+			pid := 0
+			switch v := evt.Data["pid"].(type) {
+			case int:
+				pid = v
+			case int64:
+				pid = int(v)
+			case float64:
+				pid = int(v)
+			case json.Number:
+				n, _ := v.Int64()
+				pid = int(n)
+			case string:
+				pid, _ = strconv.Atoi(strings.TrimSpace(v))
+			}
+			if pid <= 0 && startID != "" {
+				pidText, _, _ := strings.Cut(strings.TrimSpace(startID), ":")
+				pid, _ = strconv.Atoi(strings.TrimSpace(pidText))
+			}
+			return evt.Type, pid, startID, startedAt
+		}
+	}
+	return "", 0, "", ""
+}
+
+func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const goalUsage = "usage: aegis-agent goal <show|pause|resume|clear|complete|plan|validation> <session-id> [--json] [--config path]"
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, goalUsage)
+		return flag.ErrHelp
+	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "-help" {
+		_, _ = fmt.Fprintln(stdout, goalUsage)
+		return nil
+	}
+	subcommand := args[0]
+	rest := args[1:]
+	if strings.HasPrefix(subcommand, "-") {
+		if hasHelpFlag(args) && !containsAnyToken(args, "plan", "validation", "show", "pause", "resume", "clear", "complete") {
+			_, _ = fmt.Fprintln(stdout, goalUsage)
+			return nil
+		}
+		subcommand, rest = hoistSubcommandToken(args, []string{"config", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "override-coverage", "approve-latest", "approval-receipt", "help", "h"})
+		if subcommand == "" {
+			_, _ = fmt.Fprintln(stderr, goalUsage)
+			return errors.New("goal requires a subcommand (expected one of: show, pause, resume, clear, complete, plan, validation)")
+		}
+	}
 	switch subcommand {
+	case "plan":
+		return goalPlanCommand(ctx, rest, stdout, stderr)
+	case "validation":
+		return goalValidationCommand(rest, stdout, stderr)
 	case "show", "pause", "resume", "complete", "clear":
 	default:
-		return fmt.Errorf("unknown goal subcommand: %s", subcommand)
+		return fmt.Errorf("unknown goal subcommand %q (expected one of: show, pause, resume, clear, complete, plan, validation)", subcommand)
 	}
+	subArgs := normalizeInterspersedFlags(rest, []string{"config"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("goal "+subcommand, flag.ContinueOnError)
+	var (
+		configPath = flagSet.String("config", "", "Path to config file")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
+	)
+	if helped, err := parseFlagSet(flagSet, subArgs, stdout, stderr, "usage: aegis-agent goal "+subcommand+" <session-id> [--json] [--config path]"); err != nil || helped {
+		return err
+	}
+	if flagSet.NArg() < 1 {
+		return fmt.Errorf("goal %s requires <session-id>", subcommand)
+	}
+	sessionID := flagSet.Arg(0)
 	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
@@ -944,19 +1190,40 @@ func goalCommand(ctx context.Context, args []string, stdout, stderr io.Writer) e
 }
 
 func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	const goalPlanUsage = "usage: aegis-agent goal plan <show|check|approve> <session-id> [--json] [--config path]"
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal plan <show|check|approve> <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, goalPlanUsage)
 		return flag.ErrHelp
 	}
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "-help" {
+		_, _ = fmt.Fprintln(stdout, goalPlanUsage)
+		return nil
+	}
 	subcommand := args[0]
-	subArgs := normalizeInterspersedFlags(args[1:], []string{"config", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "override-coverage", "approve-latest", "approval-receipt"})
-	fs := flag.NewFlagSet("goal plan "+subcommand, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	configPath := fs.String("config", "", "")
-	jsonMode := fs.Bool("json", false, "")
-	overrideCoverage := fs.Bool("override-coverage", false, "")
-	approvalFlags := registerCLIApprovalFlags(fs)
-	if err := fs.Parse(subArgs); err != nil {
+	rest := args[1:]
+	if strings.HasPrefix(subcommand, "-") {
+		if hasHelpFlag(args) && !containsAnyToken(args, "show", "check", "approve") {
+			_, _ = fmt.Fprintln(stdout, goalPlanUsage)
+			return nil
+		}
+		subcommand, rest = hoistSubcommandToken(args, []string{"config", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "override-coverage", "approve-latest", "approval-receipt", "help", "h"})
+		if subcommand == "" {
+			_, _ = fmt.Fprintln(stderr, goalPlanUsage)
+			return errors.New("goal plan requires a subcommand (expected one of: show, check, approve)")
+		}
+	}
+	switch subcommand {
+	case "show", "check", "approve":
+	default:
+		return fmt.Errorf("unknown goal plan subcommand %q (expected one of: show, check, approve)", subcommand)
+	}
+	subArgs := normalizeInterspersedFlags(rest, []string{"config", "plan-mode-id", "plan-version", "expected-revision", "approval-request-id"}, []string{"json", "override-coverage", "approve-latest", "approval-receipt", "help", "h"})
+	flagSet := flag.NewFlagSet("goal plan "+subcommand, flag.ContinueOnError)
+	configPath := flagSet.String("config", "", "Path to config file")
+	jsonMode := flagSet.Bool("json", false, "Output JSON")
+	overrideCoverage := flagSet.Bool("override-coverage", false, "Override mission validation coverage gate on approval")
+	approvalFlags := registerCLIApprovalFlags(flagSet)
+	if helped, err := parseFlagSet(flagSet, subArgs, stdout, stderr, "usage: aegis-agent goal plan "+subcommand+" <session-id> [--json] [--config path]"); err != nil || helped {
 		return err
 	}
 	if approvalFlags.receipt && subcommand != "approve" {
@@ -965,13 +1232,13 @@ func goalPlanCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if approvalFlags.receipt && *overrideCoverage {
 		return errors.New("--approval-receipt cannot change coverage parameters")
 	}
-	if fs.NArg() < 1 {
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("goal plan %s requires <session-id>", subcommand)
 	}
 	if err := approvalFlags.validate(subcommand == "approve" && !approvalFlags.receipt); err != nil {
 		return err
 	}
-	sessionID := fs.Arg(0)
+	sessionID := flagSet.Arg(0)
 	switch subcommand {
 	case "show":
 		cwd, err := procutil.Getwd()
@@ -1103,7 +1370,7 @@ func goalPlanApproveCommand(ctx context.Context, sessionID, configPath, cwd stri
 		switch planMode.Status {
 		case session.PlanModeStatusAwaitingApproval, session.PlanModeStatusApproved:
 			if approvalFlags.requestID == "" {
-				return session.ErrMissingApprovalRequestID
+				return fmt.Errorf("--approval-request-id is required when approving a plan (for example: --approval-request-id req_1; keep the same id on retries): %w", session.ErrMissingApprovalRequestID)
 			}
 			runner, _, err := runnerLoader(configPath, cwd)
 			if err != nil {
@@ -1316,24 +1583,40 @@ func appendCLIPlanModeLinkEvent(store *session.Store, sessionID string, previous
 }
 
 func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
+	const goalValidationUsage = "usage: aegis-agent goal validation show <session-id> [--json] [--config path]"
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: aegis-agent goal validation show <session-id> [--json] [--config path]")
+		_, _ = fmt.Fprintln(stderr, goalValidationUsage)
 		return flag.ErrHelp
 	}
-	subcommand := args[0]
-	subArgs := normalizeInterspersedFlags(args[1:], []string{"config"}, []string{"json"})
-	fs := flag.NewFlagSet("goal validation "+subcommand, flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	configPath := fs.String("config", "", "")
-	jsonMode := fs.Bool("json", false, "")
-	if err := fs.Parse(subArgs); err != nil {
-		return err
+	if args[0] == "--help" || args[0] == "-h" || args[0] == "-help" {
+		_, _ = fmt.Fprintln(stdout, goalValidationUsage)
+		return nil
 	}
-	if fs.NArg() < 1 {
-		return fmt.Errorf("goal validation %s requires <session-id>", subcommand)
+	subcommand := args[0]
+	rest := args[1:]
+	if strings.HasPrefix(subcommand, "-") {
+		if hasHelpFlag(args) && !containsAnyToken(args, "show") {
+			_, _ = fmt.Fprintln(stdout, goalValidationUsage)
+			return nil
+		}
+		subcommand, rest = hoistSubcommandToken(args, []string{"config"}, []string{"json", "help", "h"})
+		if subcommand == "" {
+			_, _ = fmt.Fprintln(stderr, goalValidationUsage)
+			return errors.New("goal validation requires a subcommand (expected: show)")
+		}
 	}
 	if subcommand != "show" {
-		return fmt.Errorf("unknown goal validation subcommand: %s", subcommand)
+		return fmt.Errorf("unknown goal validation subcommand %q (expected: show)", subcommand)
+	}
+	subArgs := normalizeInterspersedFlags(rest, []string{"config"}, []string{"json", "help", "h"})
+	flagSet := flag.NewFlagSet("goal validation "+subcommand, flag.ContinueOnError)
+	configPath := flagSet.String("config", "", "Path to config file")
+	jsonMode := flagSet.Bool("json", false, "Output JSON")
+	if helped, err := parseFlagSet(flagSet, subArgs, stdout, stderr, goalValidationUsage); err != nil || helped {
+		return err
+	}
+	if flagSet.NArg() < 1 {
+		return fmt.Errorf("goal validation %s requires <session-id>", subcommand)
 	}
 	cwd, err := procutil.Getwd()
 	if err != nil {
@@ -1343,7 +1626,7 @@ func goalValidationCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	goal, err := loadCLIGoal(runner.Store(), fs.Arg(0))
+	goal, err := loadCLIGoal(runner.Store(), flagSet.Arg(0))
 	if err != nil {
 		return err
 	}
@@ -1368,9 +1651,21 @@ func approveMissionCoverage(goal session.SessionGoal, override bool) error {
 
 func loadCLIGoal(store *session.Store, sessionID string) (session.SessionGoal, error) {
 	if _, err := store.LoadMetadata(sessionID); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, statErr := os.Stat(store.SessionDir(sessionID)); errors.Is(statErr, fs.ErrNotExist) {
+				return session.SessionGoal{}, fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+			}
+		}
 		return session.SessionGoal{}, err
 	}
-	return store.LoadGoal(sessionID)
+	goal, err := store.LoadGoal(sessionID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return session.SessionGoal{}, fmt.Errorf("session %s has no goal: %w", sessionID, fs.ErrNotExist)
+		}
+		return session.SessionGoal{}, err
+	}
+	return goal, nil
 }
 
 func mutateGoalStatus(stdout io.Writer, store *session.Store, sessionID, status, eventType, label string, jsonMode bool) error {
@@ -1549,20 +1844,20 @@ func firstNonEmpty(values ...string) string {
 }
 
 func tasksCommand(args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json", "all"})
-	fs := flag.NewFlagSet("tasks", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	args = normalizeInterspersedFlags(args, []string{"config"}, []string{"json", "all", "help", "h"})
+	flagSet := flag.NewFlagSet("tasks", flag.ContinueOnError)
 	var (
-		configPath = fs.String("config", "", "")
-		jsonMode   = fs.Bool("json", false, "")
-		showAll    = fs.Bool("all", false, "")
+		configPath = flagSet.String("config", "", "Path to config file")
+		jsonMode   = flagSet.Bool("json", false, "Output JSON")
+		showAll    = flagSet.Bool("all", false, "Include all task statuses in text output")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(flagSet, args, stdout, stderr, "usage: aegis-agent tasks <session-id> [--all] [--config path] [--json]"); err != nil || helped {
 		return err
 	}
-	if fs.NArg() < 1 {
+	if flagSet.NArg() < 1 {
 		return fmt.Errorf("tasks requires <session-id>")
 	}
+	sessionID := flagSet.Arg(0)
 	cwd, err := procutil.Getwd()
 	if err != nil {
 		return err
@@ -1571,9 +1866,9 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	board, err := runner.Tasks(fs.Arg(0))
+	board, err := runner.Tasks(sessionID)
 	if err != nil {
-		return err
+		return sanitizeCLISessionErr(sessionID, err)
 	}
 	board = normalizeTaskBoard(board)
 	if *jsonMode {
@@ -1604,21 +1899,21 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "base-url", "api-key-env", "api-provider", "wire-api", "prompt"}, []string{"json", "allow-builtin-config", "help", "h"})
 	fs := flag.NewFlagSet("probe-provider", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	var (
-		providerName = fs.String("provider", "", "")
-		model        = fs.String("model", "", "")
-		configPath   = fs.String("config", "", "")
-		baseURL      = fs.String("base-url", "", "")
-		apiKeyEnv    = fs.String("api-key-env", "", "")
-		apiProvider  = fs.String("api-provider", "", "")
-		wireAPI      = fs.String("wire-api", "", "")
-		prompt       = fs.String("prompt", "", "")
-		jsonMode     = fs.Bool("json", false, "")
+		providerName = fs.String("provider", "", "Provider profile name")
+		model        = fs.String("model", "", "Model name override")
+		configPath   = fs.String("config", "", "Path to config file")
+		baseURL      = fs.String("base-url", "", "Provider base URL override")
+		apiKeyEnv    = fs.String("api-key-env", "", "API key environment variable override")
+		apiProvider  = fs.String("api-provider", "", "API protocol family override")
+		wireAPI      = fs.String("wire-api", "", "Wire API override (responses or chat_completions)")
+		prompt       = fs.String("prompt", "", "Custom probe prompt")
+		jsonMode     = fs.Bool("json", false, "Output JSON")
 		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent probe-provider [flags]"); err != nil || helped {
 		return err
 	}
 	cwd, err := procutil.Getwd()
@@ -1854,22 +2149,22 @@ type doctorReport struct {
 }
 
 func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "base-url", "api-key-env", "wire-api", "prompt", "browser-session"}, []string{"skip-probe", "json", "allow-builtin-config", "help", "h"})
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	var (
-		providerName   = fs.String("provider", "", "")
-		model          = fs.String("model", "", "")
-		configPath     = fs.String("config", "", "")
-		baseURL        = fs.String("base-url", "", "")
-		apiKeyEnv      = fs.String("api-key-env", "", "")
-		wireAPI        = fs.String("wire-api", "", "")
-		prompt         = fs.String("prompt", "", "")
-		skipProbe      = fs.Bool("skip-probe", false, "")
-		jsonMode       = fs.Bool("json", false, "")
+		providerName   = fs.String("provider", "", "Provider profile name")
+		model          = fs.String("model", "", "Model name override")
+		configPath     = fs.String("config", "", "Path to config file")
+		baseURL        = fs.String("base-url", "", "Provider base URL override")
+		apiKeyEnv      = fs.String("api-key-env", "", "API key environment variable override")
+		wireAPI        = fs.String("wire-api", "", "Wire API override")
+		prompt         = fs.String("prompt", "", "Custom probe prompt")
+		skipProbe      = fs.Bool("skip-probe", false, "Skip live provider probe")
+		jsonMode       = fs.Bool("json", false, "Output JSON")
 		browserSession = fs.String("browser-session", "", "Check only this session owned named browser daemon")
 		allowBuiltin   = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent doctor [flags]"); err != nil || helped {
 		return err
 	}
 
@@ -2151,8 +2446,10 @@ func doctorValidateProviderConfig(providerName string, providerCfg config.Provid
 		return err
 	}
 	switch apiProvider {
-	case "openai-compatible", "anthropic-compatible", "google":
+	case "openai-compatible", "google":
 		return nil
+	case "anthropic-compatible":
+		return config.ValidateAnthropicBaseURL(providerCfg.BaseURL)
 	default:
 		return fmt.Errorf("unsupported api_provider for %s: %s", providerName, apiProvider)
 	}
@@ -2401,23 +2698,23 @@ func checkHooksConfig(cfg *config.Config) doctorCheck {
 }
 
 func runInit(args []string, stdout, stderr io.Writer) error {
+	args = normalizeInterspersedFlags(args, []string{"config", "provider", "model", "base-url", "api-key-env", "wire-api", "reasoning-effort", "skill-dir", "session-dir"}, []string{"force", "send-metadata", "example-hook", "help", "h"})
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(stderr)
 	var (
-		configPath      = fs.String("config", "", "")
-		force           = fs.Bool("force", false, "")
-		provider        = fs.String("provider", "", "")
-		model           = fs.String("model", "", "")
-		baseURL         = fs.String("base-url", "", "")
-		apiKeyEnv       = fs.String("api-key-env", "", "")
-		wireAPI         = fs.String("wire-api", "", "")
-		sendMetadata    = fs.Bool("send-metadata", true, "")
+		configPath      = fs.String("config", "", "Path to config file to write")
+		force           = fs.Bool("force", false, "Overwrite existing config file")
+		provider        = fs.String("provider", "", "Default provider profile name")
+		model           = fs.String("model", "", "Default model name")
+		baseURL         = fs.String("base-url", "", "Provider base URL")
+		apiKeyEnv       = fs.String("api-key-env", "", "Environment variable name holding the API key")
+		wireAPI         = fs.String("wire-api", "", "Wire API (responses or chat_completions)")
+		sendMetadata    = fs.Bool("send-metadata", true, "Send metadata fields on OpenAI requests")
 		reasoningEffort = fs.String("reasoning-effort", "", "Explicit native Responses effort; omission uses provider default")
-		skillDir        = fs.String("skill-dir", "", "")
-		sessionDir      = fs.String("session-dir", "", "")
-		exampleHook     = fs.Bool("example-hook", true, "")
+		skillDir        = fs.String("skill-dir", "", "Skills directory path")
+		sessionDir      = fs.String("session-dir", "", "Sessions directory path")
+		exampleHook     = fs.Bool("example-hook", true, "Include an example session_complete hook")
 	)
-	if err := fs.Parse(args); err != nil {
+	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent init [flags]"); err != nil || helped {
 		return err
 	}
 	metadataSelected := false
@@ -2772,6 +3069,85 @@ func normalizeInterspersedFlags(args []string, valueFlags, boolFlags []string) [
 		flags = append(flags, arg)
 	}
 	return append(flags, positionals...)
+}
+
+func parseTimeoutDuration(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return 0, nil
+	}
+	if allDigits(trimmed) {
+		secs, err := strconv.Atoi(trimmed)
+		if err != nil || secs < 0 {
+			return 0, fmt.Errorf("invalid --timeout %q: expected positive seconds or Go duration (e.g. 30 or 2m)", value)
+		}
+		return time.Duration(secs) * time.Second, nil
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return 0, fmt.Errorf("invalid --timeout %q: must not be negative", value)
+	}
+	d, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("invalid --timeout %q: expected positive seconds or Go duration (e.g. 30 or 2m): %w", value, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid --timeout %q: must be positive", value)
+	}
+	return d, nil
+}
+
+func sanitizeCLISessionErr(sessionID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("unknown session %s: %w", sessionID, fs.ErrNotExist)
+	}
+	return err
+}
+
+func containsAnyToken(args []string, tokens ...string) bool {
+	set := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
+		set[tok] = struct{}{}
+	}
+	for _, arg := range args {
+		if _, ok := set[arg]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hoistSubcommandToken(args []string, valueFlags, boolFlags []string) (string, []string) {
+	normalized := normalizeInterspersedFlags(args, valueFlags, boolFlags)
+	valueSet := make(map[string]struct{}, len(valueFlags))
+	for _, name := range valueFlags {
+		valueSet[name] = struct{}{}
+	}
+	boolSet := make(map[string]struct{}, len(boolFlags))
+	for _, name := range boolFlags {
+		boolSet[name] = struct{}{}
+	}
+	for i := 0; i < len(normalized); i++ {
+		arg := normalized[i]
+		if arg == "--" {
+			break
+		}
+		name, hasInlineValue, isFlag := splitFlagToken(arg)
+		if !isFlag {
+			rest := append([]string{}, normalized[:i]...)
+			rest = append(rest, normalized[i+1:]...)
+			return arg, rest
+		}
+		if _, ok := boolSet[name]; ok {
+			continue
+		}
+		if _, ok := valueSet[name]; ok && !hasInlineValue && i+1 < len(normalized) {
+			i++
+		}
+	}
+	return "", args
 }
 
 func classifyCommandError(err error) error {

@@ -2821,3 +2821,163 @@ func hasProviderTool(tools []provider.ToolSchema, name string) bool {
 	}
 	return false
 }
+
+func TestPlanModeNonInteractiveRequestUserInputDoesNotBlockAndAllowsSubmitPlan(t *testing.T) {
+	var turns atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := turns.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			_, _ = w.Write([]byte(`{
+				"id":"resp_non_tty_1",
+				"status":"completed",
+				"output":[{
+					"type":"function_call",
+					"call_id":"call_ask_1",
+					"name":"request_user_input",
+					"arguments":"{\"questions\":[{\"id\":\"q1\",\"header\":\"Scope\",\"question\":\"Which target?\",\"options\":[{\"label\":\"Option A\",\"description\":\"First\"},{\"label\":\"Option B\",\"description\":\"Second\"}]}]}"
+				}],
+				"usage":{"input_tokens":10,"output_tokens":5}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+			"id":"resp_non_tty_2",
+			"status":"completed",
+			"output":[{
+				"type":"function_call",
+				"call_id":"call_submit_1",
+				"name":"submit_plan",
+				"arguments":"{\"title\":\"Plan\",\"summary\":\"Proceed with assumptions\",\"plan_markdown\":\"# Plan\\n\\n## Summary\\nUse defaults.\\n\\n## Assumptions\\nAssumed Option A.\",\"verification\":[\"go test ./...\"]}"
+			}],
+			"usage":{"input_tokens":15,"output_tokens":10}
+		}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	runner := NewRunner(cfg)
+	result, err := runner.Start(ctx, StartRequest{
+		Prompt:               "Build a plan",
+		Workdir:              t.TempDir(),
+		Mode:                 session.ModeExec,
+		PlanMode:             &session.PlanModeDraft{Enabled: true, Objective: "Build a plan", Source: session.PlanModeSourceCLI},
+		PlanOnly:             true,
+		PlanInputUnavailable: true,
+	})
+	if err != nil {
+		t.Fatalf("non-interactive plan run failed: %v", err)
+	}
+	if result.Status != session.StatusAwaitingInput {
+		t.Fatalf("expected awaiting_input after submit_plan, got %#v", result)
+	}
+	if turns.Load() != 2 {
+		t.Fatalf("expected 2 provider turns (immediate tool error then submit_plan), got %d", turns.Load())
+	}
+	msgs, err := runner.store.LoadMessages(result.SessionID)
+	if err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	foundImmediateErr := false
+	for _, msg := range msgs {
+		for _, tr := range msg.ToolResults {
+			if tr.Name == "request_user_input" && tr.IsError && strings.Contains(tr.LLMOutput, "interactive responder") {
+				foundImmediateErr = true
+			}
+		}
+	}
+	if !foundImmediateErr {
+		t.Fatalf("expected immediate error tool result for non-TTY request_user_input, got %#v", msgs)
+	}
+}
+
+func TestPlanOnlyBoundedTurnsReachesSubmitPlanReminderAndHardLimit(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var turns atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := turns.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_loop_` + time.Now().Format("150405") + `",
+			"status":"completed",
+			"output":[{
+				"type":"function_call",
+				"call_id":"call_read_` + strings.Repeat("x", 0) + `",
+				"name":"read_file",
+				"arguments":"{\"path\":\"README.md\"}"
+			}],
+			"usage":{"input_tokens":10,"output_tokens":5}
+		}`))
+		_ = n
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Session.Dir = t.TempDir()
+	cfg.Runtime.MaxTurnsSoft = 2
+	cfg.Runtime.MaxTurnsHard = -1
+	cfg.DefaultProvider = "openai-compatible"
+	cfg.Providers["openai-compatible"] = config.Provider{
+		APIProvider:       "openai-compatible",
+		APIKeyEnv:         "OPENAI_API_KEY",
+		BaseURL:           server.URL + "/v1",
+		Model:             "gpt-5.4",
+		TimeoutSec:        3,
+		RequestTimeoutSec: 3,
+		WireAPI:           "responses",
+		Retry:             config.Retry{MaxAttempts: 1},
+	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
+
+	runner := NewRunner(cfg)
+	result, err := runner.Start(context.Background(), StartRequest{
+		Prompt:               "Explore indefinitely",
+		Workdir:              workdir,
+		Mode:                 session.ModeExec,
+		PlanMode:             &session.PlanModeDraft{Enabled: true, Objective: "Explore", Source: session.PlanModeSourceCLI},
+		PlanOnly:             true,
+		PlanInputUnavailable: true,
+	})
+	if err != nil {
+		t.Fatalf("expected bounded result error=nil, got %v", err)
+	}
+	if result.Status != session.StatusFailed || result.LastError != "plan_only_turn_limit_exceeded" {
+		t.Fatalf("expected plan_only_turn_limit_exceeded failure, got %#v", result)
+	}
+	if turns.Load() != 7 {
+		t.Fatalf("expected soft(2)+4+1 resolution = 7 turns before bounded stop, got %d", turns.Load())
+	}
+	msgs, err := runner.store.LoadMessages(result.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundReminder := false
+	for _, msg := range msgs {
+		if strings.Contains(msg.Text, "call submit_plan now") {
+			foundReminder = true
+		}
+	}
+	if !foundReminder {
+		t.Fatalf("expected Plan Mode soft-turn submit_plan wrap-up reminder in %#v", msgs)
+	}
+}

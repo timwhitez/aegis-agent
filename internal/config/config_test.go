@@ -875,3 +875,90 @@ func TestWebPublicOriginsRoundTripAndStrictParse(t *testing.T) {
 		t.Fatalf("clone lost public origins: %#v", cloned.Web)
 	}
 }
+
+func TestValidateAnthropicBaseURLRejectsTrailingV1(t *testing.T) {
+	for _, bad := range []string{
+		"https://api.appintheloop.com/v1",
+		"https://api.appintheloop.com/v1/",
+		"https://user:secret@proxy.example/gw/v1/",
+	} {
+		err := ValidateAnthropicBaseURL(bad)
+		if err == nil || !strings.Contains(err.Error(), "/v1/messages") {
+			t.Fatalf("expected trailing /v1 error for %q, got %v", bad, err)
+		}
+		if strings.Contains(err.Error(), "secret") && strings.Contains(err.Error(), "so use the origin") {
+			// Verify suggested origin strips userinfo.
+			_, after, _ := strings.Cut(err.Error(), "so use the origin such as ")
+			if strings.Contains(after, "secret") {
+				t.Fatalf("suggested origin leaked userinfo: %s", err.Error())
+			}
+		}
+	}
+	for _, okURL := range []string{
+		"",
+		"https://api.appintheloop.com",
+		"https://api.appintheloop.com/",
+		"https://proxy.example/anthropic",
+	} {
+		if err := ValidateAnthropicBaseURL(okURL); err != nil {
+			t.Fatalf("unexpected error for %q: %v", okURL, err)
+		}
+	}
+}
+
+func TestProviderProvenanceAndWriteFileOmitsUntouchedBuiltinsAndEmptyHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := `schema_version: 1
+default_provider: appintheloop
+providers:
+  appintheloop:
+    api_provider: anthropic-compatible
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: https://api.appintheloop.com
+    model: MiniMax-M3.1-Flash
+hooks:
+  default_timeout_sec: 300
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadWithReport(path, dir)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.ProviderSource("appintheloop") != ProviderSourceFile {
+		t.Fatalf("expected appintheloop source=file, got %q", cfg.ProviderSource("appintheloop"))
+	}
+	for _, builtin := range []string{"openai", "anthropic", "google", "openai-compatible"} {
+		if cfg.ProviderSource(builtin) != ProviderSourceBuiltin {
+			t.Fatalf("expected %s source=builtin, got %q", builtin, cfg.ProviderSource(builtin))
+		}
+	}
+	cloned, err := Clone(cfg)
+	if err != nil {
+		t.Fatalf("clone config: %v", err)
+	}
+	if err := WriteFile(path, cloned); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(written)
+	if !strings.Contains(text, "appintheloop:") {
+		t.Fatalf("expected declared provider appintheloop in written YAML:\n%s", text)
+	}
+	for _, unwanted := range []string{
+		"http://localhost:3000/v1",
+		"openai-compatible:",
+		"assistant_message:",
+		"session_start:",
+		"session_awaiting_input:",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("unexpected %q written into config.yaml:\n%s", unwanted, text)
+		}
+	}
+}

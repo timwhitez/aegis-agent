@@ -46,7 +46,14 @@ func shouldUsePlanModeInstructions(planMode *session.PlanModeState) bool {
 	return planMode != nil && session.IsPlanModePending(planMode.Status)
 }
 
-func buildPlanModeInstructions(planMode session.PlanModeState) string {
+func buildPlanModeInstructions(planMode session.PlanModeState, interactiveInput, planOnly bool) string {
+	var extra strings.Builder
+	if !interactiveInput {
+		extra.WriteString("\n\nNon-interactive session: no TTY or Web input responder is attached. Do NOT call request_user_input; make reasonable assumptions, list them under Assumptions, and call submit_plan.")
+	}
+	if planOnly {
+		extra.WriteString("\n\nPlan-only run (--plan-only): keep read-only exploration targeted and call submit_plan promptly once you have enough facts.")
+	}
 	return strings.TrimSpace(fmt.Sprintf(`## Plan Mode
 You are in Plan Mode for this session.
 
@@ -66,7 +73,7 @@ Allowed before approval:
 Not allowed before approval:
 - shell, write_file, edit_file, todo_write, task_create, task_update, feature_list_create, feature_list_update, create_goal, record_goal_progress, update_goal, agent_spawn, agent_wait, agent_stop, agent_prompt, agent_status, agent_list, queue/delegate submission, skill command tools, custom extension tools, or finish
 
-A complete plan must include Summary, Implementation Steps, Interfaces and Data Model, Verification, Risks, and Assumptions. Do not use todo_write or task tools as the Plan Mode plan.`, planMode.Status, planMode.Objective, planMode.PlanVersion))
+A complete plan must include Summary, Implementation Steps, Interfaces and Data Model, Verification, Risks, and Assumptions. Do not use todo_write or task tools as the Plan Mode plan.`, planMode.Status, planMode.Objective, planMode.PlanVersion) + extra.String())
 }
 
 func buildApprovedPlanContext(planMode session.PlanModeState) string {
