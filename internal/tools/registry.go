@@ -1915,7 +1915,18 @@ func resolveSessionEphemeralArtifactFile(execCtx ExecContext, input string) (str
 	if !isWithin(rootResolved, targetResolved) {
 		return "", "", false, nil
 	}
-	return targetResolved, rootResolved, true, nil
+	displayBase := rootResolved
+	if execCtx.Store != nil && strings.TrimSpace(execCtx.SessionID) != "" {
+		if sessionDirResolved, err := filepath.EvalSymlinks(execCtx.Store.SessionDir(execCtx.SessionID)); err == nil && isWithin(sessionDirResolved, targetResolved) {
+			displayBase = sessionDirResolved
+		}
+	} else if filepath.Base(rootResolved) == "tool-outputs" && filepath.Base(filepath.Dir(rootResolved)) == "artifacts" {
+		sessionDirResolved := filepath.Dir(filepath.Dir(rootResolved))
+		if isWithin(sessionDirResolved, targetResolved) {
+			displayBase = sessionDirResolved
+		}
+	}
+	return targetResolved, displayBase, true, nil
 }
 
 func relativeSessionEphemeralArtifactTarget(root, input string) (string, bool) {

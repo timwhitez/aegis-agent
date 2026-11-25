@@ -33,8 +33,9 @@ func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, 
 	if err != nil {
 		return readFileErrorResult(inputPath, err)
 	}
+	displayPath := relativeOrAbsolute(displayBase, path)
 	if source != "session_ephemeral_artifact" && info.Size() > fileutil.MaxRegularFileReadBytes {
-		return readFileErrorResult(path, fmt.Errorf("file exceeds maximum readable size: %s (%d > %d bytes)", path, info.Size(), fileutil.MaxRegularFileReadBytes))
+		return readFileErrorResult(displayPath, fmt.Errorf("file exceeds maximum readable size: %s (%d > %d bytes)", displayPath, info.Size(), fileutil.MaxRegularFileReadBytes))
 	}
 
 	totalBytes := info.Size()
@@ -56,11 +57,11 @@ func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, 
 	if requestedOffset < totalBytes {
 		effectiveStart, startAdjusted, err = adjustReadFileUTF8Start(data, readStart, requestedStart, totalBytes)
 		if err != nil {
-			return readFileEncodingError(path, err)
+			return readFileEncodingError(displayPath, err)
 		}
 		effectiveEnd, endAdjusted, err = adjustReadFileUTF8End(data, readStart, requestedEnd, totalBytes)
 		if err != nil {
-			return readFileEncodingError(path, err)
+			return readFileEncodingError(displayPath, err)
 		}
 		if effectiveEnd < effectiveStart {
 			effectiveEnd = effectiveStart
@@ -73,13 +74,12 @@ func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, 
 		}
 	}
 	if !utf8.Valid(body) {
-		return readFileEncodingError(path, fmt.Errorf("requested byte window is not valid UTF-8"))
+		return readFileEncodingError(displayPath, fmt.Errorf("requested byte window is not valid UTF-8"))
 	}
 	if len(body) == 0 && effectiveStart < totalBytes {
 		return typedToolErrorResult("read_file", FailureClassOutputBudgetTooSmall, FailureClassOutputBudgetTooSmall, "byte_limit is too small to contain one complete UTF-8 rune at the requested offset")
 	}
 
-	displayPath := relativeOrAbsolute(displayBase, path)
 	for attempt := 0; attempt < 4; attempt++ {
 		header := formatReadFileByteHeader(displayPath, effectiveStart, effectiveEnd, totalBytes, requestedOffset, requestedLimit)
 		separatorBytes := 0
@@ -88,7 +88,7 @@ func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, 
 		}
 		availableBody := llmLimit - len(header) - separatorBytes
 		if availableBody < 0 {
-			return readFileOutputBudgetError(path, llmLimit)
+			return readFileOutputBudgetError(displayPath, llmLimit)
 		}
 		if len(body) <= availableBody {
 			output := header
@@ -124,13 +124,13 @@ func executeReadFileByteMode(execCtx ExecContext, path, inputPath, displayBase, 
 
 		shortened := []byte(prefixAtRuneBoundary(string(body), availableBody))
 		if len(shortened) == 0 && effectiveStart < totalBytes {
-			return readFileOutputBudgetError(path, llmLimit)
+			return readFileOutputBudgetError(displayPath, llmLimit)
 		}
 		body = shortened
 		effectiveEnd = effectiveStart + int64(len(body))
 		endAdjusted = true
 	}
-	return readFileOutputBudgetError(path, llmLimit)
+	return readFileOutputBudgetError(displayPath, llmLimit)
 }
 
 func adjustReadFileUTF8Start(data []byte, dataStart, requestedStart, totalBytes int64) (int64, bool, error) {

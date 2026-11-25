@@ -12,7 +12,70 @@ import (
 	"aegis-agent/internal/session"
 )
 
-const commandArtifactUnavailableReason = "artifact_unavailable"
+const (
+	commandArtifactUnavailableReason = "artifact_unavailable"
+	commandNonUTF8BudgetReason       = "non_utf8_output"
+)
+
+type utf8StreamValidator struct {
+	tail    [utf8.UTFMax]byte
+	tailLen int
+	invalid bool
+}
+
+func (v *utf8StreamValidator) Write(p []byte) {
+	if v.invalid || len(p) == 0 {
+		return
+	}
+	data := p
+	if v.tailLen == 0 && utf8.Valid(data) {
+		return
+	}
+	if v.tailLen > 0 {
+		var combined [2 * utf8.UTFMax]byte
+		n := copy(combined[:], v.tail[:v.tailLen])
+		take := min(len(data), utf8.UTFMax)
+		n += copy(combined[n:], data[:take])
+		buf := combined[:n]
+		consumed := 0
+		for consumed < v.tailLen {
+			rem := buf[consumed:]
+			if !utf8.FullRune(rem) {
+				v.tailLen = copy(v.tail[:], rem)
+				return
+			}
+			r, size := utf8.DecodeRune(rem)
+			if r == utf8.RuneError && size == 1 {
+				v.invalid = true
+				v.tailLen = 0
+				return
+			}
+			consumed += size
+		}
+		advance := consumed - v.tailLen
+		v.tailLen = 0
+		data = data[advance:]
+		if utf8.Valid(data) {
+			return
+		}
+	}
+	for len(data) > 0 {
+		if !utf8.FullRune(data) {
+			v.tailLen = copy(v.tail[:], data)
+			return
+		}
+		r, size := utf8.DecodeRune(data)
+		if r == utf8.RuneError && size == 1 {
+			v.invalid = true
+			return
+		}
+		data = data[size:]
+	}
+}
+
+func (v *utf8StreamValidator) Valid() bool {
+	return !v.invalid && v.tailLen == 0
+}
 
 type commandOutputResultOptions struct {
 	Summary       string
@@ -30,6 +93,7 @@ type commandOutputCollector struct {
 	pending  []byte
 
 	rawBytes        int
+	utf8Validator   utf8StreamValidator
 	stream          *session.ToolOutputArtifactStream
 	artifactInitial session.ToolOutputArtifactResult
 	artifactErr     error
@@ -69,6 +133,7 @@ func (c *commandOutputCollector) Write(payload []byte) (int, error) {
 		return 0, nil
 	}
 	c.rawBytes += len(payload)
+	c.utf8Validator.Write(payload)
 	c.preview.Write(payload)
 
 	if c.stream != nil {
@@ -116,7 +181,9 @@ func (c *commandOutputCollector) finalize(options commandOutputResultOptions) se
 	}
 
 	metadata := cloneCommandMetadata(options.Metadata)
-	fullInline := c.stream == nil && !c.spillAttempted && len(c.pending) == c.rawBytes && utf8.Valid(c.pending)
+	nonUTF8 := c.rawBytes > 0 && !c.utf8Validator.Valid()
+	fullInline := c.stream == nil && !c.spillAttempted && len(c.pending) == c.rawBytes && !nonUTF8
+	sizeExceeded := c.stream != nil || c.spillAttempted
 	renderPreview := func(limit int) (string, int) {
 		if limit <= 0 {
 			return "", 0
@@ -136,7 +203,10 @@ func (c *commandOutputCollector) finalize(options commandOutputResultOptions) se
 			candidate = commandLLMOutput(llmStatus, options.Summary)
 			candidate = candidate + "\n" + string(c.pending)
 		}
-		if !fullInline || len(candidate) > c.policy.LLMOutputMaxBytes {
+		if len(candidate) > c.policy.LLMOutputMaxBytes {
+			sizeExceeded = true
+		}
+		if !fullInline || sizeExceeded {
 			artifact = c.writeLateArtifact(c.pending)
 			fullInline = false
 		}
@@ -144,7 +214,7 @@ func (c *commandOutputCollector) finalize(options commandOutputResultOptions) se
 	summary := commandSummaryWithTruncated(options.Summary, !fullInline)
 
 	artifactPath := commandArtifactDisplayPath(c.execCtx, artifact.AbsolutePath)
-	artifactNotice := commandArtifactNotice(c.policy.LLMOutputMaxBytes, artifactPath, c.rawBytes, artifact.PersistedBytes, c.rawBytes-artifact.PersistedBytes, artifact.Complete, artifact.Truncated, artifact.Reason)
+	artifactNotice := commandArtifactNotice(c.policy.LLMOutputMaxBytes, artifactPath, c.rawBytes, artifact.PersistedBytes, c.rawBytes-artifact.PersistedBytes, artifact.Complete, artifact.Truncated, artifact.Reason, nonUTF8)
 	if fullInline {
 		artifactNotice = ""
 	}
@@ -176,7 +246,11 @@ func (c *commandOutputCollector) finalize(options commandOutputResultOptions) se
 		budgetReason = "inline"
 	} else if budgetReason == "" {
 		if artifactComplete {
-			budgetReason = "llm_output_max_bytes"
+			if nonUTF8 && !sizeExceeded {
+				budgetReason = commandNonUTF8BudgetReason
+			} else {
+				budgetReason = "llm_output_max_bytes"
+			}
 		} else {
 			budgetReason = commandArtifactUnavailableReason
 		}
@@ -202,6 +276,9 @@ func (c *commandOutputCollector) finalize(options commandOutputResultOptions) se
 	metadata["artifact_complete"] = artifactComplete
 	metadata["artifact_truncated"] = artifactTruncated
 	metadata["budget_reason"] = budgetReason
+	if nonUTF8 {
+		metadata["non_utf8_output"] = true
+	}
 	metadata["recoverable"] = recoverable
 	metadata["display_raw_bytes"] = c.rawBytes
 	metadata["display_inline_bytes"] = len(displayOutput)
@@ -462,9 +539,12 @@ func commandArtifactDisplayPath(execCtx ExecContext, absolute string) string {
 	return filepath.Clean(absolute)
 }
 
-func commandArtifactNotice(inlineLimit int, path string, rawBytes, persistedBytes, omittedBytes int, complete, truncated bool, reason string) string {
+func commandArtifactNotice(inlineLimit int, path string, rawBytes, persistedBytes, omittedBytes int, complete, truncated bool, reason string, nonUTF8 bool) string {
 	switch {
 	case complete && path != "":
+		if nonUTF8 {
+			return fmt.Sprintf("[Complete artifact (non-UTF-8): %s; raw_bytes=%d. Raw bytes are preserved in the session artifact; read_file requires UTF-8 text, so re-run the command with a binary-safe filter or redirect to a workspace file if needed.]", path, rawBytes)
+		}
 		return fmt.Sprintf("[Complete artifact: %s; raw_bytes=%d. Page with read_file byte_offset/byte_limit (inline_limit=%d).]", path, rawBytes, inlineLimit)
 	case truncated && path != "":
 		return fmt.Sprintf("[Partial artifact: %s; saved=%d/%d bytes omitted=%d reason=%s; unrecoverable.]", path, persistedBytes, rawBytes, omittedBytes, reason)
