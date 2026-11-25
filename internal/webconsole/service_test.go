@@ -15826,3 +15826,35 @@ func TestWebContinueCompletedSessionRejectsEmptyMessageWith400(t *testing.T) {
 		t.Fatalf("expected structured 400 error on empty completed continue, got %#v", errResp)
 	}
 }
+
+func TestStaleRunningOwnerReconcileRespectsGraceAfterPriorRunRelease(t *testing.T) {
+	now := time.Now().UTC()
+	priorRelease := ActiveHandleOwner{
+		EventType:   agentruntime.RunOwnerReleasedEventType,
+		PID:         os.Getpid(),
+		ReleasedAt:  now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+		LastEventAt: now.Add(-10 * time.Second).Format(time.RFC3339Nano),
+	}
+	freshState := session.State{
+		Status:    session.StatusRunning,
+		Phase:     "prepare",
+		UpdatedAt: now.Add(-500 * time.Millisecond).Format(time.RFC3339Nano),
+	}
+	if staleRunningOwnerCanBeReconciledAt(priorRelease, freshState, now, false) {
+		t.Fatal("prior run release must not allow immediate stale reconcile within startup grace window")
+	}
+	if !staleRunningOwnerCanBeReconciledAt(priorRelease, freshState, now, true) {
+		t.Fatal("forceMissingOwner=true should still allow reconcile")
+	}
+	agedState := freshState
+	agedState.UpdatedAt = now.Add(-6 * time.Second).Format(time.RFC3339Nano)
+	if !staleRunningOwnerCanBeReconciledAt(priorRelease, agedState, now, false) {
+		t.Fatal("expected prior run release without new acquire to become reconcilable after grace window")
+	}
+	postClaimRelease := priorRelease
+	postClaimRelease.ReleasedAt = now.Format(time.RFC3339Nano)
+	postClaimRelease.LastEventAt = now.Format(time.RFC3339Nano)
+	if !staleRunningOwnerCanBeReconciledAt(postClaimRelease, freshState, now, false) {
+		t.Fatal("post-claim release should be immediately reconcilable")
+	}
+}

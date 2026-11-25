@@ -62,6 +62,9 @@ type Runner struct {
 	// beforeQueueLifecycleEvent is set only by package tests to force
 	// deterministic failures around queue lifecycle event boundaries.
 	beforeQueueLifecycleEvent func(job session.QueueJob, eventType string)
+	// beforeContinueClaim is set only by package tests to deterministically
+	// exercise TOCTOU races right before ClaimSessionRun.
+	beforeContinueClaim func(sessionID string)
 }
 
 const defaultSteerMaxMessageChars = 12000
@@ -1137,9 +1140,26 @@ func (r *Runner) continueWithPreparation(ctx context.Context, req ContinueReques
 			state, err = r.store.ClaimSessionRunWithGeneration(meta.ID, r.approvalPreparation.ClaimUpdatedAt, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
 		}
 	} else {
+		if r.beforeContinueClaim != nil {
+			r.beforeContinueClaim(meta.ID)
+		}
 		state, err = r.store.ClaimSessionRun(meta.ID, session.StatusPaused, session.StatusAwaitingInput, session.StatusFailed, session.StatusCompleted)
 	}
 	if err != nil {
+		if errors.Is(err, session.ErrSessionNotResumable) {
+			enriched := error(&SessionNotResumableError{
+				SessionID: meta.ID,
+				Status:    session.StatusRunning,
+				Detail:    fmt.Sprintf("session %s was concurrently claimed by another run", meta.ID),
+				Action:    "Send steer to the active run, wait for it to settle, or inspect the latest session state before retrying continue.",
+			})
+			if currentState, loadErr := r.store.LoadState(meta.ID); loadErr == nil {
+				if detailedErr := ValidateContinueTargetWithStore(r.store, meta, currentState); detailedErr != nil {
+					enriched = detailedErr
+				}
+			}
+			err = enriched
+		}
 		if r.approvalPreparation != nil {
 			return RunResult{}, r.restoreApprovalClaimAfterError(meta.ID, err)
 		}
@@ -1383,11 +1403,44 @@ func ValidateContinueTargetWithStore(store *session.Store, meta session.SessionM
 	return notResumable
 }
 
+func parseOwnerTimestamp(raw string) (time.Time, bool) {
+	stamp := strings.TrimSpace(raw)
+	if stamp == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+		return parsed, true
+	}
+	if parsed, err := time.Parse(time.RFC3339, stamp); err == nil {
+		return parsed, true
+	}
+	return time.Time{}, false
+}
+
+func ownerReleaseTimestamp(evt events.Event) (time.Time, bool) {
+	if rawReleased, _ := evt.Data["released_at"].(string); strings.TrimSpace(rawReleased) != "" {
+		if parsed, ok := parseOwnerTimestamp(rawReleased); ok {
+			return parsed, true
+		}
+	}
+	return parseOwnerTimestamp(evt.Time)
+}
+
 func runningSessionOwnerStaleForContinue(eventsList []events.Event, state session.State) bool {
+	stateUpdatedAt, hasStateTime := parseOwnerTimestamp(state.UpdatedAt)
 	for i := len(eventsList) - 1; i >= 0; i-- {
 		evt := eventsList[i]
 		switch evt.Type {
 		case "webconsole.handle.released", RunOwnerReleasedEventType:
+			// A release event recorded strictly before state.UpdatedAt belongs to
+			// a previous run, not the run that just claimed state.Status=running.
+			// Fall through to the startup grace window instead of falsely
+			// diagnosing a newly claimed run as having a dead owner.
+			if hasStateTime {
+				if releasedAt, ok := ownerReleaseTimestamp(evt); ok && releasedAt.Before(stateUpdatedAt) {
+					goto startupGrace
+				}
+			}
 			return true
 		case "webconsole.handle.acquired", RunOwnerAcquiredEventType:
 			pid := intFromEventData(evt.Data, "pid")
@@ -1402,18 +1455,11 @@ func runningSessionOwnerStaleForContinue(eventsList []events.Event, state sessio
 			return pid > 0 && !session.ProcessOwnerAlive(pid, "")
 		}
 	}
-	stamp := strings.TrimSpace(state.UpdatedAt)
-	if stamp == "" {
+startupGrace:
+	if !hasStateTime {
 		return true
 	}
-	updatedAt, err := time.Parse(time.RFC3339Nano, stamp)
-	if err != nil {
-		updatedAt, err = time.Parse(time.RFC3339, stamp)
-		if err != nil {
-			return true
-		}
-	}
-	return time.Since(updatedAt) >= 5*time.Second
+	return time.Since(stateUpdatedAt) >= 5*time.Second
 }
 
 func (r *Runner) prepareBackgroundWaitContinuation(meta session.SessionMetadata) error {

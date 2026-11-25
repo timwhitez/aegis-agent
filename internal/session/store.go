@@ -448,6 +448,8 @@ func mergeLoadedSkills(current, next []string) []string {
 	return merged
 }
 
+var ErrSessionNotResumable = errors.New("session is not resumable")
+
 func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (State, error) {
 	allowed := make(map[string]struct{}, len(allowedStatuses))
 	for _, status := range allowedStatuses {
@@ -487,7 +489,7 @@ func (s *Store) ClaimSessionRun(sessionID string, allowedStatuses ...string) (St
 				return fmt.Errorf("validate state.json: %w", err)
 			}
 			if _, ok := allowed[claimed.Status]; !ok {
-				return errors.New("session is not resumable")
+				return ErrSessionNotResumable
 			}
 			claimed.Status = StatusRunning
 			claimed.Phase = "prepare"
