@@ -12,14 +12,17 @@ func TestCanonicalArgsReadFileNormalizesEffectiveDefaultsAndCaps(t *testing.T) {
 
 	baseline := mustCanonicalReadOnlyArgs(t, "read_file", `{"path":"src/file.go"}`, cfg)
 	for _, raw := range []string{
-		`{"path":"./src/../src/file.go","offset":0,"limit":120}`,
+		`{"path":"./src/../src/file.go","offset":0,"limit":400}`,
 		`{"path":"src/file.go","offset":1}`,
 		`{"path":"src/file.go","limit":0}`,
-		`{"path":"src/file.go","limit":9999}`,
 	} {
 		if got := mustCanonicalReadOnlyArgs(t, "read_file", raw, cfg); got != baseline {
 			t.Fatalf("read_file canonical args differ for %s:\n got %s\nwant %s", raw, got, baseline)
 		}
+	}
+	cappedBaseline := mustCanonicalReadOnlyArgs(t, "read_file", `{"path":"src/file.go","limit":1000}`, cfg)
+	if got := mustCanonicalReadOnlyArgs(t, "read_file", `{"path":"src/file.go","limit":9999}`, cfg); got != cappedBaseline {
+		t.Fatalf("oversized line limit did not normalize to max cap:\n got %s\nwant %s", got, cappedBaseline)
 	}
 
 	line := baseline

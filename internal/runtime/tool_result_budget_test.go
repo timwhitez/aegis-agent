@@ -504,7 +504,7 @@ func TestToolResultBudgetEphemeralProviderViewReusesCompleteArtifact(t *testing.
 
 	view := engine.applyEphemeralProviderView(meta.ID, messages, messages, registry)
 	got := view[0].ToolResults[0]
-	if !strings.Contains(got.LLMOutput, "Complete artifact: "+artifactPath) {
+	if !strings.Contains(got.LLMOutput, artifactPath) || !strings.Contains(got.LLMOutput, "session-internal artifact") {
 		t.Fatalf("provider view did not reuse the finalized complete artifact: %q", got.LLMOutput)
 	}
 	entries, err := os.ReadDir(engine.ephemeralArtifactRoot(meta.ID))

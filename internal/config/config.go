@@ -42,7 +42,8 @@ const (
 	DefaultToolOutputArtifactMaxFiles           = 256
 	MinToolOutputArtifactMaxFiles               = 1
 	MaxToolOutputArtifactMaxFiles               = 4096
-	DefaultCompactKeepRecentToolResultBytes     = 64 * 1024
+	DefaultCompactKeepRecentToolResults         = 16
+	DefaultCompactKeepRecentToolResultBytes     = 256 * 1024
 )
 
 const (
@@ -481,7 +482,7 @@ func Default() *Config {
 			},
 			ShellEnvAllowlist: []string{"PATH", "HOME", "LANG", "TERM"},
 			Compact: CompactConfig{
-				KeepRecentToolResults:     3,
+				KeepRecentToolResults:     DefaultCompactKeepRecentToolResults,
 				KeepRecentToolResultBytes: DefaultCompactKeepRecentToolResultBytes,
 				UtilizationFactor:         DefaultCompactUtilizationFactor,
 				SemanticSummary: CompactSemanticSummaryConfig{

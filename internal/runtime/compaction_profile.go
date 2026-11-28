@@ -105,13 +105,16 @@ func normalizeCompactionProfile(profile compactionContextProfile) compactionCont
 		profile.InputCharThreshold = 160000
 	}
 	if profile.KeepRecentToolResults <= 0 {
-		profile.KeepRecentToolResults = 3
+		profile.KeepRecentToolResults = config.DefaultCompactKeepRecentToolResults
 	}
 	if profile.KeepRecentToolResultBytes <= 0 {
 		profile.KeepRecentToolResultBytes = config.DefaultCompactKeepRecentToolResultBytes
 	}
 	if profile.HysteresisDeltaChars <= 0 {
 		profile.HysteresisDeltaChars = profile.InputCharThreshold / 4
+		if profile.InputCharThreshold >= 16000 && profile.HysteresisDeltaChars < 8000 {
+			profile.HysteresisDeltaChars = 8000
+		}
 		if profile.HysteresisDeltaChars <= 0 {
 			profile.HysteresisDeltaChars = 40000
 		}
@@ -143,6 +146,19 @@ func compactionProfileForPolicy(threshold, keepRecent, hysteresisDelta int) comp
 		HysteresisDeltaChars:      hysteresisDelta,
 		KeepRecentMessages:        deriveKeepRecentMessages(threshold),
 	})
+}
+
+func microCompactionTriggerChars(profile compactionContextProfile) int {
+	profile = normalizeCompactionProfile(profile)
+	// Keep historical messages strictly append-only (preserving full working
+	// memory and prompt KV cache prefix hits) while context usage is below 65%
+	// of the effective threshold. Only apply micro-compaction or ephemeral
+	// pointerization once genuine context pressure approaches.
+	trigger := (profile.InputCharThreshold * 65) / 100
+	if trigger <= 0 {
+		return profile.InputCharThreshold
+	}
+	return trigger
 }
 
 func deriveKeepRecentMessages(threshold int) int {

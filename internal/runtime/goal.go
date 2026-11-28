@@ -24,15 +24,16 @@ func goalPromptContext(goal session.SessionGoal) string {
 	b.WriteString("\n</untrusted_objective>\n\n")
 	b.WriteString(fmt.Sprintf("Status: %s\n", goal.Status))
 	b.WriteString(fmt.Sprintf("Mode: %s\n", goal.Mode))
-	b.WriteString(fmt.Sprintf("Budget: tokens %d", goal.TokensUsed))
-	if goal.TokenBudget != nil {
-		b.WriteString(fmt.Sprintf(" / %d", *goal.TokenBudget))
+	if goal.TokenBudget != nil || goal.TimeBudgetSeconds != nil {
+		var limits []string
+		if goal.TokenBudget != nil {
+			limits = append(limits, fmt.Sprintf("tokens <= %d", *goal.TokenBudget))
+		}
+		if goal.TimeBudgetSeconds != nil {
+			limits = append(limits, fmt.Sprintf("provider time <= %ds", *goal.TimeBudgetSeconds))
+		}
+		b.WriteString(fmt.Sprintf("Budget limits: %s (inspect live usage with get_goal)\n", strings.Join(limits, ", ")))
 	}
-	b.WriteString(fmt.Sprintf(", provider time %ds", goal.TimeUsedSeconds))
-	if goal.TimeBudgetSeconds != nil {
-		b.WriteString(fmt.Sprintf(" / %ds", *goal.TimeBudgetSeconds))
-	}
-	b.WriteString("\n")
 	if len(goal.SuccessCriteria) > 0 {
 		b.WriteString("Success criteria:\n")
 		for _, criterion := range goal.SuccessCriteria {

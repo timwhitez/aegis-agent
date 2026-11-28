@@ -107,12 +107,20 @@ func (c *compactor) build(ctx context.Context, sessionID, workdir string, state 
 	profile = normalizeCompactionProfile(profile)
 	sourceMessages := cloneMessages(messages)
 	cloned := cloneMessages(sourceMessages)
+	rawSize := estimateChars(cloned) + systemPromptChars
+	if rawSize < microCompactionTriggerChars(profile) {
+		return cloned, rawSize, false, nil
+	}
 	microStats := compactOldToolContext(cloned, profile.KeepRecentToolResults, profile.KeepRecentToolResultBytes)
 	size := estimateChars(cloned) + systemPromptChars
 	if size <= profile.InputCharThreshold {
 		return cloned, size, false, nil
 	}
-	if lastCompactionInputChars > 0 && profile.HysteresisDeltaChars > 0 && size < lastCompactionInputChars+profile.HysteresisDeltaChars {
+	recentCandidate := recentMessagesForCompaction(cloned, profile.KeepRecentMessages)
+	droppedCandidate := droppedMessagesForSemanticSummary(cloned, recentCandidate)
+	reusableByHysteresis := lastCompactionInputChars > 0 && profile.HysteresisDeltaChars > 0 && size < lastCompactionInputChars+profile.HysteresisDeltaChars
+	nothingToDrop := len(droppedCandidate) == 0 && lastCompactionInputChars > 0
+	if reusableByHysteresis || nothingToDrop {
 		summary, summarySource, err := c.reusableCompactionSummary(sessionID, workdir, state, sourceMessages, todo, tasks, profile)
 		if err != nil {
 			return nil, size, false, err
@@ -830,8 +838,13 @@ func compactOldToolContext(messages []session.Message, keepRecent, keepRecentByt
 				reason = "ephemeral_tool_result"
 			}
 			originalLLMBytes := len(result.LLMOutput)
-			result.LLMOutput = compactToolResultPayloadForContext(result.LLMOutput, reason)
-			result.DisplayOutput = compactToolResultPayloadForContext(result.DisplayOutput, reason)
+			compactedLLM := compactToolResultPayloadForContext(result.LLMOutput, reason, keepRecentBytes)
+			compactedDisplay := compactToolResultPayloadForContext(result.DisplayOutput, reason, keepRecentBytes)
+			if compactedLLM == result.LLMOutput && compactedDisplay == result.DisplayOutput {
+				continue
+			}
+			result.LLMOutput = compactedLLM
+			result.DisplayOutput = compactedDisplay
 			if result.Metadata == nil {
 				result.Metadata = map[string]any{}
 			}
@@ -880,9 +893,12 @@ func compactOldToolContext(messages []session.Message, keepRecent, keepRecentByt
 	return measureToolResultContext(messages)
 }
 
-func compactToolResultPayloadForContext(text, reason string) string {
-	const compactPayloadThreshold = 1400
-	if len(text) > compactPayloadThreshold {
+func compactToolResultPayloadForContext(text, reason string, keepRecentBytes int) string {
+	const preserveVerbatimThreshold = 1400
+	if len(text) <= preserveVerbatimThreshold && keepRecentBytes >= preserveVerbatimThreshold {
+		return text
+	}
+	if len(text) > preserveVerbatimThreshold {
 		return compactTextForContext(text, reason)
 	}
 	return fmt.Sprintf("[Compacted %s; original_bytes=%d; payload omitted]", reason, len(text))
@@ -897,7 +913,7 @@ func pointerizeFinalizedToolResultForContext(result *session.ToolResult) bool {
 		return false
 	}
 	pointer := fmt.Sprintf(
-		"[Previous %s tool result moved out of the inline context window. Complete artifact: %s (%d bytes). Use read_file with this exact path and a bounded range only if the older result is needed.]",
+		"[Previous %s tool result moved out of the inline context window. Complete session-internal artifact (read_file only; not a workspace shell path): %s (%d bytes). Use read_file with this exact path and a bounded range only if the older result is needed.]",
 		strings.TrimSpace(result.Name), artifactPath, rawBytes,
 	)
 	result.LLMOutput = pointer

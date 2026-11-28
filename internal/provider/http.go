@@ -76,7 +76,7 @@ func (c JSONClient) DoJSON(ctx context.Context, method, path string, headers map
 		if attempt == maxAttempts || !shouldRetry(err, c.Retry) {
 			return err
 		}
-		delay := retryDelay(c.Retry.BaseDelay, attempt)
+		delay := retryDelayForError(c.Retry.BaseDelay, attempt, err)
 		delay, admissionErr := admitRetryAfter(ctx, err, delay)
 		if admissionErr != nil {
 			return admissionErr

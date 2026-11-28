@@ -147,7 +147,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 当 `glob` / `grep` / `grep_files` 显式收到 `artifacts/tool-outputs` 或其子路径时，必须在普通 workspace/skill path resolver 之前返回稳定的 `unsupported_path_source` 错误：提示该 session artifact 不可 discovery，保留原始 path，并要求用 `read_file` 精确读取；不得把它归类为 workspace `not_found`，也不得建议猜路径或重跑生成命令
 - 有两种互斥模式：line mode 使用 1-based `offset` / `limit`；byte mode 使用 0-based `byte_offset` / `byte_limit`。调用中出现任一 byte 字段时不得再出现 line 字段；byte mode 必须给出正数 `byte_limit`，`byte_offset` 省略时为 0
 - line/byte mode 的普通缺文件错误都保留调用方提供的 normalized path 与 `not_found`/discovery hint；不得把相对缺失路径扩展成 host workspace 绝对路径。调用方明确提供的绝对路径仍保留；成功读取和其他错误不因此成为通用脱敏路径。
-- line mode 保持默认与最大 120 行，仍通过 `ReadRegularFileNoSymlink` 执行 16 MiB source guard；旧调用不写 byte 字段时输出与语义兼容
+- line mode 默认 400 行、最大 1000 行（受当前模型可见 byte budget 约束），仍通过 `ReadRegularFileNoSymlink` 执行 16 MiB source guard；旧调用不写 byte 字段时输出与语义兼容
 - byte mode 只通过 `fileutil.ReadRegularFileRangeNoSymlink` 读取有界 range，调用方必须显式给出 `byte_limit`（建议常规页使用 16 KiB），最高 24 KiB，并进一步受当前 `runtime.tool_output.llm_output_max_bytes` 约束；不得先全量读取再切片。workspace / skill source 的总文件大小仍受 16 MiB guard，session tool-output artifact 可在 no-symlink exact-path gate 后读取更大的有界 range
 - byte mode 只返回完整 UTF-8 rune：requested offset 落在 rune 中间时向前调整到下一个边界，requested end 落在 rune 中间时向后调整；返回 `requested_byte_offset`、`requested_byte_limit`、`effective_byte_start`、`effective_byte_end`、`start_adjusted`、`end_adjusted`、`returned_bytes`、`total_bytes`、`has_more`、`next_byte_offset` 与 `encoding=utf-8`
 - 从 0 开始并始终使用工具返回的 `next_byte_offset` 可无重复、无漏 rune 地重组原文；人为从 rune 中间开始会得到明确的 start adjustment。窗口含非法 UTF-8 或 limit 小到无法容纳一个完整 rune 时返回稳定 typed error，不用替换字符伪装原字节
@@ -257,6 +257,7 @@ command collector 生成的结果直接使用 `tool_output_budget_version=1` 完
 - 返回目标 `SKILL.md` 的完整内容与路径信息
 - 当 skill 依赖相对 shell 路径时，返回值还应给出可直接复用的 skill 根目录执行提示，避免把 skill 内相对脚本误当成 workspace 根相对路径
 - 返回值还应明确 skill references 是注册 skill bundle 下的只读资源，可通过 `read_file` / `grep` / `grep_files` 的 `skills/<skill-name>/references/...`、`load_skill` 返回的绝对路径，或唯一匹配的 `references/...` 访问，不属于 workspace 文件
+- 若该 skill 声明的 `tools/*.yaml` 命令工具因 skill 根目录位于 workspace 或当前调用目录（CWD）下而被安全信任边界排除，返回值应给出明确提示说明排除原因及通过将 skill 目录移至工作区与调用目录之外注册的办法（`doctor` 的 `skills.scan` 同样报告对应告警），不降低或绕过原有安全边界
 
 `load_skill` 在同一 session 普通重复调用仍返回 compact `already_loaded`。
 显式 `force_reload=true` 必须从已注册路径通过既有 no-symlink regular-file
@@ -332,7 +333,7 @@ Plan Mode pending 时，provider tool schema 与 `CompletionController` 都必�
 
 - 用于高频更新 session 级 todo 列表
 - 只表达“执行进度账本”，不表达依赖图，也不替代实际执行、验证或 `finish`
-- 保留已有 todo 的顺序、内容和优先级；已完成/取消项不可删除或回退；新 todo 只能追加，不能直接新增为 completed/cancelled
+- 保留已有 todo 的顺序、内容和优先级；已完成/取消项不可删除或回退；新 todo 只能追加，初始状态可为 `pending`、`in_progress` 或 `completed`，不能直接新增为 `cancelled`
 - 允许多个互不依赖或并行推进的 todo 同时为 `in_progress`
 
 ### 4.12 `todo_read`

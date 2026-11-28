@@ -64,7 +64,7 @@ func TestSafeDedupReplacesOnlyOlderIdenticalReadOnlyResult(t *testing.T) {
 	messages := []session.Message{
 		assistantCall("call_old", "", "read_file", `{"path":"src/file.go"}`),
 		session.NewToolMessage([]session.ToolResult{oldResult}),
-		assistantCall("call_new", "", "read_file", `{"path":"./src/file.go","offset":0,"limit":120}`),
+		assistantCall("call_new", "", "read_file", `{"path":"./src/file.go","offset":0,"limit":400}`),
 		session.NewToolMessage([]session.ToolResult{newResult}),
 	}
 	original := cloneMessages(messages)
@@ -324,7 +324,7 @@ func TestSafeDedupProviderViewBuildLeavesMessagesJSONLByteForByteUnchanged(t *te
 	messages := []session.Message{
 		assistantCall("call_old", "", "read_file", `{"path":"src/file.go"}`),
 		session.NewToolMessage([]session.ToolResult{oldResult}),
-		assistantCall("call_new", "", "read_file", `{"path":"src/file.go","limit":120}`),
+		assistantCall("call_new", "", "read_file", `{"path":"src/file.go","limit":400}`),
 		session.NewToolMessage([]session.ToolResult{newResult}),
 	}
 	for _, message := range messages {

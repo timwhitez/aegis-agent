@@ -98,7 +98,13 @@ type providerViewBuild struct {
 }
 
 func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMetadata, state session.State, messages []session.Message, todo []session.TodoItem, tasks []session.Task, registry *tools.Registry, profile compactionContextProfile, systemPromptChars int, requestContext requestBudgetContext, summarize semanticSummaryFunc) (providerViewBuild, error) {
-	providerMessages := e.applyEphemeralProviderView(meta.ID, messages, messages, registry)
+	normalizedProfile := normalizeCompactionProfile(profile)
+	pressureThreshold := microCompactionTriggerChars(normalizedProfile)
+	underPressure := estimateChars(messages)+systemPromptChars >= pressureThreshold
+	providerMessages := cloneMessages(messages)
+	if underPressure {
+		providerMessages = e.applyEphemeralProviderView(meta.ID, providerMessages, messages, registry)
+	}
 	providerMessages = deduplicateIdenticalReadOnlyToolResults(providerMessages, e.cfg)
 	compactionAction := "none"
 	compactionSummary := ""
@@ -119,8 +125,12 @@ func (e *Engine) buildProviderView(ctx context.Context, meta session.SessionMeta
 		return nil
 	})
 	if err == nil {
+		finalView := view
+		if underPressure || didCompact || compactionAction != "none" {
+			finalView = e.applyEphemeralProviderView(meta.ID, view, messages, registry)
+		}
 		return providerViewBuild{
-			Messages:          e.applyEphemeralProviderView(meta.ID, view, messages, registry),
+			Messages:          finalView,
 			InputChars:        inputChars,
 			DidCompact:        didCompact,
 			CompactionAction:  compactionAction,
@@ -1607,7 +1617,7 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 			}
 			if artifactPath, rawBytes, ok := completeFinalizedToolOutputArtifact(original); ok {
 				pointer := fmt.Sprintf(
-					"[Older %s output moved out of the provider context window. Complete artifact: %s (%d bytes). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
+					"[Older %s output moved out of the provider context window. Complete session-internal artifact (read_file only; not a workspace shell path): %s (%d bytes). Use read_file(path=%q, offset=1, limit=400) only if this older result is needed, and page with offset.]",
 					original.Name,
 					artifactPath,
 					rawBytes,
@@ -1615,7 +1625,7 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 				)
 				if toolResultIsNonUTF8(original) {
 					pointer = fmt.Sprintf(
-						"[Older %s output moved out of the provider context window. Complete artifact (non-UTF-8): %s (%d bytes). Raw bytes are preserved in the session artifact; read_file requires UTF-8 text, so re-run the command with a binary-safe filter if needed.]",
+						"[Older %s output moved out of the provider context window. Complete session-internal artifact (non-UTF-8; not a workspace shell path): %s (%d bytes). Raw bytes are preserved in the session artifact; read_file requires UTF-8 text, so re-run the command with a binary-safe filter if needed.]",
 						original.Name,
 						artifactPath,
 						rawBytes,
@@ -1666,7 +1676,7 @@ func (e *Engine) applyEphemeralProviderView(sessionID string, messages, sourceMe
 			displayArtifactPath := e.ephemeralArtifactDisplayPath(sessionID, artifact.AbsolutePath)
 			lineCount := countTextLines(original.LLMOutput)
 			pointer := fmt.Sprintf(
-				"[Older %s output moved out of the provider context window. Complete artifact: %s (%d lines). Use read_file(path=%q, offset=1, limit=120) only if this older result is needed, and page with offset.]",
+				"[Older %s output moved out of the provider context window. Complete session-internal artifact (read_file only; not a workspace shell path): %s (%d lines). Use read_file(path=%q, offset=1, limit=400) only if this older result is needed, and page with offset.]",
 				original.Name,
 				displayArtifactPath,
 				lineCount,

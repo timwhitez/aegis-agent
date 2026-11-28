@@ -50,12 +50,12 @@ v1 只做最小但完整的三层压缩。
 - 没有可靠 result hash、canonicalization 失败、tool 不在 allowlist 或任一语义字段不同就保留原结果。文件/搜索状态发生变化时，即使参数相同也不能折叠
 
 - 倒序逐个遍历独立 `ToolResult`；每个 result 占一个最近位置，message/batch 边界不参与计数
-- 只有同时满足 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes` 的最新连续后缀保留完整 `llm_output`。byte 口径为 UTF-8 bytes，exact boundary 可保留；第一个超过 count 或 bytes 的 result 关闭完整后缀，该 result 与更早的非 pointer result 都替换为简短占位摘要（head/tail + 原始长度）
+- 只有同时满足 `keep_recent_tool_results` 与 `keep_recent_tool_result_bytes` 的最新连续后缀保留完整 `llm_output`。byte 口径为 UTF-8 bytes，exact boundary 可保留；第一个超过 count 或 bytes 的 result 关闭完整后缀，该 result 与更早的非 pointer result 中大于短保留阈值（`1400` bytes，在常规 `keep_recent_tool_result_bytes >= 1400` 预算下）的结果才替换为简短占位摘要（head/tail + 原始长度）；更短且未被改写的结果保持原文并计为 inline
 - 同一 tool message 可以混合 compacted 和 inline result；ToolCallID、Name、IsError、Final 与业务 metadata 保持逐项对应
-- 已由 current-result budget / ephemeral view pointerize 的 result 占一个最近位置但不消耗完整 payload byte budget，并保持现有 pointer；不得再创建 artifact、嵌套 pointer 或把 partial/unavailable source 改写为 complete
+- 已由 current-result budget / ephemeral view pointerize 的 result 占一个最近位置但不消耗完整 payload byte budget，并保持现有 pointer；不得再创建 artifact、嵌套 pointer 或把 partial/unavailable source 改写为 complete。pointer 提示必须明确指出该路径是 session-internal artifact（仅支持 `read_file`，不能在 `shell` 中作为工作区路径访问）
 - 原始 `messages.jsonl` 不做覆盖
 - compacted result 仍保留对应 assistant `tool_call` / provider call id；只按 ToolCallID 裁剪该 call 的大 arguments/input/args，不触碰同 batch sibling。full-compaction 的最近消息选择若保留 result，也必须保留其 call/replay 依赖链
-- 这一层无论总规模是否超阈值都会执行：始终对超出 `keep_recent_tool_results` 的旧大输出做 head/tail 截断，是最廉价的稳定裁剪
+- 压力门控（prefix-cache 保护）：ephemeral 滑动窗口 pointerize 与 Layer 2 micro-compaction 只在估算输入规模达到 `input_char_threshold` 的 `65%`（或触发 full compaction）时才激活；在窗口充裕（`< 65%`）时保持历史消息前缀与静态 `systemPrompt` 稳定（不在 `systemPrompt` 内注入每轮变动的实时 token/秒数计数器或中途翻转的任务提示），最大化 provider KV prompt prefix cache 命中率并避免模型过早失忆
 - 不得只按 tool name + arguments 推断两个结果语义相同，也不得在 message 级覆盖整批 `tool_results`。相同查询可能在两次调用之间观察到不同文件内容或外部状态；只有上述受限 result-level 证明路径可以去重。
 
 示例：
@@ -194,10 +194,11 @@ effective context window 在 session 创建时解析并写入 session metadata�
 - `runtime.compact.input_char_threshold`
   - 默认 `0`（表示按 context window 自动推导）；正数表示显式覆盖。
 - `runtime.compact.keep_recent_tool_results`
+  - 默认 `16`；上下文进入压力区间后保留最近完整 tool result 的数量上限。
 - `runtime.compact.keep_recent_tool_result_bytes`
-  - 默认 `65536`；与 result count 同时生效，context profile 可用同名字段覆盖。
+  - 默认 `262144`（256 KiB）；与 result count 同时生效，context profile 可用同名字段覆盖。
 - `runtime.compact.hysteresis_delta_chars`
-  - 默认 `0`（表示按 `threshold / 4` 自动推导）。
+  - 默认 `0`（表示按 `threshold / 4` 自动推导，当 `threshold >= 16000` 时至少保留 `8000` 字符防振荡下限）。
 - `runtime.compact.keep_recent_messages`
   - 默认 `0`（表示按阈值规模成比例推导，不再固定保留 6 条）。
 - `runtime.compact.utilization_factor`
@@ -235,7 +236,7 @@ command collector 已在当前 ToolResult 建立 `tool_output_budget_version=1` 
 
 read_file byte window、grep/grep_files/glob page 都属于 source-recoverable payload：它们在当前结果中优先返回 path/range 或 versioned query cursor。runtime finalizer 仍是最后的 correctness cap，但正常工具输出必须已为 header + bounded records + intact cursor，不能先超量生成再依赖 head/tail artifact 截断；只有动态且无法从 source cursor 重建的正文才进入 tool-output artifact。
 
-超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
+超过阈值后第一次正常写出 transcript 与 summary artifact；后续如果输入规模没有比上次真实 compaction 水位增长超过 `hysteresis_delta_chars`，或者当前轮次已无可新裁掉的历史消息，runtime 复用最近的 summary artifact 作为 compacted provider view 的稳定前缀，并附加自上次真实压缩以来、在 `hysteresis_delta_chars` 预算内的最近消息尾部（含其 tool-call 依赖链），只写 `compact.reused` 事件，避免长任务在每轮 provider call 前反复生成空压缩/近似重复的 summary artifact 或破坏 provider prompt cache prefix。预算内的尾部保留可避免"自上次压缩以来新增、又不在固定最近窗口内"的中段消息从 provider view 消失。
 
 ## 6.1 Provider View 裁剪与指令边界
 

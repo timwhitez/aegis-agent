@@ -181,6 +181,8 @@ func runtimeBehaviorNotes(workdir, mode string, messages []session.Message) []st
 }
 
 func deliveryNote(workdir, mode string, messages []session.Message) string {
+	_ = workdir
+	_ = mode
 	idx := latestExternalInstructionIndex(messages)
 	if idx < 0 {
 		return ""
@@ -189,17 +191,9 @@ func deliveryNote(workdir, mode string, messages []session.Message) string {
 	isAudit := looksAuditOrReviewTask(text)
 	requiresArtifact := isAudit && requiresReviewArtifact(text)
 
-	stats := collectRecentToolStats(messages[idx+1:])
-	hasArtifact := strings.TrimSpace(stats.DeliverableWritePath) != ""
-
-	if hasArtifact {
-		path := displayPromptPath(workdir, stats.DeliverableWritePath)
-		if mode == session.ModeExec {
-			return fmt.Sprintf("A requested artifact was already written to %s. If required side effects are done, call finish.", path)
-		}
-		return fmt.Sprintf("A requested artifact was already written to %s. Continue only for required side effects or corrections.", path)
-	}
-
+	// Keep deliveryNote strictly derived from the user's instruction rather than
+	// mutating mid-run once a file is written; mutating the system prefix invalidates
+	// provider KV prompt caches across the entire conversation.
 	if isAudit {
 		if !requiresArtifact {
 			return "For audit or review responses, lead with findings ordered by severity and ground each validated claim in exact evidence. Keep unresolved or inference-limited points separate. Do not create a report file unless the user explicitly requested one."
@@ -1377,8 +1371,10 @@ func steerCompletionReminder(workdir, mode string, messages []session.Message) h
 
 func toolGuard(workdir string, messages []session.Message, toolName string, rawArgs json.RawMessage, yoloOpt ...bool) (string, string) {
 	yolo := len(yoloOpt) > 0 && yoloOpt[0]
-	if kind, text := explicitInspectionScopeGuard(workdir, messages, toolName, rawArgs); text != "" {
-		return kind, text
+	if !yolo {
+		if kind, text := explicitInspectionScopeGuard(workdir, messages, toolName, rawArgs); text != "" {
+			return kind, text
+		}
 	}
 	if kind, text := exactArtifactPathGuard(workdir, messages, toolName, rawArgs); text != "" {
 		return kind, text

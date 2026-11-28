@@ -424,7 +424,7 @@ func runCommand(ctx context.Context, mode string, args []string, stdout, stderr 
 	defer cancel()
 	planInputHandler := cliPlanInputHandler(os.Stdin, stderr)
 	var ttyInput *cliTTYInput
-	if mode == "run" && term.IsTerminal(int(os.Stdin.Fd())) {
+	if mode == "run" && !streamMode && !*jsonMode && term.IsTerminal(int(os.Stdin.Fd())) {
 		ttyInput, _ = startCLITTYInput(runCtx, os.Stdin, func() {
 			sessionMu.RLock()
 			id := sessionID
@@ -1900,19 +1900,20 @@ func tasksCommand(args []string, stdout, stderr io.Writer) error {
 }
 
 func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "base-url", "api-key-env", "api-provider", "wire-api", "prompt"}, []string{"json", "allow-builtin-config", "help", "h"})
+	args = normalizeInterspersedFlags(args, []string{"provider", "model", "config", "base-url", "api-key-env", "api-provider", "wire-api", "prompt"}, []string{"json", "allow-builtin-config", "thinking-probe", "help", "h"})
 	fs := flag.NewFlagSet("probe-provider", flag.ContinueOnError)
 	var (
-		providerName = fs.String("provider", "", "Provider profile name")
-		model        = fs.String("model", "", "Model name override")
-		configPath   = fs.String("config", "", "Path to config file")
-		baseURL      = fs.String("base-url", "", "Provider base URL override")
-		apiKeyEnv    = fs.String("api-key-env", "", "API key environment variable override")
-		apiProvider  = fs.String("api-provider", "", "API protocol family override")
-		wireAPI      = fs.String("wire-api", "", "Wire API override (responses or chat_completions)")
-		prompt       = fs.String("prompt", "", "Custom probe prompt")
-		jsonMode     = fs.Bool("json", false, "Output JSON")
-		allowBuiltin = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
+		providerName  = fs.String("provider", "", "Provider profile name")
+		model         = fs.String("model", "", "Model name override")
+		configPath    = fs.String("config", "", "Path to config file")
+		baseURL       = fs.String("base-url", "", "Provider base URL override")
+		apiKeyEnv     = fs.String("api-key-env", "", "API key environment variable override")
+		apiProvider   = fs.String("api-provider", "", "API protocol family override")
+		wireAPI       = fs.String("wire-api", "", "Wire API override (responses)")
+		prompt        = fs.String("prompt", "", "Custom probe prompt")
+		thinkingProbe = fs.Bool("thinking-probe", false, "Request and verify thinking/reasoning support during probe")
+		jsonMode      = fs.Bool("json", false, "Output JSON")
+		allowBuiltin  = fs.Bool("allow-builtin-config", false, "Explicitly admit builtin provider defaults when no config file loaded")
 	)
 	if helped, err := parseFlagSet(fs, args, stdout, stderr, "usage: aegis-agent probe-provider [flags]"); err != nil || helped {
 		return err
@@ -1929,13 +1930,14 @@ func probeProviderCommand(ctx context.Context, args []string, stdout, stderr io.
 		return err
 	}
 	req := runtime.ProbeRequest{
-		Provider:    *providerName,
-		Model:       *model,
-		BaseURL:     *baseURL,
-		APIKeyEnv:   *apiKeyEnv,
-		APIProvider: *apiProvider,
-		WireAPI:     *wireAPI,
-		Prompt:      *prompt,
+		Provider:      *providerName,
+		Model:         *model,
+		BaseURL:       *baseURL,
+		APIKeyEnv:     *apiKeyEnv,
+		APIProvider:   *apiProvider,
+		WireAPI:       *wireAPI,
+		Prompt:        *prompt,
+		ThinkingProbe: *thinkingProbe,
 	}
 	result, err := runner.Probe(ctx, req)
 	if *jsonMode {
@@ -2308,6 +2310,27 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			names = append(names, summary.Name)
 		}
 		skillDetails["skill_names"] = names
+		trustedTools := skillCatalog.TrustedCommandTools(cwd)
+		excludedTools := skillCatalog.ExcludedCommandTools(cwd)
+		if len(trustedTools) > 0 {
+			trustedNames := make([]string, 0, len(trustedTools))
+			for _, tool := range trustedTools {
+				trustedNames = append(trustedNames, tool.Name)
+			}
+			skillDetails["trusted_command_tools"] = trustedNames
+		}
+		if len(excludedTools) > 0 {
+			excludedList := make([]map[string]any, 0, len(excludedTools))
+			for _, excluded := range excludedTools {
+				excludedList = append(excludedList, map[string]any{
+					"name":   excluded.Tool.Name,
+					"skill":  excluded.Tool.SkillName,
+					"reason": excluded.Reason,
+				})
+			}
+			skillDetails["excluded_command_tools"] = excludedList
+			skillStatus = "warn"
+		}
 	}
 	report.Checks = append(report.Checks, doctorCheck{
 		Name:    "skills.scan",
@@ -2714,7 +2737,7 @@ func runInit(args []string, stdout, stderr io.Writer) error {
 		model           = fs.String("model", "", "Default model name")
 		baseURL         = fs.String("base-url", "", "Provider base URL")
 		apiKeyEnv       = fs.String("api-key-env", "", "Environment variable name holding the API key")
-		wireAPI         = fs.String("wire-api", "", "Wire API (responses or chat_completions)")
+		wireAPI         = fs.String("wire-api", "", "Wire API (responses)")
 		sendMetadata    = fs.Bool("send-metadata", true, "Send metadata fields on OpenAI requests")
 		reasoningEffort = fs.String("reasoning-effort", "", "Explicit native Responses effort; omission uses provider default")
 		skillDir        = fs.String("skill-dir", "", "Skills directory path")

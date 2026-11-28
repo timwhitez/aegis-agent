@@ -185,8 +185,8 @@ type AgentListResult struct {
 }
 
 const (
-	readFileDefaultLimit = 120
-	readFileMaxLimit     = 120
+	readFileDefaultLimit = 400
+	readFileMaxLimit     = 1000
 )
 
 type ControlPlane interface {
@@ -2531,7 +2531,19 @@ func defLoadSkill(catalog *skills.Catalog) Definition {
 				result.Metadata["session_state_saved"] = false
 				return result, nil
 			}
-			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect or search referenced skill files, call read_file, grep, or grep_files with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, body)
+			excludedToolsNotice := ""
+			if !explorerReadOnly && execCtx.Catalog != nil {
+				var excludedNames []string
+				for _, excluded := range execCtx.Catalog.ExcludedCommandTools(execCtx.Workdir) {
+					if strings.EqualFold(strings.TrimSpace(excluded.Tool.SkillName), strings.TrimSpace(skill.Name)) {
+						excludedNames = append(excludedNames, excluded.Tool.Name)
+					}
+				}
+				if len(excludedNames) > 0 {
+					excludedToolsNotice = fmt.Sprintf("\nNote: skill command tool(s) %s are NOT registered in this session because the skill directory lies inside the workspace or invoking working directory trust boundary. Do not search for them in the tool list; use shell with the skill's `shell_workdir` or ask the operator to move the skill directory outside the workspace/cwd.", strings.Join(excludedNames, ", "))
+				}
+			}
+			output := fmt.Sprintf("<skill path=%q shell_workdir=%q>\nWhen this skill uses relative shell paths, call the shell tool with `workdir=%q` so commands run from the skill bundle root.\nSkill bundle files are registered read-only resources, not workspace files. To inspect or search referenced skill files, call read_file, grep, or grep_files with paths like `skills/%s/references/...` or an unambiguous skill-relative link such as `references/...`; do not resolve those links under the workspace directory.%s\n\n%s\n</skill>", skill.Path, shellWorkdir, shellWorkdir, skill.Name, excludedToolsNotice, body)
 			metadata := map[string]any{
 				"path":          skill.Path,
 				"shell_workdir": shellWorkdir,
@@ -3356,7 +3368,7 @@ func defRequestUserInput() Definition {
 func defTodoWrite() Definition {
 	return Definition{
 		Name:        "todo_write",
-		Description: "Update the session todo progress ledger for non-trivial multi-step work; skip trivial one-step or purely conversational tasks. This is an append/advance-only ledger, not a plan you rewrite: always resubmit the FULL current list (call todo_read first if unsure of the exact text/order), keeping every existing item in its original position. The ONLY edit allowed to an existing item is advancing its status (pending->in_progress->completed/cancelled). Multiple independent or parallel items may be in_progress at the same time. Existing content text, priority, and order must be preserved exactly: do not reword, reorder, insert, or delete existing items. To reword, re-scope, reprioritize, or split an item, append a NEW item to the end instead of editing the existing one. New items must start as pending or in_progress, and completed/cancelled items stay in the list unchanged. This tool only records progress; it does not perform or verify the work.",
+		Description: "Update the session todo progress ledger for non-trivial multi-step work; skip trivial one-step or purely conversational tasks. This is an append/advance-only ledger, not a plan you rewrite: always resubmit the FULL current list (call todo_read first if unsure of the exact text/order), keeping every existing item in its original position. The ONLY edit allowed to an existing item is advancing its status (pending->in_progress->completed/cancelled). Multiple independent or parallel items may be in_progress at the same time. Existing content text, priority, and order must be preserved exactly: do not reword, reorder, insert, or delete existing items. To reword, re-scope, reprioritize, or split an item, append a NEW item to the end instead of editing the existing one. New items may start as pending, in_progress, or completed (e.g., recording already-finished discovery), and completed/cancelled items stay in the list unchanged. This tool only records progress; it does not perform or verify the work.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3552,8 +3564,8 @@ func validateTodoProgressUpdate(existing, next []session.TodoItem) error {
 		}
 	}
 	for i := len(existing); i < len(next); i++ {
-		if next[i].Status == "completed" || next[i].Status == "cancelled" {
-			return fmt.Errorf("todo_write cannot add new todo %d directly as %s; add it as pending or in_progress, then mark it done after the work", i+1, next[i].Status)
+		if next[i].Status == "cancelled" {
+			return fmt.Errorf("todo_write cannot add new todo %d directly as %s; add it as pending, in_progress, or completed", i+1, next[i].Status)
 		}
 	}
 	return nil

@@ -4302,8 +4302,8 @@ func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
 		t.Fatalf("mkdir artifact root: %v", err)
 	}
 	lines := make([]string, 0, 180)
-	for i := 1; i <= 180; i++ {
-		lines = append(lines, fmt.Sprintf("artifact line %03d", i))
+	for i := 1; i <= 1120; i++ {
+		lines = append(lines, fmt.Sprintf("artifact line %04d", i))
 	}
 	artifactPath := filepath.Join(artifactRoot, "grep_files-turn4.txt")
 	if err := os.WriteFile(artifactPath, []byte(strings.Join(lines, "\n")), 0o600); err != nil {
@@ -4319,7 +4319,7 @@ func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
 
 	result, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(fmt.Sprintf(`{
 		"path":%q,
-		"limit":240
+		"limit":1200
 	}`, artifactPath)))
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
@@ -4330,10 +4330,10 @@ func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
 	if result.Metadata["path_source"] != "session_ephemeral_artifact" {
 		t.Fatalf("expected session artifact source, got %#v", result.Metadata)
 	}
-	if !strings.Contains(result.DisplayOutput, "artifact line 120") || strings.Contains(result.DisplayOutput, "artifact line 121") {
+	if !strings.Contains(result.DisplayOutput, "artifact line 1000") || strings.Contains(result.DisplayOutput, "artifact line 1001") {
 		t.Fatalf("expected capped artifact window, got %q", result.DisplayOutput)
 	}
-	if !strings.Contains(result.DisplayOutput, "requested_limit=240 capped_to=120") {
+	if !strings.Contains(result.DisplayOutput, "requested_limit=1200 capped_to=1000") {
 		t.Fatalf("expected capped read annotation, got %q", result.DisplayOutput)
 	}
 
@@ -4349,7 +4349,7 @@ func TestReadFileAllowsSessionEphemeralArtifactWithinWindow(t *testing.T) {
 	if relativeResult.IsError || relativeResult.Metadata["path_source"] != "session_ephemeral_artifact" {
 		t.Fatalf("expected relative session artifact read to succeed, got %#v", relativeResult)
 	}
-	if !strings.Contains(relativeResult.DisplayOutput, "artifact line 121") || strings.Contains(relativeResult.DisplayOutput, "artifact line 120") {
+	if !strings.Contains(relativeResult.DisplayOutput, "artifact line 0121") || strings.Contains(relativeResult.DisplayOutput, "artifact line 0120") {
 		t.Fatalf("expected relative artifact read window, got %q", relativeResult.DisplayOutput)
 	}
 }
@@ -5187,9 +5187,9 @@ func TestReadFileCapsLargeRequestsAndAnnotatesWindow(t *testing.T) {
 		Config:    cfg,
 	}
 
-	lines := make([]string, 0, 180)
-	for i := 1; i <= 180; i++ {
-		lines = append(lines, fmt.Sprintf("line %03d", i))
+	lines := make([]string, 0, 1120)
+	for i := 1; i <= 1120; i++ {
+		lines = append(lines, fmt.Sprintf("line %04d", i))
 	}
 	if err := os.WriteFile(filepath.Join(workdir, "long.txt"), []byte(strings.Join(lines, "\n")), 0o644); err != nil {
 		t.Fatalf("write long file: %v", err)
@@ -5197,19 +5197,19 @@ func TestReadFileCapsLargeRequestsAndAnnotatesWindow(t *testing.T) {
 
 	result, err := registry.Execute(context.Background(), "read_file", execCtx, json.RawMessage(`{
 		"path":"long.txt",
-		"limit":240
+		"limit":1200
 	}`))
 	if err != nil {
 		t.Fatalf("read_file: %v", err)
 	}
-	if !strings.Contains(result.DisplayOutput, "[read_file path=long.txt lines=1-120 of 180; requested_limit=240 capped_to=120]") {
+	if !strings.Contains(result.DisplayOutput, "[read_file path=long.txt lines=1-1000 of 1120; requested_limit=1200 capped_to=1000]") {
 		t.Fatalf("expected annotated capped window, got %q", result.DisplayOutput)
 	}
-	if !strings.Contains(result.DisplayOutput, "line 120") {
-		t.Fatalf("expected capped content to include line 120, got %q", result.DisplayOutput)
+	if !strings.Contains(result.DisplayOutput, "line 1000") {
+		t.Fatalf("expected capped content to include line 1000, got %q", result.DisplayOutput)
 	}
-	if strings.Contains(result.DisplayOutput, "line 121") {
-		t.Fatalf("expected capped content to exclude line 121, got %q", result.DisplayOutput)
+	if strings.Contains(result.DisplayOutput, "line 1001") {
+		t.Fatalf("expected capped content to exclude line 1001, got %q", result.DisplayOutput)
 	}
 }
 
@@ -6774,9 +6774,9 @@ func TestTodoWritePreservesExistingItemsAndOnlyAppendsOrAdvances(t *testing.T) {
 			want:    "cannot change existing todo 1 status from completed to in_progress",
 		},
 		{
-			name:    "new completed item",
-			payload: `{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"},{"content":"Done without work","status":"completed","priority":"medium"}]}`,
-			want:    "cannot add new todo 3 directly as completed",
+			name:    "new cancelled item",
+			payload: `{"todos":[{"content":"Inspect current implementation","status":"completed","priority":"high"},{"content":"Patch todo semantics","status":"pending","priority":"high"},{"content":"Cancelled without work","status":"cancelled","priority":"medium"}]}`,
+			want:    "cannot add new todo 3 directly as cancelled",
 		},
 	}
 	for _, tc := range rejected {

@@ -4311,11 +4311,15 @@ func TestEngineAppendsArtifactCompletionHarnessReminderBeforeProviderCall(t *tes
 }
 
 func TestEngineEphemeralProviderViewDeduplicatesIdenticalResultsBeforeWindowing(t *testing.T) {
-	engine, meta, state, registry, hookManager, catalog := newTestEngine(t, session.ModeRun)
+	cfg := config.Default()
+	// Set a bounded threshold so ephemeral pointerization activates under
+	// pressure (>=65%) without triggering full compaction on this 4-turn fixture.
+	cfg.Runtime.Compact.InputCharThreshold = 24000
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeRun)
 	for i := 1; i <= 6; i++ {
 		writeEvidenceFile(t, meta.Workdir, fmt.Sprintf("visible-%d.txt", i), "visible\n")
 	}
-	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep checking the same glob output until you finish.")); err != nil {
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Keep checking the same glob output until you finish.\n"+strings.Repeat("context-pressure ", 600))); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	findResult := func(messages []session.Message, callID string) (session.ToolResult, bool) {

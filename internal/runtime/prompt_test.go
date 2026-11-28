@@ -833,11 +833,8 @@ func TestBuildSystemPromptHighlightsCompletedArtifactWrite(t *testing.T) {
 			}),
 		},
 	)
-	if !strings.Contains(prompt, "A requested artifact was already written to reports/final-audit.md") {
-		t.Fatalf("expected artifact write note, got:\n%s", prompt)
-	}
-	if !strings.Contains(prompt, "If required side effects are done, call finish") {
-		t.Fatalf("expected soft finish note, got:\n%s", prompt)
+	if strings.Contains(prompt, "A requested artifact was already written") {
+		t.Fatalf("system prompt must remain stable after artifact write to preserve KV prefix cache, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "todo state is fully completed") {
 		t.Fatalf("todo completion must not be treated as delivery evidence, got:\n%s", prompt)
@@ -1626,12 +1623,14 @@ func TestToolGuardKeepsExplicitInspectionScopeInYolo(t *testing.T) {
 	messages := []session.Message{
 		session.NewMessage("user", "Inspect only README.md and AGENTS.md in the current aegis-agent repository. Use targeted retrieval only."),
 	}
-	kind, text := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/README.md"}`), true)
-	if kind != "explicit_scope" {
-		t.Fatalf("expected explicit_scope guard in yolo, got kind=%q text=%q", kind, text)
+	// In standard mode explicit_scope remains active, while yolo honors full exploration autonomy (#258).
+	kindStd, textStd := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/README.md"}`), false)
+	if kindStd != "explicit_scope" || !strings.Contains(textStd, "README.md") || !strings.Contains(textStd, "AGENTS.md") {
+		t.Fatalf("expected explicit_scope guard in standard mode, got kind=%q text=%q", kindStd, textStd)
 	}
-	if !strings.Contains(text, "README.md") || !strings.Contains(text, "AGENTS.md") {
-		t.Fatalf("expected explicit paths in guard text, got %q", text)
+	kindYolo, textYolo := toolGuard(workdir, messages, "glob", json.RawMessage(`{"pattern":"**/README.md"}`), true)
+	if kindYolo != "" || textYolo != "" {
+		t.Fatalf("expected yolo mode to skip explicit_scope guard, got kind=%q text=%q", kindYolo, textYolo)
 	}
 }
 

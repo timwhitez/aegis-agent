@@ -45,11 +45,17 @@ type cliTTYReleaseRequest struct {
 }
 
 func startCLITTYInput(parent context.Context, stdin *os.File, onInterrupt func()) (*cliTTYInput, error) {
+	if stdin == nil {
+		return nil, os.ErrInvalid
+	}
+	fd := int(stdin.Fd())
+	if !isForegroundTTY(fd) {
+		return nil, errTTYNotForeground
+	}
 	reader, err := newCancelableTTYReader(stdin)
 	if err != nil {
 		return nil, err
 	}
-	fd := int(stdin.Fd())
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		reader.Close()

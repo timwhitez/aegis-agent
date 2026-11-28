@@ -258,7 +258,7 @@ func TestMicroCompactionReusesFinalizedArtifactWithoutCopy(t *testing.T) {
 	}
 	view := buildMicroCompactionView(t, messages, 1, 64*1024)
 	got := view[0].ToolResults[0]
-	if strings.Count(got.LLMOutput, artifactPath) != 1 || strings.Count(got.LLMOutput, "Complete artifact:") != 1 {
+	if strings.Count(got.LLMOutput, artifactPath) != 1 || strings.Count(got.LLMOutput, "Complete session-internal artifact") != 1 {
 		t.Fatalf("existing finalized artifact was not reused as one pointer: %q", got.LLMOutput)
 	}
 	if got.Metadata["pointerized_for_context"] != true || got.Metadata["compacted_for_context"] == true || got.Metadata["artifact_path"] != artifactPath {
@@ -427,14 +427,20 @@ func TestMicroCompactionEventsReportResultCountsAndBytes(t *testing.T) {
 
 func buildMicroCompactionView(t *testing.T, messages []session.Message, keepRecent, keepRecentBytes int) []session.Message {
 	t.Helper()
+	// Set InputCharThreshold above raw message+system size while keeping raw
+	// utilization >= 65% so micro-compaction activates without triggering full
+	// compaction (even when small payloads expand into compaction markers).
+	rawChars := estimateChars(messages)
+	const syntheticSystemChars = 4000
+	threshold := rawChars + syntheticSystemChars + 1000
 	profile := compactionContextProfile{
-		InputCharThreshold:        1 << 20,
+		InputCharThreshold:        threshold,
 		KeepRecentToolResults:     keepRecent,
 		KeepRecentToolResultBytes: keepRecentBytes,
 		HysteresisDeltaChars:      1 << 18,
 		KeepRecentMessages:        6,
 	}
-	view, _, didCompact, err := newCompactor(session.NewStore(t.TempDir())).BuildWithProfile("unused", t.TempDir(), session.State{}, messages, nil, nil, profile, 0, nil)
+	view, _, didCompact, err := newCompactor(session.NewStore(t.TempDir())).build(context.Background(), "unused", t.TempDir(), session.State{}, messages, nil, nil, profile, 0, syntheticSystemChars, nil, nil)
 	if err != nil {
 		t.Fatalf("build provider view: %v", err)
 	}
@@ -1856,7 +1862,7 @@ func TestCompactionTruncatesOldToolOutput(t *testing.T) {
 			DisplayOutput: "new output",
 		}}),
 	}
-	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
+	view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, estimateChars(messages)+64, 1, 0, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -1967,7 +1973,7 @@ func TestCompactionTruncatesProviderBlockToolArguments(t *testing.T) {
 				}}),
 			}
 
-			view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
+			view, _, didCompact, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, estimateChars(messages)+64, 1, 0, 0, func(events.Event) error { return nil })
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}
@@ -2038,7 +2044,7 @@ func TestCompactorDoesNotMutateSourceToolResultMetadata(t *testing.T) {
 		}}),
 	}
 
-	view, _, _, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, 1000000, 1, 0, 0, func(events.Event) error { return nil })
+	view, _, _, err := newCompactor(store).BuildWithPolicy(meta.ID, meta.Workdir, state, messages, nil, nil, estimateChars(messages)+64, 1, 0, 0, func(events.Event) error { return nil })
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -2423,7 +2429,7 @@ func TestCompactorStopLossDoesNotMutateDurableMessages(t *testing.T) {
 	arguments := json.RawMessage(`{"pattern":"state","path":"internal/runtime"}`)
 	messages := []session.Message{
 		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_1", Name: "grep", Arguments: arguments}}),
-		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_1", Name: "grep", LLMOutput: "old state", DisplayOutput: "old state"}}),
+		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_1", Name: "grep", LLMOutput: strings.Repeat("old state ", 200), DisplayOutput: strings.Repeat("old state ", 200)}}),
 		session.NewAssistantMessage("", "", []session.ToolCall{{ID: "grep_2", Name: "grep", Arguments: arguments}}),
 		session.NewToolMessage([]session.ToolResult{{ToolCallID: "grep_2", Name: "grep", LLMOutput: "new state", DisplayOutput: "new state"}}),
 	}
@@ -2442,7 +2448,7 @@ func TestCompactorStopLossDoesNotMutateDurableMessages(t *testing.T) {
 		t.Fatalf("load durable messages: %v", err)
 	}
 	view, _, _, err := newCompactor(store).BuildWithProfile(meta.ID, meta.Workdir, state, durable, nil, nil, compactionContextProfile{
-		InputCharThreshold:        1 << 20,
+		InputCharThreshold:        estimateChars(durable) + 64,
 		KeepRecentToolResults:     1,
 		KeepRecentToolResultBytes: 64 * 1024,
 		HysteresisDeltaChars:      1 << 18,

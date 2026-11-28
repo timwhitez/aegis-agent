@@ -139,8 +139,8 @@ runtime:
   compact:
     # Zero derives the threshold from provider/model context information.
     input_char_threshold: 0
-    keep_recent_tool_results: 3
-    keep_recent_tool_result_bytes: 65536
+    keep_recent_tool_results: 16
+    keep_recent_tool_result_bytes: 262144
     hysteresis_delta_chars: 0
     keep_recent_messages: 0
     utilization_factor: 0.85

@@ -61,10 +61,81 @@ func toolLoopReminderText(messages []session.Message) string {
 	if summary.TodoNoopCount >= 4 {
 		triggers = append(triggers, fmt.Sprintf("todo_write no-op repeated %d times", summary.TodoNoopCount))
 	}
+	for _, item := range summary.TopReadPaths {
+		if item.Count >= 6 {
+			triggers = append(triggers, fmt.Sprintf("read_file(%s) repeated %d times", item.Key, item.Count))
+			break
+		}
+	}
+	if cyclic := recentCyclicReadOnlyLoopCount(messages); cyclic >= 6 {
+		triggers = append(triggers, fmt.Sprintf("cyclic read-only tool loop detected (%d repeated calls without progress)", cyclic))
+	}
 	if len(triggers) == 0 {
 		return ""
 	}
 	return "Harness reminder: repeated context-discovery/tool patterns were observed (" + strings.Join(triggers, "; ") + "). Treat this as an observation, not a fixed workflow: reuse already loaded skills and previously read evidence, then either write/update the requested artifact or progress/validation/final notes, or clearly state the blocker before continuing."
+}
+
+func recentCyclicReadOnlyLoopCount(messages []session.Message) int {
+	// Scan recent tool results since the last mutating action (write_file, edit_file,
+	// finish, submit_plan, or a new user instruction). Count how many read-only calls
+	// repeated an exact (name, path/pattern/command) signature within that window.
+	seen := map[string]int{}
+	repeated := 0
+	inspectedTurns := 0
+	for i := len(messages) - 1; i >= 0 && inspectedTurns < 10; i-- {
+		msg := messages[i]
+		if msg.Role == "user" {
+			source, _ := msg.Meta["source"].(string)
+			if source != "harness_reminder" && source != "compaction_summary" {
+				break
+			}
+			continue
+		}
+		if msg.Role != "tool" {
+			continue
+		}
+		inspectedTurns++
+		for _, res := range msg.ToolResults {
+			switch res.Name {
+			case "write_file", "edit_file", "finish", "submit_plan":
+				return repeated
+			case "read_file", "grep", "grep_files", "glob", "load_skill":
+				sig := readOnlyRepetitionSignature(res)
+				if sig == "" {
+					continue
+				}
+				seen[sig]++
+				if seen[sig] >= 2 {
+					repeated++
+				}
+			}
+		}
+	}
+	return repeated
+}
+
+func readOnlyRepetitionSignature(result session.ToolResult) string {
+	switch result.Name {
+	case "read_file":
+		path := strings.TrimSpace(metadataString(result.Metadata, "path"))
+		if path == "" {
+			return ""
+		}
+		if offset, ok := result.Metadata["offset"]; ok {
+			return fmt.Sprintf("read_file:%s:%d-%d", path, repetitionMetadataInt(map[string]any{"offset": offset}, "offset"), repetitionMetadataInt(result.Metadata, "end"))
+		}
+		if byteOffset, ok := result.Metadata["byte_offset"]; ok {
+			return fmt.Sprintf("read_file:%s:b%d-%d", path, repetitionMetadataInt(map[string]any{"byte_offset": byteOffset}, "byte_offset"), repetitionMetadataInt(result.Metadata, "byte_end"))
+		}
+		return "read_file:" + path
+	case "grep", "grep_files", "glob":
+		return fmt.Sprintf("%s:%s:%s:%s", result.Name, metadataString(result.Metadata, "path"), metadataString(result.Metadata, "pattern"), metadataString(result.Metadata, "include"))
+	case "load_skill":
+		return "load_skill:" + strings.TrimSpace(metadataString(result.Metadata, "path"))
+	default:
+		return ""
+	}
 }
 
 func recentToolLoopReminder(messages []session.Message) bool {

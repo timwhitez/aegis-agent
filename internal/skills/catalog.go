@@ -227,6 +227,73 @@ func (c *Catalog) TrustedCommandTools(cwd string) []CommandTool {
 	return out
 }
 
+type ExcludedCommandTool struct {
+	Tool   CommandTool `json:"tool"`
+	Reason string      `json:"reason"`
+}
+
+func (c *Catalog) ExcludedCommandTools(cwd string) []ExcludedCommandTool {
+	if c == nil {
+		return nil
+	}
+	all := c.CommandTools()
+	if len(all) == 0 {
+		return nil
+	}
+	anchors := []string{}
+	if strings.TrimSpace(cwd) != "" {
+		anchors = append(anchors, cwd)
+	}
+	processCwd, err := procutil.Getwd()
+	if err != nil || strings.TrimSpace(processCwd) == "" {
+		out := make([]ExcludedCommandTool, 0, len(all))
+		for _, tool := range all {
+			out = append(out, ExcludedCommandTool{
+				Tool:   tool,
+				Reason: "process working directory unavailable; command tools fail closed",
+			})
+		}
+		return out
+	}
+	anchors = append(anchors, processCwd)
+	anchorReals := make([]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		real, err := realOrAbs(anchor)
+		if err != nil {
+			continue
+		}
+		anchorReals = append(anchorReals, real)
+	}
+	if len(anchorReals) == 0 {
+		out := make([]ExcludedCommandTool, 0, len(all))
+		for _, tool := range all {
+			out = append(out, ExcludedCommandTool{
+				Tool:   tool,
+				Reason: "trust boundary anchors unavailable; command tools fail closed",
+			})
+		}
+		return out
+	}
+	var out []ExcludedCommandTool
+	for _, tool := range all {
+		toolPath, err := realOrAbs(tool.SkillPath)
+		if err != nil {
+			out = append(out, ExcludedCommandTool{
+				Tool:   tool,
+				Reason: "skill path could not be resolved",
+			})
+			continue
+		}
+		if pathWithinAny(anchorReals, toolPath) {
+			out = append(out, ExcludedCommandTool{
+				Tool:   tool,
+				Reason: "skill directory is inside the workspace or invoking working directory",
+			})
+		}
+	}
+	return out
+}
+
 func pathWithinAny(anchors []string, target string) bool {
 	for _, anchor := range anchors {
 		if pathWithin(anchor, target) {

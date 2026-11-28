@@ -134,7 +134,7 @@ func TestEphemeralProviderViewReusesCurrentCommandArtifactWithoutCopy(t *testing
 		t.Fatalf("ephemeral provider view copied current artifact: before=%v after=%v", before, after)
 	}
 	older := view[0].ToolResults[0]
-	if !strings.Contains(older.LLMOutput, "Complete artifact:") || older.Metadata["ephemeral_provider_view"] != true {
+	if !strings.Contains(older.LLMOutput, "Complete session-internal artifact") || !strings.Contains(older.LLMOutput, "read_file only") || older.Metadata["ephemeral_provider_view"] != true {
 		t.Fatalf("older command result did not reuse current pointer: %#v", older)
 	}
 }

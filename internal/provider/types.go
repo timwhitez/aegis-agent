@@ -407,3 +407,26 @@ func retryDelay(base time.Duration, attempt int) time.Duration {
 	// security primitive.
 	return time.Duration(rand.Int63n(int64(ceiling)) + 1)
 }
+
+// retryDelayForError applies equal jitter with a 2x base ceiling for HTTP 429
+// rate limits that do not carry a Retry-After header, preventing burst retries
+// from exhausting all attempts inside a few seconds before an RPM bucket refills.
+func retryDelayForError(base time.Duration, attempt int, err error) time.Duration {
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) && httpErr.Class == "rate_limit" && httpErr.RetryAfter <= 0 {
+		effectiveBase := base
+		if effectiveBase <= 0 {
+			effectiveBase = time.Second
+		}
+		if effectiveBase <= 15*time.Second {
+			effectiveBase *= 2
+		}
+		ceiling := retryDelayCeiling(effectiveBase, attempt)
+		if ceiling <= 1 {
+			return ceiling
+		}
+		half := ceiling / 2
+		return half + time.Duration(rand.Int63n(int64(ceiling-half))+1)
+	}
+	return retryDelay(base, attempt)
+}

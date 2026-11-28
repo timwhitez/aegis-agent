@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"aegis-agent/internal/app"
 	"aegis-agent/internal/procutil"
@@ -13,7 +15,15 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__signal-process" {
 		os.Exit(procutil.RunSignalProcessCommand(os.Args[2:], os.Stderr))
 	}
-	if err := app.Run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil && !errors.Is(err, context.Canceled) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		// Release signal interception after the first graceful signal so a second
+		// SIGINT/SIGTERM immediately terminates the process if cleanup blocks.
+		stop()
+	}()
+	if err := app.Run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil && !errors.Is(err, context.Canceled) {
 		var exitErr app.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.Code)

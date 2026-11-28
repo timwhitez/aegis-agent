@@ -12,6 +12,22 @@ import (
 )
 
 var errTTYReaderStopped = errors.New("TTY reader stopped")
+var errTTYNotForeground = errors.New("stdin TTY is not in the foreground process group")
+
+// isForegroundTTY reports whether fd's controlling terminal foreground process
+// group matches this process group. Calling term.MakeRaw from a background
+// process group (e.g. under `timeout` or a background job) triggers SIGTTOU and
+// permanently stops the process.
+func isForegroundTTY(fd int) bool {
+	pgrp, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+	if err != nil {
+		// Synthetic PTY pairs without a controlling terminal (e.g. tests) return
+		// ENOTTY; only reject when a controlling terminal reports a different
+		// foreground process group.
+		return errors.Is(err, unix.ENOTTY)
+	}
+	return pgrp == unix.Getpgrp()
+}
 
 // cancelableTTYReader waits on the caller-owned TTY and an internal wakeup
 // pipe. Cancellation only closes the pipe writer; it never closes stdin.

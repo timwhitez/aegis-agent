@@ -9,15 +9,15 @@
 | `init` | 生成或更新一份配置、provider profile、session/skill 目录和可选示例 hook |
 | `models` | 列出当前有效配置（内建默认与已加载配置合并）中的 provider/model 记录；不是远端模型发现。文本输出列为 `<provider>/<model>`、`<provider>: <model>`、协议族（`openai`/`anthropic`/`google`）和来源（`file`/`builtin`，默认 profile 附 `default`）；`--declared` 仅列出配置文件声明的 provider |
 | `web` | 启动本地 Web 服务；默认 `127.0.0.1:3940`，worker 默认 2，范围 0–8 |
-| `run` | 交互执行；TTY 下 Esc 可触发 interrupt |
+| `run` | 交互执行；仅在进程处于前台 TTY 且未使用 `--json` / `--output-format stream-json` 时启用 raw TTY Esc interrupt，后台/非前台组自动回退非交互模式避免 `SIGTTOU` 挂起 |
 | `exec` | 非交互执行；可输出 JSON/stream-json，默认要求显式 `finish` |
 | `continue` | 读取已有 session，提交普通 follow-up 或显式恢复/审批操作 |
 | `steer` | 向运行中的 session 写入 steering，可选择 interrupt 当前执行 |
 | `sessions` | 列出 session；`sessions context <id>` 输出上下文报告；`sessions reconcile <id>` 恢复无活属主的 zombie `running` session 为 `paused` |
 | `goal` | 查询和改变 Goal、mission plan、validation 和审批 |
 | `tasks` | 读取 session 的 todo/task 视图 |
-| `probe-provider` | 使用当前或显式 profile 检查 provider 能力和请求 |
-| `doctor` | 输出配置、环境和可选 browser 诊断；`--skip-probe` 不调用 provider |
+| `probe-provider` | 使用当前或显式 profile 检查 provider 能力和请求（支持 `--thinking-probe` 显式探测推理/思考块与 effort 参数） |
+| `doctor` | 输出配置、环境和可选 browser 诊断（含 `skills.scan` 受信任与因位于工作区/当前目录被排除的 skill command tools 告警）；`--skip-probe` 不调用 provider |
 | `experimental` | 进入 `delegate`、`children`、`queue`、`tui` 和 Web 的扩展入口 |
 
 旧的顶层 `delegate`、`children`、`queue`、`tui` 不再是当前命令；必须使用 `aegis-agent experimental ...`。
@@ -53,6 +53,8 @@
 审批/恢复命令（`continue --approve-plan`、`goal plan approve`）还必须显式传 `--approval-request-id <id>`（重试复用同一 ID），以及 `--plan-mode-id` + `--plan-version` + `--expected-revision` 或 `--approve-latest`；只读查询可用 `--approval-receipt --approval-request-id <id>`。审批目标必须明确，不能用普通 continue 伪装审批。所有 CLI 命令均支持 `--help` / `-h`（退出码 `0` 输出到 stdout），缺失 session 或 goal 时返回明确提示而不泄漏内部存储路径。
 
 普通文本模式下，`run`、`exec` 和 `continue` 将最终回答写到 stdout。runtime 返回失败结果且附有错误详情时，stderr 显示已知停止原因。对于自由文本，最终摘要提示查看本机会话状态。stderr 不可写时仍返回会话退出码。若命令直接返回 provider 或传输错误，CLI 沿用该错误的诊断和退出码。
+
+CLI 顶层入口（含非 TTY `exec` / `run` / `continue`）捕获一次 `SIGINT` / `SIGTERM` 并优雅取消当前上下文，使 runtime 把活动 session 落盘为可恢复状态（`paused`）而不是留下 `owner_process_dead` 僵尸 `running` 状态；再次收到信号恢复默认终止行为。
 
 ## 配置选择
 

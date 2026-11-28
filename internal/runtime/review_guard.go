@@ -352,10 +352,11 @@ func durableProjectMemoryNote(workdir string, messages []session.Message) string
 	if !looksLargeProjectTask(messages) {
 		return ""
 	}
+	// Keep the system prompt prefix stable across turns (KV cache invariance):
+	// only describe project memory statically from workspace presence or the
+	// explicit large-project instruction, rather than rewriting systemPrompt on
+	// every edit/test cycle.
 	stack := loadProjectMemoryStack(workdir)
-	if refresh := projectMemoryRefreshNeed(workdir, messages); refresh.Active {
-		return fmt.Sprintf("A durable project-memory stack is available: %s. It is stale relative to %s. For durable handoff or finalization, %s. If you delegate before refreshing it, include the current progress and validation context directly in the child prompt.", strings.Join(stack.PresentPaths(), ", "), joinPromptItems(refresh.Reasons), projectMemoryRefreshInstruction(refresh))
-	}
 	if present := stack.PresentPaths(); len(present) > 0 {
 		return fmt.Sprintf("A durable project-memory stack is available: %s. Refresh from these files before more implementation or repo-scale rereads, and keep spec, plan, progress, and validation current.", strings.Join(present, ", "))
 	}
@@ -651,9 +652,6 @@ func looksLargeProjectTask(messages []session.Message) bool {
 			"architecture",
 			"traceability",
 			"matrix",
-			"codex",
-			"opencode",
-			"surpass",
 			"enterprise",
 			"refactor",
 			"long-horizon",
@@ -685,8 +683,7 @@ func looksLargeProjectTask(messages []session.Message) bool {
 			return true
 		}
 	}
-	stats := collectRecentToolStats(messages)
-	return stats.UniqueReadPaths >= 6 || stats.RetrievalCount >= 8
+	return false
 }
 
 func explicitSmallTaskOptOut(lowered string) bool {
