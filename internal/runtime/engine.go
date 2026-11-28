@@ -362,6 +362,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 	if e.control.consumePause() {
 		return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 	}
+	if isSignalInterruptContext(ctx) {
+		return e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
+	}
 	if _, err := e.triggerActiveHook(ctx, hookManager, "session.start", sessionHookPayload(meta, session.StatusRunning)); err != nil {
 		if result, handled, handleErr := e.handleCancelledBoundary(ctx, meta, state, err, hookManager, budgetRun); handled {
 			return result, handleErr
@@ -451,6 +454,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 		budgetRun.setAbsoluteTurn(state.Turn)
 		if e.control.consumePause() {
 			return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+		}
+		if isSignalInterruptContext(ctx) {
+			return e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
 		}
 
 		if err := e.deferPendingInterrupts(meta.ID); err != nil {
@@ -674,6 +680,12 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 				}
 				return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
 			}
+			if isSignalInterruptContext(ctx) {
+				if err := e.appendProviderRequestFailed(meta.ID, state.Phase, snapshot, "cancelled", errPausedBeforeProviderCall); err != nil {
+					return RunResult{}, fmt.Errorf("record provider request cancelled before call: %w", err)
+				}
+				return e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
+			}
 			if err := e.checkApprovalExecutionTarget(ctx, meta.ID); err != nil {
 				if recordErr := e.appendProviderRequestFailed(meta.ID, state.Phase, snapshot, "rejected", err); recordErr != nil {
 					return RunResult{}, fmt.Errorf("record changed approval request rejection after %v: %w", err, recordErr)
@@ -746,6 +758,11 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						return RunResult{}, appendErr
 					}
 					return e.pauseForReason(ctx, meta, state, reason, hookManager, budgetRun)
+				case isSignalInterruptContext(ctx):
+					if appendErr := e.appendProviderCancelled(meta.ID, "signal_interrupt"); appendErr != nil {
+						return RunResult{}, appendErr
+					}
+					return e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
 				case e.control.consumeSteerInterrupt():
 					if appendErr := e.appendProviderCancelled(meta.ID, "steer_interrupt"); appendErr != nil {
 						return RunResult{}, appendErr
@@ -1258,6 +1275,9 @@ func (e *Engine) Run(ctx context.Context, meta session.SessionMetadata, state se
 						}
 						if e.control.consumePause() {
 							return e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+						}
+						if isSignalInterruptContext(ctx) {
+							return e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
 						}
 						if e.control.consumeSteerInterrupt() {
 							goto nextTurn
@@ -2385,6 +2405,15 @@ func (e *Engine) pauseForReason(ctx context.Context, meta session.SessionMetadat
 	return e.pause(ctx, meta, state, reason, hookManager)
 }
 
+// ErrSignalInterrupt is the context cancellation cause used by the CLI entry
+// point on SIGINT/SIGTERM so runtime settles active sessions cleanly to paused
+// instead of failed or zombie running.
+var ErrSignalInterrupt = errors.New("signal interrupt")
+
+func isSignalInterruptContext(ctx context.Context) bool {
+	return ctx != nil && errors.Is(context.Cause(ctx), ErrSignalInterrupt)
+}
+
 func (e *Engine) handleCancelledBoundary(ctx context.Context, meta session.SessionMetadata, state session.State, err error, hookManager *hooks.Manager, budgetRun *childBudgetRun) (RunResult, bool, error) {
 	if !isContextCancellation(ctx, err) {
 		return RunResult{}, false, nil
@@ -2399,6 +2428,10 @@ func (e *Engine) handleCancelledBoundary(ctx context.Context, meta session.Sessi
 	}
 	if e.control.consumePause() {
 		result, pauseErr := e.pauseForReason(ctx, meta, state, e.control.takePauseReason(), hookManager, budgetRun)
+		return result, true, pauseErr
+	}
+	if isSignalInterruptContext(ctx) {
+		result, pauseErr := e.pauseForReason(ctx, meta, state, "signal_interrupt", hookManager, budgetRun)
 		return result, true, pauseErr
 	}
 	return RunResult{}, false, nil

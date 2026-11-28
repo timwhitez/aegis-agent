@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -243,5 +245,61 @@ func TestToolLoopReminderCatchesCyclicReadOnlyLoops(t *testing.T) {
 	}}))
 	if got := toolLoopReminderText(messages); got != "" {
 		t.Fatalf("expected reminder to clear after mutating edit_file, got %q", got)
+	}
+}
+
+func TestLooksLargeProjectTaskDoesNotFalseTriggerOnSingleWordRepository(t *testing.T) {
+	normal := []session.Message{
+		session.NewMessage("user", "Perform a thorough code review of all packages in this repository, identify every bug and concurrency risk, and write a review report to reports/review.md."),
+	}
+	if looksLargeProjectTask(normal) {
+		t.Fatal("ordinary prompt mentioning 'repository' must not trigger large-project project-memory hijack")
+	}
+	large := []session.Message{
+		session.NewMessage("user", "Refactor the architecture across this repository with full traceability."),
+	}
+	if !looksLargeProjectTask(large) {
+		t.Fatal("genuine multi-signal large-project prompt should still match looksLargeProjectTask")
+	}
+	workdir := t.TempDir()
+	before := durableProjectMemoryNote(workdir, large)
+	if err := os.MkdirAll(filepath.Join(workdir, "reports"), 0o755); err != nil {
+		t.Fatalf("mkdir reports: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "reports", "spec.md"), []byte("# spec\n"), 0o600); err != nil {
+		t.Fatalf("write spec.md: %v", err)
+	}
+	after := durableProjectMemoryNote(workdir, large)
+	if before != after {
+		t.Fatalf("durableProjectMemoryNote mutated after writing reports/spec.md (busts KV cache):\nbefore=%q\nafter=%q", before, after)
+	}
+}
+
+func TestEngineSignalInterruptSettlesSessionToPaused(t *testing.T) {
+	cfg := config.Default()
+	engine, meta, state, registry, hookManager, catalog := newTestEngineWithConfig(t, cfg, session.ModeExec)
+	if err := engine.store.AppendMessage(meta.ID, session.NewMessage("user", "Do work.")); err != nil {
+		t.Fatalf("append user message: %v", err)
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	fake := provider.NewFake(func(callCtx context.Context, _ provider.TurnRequest) (provider.TurnResult, error) {
+		cancel(ErrSignalInterrupt)
+		<-callCtx.Done()
+		return provider.TurnResult{}, callCtx.Err()
+	})
+	result, err := engine.Run(ctx, meta, state, "", fake, catalog, registry, hookManager)
+	if err != nil {
+		t.Fatalf("expected graceful pause without error, got %v", err)
+	}
+	if result.Status != session.StatusPaused {
+		t.Fatalf("expected paused status on ErrSignalInterrupt, got %q", result.Status)
+	}
+	saved, err := engine.store.LoadState(meta.ID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if saved.Status != session.StatusPaused || saved.PauseReason != "signal_interrupt" {
+		t.Fatalf("expected saved paused state with signal_interrupt reason, got %#v", saved)
 	}
 }

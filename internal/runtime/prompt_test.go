@@ -1529,7 +1529,7 @@ func TestBuildSystemPromptAddsDurableProjectMemoryNote(t *testing.T) {
 			session.NewMessage("user", "Do a full large-project architecture review and implementation plan."),
 		},
 	)
-	if !strings.Contains(prompt, "A durable project-memory stack is available: reports/plan.md") {
+	if !strings.Contains(prompt, "maintain a durable project-memory stack under reports/: spec.md, plan.md, progress.md, and validation.md") {
 		t.Fatalf("expected durable project memory note, got:\n%s", prompt)
 	}
 }

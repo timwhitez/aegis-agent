@@ -349,17 +349,13 @@ func looksReviewArtifactContent(content string) bool {
 }
 
 func durableProjectMemoryNote(workdir string, messages []session.Message) string {
+	_ = workdir
 	if !looksLargeProjectTask(messages) {
 		return ""
 	}
-	// Keep the system prompt prefix stable across turns (KV cache invariance):
-	// only describe project memory statically from workspace presence or the
-	// explicit large-project instruction, rather than rewriting systemPrompt on
-	// every edit/test cycle.
-	stack := loadProjectMemoryStack(workdir)
-	if present := stack.PresentPaths(); len(present) > 0 {
-		return fmt.Sprintf("A durable project-memory stack is available: %s. Refresh from these files before more implementation or repo-scale rereads, and keep spec, plan, progress, and validation current.", strings.Join(present, ", "))
-	}
+	// Keep the system prompt prefix strictly invariant across turns (KV cache
+	// preservation): do not interpolate mutable disk presence of reports/*.md
+	// into the system prompt.
 	return "For larger multi-step engineering or review tasks, maintain a durable project-memory stack under reports/: spec.md, plan.md, progress.md, and validation.md. Refresh from those files before more implementation or repo-scale rereads."
 }
 
@@ -647,8 +643,6 @@ func looksLargeProjectTask(messages []session.Message) bool {
 		}
 		score := 0
 		for _, token := range []string{
-			"repo",
-			"repository",
 			"architecture",
 			"traceability",
 			"matrix",
@@ -666,6 +660,7 @@ func looksLargeProjectTask(messages []session.Message) bool {
 			}
 		}
 		for _, token := range []string{
+			"repository",
 			"large",
 			"complex",
 			"project",
